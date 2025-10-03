@@ -8,7 +8,6 @@ import random
 plt.rcParams['figure.figsize'] = [10, 7]
 import re
 import molmass as ms
-import molmass as ms
 from EmulatorLibrary import * # Replaces defining here. 
 
 import torch
@@ -32,10 +31,12 @@ def QFM_fO2(P, K):
 # Compile once, use many times
 _number_pattern = re.compile(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?')
 
+def random_char(y):
+    return ''.join(random.choice(string.ascii_letters) for x in range(y))
+_number_pattern = re.compile(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?')
 def pull_number(string):
     match = _number_pattern.search(string)
     return float(match.group()) if match else np.nan
-    
 def pull_letter(string, symbols = False):
     letters = ''
     accepted_chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
@@ -45,10 +46,8 @@ def pull_letter(string, symbols = False):
         if char in accepted_chars:
             letters += char
     return letters
-
 def concat_all(*args):
     return ''.join(str(arg) for arg in args)
-
 def identify_binaries(digits):
     """Returns numpy array of all unique binaries possible given a number of digits"""
     if 2**digits > 1E7:
@@ -63,6 +62,65 @@ def identify_binaries(digits):
         binaries = np.append(binaries, new_binaries, axis = 0)
         
     return binaries.astype(int)
+
+def safe_float(x):
+    try:
+        return float(x)
+    except:
+        return 0.0
+    
+safe_convert = np.vectorize(safe_float)
+
+def blur_binary_boundaries(arr):
+    """
+    For blurring boundaries between phase occurence and disappearence for training.
+    Given a 2D binary array (0s and 1s), modifies boundary transitions (column-wise)
+    such that:
+    - A 1 that borders a 0 is set to 0.7
+    - A 0 that borders a 1 is set to 0.3
+
+    Returns a new array with blurred boundaries.
+    """
+    arr = arr.astype(float)  # Ensure output is float to allow fractional values
+    blurred = arr.copy()
+
+    # Shifted arrays for comparison: above and below
+    above = np.roll(arr, 1, axis=0)
+    below = np.roll(arr, -1, axis=0)
+
+    # Identify boundaries (only between 1s and 0s)
+    boundary_mask = (arr != above) | (arr != below)
+
+    # Only consider cases where neighbors are valid (not from wrap-around)
+    boundary_mask[0, :] &= (arr[0, :] != below[0, :])  # Top row: compare only below
+    boundary_mask[-1, :] &= (arr[-1, :] != above[-1, :])  # Bottom row: compare only above
+
+    # Set blurred values
+    blurred[(boundary_mask) & (arr == 1)] = 0.7
+    blurred[(boundary_mask) & (arr == 0)] = 0.3
+
+    return blurred
+
+    
+def grid_sample(params, table=np.array([])):
+    """Generates a numpy array grid sample recursively for arbitrary parameters.
+    Let params be a nested list, with each sublist of [min, max, len] passed to np.linspace.
+    Order of params determines column order in the output table."""
+    
+    params = list(params)  # Copy to avoid side-effects
+    param = params.pop()
+    new_col = np.linspace(*param).reshape((-1,1))
+    
+    if not table.shape[0]:
+        table = new_col
+    else:
+        table = np.append(np.repeat(new_col, table.shape[0], axis=0),
+                          np.tile(table, (new_col.shape[0], 1)), axis=1)
+    
+    if len(params):
+        return grid_sample(params, table)
+    else:
+        return table
 
 def squash_to_range(x, min_=0.1, max_=0.95):
     return x * (max_ - min_) + min_
@@ -353,7 +411,7 @@ next_index = 93
 phases_in_order = [
     'olivine', 'orthopyroxene', 'clinopyroxene', 'spinel',
     'plagioclase', 'alkali-feldspar', 'garnet', 'nepheline', 'leucite',
-    'biotite', 'rhm-oxide', 'alloy-solid', 'analcime', 'apatite', 'whitlockite', 'quartz', 'tridymite', 'cristobalite',
+    'biotite', 'rhm-oxide', 'alloy-solid', 'analcime', 'apatite', 'whitlockite', 'quartz', 'tridymite', 
     'amphibole', 'muscovite', 'fluid'
 ]
 
@@ -384,6 +442,16 @@ for phase, props in component_indices.items():
             if 'mass' in key:
                 mass_indices.append(ind)
 mass_indices = np.unique(mass_indices)
+
+
+WRkeysOld = ['SiO2','TiO2', 'Al2O3', 'FeO', 'MgO', 'CaO', 'Na2O', 'K2O', 'P2O5', 'MnO', 'H2O', 'Cr2O3', 'NiO']
+OxidesOld = WRkeysOld + ['Fe2O3']
+ElkeysOld = ['Si','Ti','Al','Fe','Mg','Ca','Na','K','P','Mn','H','Cr','Ni']
+MtotOld = np.array([ms.Formula(MM).mass for MM in OxidesOld]).reshape(14,1) #  14x1 , For phase molar mass from oxide moles
+compToOxOld = pd.read_csv('Old_Transforms/compToOx - Copy (2).csv').to_numpy()[:,1:].astype(np.float32)
+MinvOld = np.diag([1/ms.Formula(MM).mass for MM in OxidesOld])
+MMOld = np.diag([ms.Formula(mm).mass for mm in OxidesOld])
+oxToElOld = pd.read_csv('Old_Transforms/OxToEl_olderJuly2525.csv').to_numpy()[:,1:].astype(np.float32).T
 
 WRkeys = ['SiO2','TiO2', 'Al2O3', 'FeO', 'MgO', 'CaO', 'Na2O', 'K2O', 'P2O5', 'H2O', 'Cr2O3']
 Oxides = WRkeys + ['Fe2O3']
@@ -492,8 +560,30 @@ for i, ox in enumerate(Oxides):
     oxide_dict[ox] = i
 
 
-#print(label_names)
-
+chem_list = []
+j = 0
+k = 0
+comp_binariesL = []
+comp_mappingsL = []
+comp_map = {}
+for i, (label, inds) in enumerate(label_indices.items()):
+    n_components = len(inds)
+    if n_components > 1:
+        comp_list = np.arange(k, k+n_components)
+        k += n_components
+        comp_map[label] = comp_list
+        
+for i, (label, inds) in enumerate(label_indices.items()):
+    n_components = len(inds)
+    if n_components > 1:
+        comp_binariesL.append(i)
+        comp_mappingsL = comp_mappingsL + np.repeat(j, n_components).tolist()
+        j += 1
+comp_binaries = np.array(comp_binariesL)
+comp_mappings = np.zeros((j, len(comp_mappingsL))) # Build Binary Matrix to project phases to components
+#comp_mappings_tensor = torch.zeros(j, len(comp_mappingsL))
+for col, row in enumerate(comp_mappingsL):
+    comp_mappings[row, col] = 1
 
 boolTransCompToOx = np.copy(compToOx)
 boolTransCompToOx[:,3] += boolTransCompToOx[:,-1] #Compile non-negative irons for use with element inputs

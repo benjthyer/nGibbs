@@ -1,7 +1,10 @@
 
 
 """Nonzero SiO2, Al2O3, MgO, FeO, CaO required
-~Sept 12: Changed model so that regularization occurs after dropout and activation functions. Reversed"""
+~Sept 12: Changed model so that regularization occurs after dropout and activation functions. Reversed
+Future Organization: Make this the NN archetecture python file. Have one more higher level python 
+script that loads the models into one object. 
+"""
 
 date = "Sept25"
 modelname = "rhyoliteMELTS1.0.2_FullPolished"
@@ -239,7 +242,7 @@ class DualSaturationChemistry(nn.Module):
             outputs.append(out)
 
         # Concatenate all outputs into shape: (batch_size, n_phases)
-        return torch.cat(outputs, dim=1) * zero_mask
+        return torch.cat(outputs, dim=1) * zero_mask, zero_mask
 
     def forward_phase_moles(self, latentx, binary_mask, intensiveComponents, details_out = False):
         """Predicts molar abundance of phases and reconstructs bulk composition. Let intensive components be indexed by label_indices_comp"""

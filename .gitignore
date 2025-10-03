@@ -1,11 +1,17 @@
 # NumPy array files
 *.npy
 
-# Dataset directory
-102Datasets/
+# Dataset directories
+*Datasets/
+*datasets/
+*Dataset/
+*dataset/
 
 # Plots and Figures
 *hist/
+
+#Large Notebooks
+Emulator_Performance.ipynb
 
 # Python
 __pycache__/

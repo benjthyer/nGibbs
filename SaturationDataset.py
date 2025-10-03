@@ -1,5 +1,11 @@
+""" 
+Pytorch Dataset classes for training. Most disused as of 10/3/25
+"""
+
+
 import torch
 import numpy as np
+
 
 class MemmapNormalizedDataset(torch.utils.data.Dataset):
     def __init__(self, feature_memmap: np.memmap, label_memmap: np.memmap, stats_file: str):
