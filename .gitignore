@@ -4,6 +4,9 @@
 # Dataset directory
 102Datasets/
 
+# Plots and Figures
+*hist/
+
 # Python
 __pycache__/
 *.py[cod]
