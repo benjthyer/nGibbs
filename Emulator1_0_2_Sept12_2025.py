@@ -467,7 +467,7 @@ class DualSaturationChemistry(nn.Module):
     
 
     
-    def forward(self, x, binaries=None, detailed = False):
+    def forward(self, x, binaries=None, detailed = False, NN_only = False):
         """
         Forward pass for both training and inference.
 
@@ -506,11 +506,12 @@ class DualSaturationChemistry(nn.Module):
         if binaries is None: #Inference
             chem_outputs = [head(latent, inf_mask = inf_mask[:,(self.comp_mappings[i]).to(torch.bool)]) for i, head in enumerate(self.chem_heads)]
             chem_out = torch.cat(chem_outputs, dim=1) 
-            begin_refit = time.time()
-            chem_out = self.polish_negative_px(chem_out)
-            begin_spinel = time.time()
-            chem_out = self.polish_negative_sp(chem_out)
-            print(f"To solve 0CaO Px: {round((begin_spinel-begin_refit)*1E6)} microsec; To solve 0FeO/Al2O3 Sp: {round((time.time()-begin_spinel)*1E6)} microsec ")
+            if not NN_only:
+                begin_refit = time.time()
+                chem_out = self.polish_negative_px(chem_out)
+                begin_spinel = time.time()
+                chem_out = self.polish_negative_sp(chem_out)
+                print(f"To solve 0CaO Px: {round((begin_spinel-begin_refit)*1E6)} microsec; To solve 0FeO/Al2O3 Sp: {round((time.time()-begin_spinel)*1E6)} microsec ")
 
             
         else: #Training

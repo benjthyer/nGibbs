@@ -6,24 +6,14 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import random
 plt.rcParams['figure.figsize'] = [10, 7]
-from matplotlib.colors import LinearSegmentedColormap
-from molmass import Formula
 import re
 import molmass as ms
 import molmass as ms
 from EmulatorLibrary import * # Replaces defining here. 
 
 import torch
-from torch.utils.data import DataLoader, Dataset, random_split
-from torch.autograd import Variable
-from torch.nn import Linear, ReLU, CrossEntropyLoss, Sequential, Conv2d, MaxPool2d, Module, Softmax, Dropout, BCELoss, Sigmoid, MSELoss
-from torch.optim import Adam, SGD
-#import torchvision.transforms as T #THIS ONE IS BROKEN 04/04/2025
-import torch.nn as nn
-import torch.nn.functional as F
 
-def random_char(y):
-       return ''.join(random.choice(string.ascii_letters) for x in range(y))
+#import torchvision.transforms as T #THIS ONE IS BROKEN 04/04/2025
 
 def QFM_fO2(P, K):
     trans1 = 573 + (0.025 * P)
@@ -38,45 +28,6 @@ def QFM_fO2(P, K):
     K += 273.15 # Celsius to Kelvin
     logfo2 = (A/K) + B + ((D * (P-1)) / K)
     return(logfo2)
-
-def logfo2_calc(liquid, deltaQFM = True):
-    """Calculated after Kress and Carmichael 1988
-    EDITED AND UNTESTED 4/2/25"""
-    
-    DH = -95930 #J
-    DS = -46.05 #J/k
-    W = { 
-        'Al2O3': 49040, #J
-        'CaO': -48870, #J
-        'Na2O': -106040, #J
-        'K2O': -110460 #J
-    }
-    R = 8.3145 #J/mol/K
-    T = liquid[chem_ind['Temperature']] + 273.15 #K
-    
-    nFeO = liquid[chem_ind['FeO']]/Formula('FeO').mass
-    nFeO15 = liquid[chem_ind['Fe2O3']]/79.849
-    XFeO = nFeO/(nFeO+nFeO15)
-    XFeO15 = nFeO15/(nFeO+nFeO15)
-    XFeO -= (0.0776*XFeO15)
-    XFeO1464 = 1.0776*XFeO15
-    
-    total_moles = XFeO + XFeO1464
-    #total_moles = 0
-    for el in list(chem_ind.keys())[3:19]:
-        if el in ['FeO','Fe2O3']:
-            total_moles += 0
-        else:
-            total_moles += liquid[chem_ind[el]]/Formula(el).mass
-        
-    sumterm = 0
-    for el in list(W.keys()):
-        sumterm += W[el]*((liquid[chem_ind[el]]/Formula(el).mass)/total_moles)
-        
-    log10fo2 = np.log10(np.exp((np.log(XFeO1464/XFeO)+(DH/(R*T))+(sumterm/(R*T))-(DS/R))/0.232))
-    if deltaQFM:
-        log10fo2 -= QFM_fO2(liquid[chem_ind['Pressure']], liquid[chem_ind['Temperature']])
-    return log10fo2
 
 # Compile once, use many times
 _number_pattern = re.compile(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?')
@@ -389,7 +340,7 @@ for pha, val in component_indices.items():
             database_headers.append(f"{com}({pha})")
 
 component_indices['System_main']['viscosity'] = 90
-database_headers.append("viscocity(System_main)")
+database_headers.append("viscosity(System_main)")
 component_indices['System_main']['H'] = 91
 database_headers.append("H(System_main)")
 component_indices['System_main']['Cp'] = 92

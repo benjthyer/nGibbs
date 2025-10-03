@@ -202,9 +202,9 @@ def alphaMELTScooling(output_file, iter = 750, fxtal = False):
         j += 1
 
 #Out_file_comp_train = 'MELTS_TrainsetJuly7MnNiFree_Compression'
-Out_file_cool_train = 'MELTS_TrainsetSept25FxtalCooling'
+Out_file_cool_train = 'MELTS_TrainsetSept25BatchCooling'
 #Out_file_comp_valid = 'MELTS_ValidsetJuly7MnNiFree_Compression'
-Out_file_cool_valid = 'MELTS_ValidsetSept25FxtalCooling'
+Out_file_cool_valid = 'MELTS_ValidsetSept25BatchCooling'
 
 """print('Waiting...')
 time.sleep(0.5*3600) # Delay by 30 min"""
@@ -213,8 +213,8 @@ time.sleep(0.5*3600) # Delay by 30 min"""
 GEOROC = np.genfromtxt('GEOROC_PETDB_UNFILTERED_WHOLEROCK_TRAIN.csv', delimiter=',',skip_header=1)
 full_indices = np.genfromtxt('GEOROC_PETDB_UNFILTERED_WHOLEROCK_TRAIN.csv', delimiter=',',skip_header=1, dtype = str)[:,0]
 
-#alphaMELTScompress(output_file=Out_file_comp_train, iter = 250)
-alphaMELTScooling(output_file=Out_file_cool_train, iter = (50-30), fxtal=True)
+alphaMELTScooling(output_file=Out_file_cool_train, iter = 250-75)
+#alphaMELTScooling(output_file=Out_file_cool_train, iter = 50, fxtal=True)
 
 mafics = GEOROC[:,5]>=5 # MgO above 5
 full_indices = full_indices[mafics]
@@ -222,8 +222,8 @@ full_indices = full_indices[mafics]
 GEOROC = GEOROC[mafics] ### TEMP: MAFICS ONLY TO BALANCE DATASET"""
 
 #alphaMELTScompress(output_file=Out_file_comp_train, iter = 200)
-alphaMELTScooling(output_file=Out_file_cool_train, iter = 250, fxtal=True)
-#alphaMELTScooling(output_file=Out_file_cool_train, iter = 1)
+#alphaMELTScooling(output_file=Out_file_cool_train, iter = 250, fxtal=True)
+alphaMELTScooling(output_file=Out_file_cool_train, iter = 50)
 
 
 
@@ -231,7 +231,9 @@ GEOROC = np.genfromtxt('GEOROC_PETDB_UNFILTERED_WHOLEROCK_VALIDATION.csv', delim
 full_indices = np.genfromtxt('GEOROC_PETDB_UNFILTERED_WHOLEROCK_VALIDATION.csv', delimiter=',',skip_header=1, dtype = str)[:,0]
 
 #alphaMELTScompress(output_file=Out_file_comp_valid, iter = 125)
-alphaMELTScooling(output_file=Out_file_cool_valid, iter = 15, fxtal=True)
+#alphaMELTScooling(output_file=Out_file_cool_valid, iter = 15, fxtal=True)
+alphaMELTScooling(output_file=Out_file_cool_valid, iter = 15)
+
 
 
 mafics = GEOROC[:,5]>=5 # MgO above 5
@@ -241,6 +243,8 @@ GEOROC = GEOROC[mafics] ### TEMP: MAFICS ONLY TO BALANCE DATASET"""
 
 #alphaMELTScompress(output_file=Out_file_comp_valid, iter = 100)
 #alphaMELTScooling(output_file=Out_file_cool_valid, iter = 50, fxtal=True)
-alphaMELTScooling(output_file=Out_file_cool_valid, iter = 75, fxtal=True)
+#alphaMELTScooling(output_file=Out_file_cool_valid, iter = 75, fxtal=True)
+alphaMELTScooling(output_file=Out_file_cool_valid, iter = 75)
+
 
 #alphaMELTScooling(output_file=Out_file_cool_valid, iter = 5)
