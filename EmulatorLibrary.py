@@ -412,7 +412,7 @@ phases_in_order = [
     'olivine', 'orthopyroxene', 'clinopyroxene', 'spinel',
     'plagioclase', 'alkali-feldspar', 'garnet', 'nepheline', 'leucite',
     'biotite', 'rhm-oxide', 'alloy-solid', 'analcime', 'apatite', 'whitlockite', 'quartz', 'tridymite', 
-    'amphibole', 'muscovite', 'fluid'
+    'muscovite', 'fluid'
 ]
 
 
@@ -437,7 +437,7 @@ print(component_indices)
 
 mass_indices = [] #exclude amphibole
 for phase, props in component_indices.items():
-    if phase != 'amphibole':
+    if phase in (phases_in_order + ['melts-liquid']):
         for key, ind in list(props.items()):
             if 'mass' in key:
                 mass_indices.append(ind)

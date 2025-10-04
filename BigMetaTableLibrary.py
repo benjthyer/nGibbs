@@ -587,7 +587,7 @@ class BigMetaTable:
         IDs = np.unique(self.run_indices)
         to_delete = set()
         num_rows = np.shape(self.table)[0]
-        num_phases = len(mass_indices)
+        num_phases = mass_phasedict['melts-liquid']+1
         broke_count = 0
         
         
@@ -1284,7 +1284,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     total_rows = np.shape(self.table)[0]
     num_components_intensive = label_indices_comp['melts-liquid'][-1]+1
     #num_components_extensive = label_indices['melts-liquid'][-1]+1
-    num_phases = len(mass_indices)
+    num_phases = mass_phasedict['melts-liquid']+1
     print('INITIALIZE')
     
     if clear_old_tables:
@@ -1454,12 +1454,9 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
         gc.collect()
        
     finally: #Close Memmaps
-        print('some error... closing memmaps')
         del self.binarylabels, self.masslabels, self.features, self.labels, self.table1, self.molarlabels
         gc.collect()
         
-    del self.binarylabels, self.masslabels, self.features, self.labels, self.table1, self.molarlabels
-    gc.collect()
     return filter_invalid_rows(self, mismatches)
     
     
