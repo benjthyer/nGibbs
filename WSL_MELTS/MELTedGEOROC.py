@@ -4,24 +4,6 @@ import random
 import pickle
 import os   
 import string
-import time
-
-import torch
-from torch.utils.data import DataLoader, Dataset, random_split
-from torch.autograd import Variable
-from torch.nn import Linear, ReLU, CrossEntropyLoss, Sequential, Conv2d, MaxPool2d, Module, Softmax, Dropout, BCELoss, Sigmoid, MSELoss
-from torch.optim import Adam, SGD
-#import torchvision.transforms as T #THIS ONE IS BROKEN 04/04/2025
-import torch.nn as nn
-
-import MELTSEmulator
-
-
-#PhaseSatNN = MELTSEmulator.PhaseSaturationHybridNetOFP(input_dim=15).cpu().eval()
-#PhaseSatNN.load_state_dict(torch.load('rhyoliteMELTS1.0.2_BinaryPhaseSatOFP_May22.pt', map_location = torch.device('cpu')))
-#MassPartitionNN = MELTSEmulator.MolePartitioningNetOFP().cpu().eval()
-#MassPartitionNN.load_state_dict(torch.load('rhyoliteMELTS1.0.2_MolePartitionOFP_May22.pt', map_location = torch.device('cpu')))
-#Emulator = MELTSEmulator.NN_MELTS(PhaseSatNN, MassPartitionNN)
 
 allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclase','k-feldspar','garnet','nepheline','leucite','biotite','rhm-oxide','alloy-solid','apatite','whitlockite','quartz','tridymite','cristobalite','muscovite','fluid','liquid']
 
@@ -124,7 +106,7 @@ def alphaMELTScompress(output_file, iter = 750, fxtal = False):
         batchname = np.empty(simcycle, dtype=object)
         #batchname[mantle] = 'pMELTS'
         #batchname[~mantle] = 'Crustal'
-        batchname[:] = 'Crustal' # ONLY CRUSTAL UP TO 1.5 GPa !!!!
+        batchname[:] = '110Batch' # ONLY CRUSTAL UP TO 1.5 GPa !!!!
 
 
         ensemble_MELTSV2.forward_ensemble(in_array, keys, batchname = batchname, only_phases=allowed_phases, end = 12000+in_array[:,0], fxtal = fxtal, EnsembleLocation=EnsembleLocation, WSL = True, compression=True, delta = 12000/200)
@@ -202,9 +184,9 @@ def alphaMELTScooling(output_file, iter = 750, fxtal = False):
         j += 1
 
 #Out_file_comp_train = 'MELTS_TrainsetJuly7MnNiFree_Compression'
-Out_file_cool_train = 'MELTS_TrainsetSept25BatchCooling'
+Out_file_cool_train = 'MELTS110_TrainsetOct4BatchCooling'
 #Out_file_comp_valid = 'MELTS_ValidsetJuly7MnNiFree_Compression'
-Out_file_cool_valid = 'MELTS_ValidsetSept25BatchCooling'
+Out_file_cool_valid = 'MELTS110_ValidsetOct4BatchCooling'
 
 """print('Waiting...')
 time.sleep(0.5*3600) # Delay by 30 min"""
@@ -213,7 +195,9 @@ time.sleep(0.5*3600) # Delay by 30 min"""
 GEOROC = np.genfromtxt('GEOROC_PETDB_UNFILTERED_WHOLEROCK_TRAIN.csv', delimiter=',',skip_header=1)
 full_indices = np.genfromtxt('GEOROC_PETDB_UNFILTERED_WHOLEROCK_TRAIN.csv', delimiter=',',skip_header=1, dtype = str)[:,0]
 
-alphaMELTScooling(output_file=Out_file_cool_train, iter = 250-75)
+#alphaMELTScooling(output_file=Out_file_cool_train, iter = 250)
+alphaMELTScooling(output_file=Out_file_cool_train, iter = 75)
+
 #alphaMELTScooling(output_file=Out_file_cool_train, iter = 50, fxtal=True)
 
 mafics = GEOROC[:,5]>=5 # MgO above 5
@@ -223,7 +207,7 @@ GEOROC = GEOROC[mafics] ### TEMP: MAFICS ONLY TO BALANCE DATASET"""
 
 #alphaMELTScompress(output_file=Out_file_comp_train, iter = 200)
 #alphaMELTScooling(output_file=Out_file_cool_train, iter = 250, fxtal=True)
-alphaMELTScooling(output_file=Out_file_cool_train, iter = 50)
+alphaMELTScooling(output_file=Out_file_cool_train, iter = 15)
 
 
 
@@ -244,7 +228,9 @@ GEOROC = GEOROC[mafics] ### TEMP: MAFICS ONLY TO BALANCE DATASET"""
 #alphaMELTScompress(output_file=Out_file_comp_valid, iter = 100)
 #alphaMELTScooling(output_file=Out_file_cool_valid, iter = 50, fxtal=True)
 #alphaMELTScooling(output_file=Out_file_cool_valid, iter = 75, fxtal=True)
-alphaMELTScooling(output_file=Out_file_cool_valid, iter = 75)
+alphaMELTScooling(output_file=Out_file_cool_valid, iter = 3)
 
 
 #alphaMELTScooling(output_file=Out_file_cool_valid, iter = 5)
+
+#fxtal and batch crystallization 102 mafics disproportionately strongly represented in testing

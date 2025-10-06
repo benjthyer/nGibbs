@@ -340,6 +340,7 @@ chem_ind = {
 }
 
 
+# A Bit Different
 component_indices = {
     'System_main': {
         'Pressure': 0,
@@ -500,9 +501,17 @@ component_indices['System_main']['H'] = 91
 database_headers.append("H(System_main)")
 component_indices['System_main']['Cp'] = 92
 database_headers.append("Cp(System_main)")
+component_indices['System_main']['S'] = 93
+database_headers.append('S(system_main)')
+component_indices['System_main']['V'] = 94
+database_headers.append('V(System_main)')
+component_indices['System_main']['dVdP*10^6'] = 95
+database_headers.append('dVdP*10^6(System_main)')
+component_indices['System_main']['dVdT*10^6'] = 96
+database_headers.append('dVdP*10^6(System_main)')
 # Now add rho and viscosity fields sequentially
 
-next_index = 93
+next_index = 97
 
 # List of phases (in order of appearance)
 phases_in_order = [
@@ -520,14 +529,24 @@ for phase in phases_in_order:
     component_indices[phase]['H (kJ)'] = next_index
     next_index += 1
     database_headers.append(f"{'H'}({phase})")
+    component_indices[phase]['S (J/K)'] = next_index
+    next_index += 1
+    database_headers.append(f"{'S (J/K)'}({phase})")
+    component_indices[phase]['V (cc)'] = next_index
+    next_index += 1
+    database_headers.append(f"{'V (cc)'}({phase})")
 
 # Add viscosity field for melt only
 component_indices['melts-liquid']['liq rho (gm/cc)'] = next_index
 component_indices['melts-liquid']['liq vis (log 10 poise)'] = next_index + 1
 component_indices['melts-liquid']['liq H (kJ)'] = next_index + 2
+component_indices['melts-liquid']['liq S (J/K)'] = next_index + 3
+component_indices['melts-liquid']['liq V (cc)'] = next_index + 4
 database_headers.append('rho (gm/cc)(melts-liquid)')
 database_headers.append('liq vis (log 10 poise)')
 database_headers.append('liq H (kJ)')
+database_headers.append('liq S (J/K)')
+database_headers.append('liq V (cc)')
 
 def append_phase(phase, phase_tbl, MELTSobj):
     """phase_tbl is a pandas dataframe, 

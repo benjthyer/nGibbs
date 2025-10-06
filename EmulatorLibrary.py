@@ -14,6 +14,44 @@ import torch
 
 #import torchvision.transforms as T #THIS ONE IS BROKEN 04/04/2025
 
+import os
+
+def delete_files_with_keyword(directory, keyword, dry_run=True):
+    """
+    Deletes all files in `directory` whose names contain `keyword`.
+
+    Args:
+        directory (str): Path to the target directory.
+        keyword (str): Keyword to match in filenames.
+        dry_run (bool): If True, only print files that would be deleted.
+
+    Example:
+        delete_files_with_keyword("/path/to/folder", "temp", dry_run=False)
+    """
+    if not os.path.isdir(directory):
+        print(f"Error: '{directory}' is not a valid directory.")
+        return
+
+    deleted_count = 0
+    for filename in os.listdir(directory):
+        filepath = os.path.join(directory, filename)
+        if os.path.isfile(filepath) and keyword in filename:
+            if dry_run:
+                print(f"[DRY RUN] Would delete: {filepath}")
+            else:
+                try:
+                    os.remove(filepath)
+                    print(f"Deleted: {filepath}")
+                    deleted_count += 1
+                except Exception as e:
+                    print(f"Error deleting {filepath}: {e}")
+
+    if dry_run:
+        print("\nDry run complete. No files were actually deleted.")
+    else:
+        print(f"\nDeleted {deleted_count} files containing '{keyword}'.")
+
+
 def QFM_fO2(P, K):
     trans1 = 573 + (0.025 * P)
     if K > trans1:
@@ -403,9 +441,18 @@ component_indices['System_main']['H'] = 91
 database_headers.append("H(System_main)")
 component_indices['System_main']['Cp'] = 92
 database_headers.append("Cp(System_main)")
+component_indices['System_main']['S'] = 93
+database_headers.append('S(system_main)')
+component_indices['System_main']['V'] = 94
+database_headers.append('V(System_main)')
+component_indices['System_main']['dVdP*10^6'] = 95
+database_headers.append('dVdP*10^6(System_main)')
+component_indices['System_main']['dVdT*10^6'] = 96
+database_headers.append('dVdP*10^6(System_main)')
 # Now add rho and viscosity fields sequentially
 
-next_index = 93
+next_index = 97
+# Now add rho and viscosity fields sequentially
 
 # List of phases (in order of appearance)
 phases_in_order = [
@@ -423,16 +470,25 @@ for phase in phases_in_order:
     database_headers.append(f"{'rho (gm/cc)'}({phase})")
     component_indices[phase]['H (kJ)'] = next_index
     next_index += 1
-    database_headers.append(f"{'H'}({phase})")
+    database_headers.append(f"{'H (kJ)'}({phase})")
+    component_indices[phase]['S (J/K)'] = next_index
+    next_index += 1
+    database_headers.append(f"{'S (J/K)'}({phase})")
+    component_indices[phase]['V (cc)'] = next_index
+    next_index += 1
+    database_headers.append(f"{'V (cc)'}({phase})")
 
 # Add viscosity field for melt only
 component_indices['melts-liquid']['liq rho (gm/cc)'] = next_index
 component_indices['melts-liquid']['liq vis (log 10 poise)'] = next_index + 1
 component_indices['melts-liquid']['liq H (kJ)'] = next_index + 2
+component_indices['melts-liquid']['liq S (J/K)'] = next_index + 3
+component_indices['melts-liquid']['liq V (cc)'] = next_index + 4
 database_headers.append('rho (gm/cc)(melts-liquid)')
 database_headers.append('liq vis (log 10 poise)')
 database_headers.append('liq H (kJ)')
-
+database_headers.append('liq S (J/K)')
+database_headers.append('liq V (cc)')
 print(component_indices)
 
 mass_indices = [] #exclude amphibole
@@ -465,11 +521,11 @@ MM = np.diag([ms.Formula(MM).mass for MM in Oxides])
 Minv = np.diag([1/ms.Formula(MM).mass for MM in Oxides])
 oxToEl = pd.read_csv('OxToEl.csv').to_numpy()[:,1:].astype(np.float32).T
 
-label_indices = {} # Not really used anymore...
+label_indices = {} # Used for mapping phases to full components matrix
 
 label_names = []
 detail_label_indices = {} # More used for index mapping
-label_indices_comp = {} # Mapping to compositionally variable output
+label_indices_comp = {} # Mapping to compositionally variable intensive component output
 
 detail_ind = 0
 index = 0
@@ -480,15 +536,16 @@ for phase, components in component_indices.items(): # Build indices for ML-ready
                      'cristobalite']:
         phase_inds = []
 
-        if len(components) > 3 and phase != 'alloy-solid':
+        if phase == 'k-feldspar' or (len(components) > 5 and phase != 'alloy-solid'):
             detail_label_indices[phase] = {}
             comp_inds = []
             for component in components:
                 if component not in ['liq rho (gm/cc)', 'liq vis (log 10 poise)','liq H (kJ)', 
-                                     'liq mass (gm)','mass (gm)', 'rho (gm/cc)', 'H (kJ)']:
+                                     'liq mass (gm)',  'liq H (kJ)', 'liq S (J/K)', 'liq V (cc)',
+                                     'mass (gm)', 'rho (gm/cc)', 'H (kJ)', 'S (J/K)', 'V (cc)']: #State variables, not chemistry
 
                         if component not in ['tephroite', 'co-olivine', 'ni-olivine', 'pyrophanite',
-                                        'Mn', 'Ni']:
+                                        'Mn', 'Ni']: # Components that are not used, because NiO and MnO are not
                             phase_inds += [index]
                             if component != 'Fe-metal':
                                 detail_label_indices[phase][component] = detail_ind
