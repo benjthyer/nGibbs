@@ -4,9 +4,85 @@ import random
 import pickle
 import os   
 import string
+import shutil
+
+def move_file(src_filename, dst_dir, overwrite=False):
+    """
+    Move a file from the current working directory to a destination directory.
+
+    Args:
+        src_filename (str): Name of the file in the current working directory.
+        dst_dir (str): Destination directory path.
+        overwrite (bool): If True, overwrite any existing file with the same name.
+    """
+    # Ensure the source file exists
+    src_path = os.path.join(os.getcwd(), src_filename)
+    if not os.path.isfile(src_path):
+        raise FileNotFoundError(f"Source file not found: {src_path}")
+
+    # Ensure destination directory exists
+    #if not os.path.exists(dst_dir):
+     #   os.makedirs(dst_dir)
+
+    # Destination file path
+    dst_path = os.path.join(dst_dir, src_filename)
+
+    # Handle overwrite
+    if os.path.exists(dst_path):
+        if overwrite:
+            os.remove(dst_path)
+        else:
+            raise FileExistsError(f"Destination file already exists: {dst_path}")
+
+    # Move the file
+    shutil.move(src_path, dst_path)
+    print(f"Moved '{src_filename}' to '{dst_dir}' successfully.")
+
+def move_files_with_extension(extension, dst_dir, src_dir = None, overwrite=False):
+    """
+    Move all files with a given extension from the current working directory
+    to the destination directory.
+
+    Args:
+        extension (str): File extension, e.g., '.csv' or '.dat'
+        dst_dir (str or Path): Destination directory path
+        src_dir (str or Path): Source location from working directory, Default none is cwd. 
+        overwrite (bool): If True, overwrite existing files in destination
+    """
+
+    if src_dir is not None:
+        src_path = Path.cwd() / src_dir
+        if not src_path.is_file():
+            raise FileNotFoundError(f"Source file not found: {src_path}")
+    else:
+        src_path = Path.cwd()
+
+
+    #cwd = Path.cwd()
+    dst_dir = Path(dst_dir)
+    dst_dir.mkdir(parents=True, exist_ok=True)
+
+    # Find all matching files in current directory
+    files_to_move = [f for f in cwd.iterdir() if f.is_file() and f.suffix == extension]
+
+    if not files_to_move:
+        print(f"No files with extension '{extension}' found in {cwd}.")
+        return
+
+    for file_path in files_to_move:
+        dest_path = dst_dir / file_path.name
+
+        if dest_path.exists():
+            if overwrite:
+                dest_path.unlink()  # Remove existing file
+            else:
+                print(f"Skipping {file_path.name}, already exists in destination.")
+                continue
+
+        shutil.move(str(file_path), str(dest_path))
+        print(f"Moved {file_path.name} -> {dst_dir}")
 
 allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclase','k-feldspar','garnet','nepheline','leucite','biotite','rhm-oxide','alloy-solid','apatite','whitlockite','quartz','tridymite','cristobalite','muscovite','fluid','liquid']
-
 
 def random_char(y):
        return ''.join(random.choice(string.ascii_letters) for x in range(y))
@@ -26,6 +102,7 @@ phase_ind = pickle.load(open('PhaseDict.pkl', 'rb'))
 #LEPR = pickle.load(open('liquids2.pkl', 'rb')) 
 
 Out_Folder = 'GEOROC_SIMS'
+batch_file = '110Batch'
 
 alphaMELTSLocation = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'alphamelts')
 # Location to where to put the computed files.
@@ -55,6 +132,8 @@ for i, k in enumerate(keys):
 full_indices = full_indices[mafics]
 
 GEOROC = GEOROC[mafics] ### TEMP: MAFICS ONLY TO BALANCE DATASET"""
+
+move_file('emptyfile.txt','/mnt/d/Workspace/102Datasets/')
 
 #print(GEOROC)
 
@@ -106,7 +185,7 @@ def alphaMELTScompress(output_file, iter = 750, fxtal = False):
         batchname = np.empty(simcycle, dtype=object)
         #batchname[mantle] = 'pMELTS'
         #batchname[~mantle] = 'Crustal'
-        batchname[:] = '110Batch' # ONLY CRUSTAL UP TO 1.5 GPa !!!!
+        batchname[:] = batch_file # ONLY CRUSTAL UP TO 1.5 GPa !!!!
 
 
         ensemble_MELTSV2.forward_ensemble(in_array, keys, batchname = batchname, only_phases=allowed_phases, end = 12000+in_array[:,0], fxtal = fxtal, EnsembleLocation=EnsembleLocation, WSL = True, compression=True, delta = 12000/200)
@@ -168,7 +247,7 @@ def alphaMELTScooling(output_file, iter = 750, fxtal = False):
         batchname = np.empty(simcycle, dtype=object)
         #batchname[mantle] = 'pMELTS'
         #batchname[~mantle] = 'Crustal'
-        batchname[:] = 'Crustal' # ONLY CRUSTAL UP TO 1.5 GPa !!!!
+        batchname[:] = batch_file # ONLY CRUSTAL UP TO 1.5 GPa !!!!
 
 
         ensemble_MELTSV2.forward_ensemble(in_array, keys, batchname = batchname, only_phases=allowed_phases, end = 700,  fxtal = fxtal, EnsembleLocation=EnsembleLocation, WSL = True, compression=False, delta = -1)
@@ -184,9 +263,9 @@ def alphaMELTScooling(output_file, iter = 750, fxtal = False):
         j += 1
 
 #Out_file_comp_train = 'MELTS_TrainsetJuly7MnNiFree_Compression'
-Out_file_cool_train = 'MELTS110_TrainsetOct4BatchCooling'
+Out_file_cool_train = 'MELTS110_TrainsetOct8FxtalCooling'
 #Out_file_comp_valid = 'MELTS_ValidsetJuly7MnNiFree_Compression'
-Out_file_cool_valid = 'MELTS110_ValidsetOct4BatchCooling'
+Out_file_cool_valid = 'MELTS110_ValidsetOct8FxTalCooling'
 
 """print('Waiting...')
 time.sleep(0.5*3600) # Delay by 30 min"""
@@ -195,8 +274,9 @@ time.sleep(0.5*3600) # Delay by 30 min"""
 GEOROC = np.genfromtxt('GEOROC_PETDB_UNFILTERED_WHOLEROCK_TRAIN.csv', delimiter=',',skip_header=1)
 full_indices = np.genfromtxt('GEOROC_PETDB_UNFILTERED_WHOLEROCK_TRAIN.csv', delimiter=',',skip_header=1, dtype = str)[:,0]
 
-#alphaMELTScooling(output_file=Out_file_cool_train, iter = 250)
-alphaMELTScooling(output_file=Out_file_cool_train, iter = 75)
+#alphaMELTScooling(output_file=Out_file_cool_train, iter = 300)
+alphaMELTScooling(output_file=Out_file_cool_train, iter = 60, fxtal = True)
+
 
 #alphaMELTScooling(output_file=Out_file_cool_train, iter = 50, fxtal=True)
 
@@ -205,18 +285,17 @@ full_indices = full_indices[mafics]
 
 GEOROC = GEOROC[mafics] ### TEMP: MAFICS ONLY TO BALANCE DATASET"""
 
-#alphaMELTScompress(output_file=Out_file_comp_train, iter = 200)
-#alphaMELTScooling(output_file=Out_file_cool_train, iter = 250, fxtal=True)
-alphaMELTScooling(output_file=Out_file_cool_train, iter = 15)
+#alphaMELTScooling(output_file=Out_file_cool_train, iter = 60)
+alphaMELTScooling(output_file=Out_file_cool_train, iter = 300, fxtal = True)
+
 
 
 
 GEOROC = np.genfromtxt('GEOROC_PETDB_UNFILTERED_WHOLEROCK_VALIDATION.csv', delimiter=',',skip_header=1)
 full_indices = np.genfromtxt('GEOROC_PETDB_UNFILTERED_WHOLEROCK_VALIDATION.csv', delimiter=',',skip_header=1, dtype = str)[:,0]
 
-#alphaMELTScompress(output_file=Out_file_comp_valid, iter = 125)
-#alphaMELTScooling(output_file=Out_file_cool_valid, iter = 15, fxtal=True)
-alphaMELTScooling(output_file=Out_file_cool_valid, iter = 15)
+#alphaMELTScooling(output_file=Out_file_cool_valid, iter = 60)
+alphaMELTScooling(output_file=Out_file_cool_valid, iter = 10, fxtal=True)
 
 
 
@@ -225,10 +304,8 @@ full_indices = full_indices[mafics]
 
 GEOROC = GEOROC[mafics] ### TEMP: MAFICS ONLY TO BALANCE DATASET"""
 
-#alphaMELTScompress(output_file=Out_file_comp_valid, iter = 100)
-#alphaMELTScooling(output_file=Out_file_cool_valid, iter = 50, fxtal=True)
-#alphaMELTScooling(output_file=Out_file_cool_valid, iter = 75, fxtal=True)
-alphaMELTScooling(output_file=Out_file_cool_valid, iter = 3)
+#alphaMELTScooling(output_file=Out_file_cool_valid, iter = 10)
+alphaMELTScooling(output_file=Out_file_cool_valid, iter = 60, fxtal = True)
 
 
 #alphaMELTScooling(output_file=Out_file_cool_valid, iter = 5)

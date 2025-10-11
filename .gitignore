@@ -6,9 +6,15 @@
 *datasets/
 *Dataset/
 *dataset/
+Workspace/
+*SIMS/
+*sims/
+*Sims/
 
 # Plots and Figures
 *hist/
+Plots/
+
 
 #Large Notebooks
 Emulator_Performance.ipynb

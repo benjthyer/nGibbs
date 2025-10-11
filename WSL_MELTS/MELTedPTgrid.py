@@ -8,7 +8,7 @@ import time
 import molmass as ms
 import shutil
 import pandas as pd
-from EmulatorLibrary import *
+#from EmulatorLibrary import *
 
 
 allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclase','k-feldspar','garnet','nepheline','leucite','biotite',
@@ -87,12 +87,18 @@ key_dict = {}
 for i, k in enumerate(keys):
     key_dict[k] = i
 
+
+
+csv_name = 'MORB_Fxtal_Harkers.csv'
+Fxtal = True
+BatchName = 'Crustal'
+
 #in_array = grid_sample([[1,10000,50],[1600,1600,1],[-5,5,5]]) #Phase diagrams
 #in_array = grid_sample([[1,10000,50],[1600,1600,1],[0,0,1]]) #Phase diagrams
-in_array = grid_sample([[1000,1000,1],[1600,1600,1],[0,0,1]]) #Small Test
+#in_array = grid_sample([[1000,1000,1],[1600,1600,1],[0,0,1]]) #Small Test
 
 
-#in_array = grid_sample([[1000,10000,3],[1600,1600,1],[-4,4,5]]) # Harkers
+in_array = grid_sample([[1000,10000,3],[2000,2000,1],[-4,4,5]]) # Harkers
 #in_array = grid_sample([[1000,10000,3],[1600,1600,1],[-4,4,5]]) # Harkers
 #in_array = grid_sample([[1000,8000,8],[1600,1600,1],[-1,1,1]])
 
@@ -121,13 +127,13 @@ for batch in np.arange(total_batches).astype(int): # Handle remainder at final b
     else:
         end = (batch+1)*batch_size
     batchname = np.empty(end-(batch_size*batch), dtype=object)
-    batchname[:] = 'Crustal'
+    batchname[:] = BatchName
 
     ensemble_MELTSV2.forward_ensemble(in_array[(batch*batch_size):end], keys, only_phases=allowed_phases, batchname = batchname, 
-                                    end = 800, EnsembleLocation=EnsembleLocation, WSL = True, compression=False, delta = -2, fxtal=True)
+                                    end = 800, EnsembleLocation=EnsembleLocation, WSL = True, compression=False, delta = -1, fxtal=Fxtal)
     for j, name in enumerate(batchname):
             i = (batch*batch_size) + j
             batchname[j] = f"{i}:{random_char(4)}:{name}" # Put PTX Index in metadata to link one simulation
-    ensemble_MELTSV2.import_MELTS_components(EnsembleLocation=EnsembleLocation, batchname=batchname, fO2Arr=in_array[(batch*batch_size):end,2],dataname = f"MORB_Test.csv")#, dataname = f'Applications/{rockname}_BatchMELTS.csv')
+    ensemble_MELTSV2.import_MELTS_components(EnsembleLocation=EnsembleLocation, batchname=batchname, fO2Arr=in_array[(batch*batch_size):end,2],dataname = csv_name)#, dataname = f'Applications/{rockname}_BatchMELTS.csv')
 
 print(f"Ordered, Completed, and Read {nrow} simulations in {time.time()-start} seconds")

@@ -340,7 +340,6 @@ chem_ind = {
 }
 
 
-# A Bit Different
 component_indices = {
     'System_main': {
         'Pressure': 0,
@@ -548,6 +547,14 @@ database_headers.append('liq H (kJ)')
 database_headers.append('liq S (J/K)')
 database_headers.append('liq V (cc)')
 
+mass_indices = [] #exclude amphibole
+for phase, props in component_indices.items():
+    if phase in (phases_in_order + ['melts-liquid']):
+        for key, ind in list(props.items()):
+            if 'mass' in key:
+                mass_indices.append(ind)
+mass_indices = np.unique(mass_indices)
+
 def append_phase(phase, phase_tbl, MELTSobj):
     """phase_tbl is a pandas dataframe, 
     MELTSobj is a numpy redering of a single MELTS Simulation
@@ -685,9 +692,37 @@ def import_MELTS_components(EnsembleLocation, batchname, fO2Arr = None, dataname
             print(f"FAILURE AT FOLDER {folderNo}")
     if len(metadata) != np.shape(workbase)[0]:
         raise Exception('Metadata different length than rows of csv!')
+    
+    #New as of 10/08/25: Filter out much of the superliquidus assemblage to save space, balance dataset
+
+    # Step 1: Identify nonzero rows in selected columns
+    nonzero_mask = (workbase[:, mass_indices[:-1]] != 0).any(axis=1)
+    print(nonzero_mask.shape)
+    print(workbase.shape)
+    # Step 2: Separate indices
+    nonzero_indices = np.where(nonzero_mask)[0]
+    zero_indices = np.where(~nonzero_mask)[0]
+
+    # Step 3: Choose one-fourth as many zero rows as nonzero rows to add back
+    n_add = len(nonzero_indices) // 4
+    if len(zero_indices) > 0:
+        add_back_indices = np.random.choice(zero_indices, size=min(n_add, len(zero_indices)), replace=False)
+    else:
+        add_back_indices = np.array([], dtype=int)
+
+    final_indices = np.sort(np.concatenate([nonzero_indices, add_back_indices]))
+
+    # Step 5: Extract subset and matching metadata
+    filtered_workbase = workbase[final_indices]
+    print(len(metadata))
+
+    print(len(final_indices))
+    filtered_rows = [metadata[L] for L in final_indices]
+
     with open(sim_metadata_name, 'a') as f:
-        f.writelines(metadata)
-    workDF = pd.DataFrame(workbase)
+        f.writelines(filtered_rows)
+    workDF = pd.DataFrame(filtered_workbase)
+
     workDF.to_csv(dataname, mode = 'a', index = False, header = False)
     return np.unique(faultIDs)
 

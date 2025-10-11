@@ -534,16 +534,16 @@ class DualSaturationChemistry(nn.Module):
             return logits, chem_out*zero_mask, zero_mask, phaseMass, reconBulk # Training, return zero mask for loss masking of intensive chemistries
 
 GPUFullMELTS_Cr = DualSaturationChemistry().cuda()
-GPUFullMELTS_Cr.load_state_dict(torch.load(CrDictFilePath), strict = False) #New buffer
+#GPUFullMELTS_Cr.load_state_dict(torch.load(CrDictFilePath), strict = False) #New buffer
 
 GPUFullMELTS_NoCr = DualSaturationChemistry()
-GPUFullMELTS_NoCr.load_state_dict(torch.load(NoCrDictFilePath), strict = False)
+#GPUFullMELTS_NoCr.load_state_dict(torch.load(NoCrDictFilePath), strict = False)
 
 CPUFullMELTS_Cr = DualSaturationChemistry().cuda()
-CPUFullMELTS_Cr.load_state_dict(torch.load(CrDictFilePath), strict = False)
+#CPUFullMELTS_Cr.load_state_dict(torch.load(CrDictFilePath), strict = False)
 
 CPUFullMELTS_NoCr = DualSaturationChemistry()
-CPUFullMELTS_NoCr.load_state_dict(torch.load(NoCrDictFilePath), strict = False)
+#CPUFullMELTS_NoCr.load_state_dict(torch.load(NoCrDictFilePath), strict = False)
 
 class NN_MELTS():
     """Neural Network Emulator of MELTS. Holds two models: Binary Phase Saturation and Mass Partitioning.
