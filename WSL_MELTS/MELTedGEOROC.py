@@ -38,49 +38,44 @@ def move_file(src_filename, dst_dir, overwrite=False):
     shutil.move(src_path, dst_path)
     print(f"Moved '{src_filename}' to '{dst_dir}' successfully.")
 
-def move_files_with_extension(extension, dst_dir, src_dir = None, overwrite=False):
+from pathlib import Path
+import shutil
+
+def move_files_with_keyword(keyword, dst_dir, src_dir=None, overwrite=False):
     """
-    Move all files with a given extension from the current working directory
-    to the destination directory.
+    Move all files whose names contain a given keyword from the source directory
+    (or current working directory) to the destination directory.
 
     Args:
-        extension (str): File extension, e.g., '.csv' or '.dat'
-        dst_dir (str or Path): Destination directory path
-        src_dir (str or Path): Source location from working directory, Default none is cwd. 
-        overwrite (bool): If True, overwrite existing files in destination
+        keyword (str): Substring to search for in filenames.
+        dst_dir (str or Path): Destination directory path.
+        src_dir (str or Path, optional): Source directory path. Defaults to current working directory.
+        overwrite (bool): If True, overwrite existing files in destination.
     """
+    src_path = Path(src_dir) if src_dir else Path.cwd()
+    dst_path = Path(dst_dir)
+    dst_path.mkdir(parents=True, exist_ok=True)
 
-    if src_dir is not None:
-        src_path = Path.cwd() / src_dir
-        if not src_path.is_file():
-            raise FileNotFoundError(f"Source file not found: {src_path}")
-    else:
-        src_path = Path.cwd()
-
-
-    #cwd = Path.cwd()
-    dst_dir = Path(dst_dir)
-    dst_dir.mkdir(parents=True, exist_ok=True)
-
-    # Find all matching files in current directory
-    files_to_move = [f for f in cwd.iterdir() if f.is_file() and f.suffix == extension]
+    # Find all files containing the keyword in their filename
+    files_to_move = [f for f in src_path.iterdir() if f.is_file() and keyword in f.name]
 
     if not files_to_move:
-        print(f"No files with extension '{extension}' found in {cwd}.")
+        print(f"No files containing '{keyword}' found in {src_path}.")
         return
 
     for file_path in files_to_move:
-        dest_path = dst_dir / file_path.name
+        dest_file = dst_path / file_path.name
 
-        if dest_path.exists():
-            if overwrite:
-                dest_path.unlink()  # Remove existing file
-            else:
-                print(f"Skipping {file_path.name}, already exists in destination.")
-                continue
+        if dest_file.exists() and not overwrite:
+            print(f"Skipping {file_path.name}, already exists in destination.")
+            continue
 
-        shutil.move(str(file_path), str(dest_path))
-        print(f"Moved {file_path.name} -> {dst_dir}")
+        if dest_file.exists() and overwrite:
+            dest_file.unlink()
+
+        shutil.move(str(file_path), str(dest_file))
+        print(f"Moved {file_path.name} -> {dst_path}")
+
 
 allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclase','k-feldspar','garnet','nepheline','leucite','biotite','rhm-oxide','alloy-solid','apatite','whitlockite','quartz','tridymite','cristobalite','muscovite','fluid','liquid']
 
@@ -100,9 +95,23 @@ def pull_number(string):
 #chem_ind = ensemble_MELTS.chem_ind
 phase_ind = pickle.load(open('PhaseDict.pkl', 'rb'))
 #LEPR = pickle.load(open('liquids2.pkl', 'rb')) 
-
 Out_Folder = 'GEOROC_SIMS'
-batch_file = '110Batch'
+
+MELTSModel = '110' # 102, 110, 120, p
+calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic 
+fractionate = 'FxCryst' # 'FxCryst', 'FxMelt', 'Batch'
+date = 'Oxt13'
+storage_directory = f'/mnt/d/Workspace/{MELTSModel}Datasets/'
+
+# Check that arguments are valid
+assert fractionate in ['Batch', 'FxCryst'], "fractionate argument must be one of ['Batch', 'FxCryst'], 'FxMelt' not yet implemented"
+assert calctype in ['Cooling', 'Compression'], "calctype argument must be one of ['Cooling', 'Compression'], isoentropic, isoenthalpic, isochroic not yet implemented"
+assert MELTSModel in ['102', '110', '120', 'p'], "MELTSModel argument must be one of ['102', '110', '120', 'p'], MAGEmin not yet implemented"
+
+batch_file = MELTSModel + 'batch'
+
+Trainfilename = f'MELTS{MELTSModel}_Trainset{date}{fractionate}{calctype}'
+Validfilename = f'MELTS{MELTSModel}_Validset{date}{fractionate}{calctype}'
 
 alphaMELTSLocation = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'alphamelts')
 # Location to where to put the computed files.
@@ -133,7 +142,7 @@ full_indices = full_indices[mafics]
 
 GEOROC = GEOROC[mafics] ### TEMP: MAFICS ONLY TO BALANCE DATASET"""
 
-move_file('emptyfile.txt','/mnt/d/Workspace/102Datasets/')
+#move_file('emptyfile.txt','/mnt/d/Workspace/102Datasets/')
 
 #print(GEOROC)
 
@@ -262,31 +271,59 @@ def alphaMELTScooling(output_file, iter = 750, fxtal = False):
         ensemble_MELTSV2.pick_exsolution_failure(EnsembleLocation=EnsembleLocation, input_array=in_array, keys=keys, batchname=batchname, dataname = f'{output_file}_Exfail.csv', faultIDs=faultIDs)
         j += 1
 
-#Out_file_comp_train = 'MELTS_TrainsetJuly7MnNiFree_Compression'
-Out_file_cool_train = 'MELTS110_TrainsetOct8FxtalCooling'
-#Out_file_comp_valid = 'MELTS_ValidsetJuly7MnNiFree_Compression'
-Out_file_cool_valid = 'MELTS110_ValidsetOct8FxTalCooling'
-
 """print('Waiting...')
 time.sleep(0.5*3600) # Delay by 30 min"""
 
 
+
+#logic trees to direct dataset generation:
+if calctype == 'Cooling':
+    MELTER = alphaMELTScooling
+elif calctype == 'Compression':
+    MELTER = alphaMELTScompress
+
+total_to_run = int(200)
+if MELTSModel == 'p' and fractionate == 'batch':
+    mafics_to_run = int(total_to_run * 0.8)
+    full_to_run = int(total_to_run * 0.2)
+elif MELTSModel == 'p':
+    mafics_to_run = int(total_to_run * 0.95)
+    full_to_run = int(total_to_run * 0.05)
+elif MELTSModel == '120' and fractionate == 'batch':
+    mafics_to_run = int(0)
+    full_to_run = total_to_run
+elif MELTSModel == '120':
+    mafics_to_run = int(total_to_run * 0.2)
+    full_to_run = int(total_to_run * 0.8)
+elif fractionate == 'batch':
+    mafics_to_run = int(total_to_run * 0.3)
+    full_to_run = int(total_to_run * 0.7)
+else:
+    mafics_to_run = int(total_to_run * 0.7)
+    full_to_run = int(total_to_run * 0.3)
+
+
+# Generate Training Dataset
+
 GEOROC = np.genfromtxt('GEOROC_PETDB_UNFILTERED_WHOLEROCK_TRAIN.csv', delimiter=',',skip_header=1)
 full_indices = np.genfromtxt('GEOROC_PETDB_UNFILTERED_WHOLEROCK_TRAIN.csv', delimiter=',',skip_header=1, dtype = str)[:,0]
 
-#alphaMELTScooling(output_file=Out_file_cool_train, iter = 300)
-alphaMELTScooling(output_file=Out_file_cool_train, iter = 60, fxtal = True)
+if fractionate == 'Batch':
+    MELTER(output_file=Trainfilename, iter = full_to_run)
+elif fractionate == 'FxCryst':
+    MELTER(output_file=Trainfilename, iter = full_to_run, fxtal = True)
 
+if mafics_to_run != 0:
+    mafics = GEOROC[:,5]>=5 # MgO above 5
+    full_indices = full_indices[mafics]
 
-#alphaMELTScooling(output_file=Out_file_cool_train, iter = 50, fxtal=True)
+    GEOROC = GEOROC[mafics] ### TEMP: MAFICS ONLY TO BALANCE DATASET"""
 
-mafics = GEOROC[:,5]>=5 # MgO above 5
-full_indices = full_indices[mafics]
+    if fractionate == 'Batch':
+        MELTER(output_file=Trainfilename, iter = mafics_to_run)
+    elif fractionate == 'FxCryst':
+        MELTER(output_file=Trainfilename, iter = mafics_to_run, fxtal = True)
 
-GEOROC = GEOROC[mafics] ### TEMP: MAFICS ONLY TO BALANCE DATASET"""
-
-#alphaMELTScooling(output_file=Out_file_cool_train, iter = 60)
-alphaMELTScooling(output_file=Out_file_cool_train, iter = 300, fxtal = True)
 
 
 
@@ -294,20 +331,23 @@ alphaMELTScooling(output_file=Out_file_cool_train, iter = 300, fxtal = True)
 GEOROC = np.genfromtxt('GEOROC_PETDB_UNFILTERED_WHOLEROCK_VALIDATION.csv', delimiter=',',skip_header=1)
 full_indices = np.genfromtxt('GEOROC_PETDB_UNFILTERED_WHOLEROCK_VALIDATION.csv', delimiter=',',skip_header=1, dtype = str)[:,0]
 
-#alphaMELTScooling(output_file=Out_file_cool_valid, iter = 60)
-alphaMELTScooling(output_file=Out_file_cool_valid, iter = 10, fxtal=True)
+if fractionate == 'Batch':
+    MELTER(output_file=Validfilename, iter = int(full_to_run//4))
+elif fractionate == 'FxCryst':
+    MELTER(output_file=Validfilename, iter = int(full_to_run//4), fxtal = True)
 
+if mafics_to_run != 0:
+    mafics = GEOROC[:,5]>=5 # MgO above 5
+    full_indices = full_indices[mafics]
 
+    GEOROC = GEOROC[mafics] ### TEMP: MAFICS ONLY TO BALANCE DATASET"""
 
-mafics = GEOROC[:,5]>=5 # MgO above 5
-full_indices = full_indices[mafics]
-
-GEOROC = GEOROC[mafics] ### TEMP: MAFICS ONLY TO BALANCE DATASET"""
-
-#alphaMELTScooling(output_file=Out_file_cool_valid, iter = 10)
-alphaMELTScooling(output_file=Out_file_cool_valid, iter = 60, fxtal = True)
-
-
-#alphaMELTScooling(output_file=Out_file_cool_valid, iter = 5)
+    if fractionate == 'Batch':
+        MELTER(output_file=Validfilename, iter = int(mafics_to_run//4))
+    elif fractionate == 'FxCryst':
+        MELTER(output_file=Validfilename, iter = int(mafics_to_run//4), fxtal = True)
 
 #fxtal and batch crystallization 102 mafics disproportionately strongly represented in testing
+
+# Move
+move_files_with_keyword(keyword = f'MELTS{MELTSModel}', dst_dir=storage_directory, src_dir=None, overwrite=False)

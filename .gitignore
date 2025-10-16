@@ -1,6 +1,9 @@
 # NumPy array files
 *.npy
 
+#alphamelts installation
+alphamelts/
+
 # Dataset directories
 *Datasets/
 *datasets/

@@ -1,0 +1,40 @@
+Model olivine Precision of positive prediction: 98.51
+Model olivine Recall of dataset positives : 97.29%
+Model orthopyroxene Precision of positive prediction: 93.85
+Model orthopyroxene Recall of dataset positives : 89.95%
+Model clinopyroxene Precision of positive prediction: 97.62
+Model clinopyroxene Recall of dataset positives : 95.35%
+Model spinel Precision of positive prediction: 96.14
+Model spinel Recall of dataset positives : 94.57%
+Model plagioclase Precision of positive prediction: 98.24
+Model plagioclase Recall of dataset positives : 97.18%
+Model k-feldspar Precision of positive prediction: 83.6
+Model k-feldspar Recall of dataset positives : 72.6%
+Model garnet Precision of positive prediction: 91.58
+Model garnet Recall of dataset positives : 84.97%
+Model nepheline Precision of positive prediction: 95.64
+Model nepheline Recall of dataset positives : 98.16%
+Model leucite Precision of positive prediction: 93.3
+Model leucite Recall of dataset positives : 86.76%
+Model biotite Precision of positive prediction: 87.55
+Model biotite Recall of dataset positives : 86.04%
+Model rhm-oxide Precision of positive prediction: 92.58
+Model rhm-oxide Recall of dataset positives : 89.84%
+Model alloy-solid Precision of positive prediction: 91.67
+Model alloy-solid Recall of dataset positives : 91.51%
+Model analcime Precision of positive prediction: 93.93
+Model analcime Recall of dataset positives : 91.39%
+Model apatite Precision of positive prediction: 80.8
+Model apatite Recall of dataset positives : 64.13%
+Model whitlockite Precision of positive prediction: 90.56
+Model whitlockite Recall of dataset positives : 85.95%
+Model quartz Precision of positive prediction: 92.35
+Model quartz Recall of dataset positives : 85.97%
+Model tridymite Precision of positive prediction: 93.67
+Model tridymite Recall of dataset positives : 86.27%
+Model muscovite Precision of positive prediction: 85.9
+Model muscovite Recall of dataset positives : 94.83%
+Model fluid Precision of positive prediction: 96.21
+Model fluid Recall of dataset positives : 93.38%
+Model melts-liquid Precision of positive prediction: 98.67
+Model melts-liquid Recall of dataset positives : 97.71%

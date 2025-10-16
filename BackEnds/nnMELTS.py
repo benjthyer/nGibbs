@@ -557,9 +557,9 @@ class DualSaturationChemistry(nn.Module):
             chem_out[superliquidus] = 0.0
 
             # Overwrite liquid component columns with feature composition
-            liq_idx = torch.tensor(self.label_indices_comp['melts-liquid'], device=chem_out.device)
-            chem_out[superliquidus.unsqueeze(1).expand(-1, liq_idx.numel()),
-                     liq_idx.repeat(superliquidus.sum())] = features[superliquidus, 3:].reshape(-1)
+            liq_idx = torch.tensor(label_indices_comp['melts-liquid'], device=chem_out.device)
+            chem_out[superliquidus][:, liq_idx] = features[superliquidus, 3:]
+
 
             if not NN_only and non_super.any():
                 chem_out[non_super] = self.polish_negative_px(chem_out[non_super])
@@ -573,9 +573,9 @@ class DualSaturationChemistry(nn.Module):
             chem_out = torch.cat(chem_outputs, dim=1)
 
             # Overwrite liquid component columns with feature composition
-            liq_idx = torch.tensor(self.label_indices_comp['melts-liquid'], device=chem_out.device)
-            chem_out[superliquidus.unsqueeze(1).expand(-1, liq_idx.numel()),
-                     liq_idx.repeat(superliquidus.sum())] = features[superliquidus, 3:].reshape(-1)
+            liq_idx = torch.tensor(label_indices_comp['melts-liquid'], device=chem_out.device)
+            chem_out[superliquidus][:, liq_idx] = features[superliquidus, 3:]
+
 
         # Compute phase properties
         phaseMass, reconBulk, componentMoles, phaseProportions = self.forward_phase_moles(
@@ -583,14 +583,14 @@ class DualSaturationChemistry(nn.Module):
         )
 
         # Assign direct values for superliquidus rows
-        liq_idx_phase = torch.tensor(self.label_indices['melts-liquid'], device=chem_out.device)
+        liq_idx_phase = torch.tensor(label_indices['melts-liquid'], device=chem_out.device)
 
         reconBulk[superliquidus] = features[superliquidus, 3:]
-        componentMoles[superliquidus.unsqueeze(1).expand(-1, liq_idx_phase.numel()),
-                       liq_idx_phase.repeat(superliquidus.sum())] = features[superliquidus, 3:].reshape(-1)
-        phaseProportions[superliquidus.unsqueeze(1).expand(-1, liq_idx_phase.numel()),
-                         liq_idx_phase.repeat(superliquidus.sum())] = features[superliquidus, 3:].reshape(-1)
+        componentMoles[superliquidus][:, liq_idx_phase] = features[superliquidus, 3:]
+        phaseProportions[superliquidus][:, liq_idx_phase] = features[superliquidus, 3:]
+        reconBulk[superliquidus] = features[superliquidus, 3:]
         phaseMass[superliquidus, -1] = 1.0
+
 
         if binaries is None:
             if detailed:

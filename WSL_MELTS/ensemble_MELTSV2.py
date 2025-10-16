@@ -864,4 +864,4 @@ def import_MELTS(EnsembleLocation=EnsembleLocation, fail_placeholders = False, d
 
     
 #keys = ['SiO2', 'TiO2',	'Al2O3', 'FeO',	'MgO', 'CaO', 'Na2O', 'K2O', 'P2O5', 'MnO', 'H2O', 'Cr2O3',	'NiO']
-batchname = 'mybatch'
+#batchname = 'mybatch'

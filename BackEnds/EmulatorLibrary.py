@@ -846,8 +846,8 @@ def move_file(src_path, dst_path, overwrite=False):
     Move a file from the current working directory to a destination directory.
 
     Args:
-        src_filename (str): Name of the file in the current working directory.
-        dst_dir (str): Destination directory path.
+        src_path (str): Name of the file in the current working directory.
+        dst_path (str): Destination directory
         overwrite (bool): If True, overwrite any existing file with the same name.
     """
 

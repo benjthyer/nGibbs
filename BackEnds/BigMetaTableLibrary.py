@@ -92,17 +92,27 @@ class BigMetaTable:
 
         self.filename = filename
         self.memmap_file = self.filename + '.npy'
+        self.csv_file =  self.filename + '.csv'
+        self.txt_file =  self.filename + '.txt'
+        
 
         if read_dir is None:
             self.read_dir = ''
         else:
             self.read_dir = read_dir
-            if os.path.exists(self.read_dir + self.memmap_file):
-                move_file(src_path=self.read_dir + self.memmap_file, dst_dir=self.memmap_file, overwrite=False) # bring memmap into working drive.
+            if os.path.exists(self.read_dir + self.memmap_file) and not os.path.exists(self.memmap_file):
+                print(f'Moving {self.read_dir + self.memmap_file} to current directory')
+                move_file(src_path=self.read_dir + self.memmap_file, dst_path=self.memmap_file, overwrite=False) # bring memmap into working drive.
+            if os.path.exists(self.read_dir + self.csv_file) and not os.path.exists(self.csv_file):
+                print(f'Moving {self.read_dir + self.csv_file} to current directory')
+                move_file(src_path=self.read_dir + self.csv_file, dst_path=self.csv_file, overwrite=False) # bring memmap into working drive.
+            if os.path.exists(self.read_dir + self.txt_file) and not os.path.exists(self.txt_file):
+                print(f'Moving {self.read_dir + self.txt_file} to current directory')
+                move_file(src_path=self.read_dir + self.txt_file, dst_path=self.txt_file, overwrite=False) # bring memmap into working drive.
+           
                 
 
-        self.csv_file = self.read_dir + self.filename + '.csv'
-        self.txt_file = self.read_dir + self.filename + '.txt'
+        
         working_text = False # Do we change text file name to protect it after loading?
 
       
@@ -849,6 +859,86 @@ class BigMetaTable:
         self.table.flush() # Write to disc
         
         self.header = database_headers # Need to track the change in the table when saving
+
+    """def deep_filter(self, Component_Lower_Bounds=None, Component_Upper_Bounds=None, Oxide_Lower_Bounds=None, Oxide_Upper_Bounds=None, Mass_Upper_Bounds=None, batch_size=200_000):
+        # NOT SEPARATING LEUCITE AND ANALCIME
+        ### UNDER CONSTRUCTION
+
+        delete_indices = np.array([], dtype=int)
+        
+            # === Full-array filters for components (cheap)
+        if Component_Lower_Bounds is not None:
+            for phase, comp, bound in Component_Lower_Bounds:
+                idx = component_indices[phase][comp]
+                to_delete = np.where((self.table[:, idx] < bound)*(self.table[:, idx] != 0))[0]
+                print(f"Deleting {len(to_delete)} for {bound} Lower Bound {phase} {comp}")
+                delete_indices = np.append(delete_indices, to_delete)
+                
+        if Component_Upper_Bounds is not None:
+            for phase, comp, bound in Component_Upper_Bounds:
+                idx = component_indices[phase][comp]
+                to_delete = np.where(components[:, idx] > bound)[0]
+                print(f"Deleting {len(to_delete)} for {bound} Upper Bound {phase} {comp}")
+                delete_indices = np.append(delete_indices, to_delete)
+
+        # === Batch filtering for expensive mass/oxide filters
+        n_rows = components.shape[0]
+        
+        for phase in all_phases:
+            print(f"{phase} present in {(100*np.sum(binary_labels[:,mass_phasedict[phase]]>0.5))/n_rows}% of assemblages")
+        
+        print(f"Rows before deleting: {n_rows}")
+    
+        for start in range(0, n_rows, batch_size):
+            end = min(start + batch_size, n_rows)
+
+            comp_batch = components[start:end]
+
+            batch_indices = np.arange(start, end)
+
+            # Oxide Lower Bounds
+            if Oxide_Lower_Bounds is not None:
+                for phase, ox, bound in Oxide_Lower_Bounds:
+                    oxides_GT = (comp_batch[:,label_indices_comp[phase]] @ compToOxLoad[label_indices[phase]]) 
+
+                    oxides_GT = oxides_GT @ MM
+                    oxides_GT = oxides_GT * (100/np.sum(oxides_GT,axis=1)).reshape(-1,1)
+
+                    failing = np.where((oxides_GT[:,oxide_dict[ox]] < bound)*(oxides_GT[:,oxide_dict[ox]] != 0))[0]
+                    print(f"Deleting {len(failing)} for {bound} Lower Bound {phase} {ox}")
+                    delete_indices = np.append(delete_indices, batch_indices[failing])
+
+            # Oxide Upper Bounds
+            if Oxide_Upper_Bounds is not None:
+                for phase, ox, bound in Oxide_Upper_Bounds:
+                    oxides_GT = (comp_batch[:,label_indices_comp[phase]] @ compToOxLoad[label_indices[phase]]) 
+
+                    oxides_GT = oxides_GT @ MM
+                    oxides_GT = oxides_GT * (100/np.sum(oxides_GT,axis=1)).reshape(-1,1)
+
+                    failing = np.where((oxides_GT[:,oxide_dict[ox]] > bound)*(oxides_GT[:,oxide_dict[ox]] != 0))[0]
+                    print(f"Deleting {len(failing)} for {bound} Upper Bound {phase} {ox}")
+                    delete_indices = np.append(delete_indices, batch_indices[failing])
+
+            del comp_batch, batch_indices, oxides_GT
+            gc.collect()
+                
+        delete_indices = np.unique(delete_indices)
+        print(f"Rows after deleting: {n_rows-len(delete_indices)}")
+
+        del components, binary_labels
+        gc.collect()
+        
+        # Perform safe batch delete
+        safe_delete_batched(filename + 'labels.npy', delete_indices)
+        safe_delete_batched(filename + 'features.npy', delete_indices)
+        safe_delete_batched(filename + 'binary_labels.npy', delete_indices)
+        safe_delete_batched(filename + 'molar_labels.npy', delete_indices)
+        safe_delete_batched(filename + 'mass_labels.npy', delete_indices)
+        
+        gc.collect()
+        
+        return delete_indices"""
         
 def merge_big_meta_tables(tables, new_filename, chunk_size=100_000, clear_old_tables = False):
     """
@@ -1056,7 +1146,7 @@ def deep_filter(filename, Component_Lower_Bounds=None, Component_Upper_Bounds=No
         # Oxide Lower Bounds
         if Oxide_Lower_Bounds is not None:
             for phase, ox, bound in Oxide_Lower_Bounds:
-                oxides_GT = (comp_batch[:,label_indices_comp[phase]] @ compToOx[label_indices[phase]]) 
+                oxides_GT = (comp_batch[:,label_indices_comp[phase]] @ compToOxLoad[label_indices[phase]]) 
 
                 oxides_GT = oxides_GT @ MM
                 oxides_GT = oxides_GT * (100/np.sum(oxides_GT,axis=1)).reshape(-1,1)
@@ -1068,7 +1158,7 @@ def deep_filter(filename, Component_Lower_Bounds=None, Component_Upper_Bounds=No
         # Oxide Upper Bounds
         if Oxide_Upper_Bounds is not None:
             for phase, ox, bound in Oxide_Upper_Bounds:
-                oxides_GT = (comp_batch[:,label_indices_comp[phase]] @ compToOx[label_indices[phase]]) 
+                oxides_GT = (comp_batch[:,label_indices_comp[phase]] @ compToOxLoad[label_indices[phase]]) 
 
                 oxides_GT = oxides_GT @ MM
                 oxides_GT = oxides_GT * (100/np.sum(oxides_GT,axis=1)).reshape(-1,1)
@@ -1249,12 +1339,12 @@ def retrieve_component_moles(self, multiplier_bounds = [1,1]):
             if len(label_indices[phase]) > 1: #Variable componsition. Components to Molar oxides per formula unit to Molar Mass
                 compnames = np.array(label_names)[label_indices[phase]]
                 X_ind = np.array([component_indices[phase][compname] for compname in compnames])
-                MM = (self.table1[:,X_ind] @ compToOx[label_indices[phase]]) @ Mtot
+                MM = (self.table1[:,X_ind] @ compToOxLoad[label_indices[phase]]) @ Mtot
                 #Then moles of each component is multiplied by the total moles of phase (phase mass/MM)
                 zero_mat = np.zeros_like(MM, dtype=float) 
                 self.molar[:,label_indices[phase]] = self.table1[:,X_ind] * mass_multipliers* np.divide(np.atleast_2d(self.table1[:,list(component_indices[phase].values())[0]]).T, MM, out=zero_mat, where=MM != 0)                                                           
             else: #Invariant Phase Composition, moles = mass / MM
-                self.molar[:,label_indices[phase]] = ((mass_multipliers*self.table1[:,component_indices[phase]['mass (gm)']].reshape(-1,1) / (compToOx[label_indices[phase],:] @ Mtot)).T).T
+                self.molar[:,label_indices[phase]] = ((mass_multipliers*self.table1[:,component_indices[phase]['mass (gm)']].reshape(-1,1) / (compToOxLoad[label_indices[phase],:] @ Mtot)).T).T
         else: # Liquid is weight percent. First, go to moles, then do the rest of the calculation
             X_ind = np.array([component_indices['melts-liquid'][f"wt% {wrk}"] for wrk in Oxides])
             UnNormed = self.table1[:,X_ind] @ Minv[:len(X_ind), :len(X_ind)] # Moles oxides
@@ -1278,7 +1368,7 @@ def retrieve_bulk_elements(self):
         )
     retrieve_component_moles(self)
     try:
-        self.bulk[:] = self.molar @ compToOx @ oxToEl
+        self.bulk[:] = self.molar @ compToOxLoad @ oxToEl
         row_sums = np.sum(self.bulk, axis=1)
         row_sums[row_sums == 0] = 1.0
         self.bulk[:] = self.bulk / row_sums[np.newaxis, :]
@@ -1372,7 +1462,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             
             # Get molar quantities
             retrieve_component_moles(self)
-            Inmoles = (self.molar @ compToOx) @ oxToEl
+            Inmoles = (self.molar @ compToOxLoad) @ oxToEl
             InTot = np.sum(Inmoles, axis = 1).reshape(-1,1)
             
             # --- Binary labels
@@ -1449,7 +1539,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             else:
                 GT_comps[:,label_indices[phase]] = (self.molarlabels[:, mass_phasedict[phase]]).reshape(-1,1)
 
-        GTReconBulk_oxides = (((GT_comps @ compToOx) @ oxToEl) @ np.linalg.inv(oxToEl[:-1])) @ MM[:-1,:-1]
+        GTReconBulk_oxides = (((GT_comps @ compToOxLoad) @ oxToEl) @ np.linalg.inv(oxToEl[:-1])) @ MM[:-1,:-1]
         GTReconBulk_oxides =  GTReconBulk_oxides*100/np.sum(GTReconBulk_oxides,axis=1, keepdims=True)
 
 
@@ -1809,6 +1899,259 @@ def make_harkers(MELTS, plot_directory, colormap = 'turbo', hist = False):
             plt.tight_layout()
             plt.savefig(plot_directory+f'{label}XSiO2')
             plt.show()
+
+
+    def create_3D_memmaps(self, T=800, thresholds=None):
+        """
+        Creates numpy memmap datasets with [I,T,O] geometry combining filtering and resampling functionality.
+        Single loop through IDs: filter, decide, and populate all arrays at once.
+        
+        Parameters:
+        - output_prefix (str): Prefix for output memmap files
+        - T (int): Number of temperature steps per ID (default 800)
+        - thresholds (array): Thresholds for jump filtering (default uses standard values)
+        """
+    
+        performance_metrics = {
+            'Jump Filtered':0,
+            '3 ID lim':0,
+            'Total':0,
+            'Accepted':0,
+            'Steps Accepted': [],
+            'No Superliquidus': 0,
+            'Non-consecutive': 0
+        }
+
+        # Get unique IDs
+        unique_ids = np.unique(self.run_indices)
+        print(f"Found {len(unique_ids)} unique IDs")
+        performance_metrics['Total'] = len(unique_ids)
+
+        # Use 2/3 of unique IDs for final dataset
+        I = int(len(unique_ids) * 2/3)
+        print(f"Will create memmaps for {I} IDs")
+        
+        # Define dimensions
+        num_phases = mass_phasedict['melts-liquid'] + 1
+        num_components_intensive = label_indices_comp['melts-liquid'][-1] + 1
+        
+        # Create memmap files with proper dimensions
+        self.molarlabels = np.lib.format.open_memmap( # Molar abundances [I, T, num_phases]
+                self.filename + 'molar_labels.npy',
+                mode='w+',
+                dtype=np.float32,
+                shape=(I, T, num_phases)
+        )
+            
+        self.binarylabels = np.lib.format.open_memmap( # Flags of present phases [I, T, num_phases]
+                self.filename + 'binary_labels.npy',
+                mode='w+',
+                dtype=np.float32,
+                shape=(I, T, num_phases)
+        )
+        
+        self.masslabels = np.lib.format.open_memmap( # Masses in grams, normed to 100 [I, T, num_phases]
+                self.filename + 'mass_labels.npy',
+                mode='w+',
+                dtype=np.float32,
+                shape=(I, T, num_phases)
+        )
+        
+        self.features = np.lib.format.open_memmap( # Input, PTfO2, Bulk chemistry [I, T, 3 + len(Elkeys)]
+                self.filename + 'features.npy',
+                mode='w+',
+                dtype=np.float32,
+                shape=(I, T, 3 + len(Elkeys))
+        )
+        
+        self.labels = np.lib.format.open_memmap( # Components in moles, intensive only [I, T, num_components_intensive]
+                self.filename + 'labels.npy',
+                mode='w+',
+                dtype=np.float32,
+                shape=(I, T, num_components_intensive)
+        )
+        
+        # Temperature array for reference
+        self.temperatures = np.lib.format.open_memmap(
+                self.filename + 'temperatures.npy',
+                mode='w+',
+                dtype=np.float32,
+                shape=(I, T)
+        )
+        
+        relevant_cols = [component_indices['System_main']['Temperature'], # Effectively no T limit in default due to superliquidus subsampling
+                            component_indices['melts-liquid']['liq mass (gm)'],
+                            component_indices['melts-liquid']['wt% TiO2'],
+                            component_indices['melts-liquid']['wt% P2O5'],
+                            component_indices['melts-liquid']['wt% MnO'],
+                            component_indices['melts-liquid']['wt% NiO'],
+                            component_indices['System_main']['Pressure']]
+        if thresholds is None:
+            thresholds = np.array([300,12,4,4,4,5,100])
+
+        # Single loop: filter, decide, populate
+        current_row = 0
+        for ID in tqdm(unique_ids, desc="Processing IDs"):
+            if current_row >= I:
+                break
+                
+            indices = self.ID(ID)
+            
+            # Filter: Check if ID has sufficient data
+            if len(indices) < 3:
+                performance_metrics['3 ID lim'] += 1
+                continue
+                
+            # Filter: Apply jump filtering logic
+           
+            data = self.table[np.ix_(indices, relevant_cols)]
+            deltas = np.abs(data[:-1] - data[1:])
+            over_threshold = deltas > thresholds
+            any_jump = np.any(over_threshold, axis=1)
+            
+            if np.any(any_jump):
+                jump_index = np.argmax(any_jump)
+                valid_indices = indices[:jump_index]
+            else:
+                valid_indices = indices
+                
+            # Filter: Must have at least 3 valid data points
+            if len(valid_indices) < 3:
+                performance_metrics['Jump Filtered'] += 1
+                continue
+            
+            # Decide: This ID will be used - populate all arrays
+            
+            # Get temperature data and sort by temperature (descending - highest first)
+            temp_data = self.table[valid_indices, component_indices['System_main']['Temperature']]
+            sort_order = np.argsort(temp_data)[::-1]  # Descending order
+            sorted_indices = valid_indices[sort_order]
+            sorted_temps = temp_data[sort_order]
+            self.table1 = self.table[sorted_indices]
+            try:
+                first_subliquidus = np.where(np.sum(self.table1[:,mass_indices[:-1]], axis = 1) > 0)[0][0]
+            except:
+                print(f'Sub-liquidus highest temperature detected for ID: {ID}')
+                performance_metrics['No Superliquidus'] += 1
+                continue
+            liquidus_T = self.table1[first_subliquidus, component_indices['System_main']['Temperature']] + 1
+
+            # Filter: Check for consecutive indices below the liquidus
+            if np.any(np.abs(np.diff(sorted_indices[first_subliquidus:])) > 1):
+                print(f'Non-consecutive Indices Detected for ID: {ID}')
+                performance_metrics['Non-consecutive'] += 1
+                continue
+
+            # Fill temperature array (lowest temp at last slot, propagate upward)
+            n_data_points = len(sorted_temps)
+            n_subsolidus = n_data_points-first_subliquidus
+
+            if n_subsolidus > T:
+                # More data than slots - take only one superliquidus assemblage
+                self.temperatures[current_row, :] = sorted_temps[(first_subliquidus-1):(first_subliquidus-1+T)]
+                self.temperatures[current_row, 0] = liquidus_T # Accounting for uneven sampling of superliquidus assemblages
+                data_indices = sorted_indices[(first_subliquidus-1):(first_subliquidus-1+T)]
+            else:
+                # Less data than slots - fill remaining slots with superliquidus data
+                self.temperatures[current_row, (T-n_subsolidus):] = sorted_temps[first_subliquidus:]
+                self.temperatures[current_row, :(T-first_subliquidus)] = np.flip(np.arange(liquidus_T,liquidus_T+first_subliquidus)) # Fill with highest temp ascending
+                data_indices = np.concatenate([sorted_indices, 
+                                             np.full(T - n_data_points, sorted_indices[0])])
+            
+            # Create temporary table for this ID's data
+            self.table1 = self.table[data_indices]
+            self.table1[:,component_indices['System_main']['Temperature']] = self.temperature[current_row]
+
+
+            # Generate binary mask for phase presence
+            
+            binary_mask = blur_binary_boundaries((temp_table[:, mass_indices] > 0).astype(np.float32))
+                # Apply blurring if needed (placeholder - implement blur_binary_boundaries if available)
+                # binary_mask = blur_binary_boundaries(binary_mask)
+            
+            # Populate binary labels
+            self.binarylabels[current_row, :, :] = binary_mask
+            
+            # Populate mass labels (normalized to 100)
+            mass_data = self.table1[:, mass_indices]
+            mass_totals = np.sum(mass_data, axis=1, keepdims=True)
+            mass_totals[mass_totals == 0] = 1  # Avoid division by zero
+            normalized_mass = mass_data * 100 / mass_totals
+            self.masslabels[current_row, :, :] = normalized_mass
+            
+
+            retrieve_component_moles(self) # (creates self.molar object with self.table1 object): moles of phase components in system
+            Inmoles = (self.molar @ compToOxLoad) @ oxToEl
+            InTot = np.sum(Inmoles, axis = 1).reshape(-1,1)
+
+            self.molarlabels[current_row] = (self.molar / InTot) @ phaseToCompMap.T
+
+            self.features[current_row,:,:3] = self.table1[:, :3]  # Pressure, Temperature, logfO2-QFM
+            self.features[current_row,:,3:] = Inmoles/InTot
+            # Bulk chemistry features (element moles, normalized to sum of 1)
+            # This is a placeholder - implement proper bulk chemistry calculation
+            bulk_chem = np.zeros((T, len(Elkeys)))  # Placeholder
+            # TODO: Implement proper bulk chemistry calculation
+            # bulk_chem = calculate_bulk_chemistry(temp_table)
+            
+            # Combine features
+    
+            # Calculate labels (intensive chemistry components)
+            # This is a placeholder - implement proper label calculation
+            labels_data = np.zeros((T, num_components_intensive))  # Placeholder
+            # TODO: Implement proper label calculation from temp_table
+            # labels_data = calculate_intensive_chemistry(temp_table)
+
+            for phase, compdict in detail_label_indices.items(): # Move components into the right space. Already Normed to 1.
+                for component, ind in compdict.items():
+                    if phase != 'melts-liquid':
+                        
+                        # --- Labels (phase components)
+                       
+                        self.labels[current_row,:,ind] = self.table1[:, component_indices[phase][component]]
+                                       
+                        
+                    else:
+                        pass
+                if phase == 'melts-liquid':
+                    liq_mol = self.molar[:,label_indices[phase]] # Non-normalized liquid element moles
+                    liq_tot = np.sum(liq_mol, axis = 1)
+                    liqNonzero = liq_tot != 0
+                    liq_mol[liqNonzero] = liq_mol[liqNonzero] / liq_tot[liqNonzero].reshape(-1,1) # Normalize to sum 1
+                    
+                    # --- Labels (phase components)
+                    sl = np.s_[current_row, :, label_indices_comp[phase]]
+                    self.labels[sl] = liq_mol
+                    
+                    
+                    del liq_mol, liq_tot, liqNonzero, sl
+                    gc.collect()
+
+
+            
+            # Flush current row to disk
+            self.binarylabels.flush()
+            self.masslabels.flush()
+            self.molarlabels.flush()
+            self.features.flush()
+            self.labels.flush()
+            self.temperatures.flush()
+            
+            current_row += 1
+            
+            # Clean up temporary variables
+            del temp_table, binary_mask, mass_data, normalized_mass, molar_data
+            del ptfo2_features, bulk_chem, features_combined, labels_data
+            gc.collect()
+        
+        print(f"Successfully created 3D memmaps with shape [{current_row}, {T}, various]")
+        print(f"Files created:")
+        print(f"  - {self.filename}molar_labels.npy")
+        print(f"  - {self.filename}binary_labels.npy") 
+        print(f"  - {self.filename}mass_labels.npy")
+        print(f"  - {self.filename}features.npy")
+        print(f"  - {self.filename}labels.npy")
+        print(f"  - {self.filename}temperatures.npy")
 
 
 def extract_rows(filename, indices, new_suffix="_subset"):
