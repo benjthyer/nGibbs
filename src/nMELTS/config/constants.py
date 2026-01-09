@@ -237,7 +237,7 @@ database_headers.append('liq V (cc)')
 
 # Mass indices
 mass_indices = []  # exclude amphibole
-for phase, props in MELTS_indices.items():
+for phase, props in MELTS_indices.items(): #properties
     if phase in (phases_in_order + ['melts-liquid']):
         for key, ind in list(props.items()):
             if 'mass' in key:
