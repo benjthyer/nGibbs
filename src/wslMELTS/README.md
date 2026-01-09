@@ -1,0 +1,1 @@
+This directory contains scripts that are not intended to be run in this IDE. They run in a windows subsystem for linux, where they can tae advantage of GNU parallel processing of CPUs

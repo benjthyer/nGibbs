@@ -13,6 +13,8 @@ Workspace/
 *SIMS/
 *sims/
 *Sims/
+Legacy/
+src/wslMELTS/engine/alphamelts-app-2.3.1-linux/alphamelts2/ # Users will not need this. 
 
 # Plots and Figures
 *hist/
