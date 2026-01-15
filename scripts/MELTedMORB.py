@@ -1,63 +1,39 @@
+"""Note: This script is for operating MELTS simulations on custom compositions and will not be exported to users in the release. 
+The linux virtual environment is loaded by calling from linux home: source ~/melts_env/venv/bin/activate"""
+
 from copy import copy
-import ensemble_MELTSV2 # The essential ensemble MELTS functions
+import sys
+import os
+# Add parent directory to path to import from src
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+from src.wslMELTS.engine import alphamelts_functions # The essential ensemble MELTS functions
+from src.nMELTS.utils.string_utils import  random_char
+from src.nMELTS.utils.math_utils import  grid_sample
+from src.nMELTS.config.indexer import generate_column_headers, DatasetIndexer
+
 import numpy as np
-import random
-import pickle
-import os   
-import string
 import time
 import molmass as ms
 import shutil
 import pandas as pd
+from pathlib import Path
+
 #from EmulatorLibrary import *
 
+# These are the phases that will be simulated and recorded in the output files.
+allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclase','k-feldspar','garnet','nepheline','leucite',
+          'biotite','rhm-oxide','alloy-solid','apatite','whitlockite','quartz','tridymite','cristobalite','muscovite','fluid','liquid']
 
-allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclase','k-feldspar','garnet','nepheline','leucite','biotite',
-                  'rhm-oxide','alloy-solid','apatite','whitlockite','quartz','tridymite','cristobalite','muscovite','fluid','liquid']
-Out_Folder = 'MORB_SIMS'
+headers = generate_column_headers(allowed_phases)
+indexer = DatasetIndexer(headers)
 
-
-
-
-def random_char(y):
-       return ''.join(random.choice(string.ascii_letters) for x in range(y))
-
-def pull_number(string):
-    string_number = ''
-    for char in string:
-        if char in '1234567890.-':
-            string_number += char
-    try:
-        return float(string_number)
-    except: 
-        return np.nan
+Out_Folder = os.path.join(Path(__file__).parent.parent.absolute(), 'src', 'nMELTS', 'data', 'Workspace', 'MORB')
     
-def grid_sample(params, table=np.array([])):
-    """Generates a numpy array grid sample recursively for arbitrary parameters.
-    Let params be a nested list, with each sublist of [min, max, len] passed to np.linspace.
-    Order of params determines column order in the output table."""
-    
-    params = list(params)  # Copy to avoid side-effects
-    param = params.pop()
-    new_col = np.linspace(*param).reshape((-1,1))
-    
-    if not table.shape[0]:
-        table = new_col
-    else:
-        table = np.append(np.repeat(new_col, table.shape[0], axis=0),
-                          np.tile(table, (new_col.shape[0], 1)), axis=1)
-    
-    if len(params):
-        return grid_sample(params, table)
-    else:
-        return table
-
-alphaMELTSLocation = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'alphamelts')
+alphaMELTSLocation = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src', 'wslMELTS', 'engine', 'alphamelts-app-2.3.1-linux', 'alphamelts_linux')
 # Location to where to put the computed files.
-EnsembleLocation = os.path.join(os.path.dirname(os.path.abspath(__file__)), Out_Folder)
+EnsembleLocation = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src', 'wslMELTS', 'Workspace')
 
-if Out_Folder not in os.listdir():
-    os.makedirs(EnsembleLocation)
+os.makedirs(EnsembleLocation, exist_ok=True)
 
 ferric_to_ferrous = (2*ms.Formula('FeO').mass/ms.Formula('Fe2O3').mass)
 
@@ -81,8 +57,8 @@ NoCrCondition_str = copy(CrCondition_str)
 del NoCrCondition_str['Cr2O3']
 
 
-#Renormalize
-for L, MELTSmodel in enumerate(['102']):
+
+for L, MELTSmodel in enumerate(['110']): #Which MELTS models to use
     for j in range(2):
         condition_str = [NoCrCondition_str, CrCondition_str][j]
         suffix = ["NoCr", "Cr"][j]
@@ -92,7 +68,7 @@ for L, MELTSmodel in enumerate(['102']):
 
         keys = ['Pressure', 'Temperature', 'fO2']
         total = np.sum(list(condition_str.values()))
-        for key, val in condition_str.items():
+        for key, val in condition_str.items(): #Renormalize to total = 100
             condition_str[key] = np.round(val*100/total,2)
         print(condition_str)
 
@@ -104,18 +80,18 @@ for L, MELTSmodel in enumerate(['102']):
 
         Fxtal = False
         fxLabel = 'Fxtal' if Fxtal else 'Batch' 
-        csv_name = f'GTMELTS{MELTSmodel}_{suffix}_MORB_{fxLabel}_PsuedoSections_smallOx2.csv'
+        csv_name = os.path.join(Out_Folder, f'GTMELTS{MELTSmodel}_{suffix}_MORB_{fxLabel}_PsuedoSections_smallOx2.csv')
 
         BatchName = f"{MELTSmodel}Batch"
 
-        in_array = grid_sample([[1,10000,50],[1600,1600,1],[1,2,2]]) #Phase diagrams
+        #in_array = grid_sample([[1,10000,50],[1600,1600,1],[1,2,2]]) #Phase diagrams
         #in_array = grid_sample([[1,10000,50],[1600,1600,1],[0,0,1]]) #Phase diagrams
         #in_array = grid_sample([[1000,1000,1],[1600,1600,1],[0,0,1]]) #Small Test
 
 
         #in_array = grid_sample([[1000,10000,3],[2000,2000,1],[-4,4,5]]) # Harkers
         #in_array = grid_sample([[1000,10000,3],[1600,1600,1],[-4,4,5]]) # Harkers
-        #in_array = grid_sample([[1000,8000,8],[1600,1600,1],[-1,1,1]])
+        in_array = grid_sample([[1000,8000,4],[1600,1600,1],[-1,1,2]]) # performance benchmarking
 
         nrow = in_array.shape[0]
         for key, val in condition_str.items():
@@ -144,11 +120,11 @@ for L, MELTSmodel in enumerate(['102']):
             batchname = np.empty(end-(batch_size*batch), dtype=object)
             batchname[:] = BatchName
 
-            ensemble_MELTSV2.forward_ensemble(in_array[(batch*batch_size):end], keys, only_phases=allowed_phases, batchname = batchname, 
+            alphamelts_functions.forward_ensemble(in_array[(batch*batch_size):end], keys, only_phases=allowed_phases, batchname = batchname, 
                                             end = 800, EnsembleLocation=EnsembleLocation, WSL = True, compression=False, delta = -1, fxtal=Fxtal)
             for j, name in enumerate(batchname):
                     i = (batch*batch_size) + j
                     batchname[j] = f"{i}:{random_char(4)}:{name}" # Put PTX Index in metadata to link one simulation
-            ensemble_MELTSV2.import_MELTS_components(EnsembleLocation=EnsembleLocation, batchname=batchname, fO2Arr=in_array[(batch*batch_size):end,2],dataname = csv_name)#, dataname = f'Applications/{rockname}_BatchMELTS.csv')
+            alphamelts_functions.import_MELTS_components(EnsembleLocation=EnsembleLocation, batchname=batchname, indexer=indexer, fO2Arr=in_array[(batch*batch_size):end,2],dataname = csv_name)#, dataname = f'Applications/{rockname}_BatchMELTS.csv')
 
         print(f"Ordered, Completed, and Read {nrow} simulations in {time.time()-start} seconds")

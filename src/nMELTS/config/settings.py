@@ -1,7 +1,7 @@
 """
 Configuration settings.
 
-For now, just the paths.?
+For now, just the paths?
 TO DO: NEW CODE THAT CREATES THE EXTERNAL DIRECTORY STRUCTURE IF IT DON'T EXIST. 
 
 """
@@ -16,8 +16,8 @@ if external_base[-1] != '/' and len(external_base):  # Assumed to end in slash i
     external_base += '/'
 
 
-_DATA_DIR = Path(__file__).resolve().parent.parent + '/'
-DATA_PATH = 'Workspace/' # Path from internal data folder, or from external_base
+INT_DATA_DIR = Path(__file__).resolve().parent.parent / 'data'
+DATA_PATH = 'DataProducts/' # Path from internal data folder, or from external_base
 
 
 
@@ -32,10 +32,10 @@ def internal_data_dir(MELTSModel):
     Returns:
         str: Internal directory path
     """
-    return _DATA_DIR + DATA_PATH + f'{MELTSModel}Datasets/'
+    return INT_DATA_DIR / (DATA_PATH + f'{MELTSModel}')
 
 
-def external_data__dir(MELTSModel):
+def external_data_dir(MELTSModel):
     """
     Get external directory path for a MELTS model.
     
@@ -45,4 +45,4 @@ def external_data__dir(MELTSModel):
     Returns:
         str: External directory path
     """
-    return external_base + DATA_PATH + f'{MELTSModel}Datasets/'
+    return external_base + (DATA_PATH + f'{MELTSModel}')

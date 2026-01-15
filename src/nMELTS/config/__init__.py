@@ -3,68 +3,9 @@
 # Import constants to ensure CSV files are loaded when this module is imported
 from . import constants
 from . import settings
+from . import indexer
 
-# Re-export commonly used constants for convenience
-from .constants import (
-    MELTS_indices,
-    database_headers,
-    phases_in_order,
-    mass_indices,
-    WRkeys,
-    Oxides,
-    Elkeys,
-    compToOx,
-    oxToEl,
-    MM,
-    Minv,
-    Mtot,
-    label_indices,
-    label_names,
-    detail_label_indices,
-    label_indices_comp,
-    compositionally_variable_phases,
-    comp_phasedict,
-    mass_phasedict,
-    all_phases,
-    phaseToCompMap,
-    variedToAllComp,
-    oxide_dict,
-    active_ox_dict,
-    boolTransCompToOx,
-    compositionally_variable_binaries,
-    fixed_phaseToCompMap,
-    compositionally_variable_subset,
-)
-
-__all__ = [
-    'constants',
-    'settings',
-    'MELTS_indices',
-    'database_headers',
-    'phases_in_order',
-    'mass_indices',
-    'WRkeys',
-    'Oxides',
-    'Elkeys',
-    'compToOx',
-    'oxToEl',
-    'MM',
-    'Minv',
-    'Mtot',
-    'label_indices',
-    'label_names',
-    'detail_label_indices',
-    'label_indices_comp',
-    'compositionally_variable_phases',
-    'comp_phasedict',
-    'mass_phasedict',
-    'all_phases',
-    'phaseToCompMap',
-    'variedToAllComp',
-    'oxide_dict',
-    'active_ox_dict',
-    'boolTransCompToOx',
-    'compositionally_variable_binaries',
-    'fixed_phaseToCompMap',
-    'compositionally_variable_subset',
-]
+# Export indexer components
+from .indexer import DatasetIndexer, generate_column_headers
+from .ml_indexer import MLIndexer
+from .constants import COMPONENTS_IN_PHASES, default_Elkeys

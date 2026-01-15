@@ -3,6 +3,7 @@
 
 #alphamelts installation
 alphamelts/
+src/wslMELTS/engine/alphamelts-app-2.3.1-linux/alphamelts2/ # Users will not need this. 
 
 # Dataset directories
 *Datasets/
@@ -14,9 +15,9 @@ Workspace/
 *sims/
 *Sims/
 Legacy/
-src/wslMELTS/engine/alphamelts-app-2.3.1-linux/alphamelts2/ # Users will not need this. 
-alphamelts-app-2.3.1-linux/
+*Legacy/
 
+alphamelts-app-2.3.1-linux/
 # Plots and Figures
 *hist/
 Plots/
@@ -133,14 +134,6 @@ dmypy.json
 *.swo
 *~
 
-# OS
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
 
 # Temporary files
 *.tmp

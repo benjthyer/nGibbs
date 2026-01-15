@@ -1,2 +1,2 @@
 # nMELTS Dependencies
-# Add dependencies here
+# Note to self: The python virtual environment is loaded by calling from terminal: conda activate ~\anaconda3\envs\torch-env

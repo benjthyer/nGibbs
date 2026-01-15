@@ -12,7 +12,6 @@ import pandas as pd
 from pathlib import Path
 from io import StringIO
 import re
-import pickle
 import subprocess
 import warnings
 
@@ -22,15 +21,18 @@ warnings.filterwarnings("ignore", category=UserWarning)
 from .melts_file_builder import (
     makeMELTSStr,
     suppressAllBut,
-    alphaMELTSLocation,
-    EnsembleLocation,
-    pull_number
+    #alphaMELTSLocation,
+    #EnsembleLocation,
+    #pull_number
 )
 
-from ...nMELTS.config.constants import MELTS_indices, mass_indices, database_headers
+from ...nMELTS.utils.string_utils import pull_number
+from ...nMELTS.config.indexer import DatasetIndexer
 
 # You Need GNU parallel to run this! https://build.opensuse.org/package/show/home:tange/parallel
 
+EnsembleLocation = None # let this error if not set
+alphaMELTSLocation = os.path.join(Path(__file__).parent.absolute(), 'alphamelts-app-2.3.1-linux')
 
 ### Zach Gainsforth Functions ### https://github.com/ZGainsforth/alphaMELTSEnsemble?tab=readme-ov-file
 def GetalphaMELTSSectionAsTxt(data, start):
@@ -101,6 +103,27 @@ def ReadOnePhaseFromMELTSOutputFile(MELTSData, header):
 ### Here the functions are my own, or highly modified from Zach Gainsforth's functions
 ################ Ensemble Execution Functions ####################
 
+def _clean_workspace(EnsembleLocation):
+    """
+    Delete all directories and files in the EnsembleLocation workspace.
+    
+    Parameters
+    ----------
+    EnsembleLocation : str
+        Path to the workspace directory to clean
+    """
+    if os.path.exists(EnsembleLocation):
+        for item in os.listdir(EnsembleLocation):
+            item_path = os.path.join(EnsembleLocation, item)
+            try:
+                if os.path.isdir(item_path):
+                    shutil.rmtree(item_path)
+                else:
+                    os.remove(item_path)
+            except Exception as e:
+                print(f"Warning: Could not delete {item_path}: {e}")
+
+
 def forward_ensemble(input_array, keys, batchname, only_phases=None, end=0, EnsembleLocation=EnsembleLocation,
                      fxtal=False, initializer='run-alphamelts.command', WSL=True, compression=False, delta=-3):
     """
@@ -125,12 +148,18 @@ def forward_ensemble(input_array, keys, batchname, only_phases=None, end=0, Ense
     initializer : str, default='run-alphamelts.command'
         Initializer script name
     WSL : bool, default=True
-        Whether running on WSL (uses GNU parallel) or Windows
+        Whether running on WSL (uses GNU parallel) or Windows. Windows is deprecated.
     compression : bool, default=False
         Whether this is a compression run
     delta : float or np.ndarray, default=-3
         Temperature increment(s)
     """
+    # Clean workspace before starting new simulations
+    _clean_workspace(EnsembleLocation)
+    
+    # Ensure EnsembleLocation exists
+    os.makedirs(EnsembleLocation, exist_ok=True)
+    
     RunAll = ''  # The shell script to be passed to the terminal eventually
     simulations = np.shape(input_array)[0]
     if np.shape(input_array)[1] != np.shape(keys)[0]:
@@ -142,7 +171,7 @@ def forward_ensemble(input_array, keys, batchname, only_phases=None, end=0, Ense
         dirname = f'Simulation{i}'
         ComputeDir = os.path.join(EnsembleLocation, dirname)
         print(ComputeDir)
-        if np.ndim(end):
+        if np.ndim(end): # These can be scalars or sample-wise arrays.
             endparam = end[i]
         else:
             endparam = end
@@ -153,24 +182,19 @@ def forward_ensemble(input_array, keys, batchname, only_phases=None, end=0, Ense
         MELTSStr = makeMELTSStr(input_array[i, :], keys, end=endparam, fxtal=fxtal,
                                 compression=compression, delta=deltaparam)
         if only_phases:
-            if 'p' in batchname[i].lower():
-                print('No Sillimanite in PMELTS Calculations')  # Sillimanite not in pMELTS, breaks calculation.
-                only_phases.append('sillimanite')
+            #if 'p' in batchname[i].lower(): # This asks: Are we doing a PMELTS calculation?
+                #print('No Sillimanite in PMELTS Calculations')  # Sillimanite not in pMELTS, breaks calculation, enforce later...
+                #only_phases.append('sillimanite') # Vestigial for when this argument held phases to exclude, now it is phases that are kept
             MELTSStr = suppressAllBut(MELTSStr, only_phases)
         
-        if not os.path.exists(ComputeDir):
-            os.makedirs(ComputeDir)
-        else:
-            for filename in os.listdir(ComputeDir):  # Delete previous mineral table outputs to avoid mixing simulations
-                if 'tbl' in filename:
-                    file_path = os.path.join(ComputeDir, filename)
-                    os.remove(file_path)
+        # Create simulation directory (workspace is already clean)
+        os.makedirs(ComputeDir, exist_ok=True)
         
         with open(os.path.join(ComputeDir, 'input.melts'), 'w') as f:
             f.write(MELTSStr)
         
         for FileName in [batchname[i]]:
-            shutil.copy(os.path.join(Path(__file__).parent.absolute(), FileName),
+            shutil.copy(os.path.join(Path(__file__).parent.parent.absolute(), 'batch', FileName),
                        os.path.join(ComputeDir, FileName))
         RunAll += 'cd "' + ComputeDir + '" && "'
         RunAll += os.path.join(alphaMELTSLocation, initializer) + f'" -b {batchname[i]}\n'
@@ -198,7 +222,7 @@ def forward_ensemble(input_array, keys, batchname, only_phases=None, end=0, Ense
 
 ################ Data Import Functions ####################
 # Parsing MELTS output to .csv database
-def import_MELTS_components(EnsembleLocation, batchname, fO2Arr=None, dataname='DefaultMELTSstorage.csv'):
+def import_MELTS_components(EnsembleLocation, batchname, indexer, fO2Arr=None, dataname='DefaultMELTSstorage.csv'):
     """
     New as of 04/03/2025: Load Components to component object.
     
@@ -211,6 +235,8 @@ def import_MELTS_components(EnsembleLocation, batchname, fO2Arr=None, dataname='
         Location of simulation folders
     batchname : list
         Batch names for each simulation
+    indexer : DatasetIndexer
+        DatasetIndexer object containing MELTS_indices, database_headers, and mass_indices
     fO2Arr : np.ndarray, optional
         Array of fO2 offsets
     dataname : str, default='DefaultMELTSstorage.csv'
@@ -225,13 +251,13 @@ def import_MELTS_components(EnsembleLocation, batchname, fO2Arr=None, dataname='
     folders = len(contents) - 1
     sim_metadata_name = dataname.split('.')[0] + '.txt'
     metadata = []
-    workbase = np.empty((0, 1 + max(list(MELTS_indices.values())[-1].values())))
+    workbase = np.empty((0, indexer.get_max_index()+1))
 
     if not os.path.exists(sim_metadata_name):
         with open('emptyfile.txt', 'w') as f:
             pass
     if not os.path.exists(dataname):
-        newbase = pd.DataFrame(columns=database_headers)
+        newbase = pd.DataFrame(columns=indexer.database_headers)
         newbase.to_csv(dataname, index=False)
     faultIDs = []
     
@@ -257,7 +283,7 @@ def import_MELTS_components(EnsembleLocation, batchname, fO2Arr=None, dataname='
             working_database_rows = []
             for nr in range(nrows):
                 working_database_rows.append(batchname[folderNo] + f' {nr}')  # add step index
-            meltsobj = np.zeros((nrows, 1 + max(list(MELTS_indices.values())[-1].values())))  # Prepare empty container
+            meltsobj = np.zeros((nrows, indexer.get_max_index()+1))  # Prepare empty container
             
             for tablename in os.listdir(run):
                 if 'tbl' in tablename and tablename not in ['Solid_comp_tbl.txt', 'Phase_vol_tbl.txt',
@@ -295,8 +321,8 @@ def import_MELTS_components(EnsembleLocation, batchname, fO2Arr=None, dataname='
                         print(f"Bad data table for {phasename} in {folder}. Skipping it!")
                         fault = True
                         break
-                    if phasename in list(MELTS_indices.keys()):
-                        compnames = list(MELTS_indices[phasename].keys())
+                    if phasename in list(indexer.MELTS_indices.keys()):
+                        compnames = list(indexer.MELTS_indices[phasename].keys())
                         for fillname in compnames:
                             if fillname == 'corundum' and 'pBatch' in batchname[folderNo]:
                                 # pMELTS does not have corundum component in rhm-oxides as of alphamelts 2.3.1
@@ -314,19 +340,19 @@ def import_MELTS_components(EnsembleLocation, batchname, fO2Arr=None, dataname='
                                 else:
                                     delta = fO2Arr[folderNo]
                                 try:
-                                    meltsobj[rowsfill, MELTS_indices[phasename][fillname]] = delta
+                                    meltsobj[rowsfill, indexer.MELTS_indices[phasename][fillname]] = delta
                                 except:
                                     fault = True
                                     faultIDs.append(folderNo)
-                            elif phasename == 'amphibole':
+                                """elif phasename == 'amphibole':
                                 try:
-                                    meltsobj[rowsfill, MELTS_indices[phasename][fillname]] += table[:, melt_dict[fillname]]
+                                    meltsobj[rowsfill, indexer.MELTS_indices[phasename][fillname]] += table[:, melt_dict[fillname]]
                                 except:
                                     fault = True
-                                    faultIDs.append(folderNo)
+                                    faultIDs.append(folderNo)"""
                             else:
                                 try:
-                                    meltsobj[rowsfill, MELTS_indices[phasename][fillname]] = table[:, melt_dict[fillname]]
+                                    meltsobj[rowsfill, indexer.MELTS_indices[phasename][fillname]] = table[:, melt_dict[fillname]]
                                 except:
                                     fault = True
                                     faultIDs.append(folderNo)
@@ -355,7 +381,7 @@ def import_MELTS_components(EnsembleLocation, batchname, fO2Arr=None, dataname='
 
     # New as of 10/08/25: Filter out much of the superliquidus assemblage to save space, balance dataset
     # Step 1: Identify nonzero rows in selected columns
-    nonzero_mask = (workbase[:, mass_indices[:-1]] != 0).any(axis=1)
+    nonzero_mask = (workbase[:, indexer.mass_indices[:-1]] != 0).any(axis=1)
     print(nonzero_mask.shape)
     print(workbase.shape)
     # Step 2: Separate indices

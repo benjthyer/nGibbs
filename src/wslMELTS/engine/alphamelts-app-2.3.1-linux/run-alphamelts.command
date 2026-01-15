@@ -87,7 +87,7 @@ until (@argv2) {
     $run_path = $0; # $0 is the name (and path) of the run-alphamelts script (not the .bat)
     $run_path =~ s/run-alphamelts.command//;
     $run = '';
-    $program = 'alphamelts2'; #EDITED BJT June 2023 TO TIMEOUT AFTER 1 MINUTE
+    $program = 'timeout 45 alphamelts2'; #EDITED BJT June 2023 TO TIMEOUT AFTER 45 seconds
 
     $in_file = $settings_file = '';
     $log_file = '';

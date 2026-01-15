@@ -13,84 +13,14 @@ import mmap
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+import pickle
 
 # Import from refactored modules
-from ..config import (
-    MELTS_indices,
-    database_headers,
-    mass_indices,
-    mass_phasedict,
-)
+from ..config import DatasetIndexer
 from ..utils.string_utils import pull_number
 from ..utils.math_utils import blur_binary_boundaries
 from ..utils.file_utils import move_file
 
-
-def collect_indices(csv_path, mass_indices, known_total_rows=None, 
-                    batch_size=100_000, maximum_indices=4_000_000, 
-                    random_state=None, has_header=True):
-    """
-    Memory-efficient function
-    Gathers indices of subliquidus rows and supplements with random superliquidus rows. 
-    This process is also automatically applied when importing melts data, so this is rarely necessary to run manually. 
-    """
-    rng = np.random.default_rng(random_state)
-
-    selected = []   # indices of rows with nonzero
-    total_rows = 0
-
-    usecols = mass_indices[:-1]
-    #header_offset = 1 if has_header else 0
-    header_offset = 0 # I think this was adding 1 to all indices incorrectly, below pandas reader takes care of the header.
-    
-    # Stream the CSV in chunks
-    reader = pd.read_csv(
-        csv_path,
-        chunksize=batch_size,
-        header=0 if has_header else None
-    )
-
-    for chunk in tqdm(reader, desc="Collecting Subliquidus Indices..."):
-        # Absolute index offset for this chunk
-        idx_offset = total_rows + header_offset
-        total_rows += len(chunk)
-
-        # Boolean mask for nonzero rows
-        mask = (chunk.iloc[:, usecols] != 0).any(axis=1)
-        nonzero_idx = np.flatnonzero(mask) + idx_offset
-
-        if len(nonzero_idx) > 0:
-            selected.append(nonzero_idx)
-
-    # Concatenate results into one array
-    if selected:
-        selected = np.concatenate(selected)
-    else:
-        selected = np.array([], dtype=np.int64)
-
-    # Compute remaining candidates *without* materializing full setdiff
-    all_indices = np.arange(header_offset, total_rows, dtype=np.int64)
-    mask = np.ones(len(all_indices), dtype=bool)
-
-    pos = selected - header_offset
-    pos = pos[(pos >= 0) & (pos < len(mask))]  # safety check
-    mask[pos] = False
-
-    remaining = all_indices[mask]
-
-    # Balance positives and random negatives
-    n_to_sample = min(len(selected), len(remaining))
-    random_indices = rng.choice(remaining, size=n_to_sample, replace=False)
-
-    final_indices = np.sort(np.concatenate([selected, random_indices]))
-
-    # Reduce if too big
-    if len(final_indices) > maximum_indices:
-        print(f"{len(final_indices)} collected; reducing to {maximum_indices}")
-        final_indices = rng.choice(final_indices, size=int(maximum_indices), replace=False)
-        final_indices.sort()
-
-    return final_indices
 
 
 class BigMetaTable:
@@ -117,6 +47,11 @@ class BigMetaTable:
             if os.path.exists(self.read_dir + self.txt_file) and not os.path.exists(self.txt_file):
                 print(f'Moving {self.read_dir + self.txt_file} to current directory')
                 move_file(src_path=self.read_dir + self.txt_file, dst_path=self.txt_file, overwrite=False) # bring memmap into working drive.
+            # Also move header file if it exists
+            header_file = self.memmap_file.replace('.npy', '_headers.pkl')
+            if os.path.exists(self.read_dir + header_file) and not os.path.exists(header_file):
+                print(f'Moving {self.read_dir + header_file} to current directory')
+                move_file(src_path=self.read_dir + header_file, dst_path=header_file, overwrite=False)
            
                 
 
@@ -141,8 +76,12 @@ class BigMetaTable:
             with open(self.csv_file, newline='') as f:
                 file_rows = sum(1 for _ in f) - 1
                 self.file_rows = file_rows
+            
+            # Build DatasetIndexer from headers
+            self.indexer = DatasetIndexer(self.header)
+            
             if reduce_superliquidus:
-                idx = collect_indices(csv_path = self.csv_file, mass_indices = mass_indices, known_total_rows = file_rows)
+                idx = collect_indices(csv_path = self.csv_file, mass_indices = self.indexer.mass_indices, known_total_rows = file_rows)
             else:
                 idx = np.arange(file_rows)
             
@@ -158,12 +97,39 @@ class BigMetaTable:
             self._csv_to_memmap()
             self.table = np.load(self.memmap_file, mmap_mode=memmap_mode, allow_pickle=True)
             
+            # Save headers for future loading
+            
+            header_file = self.memmap_file.replace('.npy', '_headers.pkl')
+            with open(header_file, 'wb') as f:
+                pickle.dump(self.header, f)
+            
         else:
             self.table = np.load(self.memmap_file, mmap_mode=memmap_mode, allow_pickle=True)
             file_rows = self.table.shape[0]
             self.file_rows = file_rows
-            print('No Header! Assuming global database_headers apply')
-            self.header = database_headers
+            print('No Header! Attempting to load from existing memmap metadata or reconstructing from table structure...')
+            # Try to load header from a saved pickle file
+            header_file = self.memmap_file.replace('.npy', '_headers.pkl')
+            if os.path.exists(header_file):
+                with open(header_file, 'rb') as f:
+                    self.header = pickle.load(f)
+            else:
+                # If header file doesn't exist, try to load from CSV if it exists
+                if os.path.exists(self.csv_file):
+                    with open(self.csv_file, newline='') as f:
+                        reader = csv.reader(f)
+                        self.header = next(reader)
+                else:
+                    # If we can't load headers, we need to raise an error since DatasetIndexer requires them
+                    raise ValueError(
+                        "Cannot load table without headers. Headers are required for DatasetIndexer. "
+                        "Please rebuild the memmap with rebuild_memmap=True, ensure header file exists, "
+                        f"or provide a CSV file at {self.csv_file}"
+                    )
+            
+            # Build DatasetIndexer from loaded headers
+            self.indexer = DatasetIndexer(self.header)
+            
             total_rows = file_rows
             self.total_rows = total_rows
             
@@ -484,12 +450,23 @@ class BigMetaTable:
             for line in self.meta[move_indices]:
                 f.write(line + '\n')
         
+        # Save headers for new table
+        
+        new_header_file = new_path.replace('.npy', '_headers.pkl')
+        with open(new_header_file, 'wb') as f:
+            pickle.dump(self.header, f)
+        
         # Write kept data
         remaining_data = np.lib.format.open_memmap(
             remaining_filename+'.npy', mode='w+', dtype=dtype, shape=(total_rows - num_to_move, col_count)
         )
         remaining_data[:] = self.table[keep_indices]
         remaining_data.flush()
+        
+        # Save headers for remaining table
+        remaining_header_file = remaining_filename+'_headers.pkl'
+        with open(remaining_header_file, 'wb') as f:
+            pickle.dump(self.header, f)
         
         #...and kept text
         self.meta = self.meta[keep_indices]
@@ -519,8 +496,8 @@ class BigMetaTable:
         # Move BlurredBinaries
         if self.blurredbinaries is not None:
             new_table.blurredbinaries = np.lib.format.open_memmap(
-            new_filename+'blurredbinaries.npy', mode='w+', dtype=np.float32, shape=(num_to_move, len(mass_indices))
-            )
+                new_filename+'blurredbinaries.npy', mode='w+', dtype=np.float32, shape=(num_to_move, self.indexer.nphases)
+                )
             new_table.blurredbinaries[:] = self.blurredbinaries[move_indices]
             new_table.blurredbinaries.flush()
             print(f"First Row blurredbinaries split Memmap write mode:{new_table.blurredbinaries[0]}")
@@ -539,7 +516,7 @@ class BigMetaTable:
             else: 
                 temp_binary_filename = binary_name
                 
-            new_binary_memmap = np.lib.format.open_memmap(temp_binary_filename, dtype=np.float32, mode='w+', shape=(total_rows - num_to_move, len(mass_indices)))
+            new_binary_memmap = np.lib.format.open_memmap(temp_binary_filename, dtype=np.float32, mode='w+', shape=(total_rows - num_to_move, self.indexer.nphases))
 
             # Write filtered rows to new memmap file
             new_binary_memmap[:] = self.blurredbinaries[keep_indices]
@@ -596,12 +573,12 @@ class BigMetaTable:
         IDs = np.unique(self.run_indices)
         to_delete = set()
 
-        relevant_cols = [MELTS_indices['System_main']['Temperature'],
-                 MELTS_indices['melts-liquid']['liq mass (gm)'],
-                 MELTS_indices['melts-liquid']['wt% TiO2'],
-                 MELTS_indices['melts-liquid']['wt% P2O5'],
-                 MELTS_indices['melts-liquid']['wt% MnO'],
-                 MELTS_indices['melts-liquid']['wt% NiO']]
+        relevant_cols = [self.indexer.MELTS_indices['System_main']['Temperature'],
+                 self.indexer.MELTS_indices['melts-liquid']['liq mass (gm)'],
+                 self.indexer.MELTS_indices['melts-liquid']['wt% TiO2'],
+                 self.indexer.MELTS_indices['melts-liquid']['wt% P2O5'],
+                 self.indexer.MELTS_indices['melts-liquid']['wt% MnO'],
+                 self.indexer.MELTS_indices['melts-liquid']['wt% NiO']]
 
         for ID in tqdm(IDs, desc="Trimming Unstable Jumps", leave=False):
             indices = self.ID(ID)
@@ -628,17 +605,17 @@ class BigMetaTable:
         IDs = np.unique(self.run_indices)
         to_delete = set()
         num_rows = np.shape(self.table)[0]
-        num_phases = mass_phasedict['melts-liquid']+1
+        num_phases = self.indexer.nphases
         broke_count = 0
         
         
-        relevant_cols = [MELTS_indices['System_main']['Temperature'],
-                 MELTS_indices['melts-liquid']['liq mass (gm)'],
-                 MELTS_indices['melts-liquid']['wt% TiO2'],
-                 MELTS_indices['melts-liquid']['wt% P2O5'],
-                 MELTS_indices['melts-liquid']['wt% MnO'],
-                 MELTS_indices['melts-liquid']['wt% NiO'],
-                 MELTS_indices['System_main']['Pressure']]
+        relevant_cols = [self.indexer.MELTS_indices['System_main']['Temperature'],
+                 self.indexer.MELTS_indices['melts-liquid']['liq mass (gm)'],
+                 self.indexer.MELTS_indices['melts-liquid']['wt% TiO2'],
+                 self.indexer.MELTS_indices['melts-liquid']['wt% P2O5'],
+                 self.indexer.MELTS_indices['melts-liquid']['wt% MnO'],
+                 self.indexer.MELTS_indices['melts-liquid']['wt% NiO'],
+                 self.indexer.MELTS_indices['System_main']['Pressure']]
         
         table_labels = ['Temperature','liq mass (gm)', 'wt% TiO2', 'wt% P2O5','wt% MnO','wt% NiO','Pressure']
         
@@ -667,7 +644,7 @@ class BigMetaTable:
             over_threshold = deltas > thresholds
 
             # Build Binary labels with blurred boundaries
-            binary_mask = (self.table[np.ix_(indices,mass_indices)]>0).astype(np.float32)
+            binary_mask = (self.table[np.ix_(indices,self.indexer.mass_indices)]>0).astype(np.float32)
             # Check where any delta exceeds the threshold
             any_jump = np.any(over_threshold, axis=1)
 
@@ -698,21 +675,39 @@ class BigMetaTable:
             
     
     def filter_legal(self):
-        TiO2_col = MELTS_indices['melts-liquid']['wt% TiO2']
-        SiO2_col = MELTS_indices['melts-liquid']['wt% SiO2']
-        FO2_col = MELTS_indices['System_main']['logfO2-QFM']
+        TiO2_col = self.indexer.MELTS_indices['melts-liquid']['wt% TiO2']
+        SiO2_col = self.indexer.MELTS_indices['melts-liquid']['wt% SiO2']
+        FO2_col = self.indexer.MELTS_indices['System_main']['logfO2-QFM']
         
         TiO2_excess = self.table[:, TiO2_col] > self.table[:, SiO2_col]
         FO2_out = (self.table[:, FO2_col] > 5) | (self.table[:, FO2_col] < -5)
-        amphibole_bearing = self.table[:, MELTS_indices['amphibole']['mass (gm)']] > 0
-        cristobalite_bearing = self.table[:, MELTS_indices['cristobalite']['mass (gm)']] > 0
+        #amphibole_bearing = self.table[:, self.indexer.MELTS_indices['amphibole']['mass (gm)']] > 0
+        #cristobalite_bearing = self.table[:, self.indexer.MELTS_indices['cristobalite']['mass (gm)']] > 0
         SiO2_deficit = (self.table[:, SiO2_col] < 20) * (self.table[:, SiO2_col] != 0)
+        
+        # Check for nonzero values in excluded phases (skip System_main as it's always present)
+        excluded_phase_cols = []
+        for phase in self.indexer.EXCLUDED_PHASES:
+            if phase != 'System_main' and phase in self.indexer.MELTS_indices:
+                # Get all column indices for this excluded phase
+                phase_cols = list(self.indexer.MELTS_indices[phase].values())
+                excluded_phase_cols.extend(phase_cols)
+        
+        excluded_phase_mask = np.zeros(self.table.shape[0], dtype=bool)
+        if excluded_phase_cols:
+            # Check if any excluded phase column has nonzero values
+            excluded_phase_data = self.table[:, excluded_phase_cols]
+            excluded_phase_mask = np.any(excluded_phase_data != 0, axis=1)
       
-        self.delete(np.where(TiO2_excess | FO2_out | amphibole_bearing | cristobalite_bearing | SiO2_deficit)[0])
+        #self.delete(np.where(TiO2_excess | FO2_out | amphibole_bearing | cristobalite_bearing | SiO2_deficit | excluded_phase_mask)[0])
+        self.delete(np.where(TiO2_excess | FO2_out | SiO2_deficit | excluded_phase_mask)[0])
+        
         print(f"Deleted {np.sum(TiO2_excess)} for TiO2 dominant liquids")
         print(f"Deleted {np.sum(FO2_out)} for out-of-bounds fO2")
-        print(f"Deleted {np.sum(amphibole_bearing)} for having amphibole")
+        #print(f"Deleted {np.sum(amphibole_bearing)} for having amphibole")
+        #print(f"Deleted {np.sum(cristobalite_bearing)} for having cristobalite")
         print(f"Deleted {np.sum(SiO2_deficit)} for low (<20%) SiO2 liquids")
+        print(f"Deleted {np.sum(excluded_phase_mask)} for having nonzero values in excluded phases: {self.indexer.EXCLUDED_PHASES}")
           
     def filter_full_metadata(self):
         """Deletes rows where metadata contain unsupported phases."""
@@ -774,7 +769,7 @@ class BigMetaTable:
 
         #Define Sizings
         n_rare = rare_rows.shape[0]
-        n_masscols = len(mass_indices)
+        n_masscols = self.indexer.nphases
         total_new = n_rare * n_resamples
         old_rows, n_cols = self.table.shape
         new_total = old_rows + total_new
@@ -816,11 +811,11 @@ class BigMetaTable:
         resampled = np.repeat(rare_rows, n_resamples, axis=0)
 
         # Apply multipliers to specified mass columns
-        resampled[:,mass_indices] = resampled[:,mass_indices] * multipliers
+        resampled[:,self.indexer.mass_indices] = resampled[:,self.indexer.mass_indices] * multipliers
         
-        totals = np.sum(resampled[:,mass_indices], axis = 1).reshape((-1,1))
+        totals = np.sum(resampled[:,self.indexer.mass_indices], axis = 1).reshape((-1,1))
         
-        resampled[:,mass_indices] = resampled[:,mass_indices] * 100/totals
+        resampled[:,self.indexer.mass_indices] = resampled[:,self.indexer.mass_indices] * 100/totals
 
         # Expand underlying memmap
         new_path = f"{self.table.filename.split('.')[0]}_resampled.npy"
@@ -850,32 +845,33 @@ class BigMetaTable:
         
     def separate_analcime(self):
         
-        """Used to move columns into right place after changing structure of MELTS metatable to separate K and Na/H2O rich
-        leucites"""
+        """Used to move leucite data to analcime columns when leucite component < 0.4 (indicating Na/H2O rich analcime)"""
         
-        #Go through and delete rare instances of alloy-liquid
-        alloy_pres = np.where(self.table[:,MELTS_indices['analcime']['leucite']] > 0)[0] # Old alloy-liquid mass slot
-        if len(alloy_pres):
-            self.delete(alloy_pres)
-            print(f"Deleting {len(alloy_pres)} assemblages for alloy liquid presence")
+        # Find rows where leucite phase has mass > 0 and leucite component < 0.4 (indicating analcime)
+        analcime_pres = np.where((self.table[:,self.indexer.MELTS_indices['leucite']['mass (gm)']]>0) & (self.table[:,self.indexer.MELTS_indices['leucite']['leucite']]<0.4))[0]
+        print(f"Total Length:{np.shape(self.table)[0]}, Leucites: {np.sum(self.table[:,self.indexer.MELTS_indices['leucite']['mass (gm)']]>0)}, of which {len(analcime_pres)} are analcime")
         
-        analcime_pres = np.where((self.table[:,MELTS_indices['leucite']['mass (gm)']]>0) & (self.table[:,MELTS_indices['leucite']['leucite']]<0.4))[0]
-        print(f"Total Length:{np.shape(self.table)[0]}, Leucites: {np.sum(self.table[:,MELTS_indices['leucite']['mass (gm)']]>0)}, of which {len(analcime_pres)} are analcime")
+        if len(analcime_pres) == 0:
+            print("No analcime assemblages found to separate.")
+            return
         
-        
+        # Map leucite columns to analcime columns
         oldIDX = []
         newIDX = []
-        for key, idx in MELTS_indices['leucite'].items():
-            oldIDX.append(idx)
-            newIDX.append(MELTS_indices['analcime'][key])
+        for key, idx in self.indexer.MELTS_indices['leucite'].items():
+            if key in self.indexer.MELTS_indices['analcime']:
+                oldIDX.append(idx)
+                newIDX.append(self.indexer.MELTS_indices['analcime'][key])
             
         oldIDX = np.array(oldIDX)
         newIDX = np.array(newIDX)
 
+        # Move data from leucite columns to analcime columns
         self.table[np.ix_(analcime_pres,newIDX)] = self.table[np.ix_(analcime_pres,oldIDX)]
+        # Clear the leucite columns for these rows
         self.table[np.ix_(analcime_pres,oldIDX)] = 0
         self.table.flush() # Write to disc
         
-        self.header = database_headers # Need to track the change in the table when saving
+        print(f"Moved {len(analcime_pres)} assemblages from leucite to analcime columns")
 
 

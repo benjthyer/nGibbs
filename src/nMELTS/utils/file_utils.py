@@ -43,22 +43,28 @@ def delete_files_with_keyword(directory, keyword, dry_run=True):
         print("\nDry run complete. No files were actually deleted.")
     else:
         print(f"\nDeleted {deleted_count} files containing '{keyword}'.")
+        
 
-
-def move_file(src_path, dst_path, overwrite=False):
+def move_file(src_filename, dst_dir, overwrite=False):
     """
-    Move a file from the current working directory, to a destination directory.
+    Move a file from the current working directory to a destination directory.
 
     Args:
-        src_path (str): Name of the file in the current working directory.
-        dst_path (str): Destination directory
+        src_filename (str): Name of the file in the current working directory.
+        dst_dir (str): Destination directory path.
         overwrite (bool): If True, overwrite any existing file with the same name.
     """
+    # Ensure the source file exists
+    src_path = os.path.join(os.getcwd(), src_filename)
     if not os.path.isfile(src_path):
         raise FileNotFoundError(f"Source file not found: {src_path}")
 
-    if src_path == dst_path:
-        return
+    # Ensure destination directory exists
+    #if not os.path.exists(dst_dir):
+    #   os.makedirs(dst_dir)
+
+    # Destination file path
+    dst_path = os.path.join(dst_dir, src_filename)
 
     # Handle overwrite
     if os.path.exists(dst_path):
@@ -69,8 +75,7 @@ def move_file(src_path, dst_path, overwrite=False):
 
     # Move the file
     shutil.move(src_path, dst_path)
-    print(f"Moved '{src_path}' to '{dst_path}' successfully.")
-
+    print(f"Moved '{src_filename}' to '{dst_dir}' successfully.")
 
 def move_files_with_extension(extension, dst_dir, src_dir=None, overwrite=False):
     """
@@ -113,3 +118,108 @@ def move_files_with_extension(extension, dst_dir, src_dir=None, overwrite=False)
 
         shutil.move(str(file_path), str(dest_path))
         print(f"Moved {file_path.name} -> {dst_dir}")
+
+def move_files_with_keyword(keyword, dst_dir, src_dir=None, overwrite=False):
+    """
+    Move all files whose names contain a given keyword from the source directory
+    (or current working directory) to the destination directory.
+
+    Args:
+        keyword (str): Substring to search for in filenames.
+        dst_dir (str or Path): Destination directory path.
+        src_dir (str or Path, optional): Source directory path. Defaults to current working directory.
+        overwrite (bool): If True, overwrite existing files in destination.
+    """
+    src_path = Path(src_dir) if src_dir else Path.cwd()
+    dst_path = Path(dst_dir)
+    dst_path.mkdir(parents=True, exist_ok=True)
+
+    # Find all files containing the keyword in their filename
+    files_to_move = [f for f in src_path.iterdir() if f.is_file() and keyword in f.name]
+
+    if not files_to_move:
+        print(f"No files containing '{keyword}' found in {src_path}.")
+        return
+
+    for file_path in files_to_move:
+        dest_file = dst_path / file_path.name
+
+        if dest_file.exists() and not overwrite:
+            print(f"Skipping {file_path.name}, already exists in destination.")
+            continue
+
+        if dest_file.exists() and overwrite:
+            dest_file.unlink()
+
+        shutil.move(str(file_path), str(dest_file))
+        print(f"Moved {file_path.name} -> {dst_path}")
+
+
+def count_file_lines(file_path, skip_header=False):
+    """
+    Efficiently count lines in a text or CSV file without loading into RAM.
+    
+    For files > 1GB, this is much more memory-efficient than loading the entire file.
+    Uses line-by-line reading which minimizes memory usage.
+    
+    Parameters
+    ----------
+    file_path : str or Path
+        Path to the file to count lines in
+    skip_header : bool, default=False
+        If True, skip the first line (useful for CSV files with headers)
+        
+    Returns
+    -------
+    int
+        Number of lines (excluding header if skip_header=True)
+        
+    Examples
+    --------
+    >>> # Count all lines in a text file
+    >>> count = count_file_lines('metadata.txt')
+    >>> 
+    >>> # Count data rows in a CSV (excluding header)
+    >>> count = count_file_lines('data.csv', skip_header=True)
+    """
+    file_path = Path(file_path) if not isinstance(file_path, str) else file_path
+    
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File not found: {file_path}")
+    
+    count = 0
+    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+        if skip_header:
+            try:
+                next(f)  # Skip header
+            except StopIteration:
+                return 0  # Empty file
+        for _ in f:
+            count += 1
+    return count
+
+
+def count_csv_rows(csv_path, has_header=True):
+    """
+    Count data rows in a CSV file without loading into RAM.
+    
+    Convenience wrapper around count_file_lines for CSV files.
+    
+    Parameters
+    ----------
+    csv_path : str or Path
+        Path to CSV file
+    has_header : bool, default=True
+        Whether the CSV file has a header row
+        
+    Returns
+    -------
+    int
+        Number of data rows (excluding header if has_header=True)
+        
+    Examples
+    --------
+    >>> row_count = count_csv_rows('large_file.csv')
+    >>> print(f"CSV has {row_count} data rows")
+    """
+    return count_file_lines(csv_path, skip_header=has_header)

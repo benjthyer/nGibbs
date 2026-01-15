@@ -219,8 +219,7 @@ def makeMELTSStr(conditions, keys, end=True, fxtal=False, compression=False, del
     
     if fxtal:
         MELTSStr += 'mode: fractionate solids\n'
-    
-    MELTSStr += ''
+
 
     return MELTSStr
 
@@ -244,5 +243,4 @@ def suppressAllBut(MELTSStr, phase_names):
     for phase in systemNames:
         if phase not in phase_names:
             MELTSStr += f'Suppress: {phase}\n'
-    MELTSStr += ''  # I don't know why this is here, but it's in makeMELTSstr so I add it here as well
     return MELTSStr

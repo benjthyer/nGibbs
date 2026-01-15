@@ -5,7 +5,13 @@ Extracted from Legacy/BackEnds/EmulatorLibrary.py
 """
 
 import numpy as np
-import torch
+# Make torch optional for WSL scripts that don't need ML features
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    torch = None
+    TORCH_AVAILABLE = False
 
 
 def QFM_fO2(P, K):
@@ -45,6 +51,8 @@ def QFM_fO2_torch(P, K, use_torch=False):
     Returns:
         log10(fO2): Logarithm base 10 of oxygen fugacity
     """
+    if use_torch and not TORCH_AVAILABLE:
+        raise ImportError("PyTorch is not available. Install torch to use use_torch=True")
     xp = torch if use_torch else np  # shorthand for backend
 
     trans1 = 573 + (0.025 * P)
@@ -97,6 +105,8 @@ def Fe2O3_FeO_ratio(fO2, T, P, composition, use_torch=False, device='cpu'):
     T0 = 1673.0  # Kelvin
 
     if use_torch:
+        if not TORCH_AVAILABLE:
+            raise ImportError("PyTorch is not available. Install torch to use use_torch=True")
         d = torch.tensor(d, dtype=torch.float32, device=device)
         dX_sum = composition @ d
         ln_ratio = (
