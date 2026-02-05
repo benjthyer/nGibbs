@@ -1,2 +1,14 @@
 # nMELTS Configuration File
-# User-configurable settings
+
+# Base directory for internal data (relative to repo root or absolute path)
+internal_data_dir: "data"
+
+# Base directory for external storage (absolute path or empty string to disable)
+external_base: "D:/nMELTS/"
+
+
+# Subdirectories under internal/external base where MELTS sims are done and where MELTS and ML ready data products live
+
+scratch_data_path: "Workspace/" # Where MELTS Sims are dumped and read from with alphamelts
+data_path: "MELTStables/" # Where compiled MELTS tables live
+train_path: "MLready/" # Where ML-ready training bundles live

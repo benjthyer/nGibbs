@@ -32,8 +32,8 @@ from ..config import (
 # Import utility functions
 from ..utils.math_utils import QFM_fO2, Fe2O3_FeO_ratio
 
-# Import Normalizer from parser
-from ..data.parser import Normalizer
+# Import Normalizer from math_utils
+from ..utils.math_utils import Normalizer
 
 from ..engine.NN import MidLevelNetwork
 # NOTE: MidLevelNetwork needs to be imported from the models module or Legacy
@@ -513,8 +513,8 @@ class NN_MELTS:
 
         start = time.time()
         nrows = components.size()[0]
-        ncomps = label_indices['melts-liquid'][-1] + 1
-        nphases = mass_phasedict['melts-liquid'] + 1
+        ncomps = self.ml_indexer.ncomps
+        nphases = self.ml_indexer.nphases
         bulk = features[:, 3:].clone()
 
         # Organize phaseToComp Matrix w/ NN output
@@ -851,8 +851,8 @@ class NN_MELTS:
 
             nB = inp_tensor.size(0)
             nEl = self.oxToEl.size(1)
-            nC = label_indices['melts-liquid'][-1] + 1
-            nP = len(list(label_indices.keys()))
+            nC = self.ml_indexer.ncomps
+            nP = self.ml_indexer.nphases
             nSteps = len(T_path)
 
             component_tensor = torch.zeros((nB, nC, nSteps), dtype=torch.float32, device=self.dev)

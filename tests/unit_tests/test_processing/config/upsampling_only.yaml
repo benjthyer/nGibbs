@@ -1,0 +1,44 @@
+# Test config: isolate rare phase upsampling only
+
+dataset:
+  MELTSModel: '110'
+  Date: 'Feb3'
+  Mode: 'BatchCooling'
+  subset: false
+  use_external: false
+
+preprocessing:
+  preprocessed: false
+  filter_full_metadata: false
+  filter_legal: false
+  separate_analcime: true
+
+upsampling:
+  enabled: true
+  phases:
+    nepheline:
+      n_resamples: 2
+      multiplier_bounds: [0.9, 1.1]
+    leucite:
+      n_resamples: 1
+      multiplier_bounds: [0.9, 1.1]
+    # Keep test set config minimal but valid
+    test_set_phases:
+      nepheline:
+        n_resamples: 1
+        multiplier_bounds: [0.99, 1.01]
+
+resampling:
+  train_bounds:
+    - [1, 1]
+  test_bounds:
+    - [1, 1]
+
+balancing:
+  function: null
+
+deep_filter:
+  oxide_lower_bounds: []
+  oxide_upper_bounds: []
+  component_upper_bounds: []
+  batch_size: 200000

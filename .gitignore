@@ -16,6 +16,7 @@ Workspace/
 *Sims/
 Legacy/
 *Legacy/
+data/
 
 alphamelts-app-2.3.1-linux/
 # Plots and Figures
@@ -60,6 +61,8 @@ pip-log.txt
 pip-delete-this-directory.txt
 
 # Unit test / coverage reports
+*logs/
+.pytest_cache/
 htmlcov/
 .tox/
 .nox/
@@ -72,6 +75,9 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+__pycache__/
+*logs/
+*debug_outputs/
 
 # Jupyter Notebook
 .ipynb_checkpoints

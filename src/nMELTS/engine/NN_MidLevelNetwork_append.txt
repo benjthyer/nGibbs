@@ -1,9 +1,0 @@
-# MidLevelNetwork class to append to NN.py
-
-Due to the large size of the MidLevelNetwork class, please see src/nMELTS/engine/Legacy/nnMELTS.py lines 510-1034
-for the complete implementation. The class should be added after line 251 in NN.py.
-
-Key changes needed:
-1. Add device parameter to __init__ (default 'cuda')
-2. Fix duplicate comp_mappings registration (line 620 in Legacy version)
-3. Ensure all tensors use the device parameter

@@ -717,3 +717,169 @@ class MidLevelNetwork(TunableModel):
             return logits, chem_out*zero_mask, zero_mask, phaseMass, reconBulk # Training, return zero mask for loss masking of intensive chemistries"""
 
 
+class CombinedNetwork(nn.Module):
+    """
+    A combined class that wraps both TunableModel and MidLevelNetwork objects.
+    
+    This class provides a unified interface to both the base TunableModel
+    and the extended MidLevelNetwork functionality, allowing flexible use
+    of either component as needed.
+    
+    Parameters
+    ----------
+    encoderLayerUp : int, default=0
+        Number of layers to expand encodings
+    encoderLayerDown : int, default=0
+        Number of layers to downscale the encodings
+    middleLayerUp : int, default=0
+        Number of middle layers to expand
+    middleLayerDown : int, default=0
+        Number of middle layers to compress
+    low_regularization : str, default='none'
+        Regularization for encoder layers
+    high_regularization : str, default='none'
+        Regularization for middle layers
+    activation_leak : float, default=0.05
+        Leak parameter for LeakyReLU activation
+    lowWD : float, default=0
+        Weight decay for lower model layers
+    highWD : float, default=0
+        Weight decay for upper model layers
+    noise : float, default=0
+        Noise level for training
+    description : str, default=''
+        Description of the model's target
+    """
+    def __init__(self, encoderLayerUp=0, encoderLayerDown=0,
+                 middleLayerUp=0, middleLayerDown=0,
+                 low_regularization='none', high_regularization='none', 
+                 activation_leak=0.05,
+                 lowWD=0, highWD=0, noise=0, description=''):
+        super().__init__()
+        
+        # Create the base TunableModel
+        self.tunable_model = TunableModel(
+            encoderLayerUp=encoderLayerUp,
+            encoderLayerDown=encoderLayerDown,
+            middleLayerUp=middleLayerUp,
+            middleLayerDown=middleLayerDown,
+            low_regularization=low_regularization,
+            high_regularization=high_regularization,
+            activation_leak=activation_leak
+        )
+        
+        # Create the MidLevelNetwork (which inherits from TunableModel)
+        self.midlevel_network = MidLevelNetwork(
+            encoderLayerUp=encoderLayerUp,
+            encoderLayerDown=encoderLayerDown,
+            middleLayerUp=middleLayerUp,
+            middleLayerDown=middleLayerDown,
+            low_regularization=low_regularization,
+            high_regularization=high_regularization,
+            activation_leak=activation_leak,
+            lowWD=lowWD,
+            highWD=highWD,
+            noise=noise,
+            description=description
+        )
+        
+        # Store configuration
+        self.config = self.midlevel_network.config
+        
+    def forward(self, x, binaries=None, detailed=False, NN_only=False):
+        """
+        Forward pass using the MidLevelNetwork.
+        
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor
+        binaries : torch.Tensor or None
+            Binary phase labels (for training)
+        detailed : bool, default=False
+            Whether to return detailed outputs
+        NN_only : bool, default=False
+            Whether to skip physics polishing
+            
+        Returns
+        -------
+        Output from MidLevelNetwork.forward()
+        """
+        return self.midlevel_network.forward(x, binaries=binaries, detailed=detailed, NN_only=NN_only)
+    
+    def forward_binaries(self, x):
+        """
+        Forward pass for binary predictions only.
+        
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor
+            
+        Returns
+        -------
+        torch.Tensor
+            Binary saturation logits
+        """
+        return self.midlevel_network.forward_binaries(x)
+    
+    def forward_phase_moles(self, latentx, binary_mask, intensiveComponents, details_out=False):
+        """
+        Predict phase moles and reconstruct bulk composition.
+        
+        Parameters
+        ----------
+        latentx : torch.Tensor
+            Latent representation
+        binary_mask : torch.Tensor
+            Binary phase mask
+        intensiveComponents : torch.Tensor
+            Intensive component predictions
+        details_out : bool, default=False
+            Whether to return detailed outputs
+            
+        Returns
+        -------
+        Output from MidLevelNetwork.forward_phase_moles()
+        """
+        return self.midlevel_network.forward_phase_moles(
+            latentx, binary_mask, intensiveComponents, details_out=details_out
+        )
+    
+    def save(self, DictFilePath):
+        """
+        Save model state and configuration.
+        
+        Parameters
+        ----------
+        DictFilePath : str
+            Path to save the model
+        """
+        self.midlevel_network.save(DictFilePath)
+    
+    @property
+    def encoder(self):
+        """Access to the encoder from MidLevelNetwork."""
+        return self.midlevel_network.encoder
+    
+    @property
+    def sat_head(self):
+        """Access to saturation heads from MidLevelNetwork."""
+        return self.midlevel_network.sat_head
+    
+    @property
+    def chem_heads(self):
+        """Access to chemical heads from MidLevelNetwork."""
+        return self.midlevel_network.chem_heads
+    
+    @property
+    def middleBrain(self):
+        """Access to middle brain from MidLevelNetwork."""
+        return self.midlevel_network.middleBrain
+    
+    @property
+    def mole_head(self):
+        """Access to mole head from MidLevelNetwork."""
+        return self.midlevel_network.mole_head
+
+

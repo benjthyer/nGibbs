@@ -79,33 +79,46 @@ def move_file(src_filename, dst_dir, overwrite=False):
 
 def move_files_with_extension(extension, dst_dir, src_dir=None, overwrite=False):
     """
-    Move all files with a given extension from the current working directory
-    to the destination directory.
+    Move all files with a given extension or filename ending from a directory.
 
     Args:
-        extension (str): File extension, e.g., '.csv' or '.dat'
-        dst_dir (str or Path): Destination directory path
-        src_dir (str or Path): Source location from working directory, Default none is cwd. 
+        extension (str): File extension (e.g., '.csv') or filename ending (e.g., 'labels.npy')
+        dst_dir (str or Path): Destination directory path (absolute or relative)
+        src_dir (str or Path): Source directory path (absolute or relative). Default is cwd.
         overwrite (bool): If True, overwrite existing files in destination
     """
-    if src_dir == dst_dir: 
-        return
-
+    # Handle source directory - accept both absolute and relative paths
     if src_dir is not None:
-        src_path = Path.cwd() / src_dir
+        src_path = Path(src_dir)
+        if not src_path.is_absolute():
+            src_path = Path.cwd() / src_dir
     else:
         src_path = Path.cwd()
-
+    
+    # Handle destination directory
     dst_dir = Path(dst_dir)
+    if not dst_dir.is_absolute():
+        dst_dir = Path.cwd() / dst_dir
+    
+    # Don't move if source and destination are the same
+    if src_path.resolve() == dst_dir.resolve():
+        return
+    
     dst_dir.mkdir(parents=True, exist_ok=True)
 
-    # Find all matching files in current directory
-    files_to_move = [f for f in src_path.iterdir() if f.is_file() and f.suffix == extension]
+    # Find matching files - check both suffix and filename ending
+    if extension.startswith('.'):
+        # Traditional extension match (e.g., '.csv', '.npy')
+        files_to_move = [f for f in src_path.iterdir() if f.is_file() and f.suffix == extension]
+    else:
+        # Filename ending match (e.g., 'molar_labels.npy', '_processed.txt')
+        files_to_move = [f for f in src_path.iterdir() if f.is_file() and f.name.endswith(extension)]
 
     if not files_to_move:
-        print(f"No files with extension '{extension}' found.")
+        print(f"No files matching '{extension}' found in {src_path}.")
         return
 
+    moved_count = 0
     for file_path in files_to_move:
         dest_path = dst_dir / file_path.name
 
@@ -117,7 +130,9 @@ def move_files_with_extension(extension, dst_dir, src_dir=None, overwrite=False)
                 continue
 
         shutil.move(str(file_path), str(dest_path))
-        print(f"Moved {file_path.name} -> {dst_dir}")
+        moved_count += 1
+    
+    print(f"Moved {moved_count} file(s) matching '{extension}' from {src_path} -> {dst_dir}")
 
 def move_files_with_keyword(keyword, dst_dir, src_dir=None, overwrite=False):
     """
@@ -223,3 +238,88 @@ def count_csv_rows(csv_path, has_header=True):
     >>> print(f"CSV has {row_count} data rows")
     """
     return count_file_lines(csv_path, skip_header=has_header)
+
+
+def get_baseline_files(directory):
+    """
+    Take a snapshot of all files currently in a directory.
+    
+    Useful for cleanup operations - capture baseline before work starts,
+    then use with clear_new_files() in a finally block to clean up only
+    files created during execution.
+    
+    Parameters
+    ----------
+    directory : str or Path
+        Directory to scan
+        
+    Returns
+    -------
+    set
+        Set of filenames (just names, not full paths) currently in directory
+        
+    Examples
+    --------
+    >>> baseline = get_baseline_files('/path/to/dir')
+    >>> try:
+    ...     # Do some work that creates files
+    ...     process_data()
+    ... finally:
+    ...     clear_new_files('/path/to/dir', baseline)
+    """
+    directory = Path(directory)
+    if not directory.is_dir():
+        raise NotADirectoryError(f"'{directory}' is not a valid directory")
+    
+    return {f.name for f in directory.iterdir() if f.is_file()}
+
+
+def clear_new_files(directory, baseline_files):
+    """
+    Delete files that were created after a baseline snapshot.
+    
+    Compares current files in directory against a baseline set and removes
+    only files that are new (not in baseline). Useful for cleanup in 
+    try/finally blocks or exception handlers.
+    
+    Parameters
+    ----------
+    directory : str or Path
+        Directory to scan for new files
+    baseline_files : set
+        Set of baseline filenames (from get_baseline_files())
+        
+    Returns
+    -------
+    int
+        Number of files deleted
+        
+    Examples
+    --------
+    >>> baseline = get_baseline_files('/path/to/dir')
+    >>> try:
+    ...     # Do some work that creates files
+    ...     process_data()
+    ... finally:
+    ...     deleted_count = clear_new_files('/path/to/dir', baseline)
+    ...     print(f"Cleaned up {deleted_count} temporary files")
+    """
+    directory = Path(directory)
+    if not directory.is_dir():
+        raise NotADirectoryError(f"'{directory}' is not a valid directory")
+    
+    deleted_count = 0
+    current_files = {f.name for f in directory.iterdir() if f.is_file()}
+    new_files = current_files - baseline_files
+    
+    for filename in new_files:
+        filepath = directory / filename
+        try:
+            filepath.unlink()
+            print(f"Deleted temporary file: {filepath}")
+            deleted_count += 1
+        except Exception as e:
+            print(f"Error deleting {filepath}: {e}")
+    
+    return deleted_count
+

@@ -5,11 +5,13 @@ import sys
 import os
 # Add parent directory to path to import from src
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-from src.nMELTS.config.settings import internal_data_dir
-#from src.wslMELTS.engine import alphamelts_functions # The essential ensemble MELTS functions
-#from src.nMELTS.utils.string_utils import pull_number, random_char
-import RandomMelters as RM
-from src.nMELTS.config.indexer import generate_column_headers, DatasetIndexer
+# Add src to path so we can import modules without src prefix
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src'))
+from nMELTS.config.settings import internal_data_dir, internal_scratch_dir
+#from builder.alphamelts.engine import alphamelts_functions # The essential ensemble MELTS functions
+#from nMELTS.utils.string_utils import pull_number, random_char
+from builder.alphamelts.engine import RandomMelters as RM
+from builder.indexer import generate_column_headers, DatasetIndexer
 import numpy as np
 import pandas as pd
 #import warnings
@@ -17,16 +19,20 @@ import pandas as pd
 from pathlib import Path
 import shutil
 
-
-Out_Folder = os.path.join(Path(__file__).parent.parent.absolute(), 'src', 'nMELTS', 'data', 'DataProducts')
     
-alphaMELTSLocation = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src', 'wslMELTS', 'engine', 'alphamelts-app-2.3.1-linux', 'alphamelts_linux')
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = REPO_ROOT / 'data'
+
+alphaMELTSLocation = os.path.join(REPO_ROOT, 'src', 'builder', 'alphamelts', 'engine', 'alphamelts-app-2.3.1-linux', 'alphamelts_linux')
 # Location to where to put the computed files.
-EnsembleLocation = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src', 'wslMELTS', 'Workspace')
+EnsembleLocation = str(internal_scratch_dir())
+
+GEOROC_DIR = os.path.join(REPO_ROOT, 'src', 'builder', 'alphamelts', 'DataProducts', 'GEOROC')
+
 
 os.makedirs(EnsembleLocation, exist_ok=True)
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-date = 'Nov20'
+date = 'Jan27'
 
 total_to_run = int(160) # How many total simulations to run
 simcycle = 50 # How many simulations to run per iteration
@@ -38,8 +44,8 @@ simcycle = 50 # How many simulations to run per iteration
 
 #batch_file = MELTSModel + 'batch'
 
-for N, MELTSModel in enumerate(['p', '102', '120']): 
-    for fractionate in ['Batch', 'FxCryst']:
+for N, MELTSModel in enumerate(['p']):#, '102', '120']): 
+    for fractionate in ['Batch']:#, 'FxCryst']:
 
         if MELTSModel == 'p':
              allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclase','k-feldspar','garnet',
@@ -56,8 +62,13 @@ for N, MELTSModel in enumerate(['p', '102', '120']):
         assert calctype in ['Cooling', 'Compression'], "calctype argument must be one of ['Cooling', 'Compression'], isoentropic, isoenthalpic, isochroic not yet implemented"
         assert MELTSModel in ['102', '110', '120', 'p'], "MELTSModel argument must be one of ['102', '110', '120', 'p'], MAGEmin not yet implemented"
 
-        Trainfilename = Out_Folder +f'/MELTS{MELTSModel}_Trainset{date}{fractionate}{calctype}'
-        Validfilename = Out_Folder +f'/MELTS{MELTSModel}_Validset{date}{fractionate}{calctype}'
+
+        Out_Folder = Path(internal_data_dir(MELTSModel))
+        
+        os.makedirs(Out_Folder, exist_ok=True)
+
+        Trainfilename = str(Out_Folder / f'MELTS{MELTSModel}_Trainset{date}{fractionate}{calctype}')
+        Validfilename = str(Out_Folder / f'MELTS{MELTSModel}_Validset{date}{fractionate}{calctype}')
         
 
         #logic trees to direct dataset generation:
@@ -90,10 +101,10 @@ for N, MELTSModel in enumerate(['p', '102', '120']):
         # Generate Training Dataset
         
         
-        GEOROC = np.genfromtxt(internal_data_dir('GEOROC/GEOROC_PETDB_UNFILTERED_WHOLEROCK_TRAIN.csv'), delimiter=',',skip_header=1)
+        GEOROC = np.genfromtxt(GEOROC_DIR + '/GEOROC_PETDB_UNFILTERED_WHOLEROCK_TRAIN.csv', delimiter=',',skip_header=1)
         
         # Define keys for input compositions (oxides)
-        keys = np.array(pd.read_csv(internal_data_dir('GEOROC') / 'GEOROC_PETDB_UNFILTERED_WHOLEROCK_TRAIN.csv', delimiter=',').columns)[1:]
+        keys = np.array(pd.read_csv(GEOROC_DIR + '/GEOROC_PETDB_UNFILTERED_WHOLEROCK_TRAIN.csv').columns)[1:]
 
         # Create col_dict mapping keys to indices
         col_dict = {}
@@ -116,4 +127,3 @@ for N, MELTSModel in enumerate(['p', '102', '120']):
 
             args['iter'] = int(mafics_to_run//4)
             MELTER(output_file=Validfilename, **args)
-

@@ -1,0 +1,33 @@
+# Test config: isolate separate_analcime only
+
+dataset:
+  MELTSModel: '110'
+  Date: 'Feb3'
+  Mode: 'BatchCooling'
+  subset: false
+  use_external: false
+
+preprocessing:
+  preprocessed: false
+  filter_full_metadata: false
+  filter_legal: false
+  separate_analcime: true
+
+upsampling:
+  enabled: false
+  phases: {}
+
+resampling:
+  train_bounds:
+    - [1, 1]
+  test_bounds:
+    - [1, 1]
+
+balancing:
+  function: null
+
+deep_filter:
+  oxide_lower_bounds: []
+  oxide_upper_bounds: []
+  component_upper_bounds: []
+  batch_size: 200000

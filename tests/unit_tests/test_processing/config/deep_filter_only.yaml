@@ -1,0 +1,46 @@
+# Test config: isolate deep_filter only
+
+dataset:
+  MELTSModel: '110'
+  Date: 'Feb3'
+  Mode: 'BatchCooling'
+  subset: false
+  use_external: false
+
+preprocessing:
+  preprocessed: false
+  filter_full_metadata: false
+  filter_legal: false
+  separate_analcime: true
+
+upsampling:
+  enabled: false
+  phases: {}
+
+resampling:
+  train_bounds:
+    - [1, 1]
+  test_bounds:
+    - [1, 1]
+
+balancing:
+  function: null
+
+deep_filter:
+  oxide_lower_bounds:
+    - ['k-feldspar', 'K2O', 8]
+    - ['clinopyroxene', 'CaO', 7]
+    - ['melts-liquid', 'SiO2', 30]
+  oxide_upper_bounds:
+    - ['k-feldspar', 'CaO', 1]
+    - ['plagioclase', 'K2O', 8]
+    - ['clinopyroxene', 'TiO2', 6]
+    - ['clinopyroxene', 'Al2O3', 8]
+    - ['orthopyroxene', 'TiO2', 2]
+    - ['orthopyroxene', 'Al2O3', 8]
+    - ['orthopyroxene', 'CaO', 4]
+    - ['melts-liquid', 'TiO2', 13]
+    - ['melts-liquid', 'P2O5', 10]
+  component_upper_bounds: [['plagioclase', 'sanidine', 0.1]]
+  component_lower_bounds: [['olivine', 'fayalite', 0.1]]
+  batch_size: 200000

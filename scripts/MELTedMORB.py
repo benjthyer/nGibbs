@@ -6,10 +6,13 @@ import sys
 import os
 # Add parent directory to path to import from src
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-from src.wslMELTS.engine import alphamelts_functions # The essential ensemble MELTS functions
-from src.nMELTS.utils.string_utils import  random_char
-from src.nMELTS.utils.math_utils import  grid_sample
-from src.nMELTS.config.indexer import generate_column_headers, DatasetIndexer
+# Add src to path so we can import modules without src prefix
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src'))
+from builder.alphamelts.engine import alphamelts_functions # The essential ensemble MELTS functions
+from nMELTS.utils.string_utils import  random_char
+from nMELTS.utils.math_utils import  grid_sample
+from builder.indexer import generate_column_headers, DatasetIndexer
+from nMELTS.config.settings import internal_data_dir, internal_scratch_dir
 
 import numpy as np
 import time
@@ -27,11 +30,15 @@ allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclas
 headers = generate_column_headers(allowed_phases)
 indexer = DatasetIndexer(headers)
 
-Out_Folder = os.path.join(Path(__file__).parent.parent.absolute(), 'src', 'nMELTS', 'data', 'Workspace', 'MORB')
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = REPO_ROOT / 'data'
+
+Out_Folder = Path(internal_data_dir('MORB'))
+os.makedirs(Out_Folder, exist_ok=True)
     
-alphaMELTSLocation = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src', 'wslMELTS', 'engine', 'alphamelts-app-2.3.1-linux', 'alphamelts_linux')
+alphaMELTSLocation = os.path.join(REPO_ROOT, 'src', 'builder', 'alphamelts', 'engine', 'alphamelts-app-2.3.1-linux', 'alphamelts_linux')
 # Location to where to put the computed files.
-EnsembleLocation = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src', 'wslMELTS', 'Workspace')
+EnsembleLocation = str(internal_scratch_dir())
 
 os.makedirs(EnsembleLocation, exist_ok=True)
 
