@@ -1,4 +1,4 @@
-from BackEnds.nnMELTS import MidLevelNetwork
+import nMELTS.engine.NN as NN
 
 
 
@@ -783,3 +783,34 @@ def tune_Lower_MELTS(Model=None, Param_Dict=None, Cr=False, Epochs=7):
     Model.load_state_dict(best_weights) # Load best model's weights
 
     return Model, results
+
+
+def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only = False):
+    """Loads MELTS NN with saved archetecture. Requires saved .config dictionary attribute.
+    substitutions are dictionaries with configurations to instantiate in the new model that were not 
+    in the old one to load. Useful for building upper model on trained lower model.
+    If allowed_prefixes list is none, will load all weights. Otherwise just specified weights"""
+
+    ckpt = torch.load(DictFilePath)
+    configuration = ckpt['config']
+    if substitutions is not None:
+        for parameter, setting in substitutions.items():
+            configuration[parameter] = setting
+            
+    model = MidLevelNetwork(**configuration)
+
+    if low_only: # Only load lower model
+        model_dict = model.state_dict()
+        allowed_prefixes = ["encoder.", "sat_head."]        
+        filtered_dict = {
+            k: v for k, v in ckpt['state_dict'].items()
+            if any(k.startswith(p) for p in allowed_prefixes)
+        }
+        model_dict.update(filtered_dict)
+        model.load_state_dict(model_dict, strict=False)
+    else:
+        model.load_state_dict(ckpt['state_dict'], strict = False)   
+
+    return model
+
+
