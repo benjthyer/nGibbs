@@ -1,9 +1,15 @@
 # NumPy array files
 *.npy
 
+# empty files
+emptyfile.txt
+
 #alphamelts installation
-alphamelts/
-src/wslMELTS/engine/alphamelts-app-2.3.1-linux/alphamelts2/ # Users will not need this. 
+src/alphamelts/engine/alphamelts-app-2.3.1-linux/alphamelts2/ # Users will not need this. 
+
+# Notes to Self
+DonnieMeetMinutes.md
+NotesToSelf.md
 
 # Dataset directories
 *Datasets/
@@ -23,6 +29,8 @@ alphamelts-app-2.3.1-linux/
 *hist/
 Plots/
 
+# Agent Configurations
+#.github/
 
 #Large Notebooks
 Emulator_Performance.ipynb

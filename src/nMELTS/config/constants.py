@@ -44,9 +44,9 @@ COMPOSITIONAL_COMPONENTS_IN_PHASES: Dict[str, List[str]] = { # Will need to be e
     'nepheline': ['na-nepheline', 'k-nepheline', 'vc-nepheline', 'ca-nepheline'],
     'leucite': ['leucite', 'analcime', 'na-leucite'],
     'biotite': ['annite', 'phlogopite'],
-    'rhm-oxide': ['geikielite', 'hematite', 'ilmenite', 'pyrophanite', 'corundum'],
+    'rhm-oxide': ['geikielite', 'hematite', 'ilmenite', 'pyrophanite', 'corundum'], # Corundum is not actually in rhm-oxide in pMELTS
     'alloy-solid': ['Fe-metal', 'Ni-metal'],
-    'alloy-liquid': ['Fe-metal', 'Ni-metal'],
+    'alloy-liquid': ['Fe-liquid', 'Ni-liquid'], # Definitely called this in pMELTS... Possible that components are 'Fe-metal' etc for others? 
     'analcime': ['leucite', 'analcime', 'na-leucite'],
     'apatite': [],  # No chemical components, only state variables
     'whitlockite': [],  # No chemical components, only state variables

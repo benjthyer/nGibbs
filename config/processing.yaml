@@ -11,6 +11,8 @@ dataset:
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
+outname: ''                  # Base name for output folder (without extension). Auto-Generated if blank
+
 # ============================================================================
 # PREPROCESSING OPTIONS
 # ============================================================================

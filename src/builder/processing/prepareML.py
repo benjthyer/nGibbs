@@ -84,6 +84,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
     balance_cfg = config['balancing']
     filter_cfg = config['deep_filter']
     plot_cfg = config.get('plot', {})
+    outname = config.get('outname', '').strip()
     
     MELTSModel = MELTSModel or dataset_cfg['MELTSModel']
     Date = Date or dataset_cfg['Date']
@@ -139,6 +140,28 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         ValidName += '_processed'
         TestName += '_processed'
         TrainName += '_processed'
+
+    # Helper function to generate bundle names based on outname config
+    def get_bundle_name(base_name, data_type):
+        """
+        Generate bundle filename.
+        
+        Parameters
+        ----------
+        base_name : str
+            Base name (TrainName, TestName, or ValidName)
+        data_type : str
+            Type of data ('Train', 'Test', or 'Valid')
+            
+        Returns
+        -------
+        str
+            Bundle filename
+        """
+        if outname:
+            return f"{outname}_{data_type}.tar.gz"
+        else:
+            return f"{Path(base_name).name}.tar.gz"
 
     gc.collect()
     
@@ -223,7 +246,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
             os.rename(TrainName + 'Filtered.npy', TrainName + '_processed.npy')
             os.rename(TrainName + 'Filtered.txt', TrainName + '_processed.txt')
 
-        train_bundle = train_dir / f"{Path(TrainName).name}.tar.gz"
+        train_bundle = train_dir / get_bundle_name(TrainName, 'Train')
         deep_filter(
             str(train_bundle),
             indexer=indexer,
@@ -297,7 +320,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         delete_files_with_keyword(str(INTERNAL_DIR), keyword='working', dry_run=False)
         delete_files_with_keyword(str(INTERNAL_DIR), keyword='temp', dry_run=False)
 
-        test_bundle = train_dir / f"{Path(TestName).name}.tar.gz"
+        test_bundle = train_dir / get_bundle_name(TestName, 'Test')
         deep_filter(
             str(test_bundle),
             indexer=indexer,
@@ -306,7 +329,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
             Component_Upper_Bounds=filter_cfg['component_upper_bounds'] or None,
             batch_size=filter_cfg['batch_size']
         )
-        valid_bundle = train_dir / f"{Path(ValidName).name}.tar.gz"
+        valid_bundle = train_dir / get_bundle_name(ValidName, 'Valid')
         deep_filter(
             str(valid_bundle),
             indexer=indexer,

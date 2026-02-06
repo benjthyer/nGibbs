@@ -45,6 +45,9 @@ ELEMENT_TO_OXIDE = {
     'Ni': 'NiO',
 }
 
+# Reverse mapping: oxide to element
+OXIDE_TO_ELEMENT = {oxide: element for element, oxide in ELEMENT_TO_OXIDE.items()}
+
 # ============================================================================
 #  Phase-to-Components/Attributes Dictionary
 # ============================================================================
@@ -52,7 +55,7 @@ ELEMENT_TO_OXIDE = {
 # Used by both DatasetIndexer and scripts that generate column headers for new datasets.
 # State variables (mass, density, thermodynamic properties) for non melts-liquid phases are added separately.
 
-def generate_column_headers(phases: List[str]) -> List[str]:
+def generate_column_headers(phases: List[str], mode: str = 'None', zeroOxides: List[str] = []) -> List[str]:
     """
     Generate column headers from a list of phase names using COMPONENTS_IN_PHASES.
     
@@ -60,7 +63,10 @@ def generate_column_headers(phases: List[str]) -> List[str]:
     ----------
     phases : List[str]
         List of phase names to generate columns for
-        
+
+    mode : str       
+        MELTS model mode, which affects how certain phases are labeled. pMELTS doesn't include MnO, NiO, CoO or Corundum in rhm-oxide
+        Default does not force these exclusions
     Returns
     -------
     List[str]
@@ -97,11 +103,16 @@ def generate_column_headers(phases: List[str]) -> List[str]:
             components = COMPONENTS_IN_PHASES[phase]
             
             for component in components:
-                column_headers.append(f"{component}({phase})")
+                if (mode.lower() != 'p' or (not any([pExclude in component for pExclude in ['CoO', 'corundum']]))): # except oxides, components lowercase
+                    if not any([oxide in component for oxide in zeroOxides]):
+                        column_headers.append(f"{component}({phase})")
+                else:
+                    print(f"Excluding component '{component}' from phase '{phase}' for pMELTS mode.")
     
     if is_liquid: # I want the liquid at the end for clarity and continuity with previous editions
         for component in COMPONENTS_IN_PHASES['melts-liquid']:
-            column_headers.append(f"{component}({'melts-liquid'})")
+            if not any([oxide in component for oxide in zeroOxides]):
+                column_headers.append(f"{component}({'melts-liquid'})")
 
     return column_headers
 
@@ -149,34 +160,26 @@ class DatasetIndexer:
         """
         self.headers = headers
         self.database_headers = headers.copy()
+
+        # Core mappings
+        self.MELTS_indices: Dict[str, Dict[str, int]] = {}
+        self.mass_indices: np.ndarray = np.array([], dtype=int)
+
+        # Initialize empty exclusions, to be populated later dynamically based on data. These exclude phases and components from being
+        # carried further into the ml_indexer object, for which ALL COLUMNS of EVERY TABLE is expected to be nonzero (else the model carries dead neurons)
         self.EXCLUDED_COMPONENTS_BY_PHASE = {}
 
         self.STATE_VARIABLES = STATE_VARIABLES
         self.EXCLUDED_PHASES = {'System_main', 'Bulk_comp'}  # Default excluded phases
 
-        self.Elkeys = default_Elkeys.copy() #  Let DatasetIndexer build Elkeys from table headers and values
 
-        # Remove duplicates while preserving order
-        seen = set()
-        self.Elkeys = [el for el in self.Elkeys if not (el in seen or seen.add(el))]
+        self._parse_headers() # Build MELTS_indicies to index all of the MELTS table
+
+        # Dynamically populate Elkeys from Bulk_comp components
+        self._populate_elkeys_from_bulk_comp()
+
+        self._build_fundamentals() # Build WRkeys and Oxides from Elkeys
         
-        # Build WRkeys from Elkeys (all oxides except Fe2O3)
-        self.WRkeys = []
-        for el in self.Elkeys:
-            if el in ELEMENT_TO_OXIDE:
-                ox = ELEMENT_TO_OXIDE[el]
-                if ox not in self.WRkeys:
-                    self.WRkeys.append(ox)
-        
-        # Build Oxides from WRkeys + Fe2O3 (if Fe is present)
-        self.Oxides = self.WRkeys.copy()
-        if 'Fe' in self.Elkeys and 'Fe2O3' not in self.Oxides:
-            self.Oxides.append('Fe2O3')
-        
-        # Build oxide_dict from Oxides list
-        self.oxide_dict: Dict[str, int] = {}
-        for i, ox in enumerate(self.Oxides):
-            self.oxide_dict[ox] = i
 
         # Exclude components whose oxides fall outside the active Oxides list
         projections_dir = Path(__file__).resolve().parent.parent / 'nMELTS' / 'config' / 'projections'
@@ -192,10 +195,6 @@ class DatasetIndexer:
             elems = [el for el, val in oxToEl_df[ox].items() if float(val) != 0]
             if elems:
                 self.oxides_to_elements[ox] = elems
-
-        # Core mappings
-        self.MELTS_indices: Dict[str, Dict[str, int]] = {}
-        self.mass_indices: np.ndarray = np.array([], dtype=int)
         
         # Phase to chemical components mapping (single-level dict)
         self.components_in_phases: Dict[str, List[str]] = {}
@@ -231,8 +230,52 @@ class DatasetIndexer:
         self.nphases: int = 0
         
         # Parse and build initial indices
-        self._parse_headers() # Build MELTS_indicies to index all of the MELTS table
         self._repopulate_indexer()
+
+    def _populate_elkeys_from_bulk_comp(self):
+        """
+        Dynamically populate self.Elkeys from Bulk_comp components.
+        
+        Extracts oxide names from Bulk_comp headers and maps them to elements
+        using the OXIDE_TO_ELEMENT mapping. Avoids duplicate entries.
+        """
+        elkeys_set = set()  # Use set to avoid duplicates (including duplicate Fe)
+        
+        if 'Bulk_comp' in self.MELTS_indices:
+            for component in self.MELTS_indices['Bulk_comp'].keys():
+                # Skip state variables
+                if component in self.STATE_VARIABLES:
+                    continue
+                
+                # Extract oxide name (remove 'wt% ' prefix if present)
+                oxide_name = component.replace('wt% ', '').strip()
+                
+                # Map oxide to element
+                if oxide_name in OXIDE_TO_ELEMENT:
+                    elkeys_set.add(OXIDE_TO_ELEMENT[oxide_name])
+        
+        # Convert to sorted list for consistent, reproducible ordering
+        self.Elkeys = sorted(list(elkeys_set))
+
+    def _build_fundamentals(self):
+        
+        # Build WRkeys from Elkeys (all oxides except Fe2O3)
+        self.WRkeys = []
+        for el in self.Elkeys:
+            if el in ELEMENT_TO_OXIDE:
+                ox = ELEMENT_TO_OXIDE[el]
+                if ox not in self.WRkeys:
+                    self.WRkeys.append(ox)
+        
+        # Build Oxides from WRkeys + Fe2O3 (if Fe is present)
+        self.Oxides = self.WRkeys.copy()
+        if 'Fe' in self.Elkeys and 'Fe2O3' not in self.Oxides:
+            self.Oxides.append('Fe2O3')
+        
+        # Build oxide_dict from Oxides list
+        self.oxide_dict: Dict[str, int] = {}
+        for i, ox in enumerate(self.Oxides):
+            self.oxide_dict[ox] = i
 
     def _repopulate_indexer(self):
         self._look_for_illegal_oxides()

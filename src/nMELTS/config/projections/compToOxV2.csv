@@ -48,8 +48,8 @@ pyrophanite : rhm-oxide,0,1,0,0,0,0,0,0,0,1,0,0,0,0
 corundum : rhm-oxide,0,0,1,0,0,0,0,0,0,0,0,0,0,0
 Fe-metal : alloy-solid,0,0,0,3,0,0,0,0,0,0,0,0,0,-1
 Ni-metal : alloy-solid,0,0,0,2,0,0,0,0,0,0,0,0,1,-1
-Fe-metal : alloy-liquid,0,0,0,3,0,0,0,0,0,0,0,0,0,-1
-Ni-metal : alloy-liquid,0,0,0,2,0,0,0,0,0,0,0,0,1,-1
+Fe-liquid : alloy-liquid,0,0,0,3,0,0,0,0,0,0,0,0,0,-1
+Ni-liquid : alloy-liquid,0,0,0,2,0,0,0,0,0,0,0,0,1,-1
 leucite : analcime,2,0,0.5,0,0,0,0,0.5,0,0,0,0,0,0
 analcime : analcime,2,0,0.5,0,0,0,0.5,0,0,0,1,0,0,0
 na-leucite : analcime,2,0,0.5,0,0,0,0.5,0,0,0,0,0,0,0

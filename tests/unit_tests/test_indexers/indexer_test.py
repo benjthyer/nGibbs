@@ -1013,7 +1013,7 @@ if __name__ == '__main__':
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     setup_test_logging(
         log_filename=f"{Path(__file__).stem}_{timestamp}.txt",
-        log_dir=Path(__file__).parent,
+        log_dir=Path(__file__).parent / 'logs',
     )
     
     
@@ -1030,15 +1030,9 @@ if __name__ == '__main__':
         'whitlockite','quartz','tridymite','cristobalite','muscovite','fluid','liquid'
     ]
 
-    args = {
-        'EXCLUDED_PHASES' : {'System_main'},
-        'EXCLUDED_COMPONENTS_BY_PHASE' : {},
-        #'Elkeys' : ['Si', 'Ti', 'Al', 'Fe', 'Mg', 'Ca', 'Na', 'H', 'Mn', 'Ni']
-    }
-
     headers = generate_column_headers(phases)
 
-    indexer = DatasetIndexer(headers=headers, **args)
+    indexer = DatasetIndexer(headers=headers)
 
     print("\n" + "=" * 70)
     print("RUNNING INITIAL ML INDEXER TEST")
@@ -1052,7 +1046,7 @@ if __name__ == '__main__':
 
     #NOW TRY WITH AUTO EXCLUDE! 
 
-    csv_path = Path(project_root) / 'data' / 'MELTStables' / '110' / 'MELTS110_TrainsetFeb3BatchCooling.csv'
+    csv_path = Path(project_root) / 'data' / 'MELTStables' / 'p' / 'MELTSp_TrainsetFeb4BatchCooling.csv'
     DF = pd.read_csv(csv_path)
     headers = list(DF.columns)
     indexer_auto = DatasetIndexer(headers=headers)

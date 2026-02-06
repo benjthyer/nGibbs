@@ -32,6 +32,11 @@ A machine learning emulator for MELTS thermodynamic modeling software. This proj
 
 **Key Features:**
 - This pipeline flexibly produces diverse MELTS datasets to train different models that cover different use-cases and composition spaces, optimizing for accuracy where it counts for the user. 
+  - Dynamic indexers: DatasetIndexer() class in indexer.py. Builds indexers based on table values and column names. 
+    - Fundamental object: Elkeys is controlled by oxides present in 'Bulk_comp' columns of MELTS tables. 
+    - Spawn ml_indexer() class, which is carried by nMELTS models during training. 
+
+
 - I have done my best to keep these training datasets well-documented by carrying along their stats files and the configuration files used in their processing.
 - Training data is generated with alphamelts 2.0.3 running on GNU parallel on WSL. Native python parallelism may be more effectively supported for Macs-- currently untested.
 - Large datasets can be manipulated. On my machine, .csv files up to ~10 GB can be manipulated. The training products are vastly reduced in size
@@ -176,6 +181,9 @@ For details on specific dependency versions and optional packages, see [requirem
 
 ### 1. Data Generation
 
+External dependency: alphamelts
+MELTS simulations are orchestrated through alphamelts by parallelized (GNU parallel) terminal calls in WSL.
+
 Raw MELTS data comes from MELTS/alphaMELTS simulations of bulk compositions from GEOROC and PetDB. Each simulation produces 
 text files within the working directory of alphamelts (folders within data/Workspace)
 These text files contain 100s-1000s of EQM assemblages
@@ -199,7 +207,7 @@ Then the folders with the MELTS-generated tables are cleared.
 
 Converts raw MELTS CSV/TXT into ML-ready bundles.
 
-**Pipeline Steps:**
+**Data Processing Pipeline Steps:**
 
 1. **Load & Index** ([BigMetaTable.py](src/builder/processing/BigMetaTable.py))
    - Parse CSV into memory-mapped arrays (for memory efficiency on large datasets)
@@ -421,6 +429,10 @@ deep_filter:
 ```
 
 ### Project Configuration
+
+Note: This Copilot agents are to follow strict structure and changelog rules.
+See `.github/copilot-instructions.md`.
+
 
 Set paths and storage locations in [config/config.yaml](config/config.yaml):
 

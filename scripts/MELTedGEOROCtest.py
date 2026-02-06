@@ -33,11 +33,12 @@ os.makedirs(EnsembleLocation, exist_ok=True)
 total_to_run = int(1) # How many total simulations to run
 simcycle = 16 # How many simulations to run per iteration
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-MELTSModel= '110'
+MELTSModel= 'p'
 fractionate = 'Batch'
 
-date = 'Feb3'
+date = 'Feb4'
 
+ZeroOxides = ['MnO', 'NiO', 'CoO'] # List of oxides to set to zero
 
 Out_Folder = Path(internal_data_dir(MELTSModel))
 os.makedirs(Out_Folder, exist_ok=True)
@@ -46,14 +47,19 @@ Trainfilename = str(Out_Folder / f'MELTS{MELTSModel}_Trainset{date}{fractionate}
 Validfilename = str(Out_Folder / f'MELTS{MELTSModel}_Validset{date}{fractionate}{calctype}')
 
 if MELTSModel == 'p':
-        allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclase','k-feldspar','garnet',
+    allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclase','k-feldspar','garnet',
     'rhm-oxide','alloy-solid','alloy-liquid','apatite','whitlockite','quartz','tridymite','cristobalite','fluid','liquid']
+    for zeroOx in ['MnO', 'NiO', 'CoO']: #pMELTS must exclude these...
+        if zeroOx not in ZeroOxides:
+            ZeroOxides.append(zeroOx)
+     
 else:
     allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclase','k-feldspar','garnet',
         'nepheline','leucite','biotite','rhm-oxide','alloy-solid','alloy-liquid','apatite','whitlockite','quartz','tridymite','cristobalite','muscovite','fluid','liquid']
 
 # Generate headers and create indexer for this set of phases
-headers = generate_column_headers(allowed_phases)
+headers = generate_column_headers(allowed_phases, mode=MELTSModel, zeroOxides=ZeroOxides) # pMELTS doesn't include Corundum in rhm-oxide
+
 indexer = DatasetIndexer(headers)
 
 assert fractionate in ['Batch', 'FxCryst'], "fractionate argument must be one of ['Batch', 'FxCryst'], 'FxMelt' not yet implemented"
@@ -76,7 +82,7 @@ col_dict = {}
 for i, k in enumerate(keys):
     col_dict[k] = i
 
-args = {'MELTSModel':MELTSModel, 'GEOROC':GEOROC, 'col_dict':col_dict, 'indexer':indexer, 'iter':total_to_run,
+args = {'MELTSModel':MELTSModel, 'GEOROC':GEOROC, 'col_dict':col_dict, 'indexer':indexer, 'itercode':f'a{total_to_run}',
          'simcycle':simcycle, 'fxtal': (fractionate == 'FxCryst'), 'ExFailures':False}
 
 MELTER(output_file=Trainfilename, **args)

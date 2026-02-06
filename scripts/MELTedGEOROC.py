@@ -27,14 +27,21 @@ alphaMELTSLocation = os.path.join(REPO_ROOT, 'src', 'builder', 'alphamelts', 'en
 # Location to where to put the computed files.
 EnsembleLocation = str(internal_scratch_dir())
 
-GEOROC_DIR = os.path.join(REPO_ROOT, 'src', 'builder', 'alphamelts', 'DataProducts', 'GEOROC')
+GEOROC_DIR = os.path.join(REPO_ROOT, 'data', 'MELTStables', 'GEOROC')
 
 
 os.makedirs(EnsembleLocation, exist_ok=True)
-calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-date = 'Jan27'
 
-total_to_run = int(160) # How many total simulations to run
+calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
+date = 'Feb5'
+
+ZeroOxides = ['MnO', 'NiO', 'CoO'] # List of oxides to set to zero
+MELTSmodels = ['p']
+FXes = ['Batch']#, 'FxCryst']
+
+startT = 1400
+max_liquid_fraction = 15
+total_to_run = int(80) # How many total simulations to run
 simcycle = 50 # How many simulations to run per iteration
 
 #storage_directory = f'/mnt/d/Workspace/{MELTSModel}Datasets/'
@@ -44,18 +51,21 @@ simcycle = 50 # How many simulations to run per iteration
 
 #batch_file = MELTSModel + 'batch'
 
-for N, MELTSModel in enumerate(['p']):#, '102', '120']): 
-    for fractionate in ['Batch']:#, 'FxCryst']:
+for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']): 
+    for fractionate in FXes:#, 'FxCryst']:
 
         if MELTSModel == 'p':
-             allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclase','k-feldspar','garnet',
+            allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclase','k-feldspar','garnet',
             'rhm-oxide','alloy-solid','alloy-liquid','apatite','whitlockite','quartz','tridymite','cristobalite','fluid','liquid']
+            for zeroOx in['MnO', 'NiO', 'CoO']: #pMELTS must exclude these...
+                if zeroOx not in ZeroOxides:
+                    ZeroOxides.append(zeroOx)
         else:
             allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclase','k-feldspar','garnet',
                 'nepheline','leucite','biotite','rhm-oxide','alloy-solid','alloy-liquid','apatite','whitlockite','quartz','tridymite','cristobalite','muscovite','fluid','liquid']
 
         # Generate headers and create indexer for this set of phases
-        headers = generate_column_headers(allowed_phases)
+        headers = generate_column_headers(allowed_phases, mode=MELTSModel, zeroOxides=ZeroOxides)
         indexer = DatasetIndexer(headers)
 
         assert fractionate in ['Batch', 'FxCryst'], "fractionate argument must be one of ['Batch', 'FxCryst'], 'FxMelt' not yet implemented"
@@ -69,7 +79,8 @@ for N, MELTSModel in enumerate(['p']):#, '102', '120']):
 
         Trainfilename = str(Out_Folder / f'MELTS{MELTSModel}_Trainset{date}{fractionate}{calctype}')
         Validfilename = str(Out_Folder / f'MELTS{MELTSModel}_Validset{date}{fractionate}{calctype}')
-        
+        Train_progress_file = f'{Trainfilename}_progress.txt'
+        Valid_progress_file = f'{Validfilename}_progress.txt'
 
         #logic trees to direct dataset generation:
         if calctype == 'Cooling':
@@ -78,19 +89,19 @@ for N, MELTSModel in enumerate(['p']):#, '102', '120']):
             MELTER = RM.alphaMELTScompress
 
         # Clunky. Distributing the types of data to be run. This may be superceded by a more elegant solution soon.
-        if MELTSModel == 'p' and fractionate == 'batch':
+        if MELTSModel == 'p' and fractionate == 'Batch':
             mafics_to_run = int(total_to_run * 0.9)
             full_to_run = int(total_to_run * 0.1)
         elif MELTSModel == 'p':
             mafics_to_run = int(total_to_run * 0.975)
             full_to_run = int(total_to_run * 0.025)
-        elif MELTSModel == '120' and fractionate == 'batch':
+        elif MELTSModel == '120' and fractionate == 'Batch':
             mafics_to_run = int(0)
             full_to_run = total_to_run
         elif MELTSModel == '120':
             mafics_to_run = int(total_to_run * 0.2)
             full_to_run = int(total_to_run * 0.8)
-        elif fractionate == 'batch':
+        elif fractionate == 'Batch':
             mafics_to_run = int(total_to_run * 0.3)
             full_to_run = int(total_to_run * 0.7)
         else:
@@ -99,6 +110,7 @@ for N, MELTSModel in enumerate(['p']):#, '102', '120']):
 
 
         # Generate Training Dataset
+        
         
         
         GEOROC = np.genfromtxt(GEOROC_DIR + '/GEOROC_PETDB_UNFILTERED_WHOLEROCK_TRAIN.csv', delimiter=',',skip_header=1)
@@ -111,19 +123,37 @@ for N, MELTSModel in enumerate(['p']):#, '102', '120']):
         for i, k in enumerate(keys):
             col_dict[k] = i
 
-        args = {'MELTSModel':MELTSModel, 'GEOROC':GEOROC, 'col_dict':col_dict, 'indexer':indexer, 'iter':full_to_run, 'simcycle':simcycle, 'fxtal': (fractionate == 'FxCryst')}
+        # Run full GEOROC training dataset
+        args = {'MELTSModel':MELTSModel, 'GEOROC':GEOROC, 'col_dict':col_dict, 'indexer':indexer, 
+                'itercode':f'a{full_to_run}', 'simcycle':simcycle, 'fxtal': (fractionate == 'FxCryst'), 
+                'startT': startT, 'max_liquid_fraction': max_liquid_fraction}
+        
         MELTER(output_file=Trainfilename, **args)
 
-        args['iter'] = int(full_to_run//4)
+        # Run full GEOROC validation dataset
+        args['itercode'] = f'a{int(full_to_run//4)}'
         MELTER(output_file=Validfilename, **args)
 
         if mafics_to_run != 0:
             mafics = GEOROC[:,5]>=5 # MgO above 5
            
             args['GEOROC'] = GEOROC[mafics]
-            args['iter'] = mafics_to_run
+            # Run mafic GEOROC training dataset
+            args['itercode'] = f'm{mafics_to_run}'
 
             MELTER(output_file=Trainfilename, **args)
 
-            args['iter'] = int(mafics_to_run//4)
+            # Run mafic GEOROC validation dataset
+            args['itercode'] = f'm{int(mafics_to_run//4)}'
             MELTER(output_file=Validfilename, **args)
+
+
+        # Clean up progress files upon completion
+        if os.path.exists(Train_progress_file):
+            os.remove(Train_progress_file)
+            print(f"Training simulations completed. Progress file removed.")
+
+            # Clean up progress file upon completion
+        if os.path.exists(Valid_progress_file):
+            os.remove(Valid_progress_file)
+            print(f"Validation simulations completed. Progress file removed.")
