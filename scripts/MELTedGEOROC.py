@@ -36,11 +36,11 @@ calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, I
 date = 'Feb5'
 
 ZeroOxides = ['MnO', 'NiO', 'CoO'] # List of oxides to set to zero
-MELTSmodels = ['p']
+MELTSmodels = ['p', '102'] # MELTS models to run. To add: MAGEmin
 FXes = ['Batch']#, 'FxCryst']
 
-startT = 1400
-max_liquid_fraction = 15
+startTs = [1400, 1800]
+max_liquid_fractions = [15, 100]
 total_to_run = int(80) # How many total simulations to run
 simcycle = 50 # How many simulations to run per iteration
 
@@ -52,6 +52,8 @@ simcycle = 50 # How many simulations to run per iteration
 #batch_file = MELTSModel + 'batch'
 
 for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']): 
+    startT = startTs[N]
+    max_liquid_fraction = max_liquid_fractions[N]
     for fractionate in FXes:#, 'FxCryst']:
 
         if MELTSModel == 'p':
@@ -135,7 +137,7 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
         MELTER(output_file=Validfilename, **args)
 
         if mafics_to_run != 0:
-            mafics = GEOROC[:,5]>=5 # MgO above 5
+            mafics = GEOROC[:,col_dict['MgO']+1]>=5 # MgO above 5
            
             args['GEOROC'] = GEOROC[mafics]
             # Run mafic GEOROC training dataset

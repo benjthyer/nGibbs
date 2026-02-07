@@ -20,7 +20,7 @@ if src_path not in sys.path:
 from .filters import filter_invalid_rows
 from nMELTS.config.settings import internal_train_dir, external_train_dir, external_base
 from nMELTS.utils.string_utils import pull_number
-
+from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
 
 featureNames = [['Pressure', 'System_main'], ['Temperature', 'System_main'], ['logfO2-QFM', 'System_main']]#, 'H(System_main)'] # Must be in MELTS_indices
 #freeOutputs = [['viscocity', 'System_main'], ['liq H (kJ)', 'melts-liquid'], ['Temperature', 'System_main']]
@@ -102,7 +102,7 @@ def load_ml_bundle(bundle_path):
         shutil.rmtree(temp_dir)
 
 
-def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=False, featureNames=featureNames, freeOutputs=freeOutputs, indexer=None):
+def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=False, featureNames=featureNames, freeOutputs=freeOutputs, indexer=None, config_path=None):
 
     """Builds features and labels for training"""
     sampleNo = len(resample_bounds)
@@ -388,6 +388,9 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
         self.filename + 'labels.npy': 'labels.npy',
         pickle_path: 'ml_indexer.pkl',
     }
+    if config_path:
+        config_basename = Path(config_path).name
+        file_mappings[str(config_path)] = config_basename
     if freeOutputs is not None:
         file_mappings[self.filename + 'free_outputs.npy'] = 'free_outputs.npy'
     
@@ -398,11 +401,15 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     bundle_base = self.filename.split('_working')[0]
     bundle_path = bundle_base + '.tar.gz'
 
+
     with tarfile.open(bundle_path, 'w:gz') as tar:
         for fpath, arcname in file_mappings.items():
             if os.path.exists(fpath):
                 tar.add(fpath, arcname=arcname)
         
+    sanity_check_bundle(bundle_path=Path(bundle_path)) # Verify that the data make sense
+
+
     # Move bundle to configured training directory
     model_match = re.search(r"MELTS([^_]+)_", Path(bundle_base).name)
     if model_match:
@@ -415,6 +422,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
         target_dir.mkdir(parents=True, exist_ok=True)
         target_path = target_dir / Path(bundle_path).name
         shutil.move(bundle_path, target_path)
+
         return target_path
     
     return bundle_path  #filter_invalid_rows(self, mismatches)

@@ -1,0 +1,140 @@
+# Configuration for MELTS data processing and ML dataset generation
+# This file controls all aspects of the process_for_ML() workflow
+
+# ============================================================================
+# DATASET SELECTION
+# ============================================================================
+dataset:
+  MELTSModel: '110'          # MELTS model version: '102', '110', '120', 'p'
+  Date: 'Feb3'               # Date identifier for dataset naming
+  Mode: 'BatchCooling'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
+  subset: false              # Whether to use subset versions of datasets
+  use_external: false        # Whether to use external storage directory (specified in settings.py)
+
+outname: ''                  # Base name for output folder (without extension). Auto-Generated if blank
+
+# ============================================================================
+# PREPROCESSING OPTIONS
+# ============================================================================
+preprocessing:
+  preprocessed: false        # Skip preprocessing if data already preprocessed
+  filter_full_metadata: true # Filter by persence of notes in metadata, corresponding to phases that are not recognized.
+  filter_legal: false        # Deprecated 
+  separate_analcime: true    # Separate analcime phase during preprocessing 
+  #(Generally do this, Analcime in MELTS has two distinct compositional fields)
+
+# ============================================================================
+# RARE PHASE UPSAMPLING
+# ============================================================================
+# Users can add or remove phases by editing the 'phases' section below.
+# For each phase, provide 'n_resamples' (number of resampling iterations)
+# and 'multiplier_bounds' ([lower, upper] bounds for perturbation).
+# Examples of additional phases: alloy-solid, apatite, cristobalite, etc.
+upsampling:
+  enabled: true              # Enable rare phase upsampling
+  phases:
+    nepheline:
+      n_resamples: 10
+      multiplier_bounds: [0.8, 1.1]
+    leucite:
+      n_resamples: 2
+      multiplier_bounds: [0.8, 1.1]
+    analcime:
+      n_resamples: 3
+      multiplier_bounds: [0.8, 1.1]
+    olivine:
+      n_resamples: 1
+      multiplier_bounds: [0.8, 1.1]
+    muscovite:
+      n_resamples: 3
+      multiplier_bounds: [0.8, 1.1]
+    biotite:
+      n_resamples: 1
+      multiplier_bounds: [0.8, 1.1]
+    k-feldspar:
+      n_resamples: 1
+      multiplier_bounds: [0.8, 1.1]
+    # For test set - tighter bounds (no/ weak resampling suggested, just augmentation)
+    # Use same phase names as above with tighter multiplier_bounds
+    test_set_phases:
+      nepheline:
+        n_resamples: 10
+        multiplier_bounds: [0.99, 1.01]
+      leucite:
+        n_resamples: 2
+        multiplier_bounds: [0.99, 1.01]
+      analcime:
+        n_resamples: 3
+        multiplier_bounds: [0.99, 1.01]
+      olivine:
+        n_resamples: 1
+        multiplier_bounds: [0.99, 1.01]
+      muscovite:
+        n_resamples: 3
+        multiplier_bounds: [0.99, 1.01]
+      biotite:
+        n_resamples: 1
+        multiplier_bounds: [0.99, 1.01]
+      k-feldspar:
+        n_resamples: 1
+        multiplier_bounds: [0.99, 1.01]
+
+# ============================================================================
+# RESAMPLING TO DATASETS - Feature/Label Generation
+# ============================================================================
+resampling:
+  # Resampling bounds for training set. These are used to generate random multipliers to phase masses.
+  # Intensive properties are constant, but with different phase proportions.
+  # Multiple entries = multiple resampled versions of the dataset
+  train_bounds:
+    - [1, 1]          # Identity
+    - [0.8, 1]        # Shift phase proportions by ~20%
+    - [0.5, 1]        # Shift phase proportions by ~50%
+  
+  # Resampling bounds for test/validation sets (typically just full dataset)
+  test_bounds:
+    - [1, 1]          # Identity (no resampling)
+
+# ============================================================================
+# PLOTTING
+# ============================================================================
+plot:
+  enabled: True        # If false or missing, plots are not generated
+
+# ============================================================================
+# BALANCING FUNCTION
+# ============================================================================
+balancing:                    # Selectively "culling" dataset to balance liquid fractions
+  function: balance_lowF              # Options: null = no balancing applied 
+                              # 'balance_lowF' = Weigh all liquid fractions ~equalLy. Removes subsolidus bias  
+                              # 'balance_superliquidus' = Favor subliquidus over superliquidus for Frac. Xtal. 
+                              # 'balance_geodynamics' = Keep only 10% liq fraction and less. Used for geodynamics
+                            
+# ============================================================================
+# DEEP FILTERING - Oxide and Component Composition Bounds
+# ============================================================================
+deep_filter:
+  # Oxide lower bounds: [phase, oxide, minimum_wt%]
+  oxide_lower_bounds:
+    - ['k-feldspar', 'K2O', 8]
+    - ['clinopyroxene', 'CaO', 7]
+    - ['melts-liquid', 'SiO2', 30]
+  
+  # Oxide upper bounds: [phase, oxide, maximum_wt%]
+  oxide_upper_bounds:
+    - ['k-feldspar', 'CaO', 1]
+    - ['plagioclase', 'K2O', 8]
+    - ['clinopyroxene', 'TiO2', 6]
+    - ['clinopyroxene', 'Al2O3', 8]
+    - ['orthopyroxene', 'TiO2', 2]
+    - ['orthopyroxene', 'Al2O3', 8]
+    - ['orthopyroxene', 'CaO', 4]
+    - ['melts-liquid', 'TiO2', 13]
+    - ['melts-liquid', 'P2O5', 10]
+  
+  # Component upper bounds: [phase, component, maximum_wt%]
+  # Example: [['plagioclase', 'sanidine', 0.1]]
+  component_upper_bounds: [['plagioclase', 'sanidine', 0.1]]
+  
+  # Processing batch size for "deep" filtering, which targets .npy data products. 
+  batch_size: 200000

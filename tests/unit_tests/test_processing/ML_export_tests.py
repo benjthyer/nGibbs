@@ -9,6 +9,7 @@ project_root = Path(__file__).parent.parent.parent.parent # Add top directory to
 sys.path.insert(0, str(project_root))
 #from tests.test_utils import is_almost_equal
 from tests.test_utils import setup_test_logging
+import tests.unit_tests.test_indexers.indexer_test as IDX_TEST
 
 ## Functions work on BigMetaTable object, which contains unique indexers 
 # and projection matrices at BMT.indexer.ml_indexer and the full MELTS table at BMT.table. Also these data products, generated
@@ -90,6 +91,111 @@ def export_bundle_arrays_to_csv(bundle, output_dir: Optional[Path] = None) -> No
         mass_path = output_dir / 'mass_labels.csv'
         mass_df.to_csv(mass_path, index=False)
         print(f"Exported mass_labels to {mass_path}")
+
+
+def sanity_check_bundle(bundle_path: Path, tolerance=1e-3, bulk_tol_frac=1e-3) -> None:
+    """
+    Basic sanity checks for a ML bundle with ml_indexer consistency.
+
+    Checks:
+    - Array shapes match indexer dimensions (labels vs VC, binaries vs P).
+    - Variable-phase label rows sum to 1 when phase present, else 0.
+    - (phase moles > 0) matches binary labels.
+    - Labels only nonzero where binary labels allow.
+    - Reconstructed bulk element composition matches features within tolerance.
+    """
+    from src.builder.processing.MLexporter import load_ml_bundle
+
+    bundle = load_ml_bundle(bundle_path)
+    indexer = bundle.ml_indexer
+
+    labels = bundle.labels
+    molar_labels = bundle.molar_labels
+    binary_labels = bundle.binary_labels
+    features = bundle.features
+    free_outputs = getattr(bundle, 'free_outputs', None)
+
+    assert labels.shape[1] == indexer.ncompsVaried, (
+        f"labels has {labels.shape[1]} columns, expected VC={indexer.ncompsVaried}"
+    )
+    assert binary_labels.shape[1] == indexer.nphases, (
+        f"binary_labels has {binary_labels.shape[1]} columns, expected P={indexer.nphases}"
+    )
+    assert molar_labels.shape[1] == indexer.nphases, (
+        f"molar_labels has {molar_labels.shape[1]} columns, expected P={indexer.nphases}"
+    )
+
+    # All bundle arrays should have consistent row counts.
+    row_counts = {
+        'features': features.shape[0],
+        'labels': labels.shape[0],
+        'molar_labels': molar_labels.shape[0],
+        'binary_labels': binary_labels.shape[0],
+        'mass_labels': bundle.mass_labels.shape[0],
+    }
+    if free_outputs is not None:
+        row_counts['free_outputs'] = free_outputs.shape[0]
+
+    unique_row_counts = set(row_counts.values())
+    assert len(unique_row_counts) == 1, (
+        f"Bundle arrays have inconsistent row counts: {row_counts}"
+    )
+
+    # Variable-phase label row sums should be 1 if phase present, else 0.
+    for phase, idxs in indexer.label_indices_comp.items():
+        idxs = np.asarray(idxs, dtype=int)
+        phase_idx = indexer.mass_phasedict[phase]
+        phase_present = binary_labels[:, phase_idx] > 0.5
+        row_sums = np.sum(labels[:, idxs], axis=1)
+        assert np.allclose(row_sums[phase_present], 1.0, rtol=0.0, atol=tolerance), (
+            f"{phase}: label rows should sum to 1 when present"
+        )
+        assert np.allclose(row_sums[~phase_present], 0.0, rtol=0.0, atol=tolerance), (
+            f"{phase}: label rows should sum to 0 when absent"
+        )
+
+    # Phase moles > 0 should match binary labels.
+    phase_present_from_moles = molar_labels > 0
+    phase_present_from_binary = binary_labels > 0.5
+    assert np.array_equal(phase_present_from_moles, phase_present_from_binary), (
+        "(phase moles > 0) must match binary_labels"
+    )
+
+    # Labels only nonzero where binary labels allow.
+    comp_mappings = indexer.comp_mappings
+    comp_binaries = np.asarray(indexer.comp_binaries, dtype=int)
+    label_implied_binary = labels @ comp_mappings.T
+    assert np.allclose(
+        label_implied_binary,
+        binary_labels[:, comp_binaries],
+        rtol=0.0,
+        atol=tolerance
+    ), "labels are nonzero where binary labels disallow"
+
+    # Reconstruct bulk element composition from phase moles + component labels.
+    phase_to_comp = indexer.phaseToCompMap
+    comp_moles = molar_labels @ phase_to_comp
+
+    varied_to_all = indexer.variedToAllComp
+    labels_full = labels @ varied_to_all
+    var_idx = np.asarray(indexer.compositionally_variable_subset, dtype=int)
+
+    comp_frac = np.ones_like(labels_full)
+    comp_frac[:, var_idx] = labels_full[:, var_idx]
+    comp_moles = comp_moles * comp_frac
+
+    bulk_el = (comp_moles @ indexer.compToOxLoad) @ indexer.OxToEl
+    bulk_el = bulk_el / np.sum(bulk_el, axis=1, keepdims=True)
+
+    feature_offset = 3
+    expected_el = features[:, feature_offset:]
+    rel_diff = np.abs(bulk_el - expected_el) / (expected_el + 1e-10)
+    max_rel_diff = np.max(rel_diff)
+    assert max_rel_diff <= bulk_tol_frac, (
+        f"Bulk element mismatch: max rel diff {max_rel_diff:.2e} > {bulk_tol_frac:.2e}"
+    )
+
+    print(f"[PASS] sanity_check_bundle passed for {bundle_path}")
 
 
 def test_phase_masses(BMT, fractionate='batch', tolerance_ppm=0.1):
@@ -612,7 +718,18 @@ def run_tests_on_bundle(bundle_path: Path, BMT, test_name: str = "", output_tabl
     BMT.molarlabels = bundle.molar_labels
     BMT.binarylabels = bundle.binary_labels
     BMT.masslabels = bundle.mass_labels
-    
+    BMT.indexer.ml_indexer = bundle.ml_indexer
+    BMT.indexer.expose_ml_indexer_attributes()  # Ensure indexer attributes are accessible at BMT.indexer level
+
+    IDX_TEST.test_dataset_indexer(BMT.indexer)  # Sanity check that indexer is functional after loading bundle
+    IDX_TEST.test_ml_indexer(BMT.indexer.ml_indexer)  # Sanity check that ml_indexer is functional after loading bundle
+
+    sanity_check_bundle(bundle_path=bundle_path)
+
+    #BMT.indexer.ml_indexer.label_indices_comp['fake'] = np.array([39,40,41])
+
+    #IDX_TEST.test_ml_indexer(BMT.indexer.ml_indexer)  # This should fail if label_indices_comp is not properly integrated into ml_indexer
+
     # Execute tests
     if fractionate is not None:
         test_bulk_comp_change_by_run(BMT, mode=fractionate.lower(), tolerance_ppm=150000, Output_tables=output_tables)

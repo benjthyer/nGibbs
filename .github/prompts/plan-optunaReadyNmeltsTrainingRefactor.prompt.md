@@ -133,7 +133,7 @@
 
 ### **Phase 5: Configuration & Entry Point**
 
-13. **Create training config dataclass** in `src/builder/training/config/training_config.py`:
+13. **Create training config dataclass** in `src/builder/training/config/training_config.py`: 
     - Parse `config/training.yaml` → typed Python objects
     - Validate hyperparameter ranges
     - Provide defaults for missing keys

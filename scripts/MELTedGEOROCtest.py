@@ -36,7 +36,9 @@ calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, I
 MELTSModel= 'p'
 fractionate = 'Batch'
 
-date = 'Feb4'
+date = 'Feb5'
+startT = 1400
+max_liquid_fraction = 15
 
 ZeroOxides = ['MnO', 'NiO', 'CoO'] # List of oxides to set to zero
 
@@ -72,18 +74,16 @@ if calctype == 'Cooling':
 elif calctype == 'Compression':
     MELTER = RM.alphaMELTScompress
 
-GEOROC = np.genfromtxt(GEOROC_DIR + '/GEOROC_PETDB_UNFILTERED_WHOLEROCK_TRAIN.csv', delimiter=',',skip_header=1)
+GEOROC = np.genfromtxt(GEOROC_DIR + '/GEOROC_PETDB_UNFILTERED_WHOLEROCK_TRAIN.csv', delimiter=',',skip_header=1) # Skip index column
 
 # Define keys for input compositions (oxides)
 keys = np.array(pd.read_csv(GEOROC_DIR + '/GEOROC_PETDB_UNFILTERED_WHOLEROCK_TRAIN.csv').columns)[1:] # Skip index column
+col_dict = {key:i for i, key in enumerate(keys)} # Create col_dict mapping keys to indices
 
-# Create col_dict mapping keys to indices
-col_dict = {}
-for i, k in enumerate(keys):
-    col_dict[k] = i
+maficsGEOROC = GEOROC[GEOROC[:, col_dict['MgO']+1] > 25] # Must add 1 to account for indexing. This is confusing.
 
-args = {'MELTSModel':MELTSModel, 'GEOROC':GEOROC, 'col_dict':col_dict, 'indexer':indexer, 'itercode':f'a{total_to_run}',
-         'simcycle':simcycle, 'fxtal': (fractionate == 'FxCryst'), 'ExFailures':False}
+args = {'MELTSModel':MELTSModel, 'GEOROC':maficsGEOROC, 'col_dict':col_dict, 'indexer':indexer, 'itercode':f'a{total_to_run}',
+         'simcycle':simcycle, 'fxtal': (fractionate == 'FxCryst'), 'ExFailures':False, 'startT': startT, 'max_liquid_fraction': max_liquid_fraction}
 
 MELTER(output_file=Trainfilename, **args)
 MELTER(output_file=Validfilename, **args)

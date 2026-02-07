@@ -1,0 +1,38 @@
+lower_model:
+  encoderLayerUp: [1, 2, 3]
+  encoderLayerDown: [0, 1]
+  low_regularization: [none, dropout0.2, batchnorm]
+  activation_leak: 0.05
+
+upper_model:
+  middleLayerUp: [1, 2, 3]
+  middleLayerDown: [0, 1]
+  high_regularization: [batchnormdropout0, layernormdropout0]
+  highWD: [0, 1e-6, 1e-5, 1e-4]
+  noise: [0, 0.01, 0.05]
+
+data:
+  batch_size: 1024
+  num_workers: 0
+  pin_memory: true
+  validation_bundle: VALIDMELTS
+
+training:
+  epochs: 20
+  learning_rate: 1e-3
+  early_stopping_patience: 2
+
+optuna:
+  n_trials: 100
+  study_name: "nMELTS_lower_optuna"
+  sampler: "TPESampler"
+  pruner: "MedianPruner"
+
+training_strategy:
+  stages:
+    - name: lower
+      freeze_encoder: false
+    - name: upper
+      freeze_encoder: true
+    - name: finetune
+      freeze_encoder: false

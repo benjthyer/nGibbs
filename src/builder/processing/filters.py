@@ -20,9 +20,14 @@ src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
+top_path = str(Path(__file__).parent.parent.parent.parent)
+if top_path not in sys.path:
+    sys.path.insert(0, top_path)
+
 # Import DatasetIndexer type for type hints
 from typing import Optional
 from builder.indexer import DatasetIndexer
+from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
 
 
 # Oxide bounds configuration
@@ -423,11 +428,13 @@ def safe_delete_batched(filename, delete_indices, batch_size=200000):
 
 def deep_filter(tarball_path, Component_Lower_Bounds=None, Component_Upper_Bounds=None, 
                         Oxide_Lower_Bounds=None, Oxide_Upper_Bounds=None, Mass_Upper_Bounds=None, 
-                        indexer: Optional[DatasetIndexer] = None, batch_size=200_000):
+                        batch_size=200_000):
     """Filter files within a tar.gz bundle."""
     from .MLexporter import generate_dataset_stats
     
     tarball_path = Path(tarball_path)
+    sanity_check_bundle(tarball_path)
+
     temp_dir = tempfile.mkdtemp()
     
     try:
@@ -445,7 +452,7 @@ def deep_filter(tarball_path, Component_Lower_Bounds=None, Component_Upper_Bound
             os.rename(stats_file, prefilter_stats)
             print(f"Renamed stats.txt → stats_prefilter.txt")
         
-        # Load ml_indexer for regenerating stats
+        # Load ml_indexer for filtering and regenerating stats
         ml_indexer_path = temp_path / 'ml_indexer.pkl'
         if ml_indexer_path.exists():
             with open(ml_indexer_path, 'rb') as f:
@@ -472,8 +479,8 @@ def deep_filter(tarball_path, Component_Lower_Bounds=None, Component_Upper_Bound
             Oxide_Lower_Bounds=Oxide_Lower_Bounds,
             Oxide_Upper_Bounds=Oxide_Upper_Bounds,
             Mass_Upper_Bounds=Mass_Upper_Bounds,
-            indexer=indexer,
-            batch_size=batch_size
+            batch_size=batch_size,
+            ml_indexer=ml_indexer
         )
         
         
@@ -538,7 +545,7 @@ def _deep_filter_tarball(tarball_path, Component_Lower_Bounds=None, Component_Up
             os.rename(stats_file, prefilter_stats)
             print(f"Renamed stats.txt → stats_prefilter.txt")
         
-        # Load ml_indexer for regenerating stats
+        # Load ml_indexer for filtering and regenerating stats
         ml_indexer_path = temp_path / 'ml_indexer.pkl'
         if ml_indexer_path.exists():
             with open(ml_indexer_path, 'rb') as f:
@@ -565,8 +572,8 @@ def _deep_filter_tarball(tarball_path, Component_Lower_Bounds=None, Component_Up
             Oxide_Lower_Bounds=Oxide_Lower_Bounds,
             Oxide_Upper_Bounds=Oxide_Upper_Bounds,
             Mass_Upper_Bounds=Mass_Upper_Bounds,
-            indexer=indexer,
-            batch_size=batch_size
+            batch_size=batch_size,
+            ml_indexer=ml_indexer
         )
         
         # Move filtered files back to original names
@@ -605,26 +612,24 @@ def _deep_filter_tarball(tarball_path, Component_Lower_Bounds=None, Component_Up
         shutil.rmtree(temp_dir)
 
 
-def _deep_filter_npy(filename, Component_Lower_Bounds=None, Component_Upper_Bounds=None, Oxide_Lower_Bounds=None, Oxide_Upper_Bounds=None, Mass_Upper_Bounds=None, indexer: Optional[DatasetIndexer] = None, batch_size=200_000):
-    """Filter an on-disk dataset using the provided DatasetIndexer for lookups."""
+def _deep_filter_npy(filename, Component_Lower_Bounds=None, Component_Upper_Bounds=None, Oxide_Lower_Bounds=None, Oxide_Upper_Bounds=None, Mass_Upper_Bounds=None, batch_size=200_000, ml_indexer=None):
+    """Filter an on-disk dataset using the provided ml_indexer for lookups."""
 
-
-    ml_indexer = getattr(indexer, "ml_indexer", None)
     if ml_indexer is None:
-        raise ValueError("indexer.ml_indexer is required for deep_filter")
+        raise ValueError("ml_indexer is required for deep_filter")
 
-    detail_label_indices = indexer.detail_label_indices
-    all_phases = indexer.all_phases
-    mass_phasedict = indexer.mass_phasedict
-    label_indices_comp = indexer.label_indices_comp
-    label_indices = indexer.label_indices
-    oxide_dict = getattr(indexer, "oxide_dict", None)
+    detail_label_indices = ml_indexer.detail_label_indices
+    all_phases = ml_indexer.all_phases
+    mass_phasedict = ml_indexer.mass_phasedict
+    label_indices_comp = ml_indexer.label_indices_comp
+    label_indices = ml_indexer.label_indices
+    oxide_dict = {ox: i for i, ox in enumerate(ml_indexer.Oxides)}
 
     compToOxLoad = getattr(ml_indexer, "compToOxLoad", None)
     MM = getattr(ml_indexer, "MM", None)
 
-    if (Oxide_Lower_Bounds or Oxide_Upper_Bounds) and (compToOxLoad is None or MM is None or oxide_dict is None):
-        raise ValueError("Oxide filtering requires compToOxLoad, MM, and oxide_dict from the indexer")
+    if (Oxide_Lower_Bounds or Oxide_Upper_Bounds) and (compToOxLoad is None or MM is None):
+        raise ValueError("Oxide filtering requires compToOxLoad and MM from the ml_indexer")
 
     components = np.load(filename + 'labels.npy', mmap_mode='r')
     binary_labels = np.load(filename + 'binary_labels.npy', mmap_mode='r')
@@ -666,6 +671,8 @@ def _deep_filter_npy(filename, Component_Lower_Bounds=None, Component_Upper_Boun
         # Oxide Lower Bounds
         if Oxide_Lower_Bounds is not None:
             for phase, ox, bound in Oxide_Lower_Bounds:
+                print(f"Processing {phase} {ox} Lower Bound filter...")
+                print(f"comp_batch shape: {comp_batch.shape}, label_indices_comp[phase]: {label_indices_comp[phase]}, compToOxLoad shape: {compToOxLoad.shape}")
                 oxides_GT = (comp_batch[:,label_indices_comp[phase]] @ compToOxLoad[label_indices[phase]]) 
 
                 oxides_GT = oxides_GT @ MM
@@ -711,4 +718,5 @@ def _deep_filter_npy(filename, Component_Lower_Bounds=None, Component_Upper_Boun
     
     gc.collect()
     
+
     return delete_indices

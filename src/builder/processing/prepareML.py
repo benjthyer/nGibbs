@@ -19,21 +19,25 @@ src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
+file_path = str(Path(__file__).parent)
+if file_path not in sys.path:
+    sys.path.insert(0, file_path)
+
 # Import BigMetaTable
-from .BigMetaTable import BigMetaTable
+from builder.processing.BigMetaTable import BigMetaTable
 
 # Import filter functions
-from . import filters
+from builder.processing import filters
 
 # Import settings and utilities
 from nMELTS.config.settings import internal_data_dir, external_data_dir, external_base, internal_train_dir, external_train_dir
 from nMELTS.utils.file_utils import delete_files_with_keyword, move_files_with_extension, get_baseline_files, clear_new_files
 
 # Exporter functions
-from .MLexporter import resampling_to_datasets, make_harkers, make_Tplots
+from builder.processing.MLexporter import resampling_to_datasets, make_harkers, make_Tplots
 
 # Perhaps migrate the chemistry filters to their own module? 
-from .filters import deep_filter, Oxide_Lower_Bounds, Oxide_Upper_Bounds, Component_Upper_Bounds 
+from builder.processing.filters import deep_filter, Oxide_Lower_Bounds, Oxide_Upper_Bounds, Component_Upper_Bounds 
 
 
 
@@ -75,7 +79,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
     
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
-    
+
     # Extract configuration with command-line overrides
     dataset_cfg = config['dataset']
     preproc_cfg = config['preprocessing']
@@ -222,15 +226,17 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
 
         TrainMELTS.filename = TrainName
         if upsample:
-            train_bundle_path = resampling_to_datasets(TrainMELTS, resampling_cfg['train_bounds'])
+            train_bundle_path = resampling_to_datasets(
+                TrainMELTS,
+                resampling_cfg['train_bounds'],
+                config_path=config_path
+            )
         else:
-            train_bundle_path = resampling_to_datasets(TrainMELTS, [[1, 1]])
-        
-        # Add the config file used to the bundle
-        if train_bundle_path and Path(train_bundle_path).exists():
-            import tarfile
-            with tarfile.open(train_bundle_path, 'a') as tar:
-                tar.add(str(config_path), arcname='processing.yaml')
+            train_bundle_path = resampling_to_datasets(
+                TrainMELTS,
+                [[1, 1]],
+                config_path=config_path
+            )
 
 
         del TrainMELTS.table
@@ -249,7 +255,6 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         train_bundle = train_dir / get_bundle_name(TrainName, 'Train')
         deep_filter(
             str(train_bundle),
-            indexer=indexer,
             Oxide_Lower_Bounds=filter_cfg['oxide_lower_bounds'] or None,
             Oxide_Upper_Bounds=filter_cfg['oxide_upper_bounds'] or None,
             Component_Upper_Bounds=filter_cfg['component_upper_bounds'] or None,
@@ -288,25 +293,24 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
                 balance_function(TestMELTS)
                 balance_function(ValidMELTS)
 
-            TestMELTS.save(name=f"{TestName}Filtered", save_csv=False)
-            ValidMELTS.save(name=f"{ValidName}Filtered", save_csv=False)
+            #TestMELTS.save(name=f"{TestName}Filtered", save_csv=False)
+            #ValidMELTS.save(name=f"{ValidName}Filtered", save_csv=False)
         else:
             TestMELTS = BigMetaTable(TestName, read_dir=read_dir)
 
         TestMELTS.filename = TestName
         ValidMELTS.filename = ValidName
 
-        test_bundle_path = resampling_to_datasets(TestMELTS, resampling_cfg['test_bounds'])
-        valid_bundle_path = resampling_to_datasets(ValidMELTS, resampling_cfg['test_bounds'])
-        
-        # Add the config file used to both bundles
-        import tarfile
-        if test_bundle_path and Path(test_bundle_path).exists():
-            with tarfile.open(test_bundle_path, 'a') as tar:
-                tar.add(str(config_path), arcname='processing.yaml')
-        if valid_bundle_path and Path(valid_bundle_path).exists():
-            with tarfile.open(valid_bundle_path, 'a') as tar:
-                tar.add(str(config_path), arcname='processing.yaml')
+        test_bundle_path = resampling_to_datasets(
+            TestMELTS,
+            resampling_cfg['test_bounds'],
+            config_path=config_path
+        )
+        valid_bundle_path = resampling_to_datasets(
+            ValidMELTS,
+            resampling_cfg['test_bounds'],
+            config_path=config_path
+        )
 
         # Generate plots (saved to PLOT_DIR, not displayed due to 'Agg' backend)
         if plot_enabled:
@@ -323,7 +327,6 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         test_bundle = train_dir / get_bundle_name(TestName, 'Test')
         deep_filter(
             str(test_bundle),
-            indexer=indexer,
             Oxide_Lower_Bounds=filter_cfg['oxide_lower_bounds'] or None,
             Oxide_Upper_Bounds=filter_cfg['oxide_upper_bounds'] or None,
             Component_Upper_Bounds=filter_cfg['component_upper_bounds'] or None,
@@ -332,7 +335,6 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         valid_bundle = train_dir / get_bundle_name(ValidName, 'Valid')
         deep_filter(
             str(valid_bundle),
-            indexer=indexer,
             Oxide_Lower_Bounds=filter_cfg['oxide_lower_bounds'] or None,
             Oxide_Upper_Bounds=filter_cfg['oxide_upper_bounds'] or None,
             Component_Upper_Bounds=filter_cfg['component_upper_bounds'] or None,

@@ -70,6 +70,8 @@ pip-delete-this-directory.txt
 
 # Unit test / coverage reports
 *logs/
+!ChangeLogs/
+!ChangeLogs/**
 .pytest_cache/
 htmlcov/
 .tox/
@@ -84,7 +86,6 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 __pycache__/
-*logs/
 *debug_outputs/
 
 # Jupyter Notebook

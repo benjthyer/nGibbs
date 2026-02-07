@@ -13,21 +13,21 @@ import torch.nn.functional as F
 # Import utility functions
 from ..utils.string_utils import pull_letter, pull_number
 
-# Import constants and mappings from config
+# Import constants and mappings from config (fallbacks)
 from ..config import (
-    Elkeys,
-    label_indices,
-    label_indices_comp,
-    compToOx,
-    oxToEl,
-    MM,
-    Minv,
-    Mtot,
-    phaseToCompMap,
-    variedToAllComp,
-    fixed_phaseToCompMap,
-    boolTransCompToOx,
-    compositionally_variable_subset,
+    Elkeys as DEFAULT_ELKEYS,
+    label_indices as DEFAULT_LABEL_INDICES,
+    label_indices_comp as DEFAULT_LABEL_INDICES_COMP,
+    compToOx as DEFAULT_COMP_TO_OX,
+    oxToEl as DEFAULT_OX_TO_EL,
+    MM as DEFAULT_MM,
+    Minv as DEFAULT_MINV,
+    Mtot as DEFAULT_MTOT,
+    phaseToCompMap as DEFAULT_PHASE_TO_COMP,
+    variedToAllComp as DEFAULT_VARIED_TO_ALL_COMP,
+    fixed_phaseToCompMap as DEFAULT_FIXED_PHASE_TO_COMP,
+    boolTransCompToOx as DEFAULT_BOOL_TRANS_COMP_TO_OX,
+    compositionally_variable_subset as DEFAULT_COMP_VAR_SUBSET,
 )
 
 
@@ -40,11 +40,12 @@ class TunableModel(nn.Module):
                  middleLayerDown=1,
                  low_regularization='none',
                  high_regularization='none',
-                 activation_leak=0.05):
+                 activation_leak=0.05,
+                 ml_indexer=None):
         """
         regularization: 'none' | 'batchnorm' | 'dropout<frac>' (e.g. 'dropout0.2')
         activation_factory: a callable returning an nn.Module activation (default: LeakyReLU)
-        Note: code expects globals: label_indices, Elkeys (and later, mapping buffers in subclass).
+        Note: code uses ml_indexer-derived mappings.
         """
         super().__init__()
 
@@ -60,8 +61,10 @@ class TunableModel(nn.Module):
 
         activation_factory = lambda: nn.LeakyReLU(activation_leak) if activation_leak > 0 else lambda: nn.ReLU()
 
-        self.n_phases = len(list(label_indices.keys()))
-        input_dim = 3 + len(Elkeys)
+        self._set_indexer(ml_indexer)
+
+        self.n_phases = len(list(self.label_indices.keys()))
+        input_dim = 3 + len(self.Elkeys)
         self.activation_factory = activation_factory
         self.input_dim = input_dim
 
@@ -187,12 +190,12 @@ class TunableModel(nn.Module):
         After creating TunableModel instance, call finish_build() to finalize:
          - create chem heads from label_indices
          - build middleBrain and mole_head
-        This separation allows use of globals that may be set after __init__ in code.
+        This separation allows use of indexer mappings that may be set after __init__.
         """
         # build comp mappings and chem heads
         j = 0
         self.chem_heads = nn.ModuleList()
-        for i, (label, inds) in enumerate(label_indices.items()):
+        for i, (label, inds) in enumerate(self.label_indices.items()):
             n_components = len(inds)
             if n_components > 1:
                 self.comp_binariesL.append(i)
@@ -251,6 +254,39 @@ class TunableModel(nn.Module):
         self.comp_binariesL = self.comp_binariesL
         self._n_chem_head_count = len(self.chem_heads)
 
+    def _set_indexer(self, ml_indexer):
+        self.ml_indexer = ml_indexer
+
+        if ml_indexer is None:
+            self.Elkeys = DEFAULT_ELKEYS
+            self.label_indices = DEFAULT_LABEL_INDICES
+            self.label_indices_comp = DEFAULT_LABEL_INDICES_COMP
+            self.compToOx_raw = DEFAULT_COMP_TO_OX
+            self.oxToEl_raw = DEFAULT_OX_TO_EL
+            self.MM_raw = DEFAULT_MM
+            self.Minv_raw = DEFAULT_MINV
+            self.Mtot_raw = DEFAULT_MTOT
+            self.phaseToCompMap_raw = DEFAULT_PHASE_TO_COMP
+            self.variedToAllComp_raw = DEFAULT_VARIED_TO_ALL_COMP
+            self.fixed_phaseToCompMap_raw = DEFAULT_FIXED_PHASE_TO_COMP
+            self.boolTransCompToOx_raw = DEFAULT_BOOL_TRANS_COMP_TO_OX
+            self.compositionally_variable_subset_raw = DEFAULT_COMP_VAR_SUBSET
+            return
+
+        self.Elkeys = ml_indexer.Elkeys
+        self.label_indices = ml_indexer.label_indices
+        self.label_indices_comp = ml_indexer.label_indices_comp
+        self.compToOx_raw = ml_indexer.compToOx
+        self.oxToEl_raw = getattr(ml_indexer, "OxToEl", None) or ml_indexer.oxToEl
+        self.MM_raw = ml_indexer.MM
+        self.Minv_raw = ml_indexer.Minv
+        self.Mtot_raw = ml_indexer.Mtot
+        self.phaseToCompMap_raw = ml_indexer.phaseToCompMap
+        self.variedToAllComp_raw = ml_indexer.variedToAllComp
+        self.fixed_phaseToCompMap_raw = ml_indexer.fixed_phaseToCompMap
+        self.boolTransCompToOx_raw = ml_indexer.boolTransCompToOx
+        self.compositionally_variable_subset_raw = ml_indexer.compositionally_variable_subset
+
 
 class MidLevelNetwork(TunableModel):
     def __init__(self, encoderLayerUp=0, encoderLayerDown=0,
@@ -260,9 +296,19 @@ class MidLevelNetwork(TunableModel):
                  lowWD = 0, # Weight Decays for use when training lower and upper model respectively 
                  highWD = 0,
                  noise = 0,
-                 description=''):# Use Description Arg to keep track of model's target (e.g. 'MELTS 1.0, Fxtal, NoCr')
+                 description='',
+                 ml_indexer=None):# Use Description Arg to keep track of model's target (e.g. 'MELTS 1.0, Fxtal, NoCr')
         # call TunableModel constructor
-        super().__init__(encoderLayerUp, encoderLayerDown, middleLayerUp, middleLayerDown, low_regularization, high_regularization, activation_leak)
+        super().__init__(
+            encoderLayerUp,
+            encoderLayerDown,
+            middleLayerUp,
+            middleLayerDown,
+            low_regularization,
+            high_regularization,
+            activation_leak,
+            ml_indexer=ml_indexer,
+        )
 
         # Save Model Configuration:
         self.config = dict(
@@ -312,27 +358,22 @@ class MidLevelNetwork(TunableModel):
 
 
 
-        self.compToOx = torch.tensor(compToOx, dtype = torch.float, device = 'cuda')
-        self.oxToEl = torch.tensor(oxToEl, dtype = torch.float, device = 'cuda')
-        self.elToOx = torch.linalg.inv(self.oxToEl[:len(Elkeys)]) #For FeOt only
-        self.Minv = torch.tensor(Minv, dtype = torch.float, device = 'cuda')
-        self.MM = torch.tensor(MM, dtype = torch.float, device = 'cuda')
-        self.Mtot = torch.tensor(Mtot, dtype = torch.float, device = 'cuda').flatten()
+        self.compToOx = torch.tensor(self.compToOx_raw, dtype=torch.float, device='cuda')
+        self.oxToEl = torch.tensor(self.oxToEl_raw, dtype=torch.float, device='cuda')
+        self.elToOx = torch.linalg.inv(self.oxToEl[:len(self.Elkeys)]) # For FeOt only
+        self.Minv = torch.tensor(self.Minv_raw, dtype=torch.float, device='cuda')
+        self.MM = torch.tensor(self.MM_raw, dtype=torch.float, device='cuda')
+        self.Mtot = torch.tensor(self.Mtot_raw, dtype=torch.float, device='cuda').flatten()
 
-        self.register_buffer('boolTransCompToOx', torch.tensor(boolTransCompToOx)) 
-        self.register_buffer('compositionally_variable_subset', torch.tensor(compositionally_variable_subset,dtype = int))
-        self.register_buffer('comp_mappings', comp_mappings) 
-
-        
-        self.register_buffer('comp_binaries', torch.tensor(comp_binariesL, dtype = torch.int)) # Use == 0 for pure binaries
-
-        self.register_buffer('phaseToCompMap', torch.tensor(phaseToCompMap, dtype = torch.float))
-        self.register_buffer('variedToAllComp', torch.tensor(variedToAllComp, dtype = torch.float))
-        self.register_buffer('fixed_phaseToCompMap', torch.tensor(fixed_phaseToCompMap, dtype = torch.float))
-        self.register_buffer('compToEl', torch.tensor(compToOx @ oxToEl, dtype = torch.float))
+        self.register_buffer('boolTransCompToOx', torch.tensor(self.boolTransCompToOx_raw))
+        self.register_buffer('compositionally_variable_subset', torch.tensor(self.compositionally_variable_subset_raw, dtype=int))
+        self.register_buffer('phaseToCompMap', torch.tensor(self.phaseToCompMap_raw, dtype=torch.float))
+        self.register_buffer('variedToAllComp', torch.tensor(self.variedToAllComp_raw, dtype=torch.float))
+        self.register_buffer('fixed_phaseToCompMap', torch.tensor(self.fixed_phaseToCompMap_raw, dtype=torch.float))
+        self.register_buffer('compToEl', torch.tensor(self.compToOx_raw @ self.oxToEl_raw, dtype=torch.float))
 
     def save(self, DictFilePath):
-        torch.save({'state_dict': self.state_dict(), 'config': self.config}, DictFilePath)
+        torch.save({'state_dict': self.state_dict(), 'config': self.config, 'ml_indexer': self.ml_indexer}, DictFilePath)
 
     def forward_binaries(self, x):
         """Outputs satuation logits only, to be passed through sigmoid. Useful for training with BCEwithlogits loss"""
@@ -349,7 +390,7 @@ class MidLevelNetwork(TunableModel):
 
 
     def forward_phase_moles(self, latentx, binary_mask, intensiveComponents, details_out = False):
-        """Predicts molar abundance of phases and reconstructs bulk composition. Let intensive components be indexed by label_indices_comp"""
+        """Predicts molar abundance of phases and reconstructs bulk composition."""
 
         phaseMoles = self.mole_head(latentx) * binary_mask
         compMultipliers = phaseMoles @ self.phaseToCompMap #(B,C)
@@ -383,18 +424,18 @@ class MidLevelNetwork(TunableModel):
     
     def polish_negative_px(self, intensiveComponents):
         # Send g5 Fliers back to reason, rescale remaining components.
-        fliers = intensiveComponents[:, label_indices_comp['orthopyroxene'][6]] > 0.5
-        intensiveComponents[fliers, label_indices_comp['orthopyroxene'][6]] = 0.5
-        r_fly, c_fly = torch.meshgrid(torch.nonzero(fliers, as_tuple=False).squeeze(-1).to(torch.int), torch.tensor(label_indices_comp['orthopyroxene'][:6],dtype = torch.int, device = intensiveComponents.device), indexing="ij")
+        fliers = intensiveComponents[:, self.label_indices_comp['orthopyroxene'][6]] > 0.5
+        intensiveComponents[fliers, self.label_indices_comp['orthopyroxene'][6]] = 0.5
+        r_fly, c_fly = torch.meshgrid(torch.nonzero(fliers, as_tuple=False).squeeze(-1).to(torch.int), torch.tensor(self.label_indices_comp['orthopyroxene'][:6],dtype = torch.int, device = intensiveComponents.device), indexing="ij")
         intensiveComponents[r_fly, c_fly] =intensiveComponents[r_fly, c_fly] * (0.5 / (intensiveComponents[r_fly, c_fly].sum(dim=-1, keepdim=True)))
 
         # Check and correct for below zero CaO
         PosS = torch.sum(
-            intensiveComponents[:, label_indices_comp['orthopyroxene'][:5]], dim=-1
+            intensiveComponents[:, self.label_indices_comp['orthopyroxene'][:5]], dim=-1
         )  # Sumterm
         NegS = (
-            intensiveComponents[:, label_indices_comp['orthopyroxene'][5]] * 2
-        ) + intensiveComponents[:, label_indices_comp['orthopyroxene'][6]]
+            intensiveComponents[:, self.label_indices_comp['orthopyroxene'][5]] * 2
+        ) + intensiveComponents[:, self.label_indices_comp['orthopyroxene'][6]]
 
         illegal = NegS > PosS
 
@@ -403,8 +444,8 @@ class MidLevelNetwork(TunableModel):
             print(NegS[illegal])
             print(torch.where(illegal))
             denom = (
-                2 * intensiveComponents[illegal, label_indices_comp['orthopyroxene'][6]]
-                + 3 * intensiveComponents[illegal, label_indices_comp['orthopyroxene'][5]]
+                2 * intensiveComponents[illegal, self.label_indices_comp['orthopyroxene'][6]]
+                + 3 * intensiveComponents[illegal, self.label_indices_comp['orthopyroxene'][5]]
             )
             b = 1.0 / denom
             a = NegS[illegal] / (denom * PosS[illegal])
@@ -413,9 +454,9 @@ class MidLevelNetwork(TunableModel):
             row_idx = torch.nonzero(illegal, as_tuple=False).squeeze(-1).to(torch.int)
             print(row_idx)
             # Column indices (orthopyroxene subset)
-            cols_pos = torch.tensor(label_indices_comp['orthopyroxene'][:5],
+            cols_pos = torch.tensor(self.label_indices_comp['orthopyroxene'][:5],
                                     device=intensiveComponents.device, dtype = torch.int)
-            cols_neg = torch.tensor(label_indices_comp['orthopyroxene'][-2:],
+            cols_neg = torch.tensor(self.label_indices_comp['orthopyroxene'][-2:],
                                     device=intensiveComponents.device, dtype = torch.int)
 
             # Build broadcastable index grids
@@ -432,9 +473,9 @@ class MidLevelNetwork(TunableModel):
     
     def polish_negative_spFe(self, intensiveComponents):
         # Check and correct for below zero FeO
-        PosS = torch.sum(intensiveComponents[:, label_indices_comp['spinel'][torch.tensor([0,1,2,4], dtype = torch.int)]], dim=-1
-        ) + ( intensiveComponents[:, label_indices_comp['spinel'][4]]*2.25 )# Sumterm
-        NegS = intensiveComponents[:, label_indices_comp['spinel'][3]] * 19
+        PosS = torch.sum(intensiveComponents[:, self.label_indices_comp['spinel'][torch.tensor([0,1,2,4], dtype = torch.int)]], dim=-1
+        ) + ( intensiveComponents[:, self.label_indices_comp['spinel'][4]]*2.25 )# Sumterm
+        NegS = intensiveComponents[:, self.label_indices_comp['spinel'][3]] * 19
 
         illegal = NegS > PosS
         if illegal.any():
@@ -443,9 +484,9 @@ class MidLevelNetwork(TunableModel):
             row_idx = torch.nonzero(illegal, as_tuple=False).squeeze(-1).to(torch.int)
             print(row_idx)
             # Column indices (spinel subset)
-            cols_pos = torch.tensor(label_indices_comp['spinel'][torch.tensor([0,1,2,4], dtype = torch.int)],
+            cols_pos = torch.tensor(self.label_indices_comp['spinel'][torch.tensor([0,1,2,4], dtype = torch.int)],
                                     device=intensiveComponents.device, dtype = torch.int)
-            cols_neg = torch.tensor(label_indices_comp['spinel'][3],
+            cols_neg = torch.tensor(self.label_indices_comp['spinel'][3],
                                    device=intensiveComponents.device, dtype = torch.int)
 
             # Build broadcastable index grids
@@ -457,7 +498,7 @@ class MidLevelNetwork(TunableModel):
             #print(torch.where(illegal))
             denom = (19*A) + PosS[illegal] 
             a = 19.0 / denom
-            b = PosS[illegal] / (denom *  intensiveComponents[illegal, label_indices_comp['spinel'][3]])
+            b = PosS[illegal] / (denom *  intensiveComponents[illegal, self.label_indices_comp['spinel'][3]])
 
             # Scale updates
             intensiveComponents[rr_pos, cc_pos] = a[:, None] * intensiveComponents[rr_pos, cc_pos]
@@ -467,21 +508,21 @@ class MidLevelNetwork(TunableModel):
     
     def polish_negative_spAl(self, intensiveComponents):
         # Check and correct for negative Al in spinel
-        NegS = (intensiveComponents[:,label_indices_comp['spinel'][2]] * (2/3)) + (intensiveComponents[:,label_indices_comp['spinel'][4]] * (1/4))
-        PosS =  (intensiveComponents[:,label_indices_comp['spinel'][1]] ) + (intensiveComponents[:,label_indices_comp['spinel'][3]])
+        NegS = (intensiveComponents[:,self.label_indices_comp['spinel'][2]] * (2/3)) + (intensiveComponents[:,self.label_indices_comp['spinel'][4]] * (1/4))
+        PosS =  (intensiveComponents[:,self.label_indices_comp['spinel'][1]] ) + (intensiveComponents[:,self.label_indices_comp['spinel'][3]])
         illegal = NegS > PosS
         if illegal.sum():  # Calculate scaling factors to zero out negative hercynite without affecting Chromite
-            A =  (intensiveComponents[illegal,label_indices_comp['spinel'][2]] ) + (intensiveComponents[illegal,label_indices_comp['spinel'][4]])
+            A =  (intensiveComponents[illegal,self.label_indices_comp['spinel'][2]] ) + (intensiveComponents[illegal,self.label_indices_comp['spinel'][4]])
             RemS = A + PosS[illegal] # equivalent to 1-chromite
             a = RemS / (A + NegS[illegal])
             b = (RemS * NegS[illegal]) / ( PosS[illegal] * (A + NegS[illegal]) )
-            intensiveComponents[illegal,label_indices_comp['spinel'][2]], intensiveComponents[illegal,label_indices_comp['spinel'][4]] = a * intensiveComponents[illegal,label_indices_comp['spinel'][2]], a * intensiveComponents[illegal,label_indices_comp['spinel'][4]]
-            intensiveComponents[illegal,label_indices_comp['spinel'][1]], intensiveComponents[illegal,label_indices_comp['spinel'][3]] =  b * intensiveComponents[illegal,label_indices_comp['spinel'][1]], b * intensiveComponents[illegal,label_indices_comp['spinel'][3]] 
+            intensiveComponents[illegal,self.label_indices_comp['spinel'][2]], intensiveComponents[illegal,self.label_indices_comp['spinel'][4]] = a * intensiveComponents[illegal,self.label_indices_comp['spinel'][2]], a * intensiveComponents[illegal,self.label_indices_comp['spinel'][4]]
+            intensiveComponents[illegal,self.label_indices_comp['spinel'][1]], intensiveComponents[illegal,self.label_indices_comp['spinel'][3]] =  b * intensiveComponents[illegal,self.label_indices_comp['spinel'][1]], b * intensiveComponents[illegal,self.label_indices_comp['spinel'][3]] 
         return intensiveComponents
     
     def polish_negative_sp(self, intensiveComponents, trial = 0):
         # Indices for spinel components
-        idxs = label_indices_comp['spinel']
+        idxs = self.label_indices_comp['spinel']
         i1, i2, i3, i4, i5 = idxs[0], idxs[1], idxs[2], idxs[3], idxs[4]
 
         # Extract components
@@ -554,7 +595,7 @@ class MidLevelNetwork(TunableModel):
             try:
                 sol = torch.linalg.solve(M, rhs)  # shape (rows, 3). A wannabe pure MgAl2O3 makes a singular matrix. Handle this edge case with a simpler fix then recursion.
             except:
-                rr_e, cc_e = torch.meshgrid(row_idx, torch.tensor(label_indices_comp['spinel'], dtype = torch.int, device = intensiveComponents.device), indexing="ij")
+                rr_e, cc_e = torch.meshgrid(row_idx, torch.tensor(self.label_indices_comp['spinel'], dtype = torch.int, device = intensiveComponents.device), indexing="ij")
                 print('SPINEL COMPOSITIONS:')
                 print(intensiveComponents[rr_e, cc_e])
                 if trial == 2:
@@ -671,7 +712,7 @@ class MidLevelNetwork(TunableModel):
             chem_out[superliquidus] = 0.0
 
             # Overwrite liquid component columns with feature composition
-            liq_idx = torch.tensor(label_indices_comp['melts-liquid'], device=chem_out.device)
+            liq_idx = torch.tensor(self.label_indices_comp['melts-liquid'], device=chem_out.device)
             #chem_out[superliquidus][:, liq_idx] = features[superliquidus, 3:]
             chem_out[superliquidus, -len(liq_idx):] = features[superliquidus, 3:]
 
@@ -689,7 +730,7 @@ class MidLevelNetwork(TunableModel):
             chem_out = torch.cat(chem_outputs, dim=1)
 
             # Overwrite liquid component columns with feature composition
-            liq_idx = torch.tensor(label_indices_comp['melts-liquid'], device=chem_out.device)
+            liq_idx = torch.tensor(self.label_indices_comp['melts-liquid'], device=chem_out.device)
             chem_out[superliquidus][:, liq_idx] = features[superliquidus, 3:]
 
 
@@ -699,7 +740,7 @@ class MidLevelNetwork(TunableModel):
         )
 
         # Assign direct values for superliquidus rows
-        liq_idx_phase = torch.tensor(label_indices['melts-liquid'], device=chem_out.device)
+        liq_idx_phase = torch.tensor(self.label_indices['melts-liquid'], device=chem_out.device)
 
         reconBulk[superliquidus] = features[superliquidus, 3:]
         componentMoles[superliquidus][:, liq_idx_phase] = features[superliquidus, 3:]
@@ -749,12 +790,14 @@ class CombinedNetwork(nn.Module):
         Noise level for training
     description : str, default=''
         Description of the model's target
+    ml_indexer : object, optional
+        MLIndexer instance to supply phase/component mappings
     """
     def __init__(self, encoderLayerUp=0, encoderLayerDown=0,
                  middleLayerUp=0, middleLayerDown=0,
                  low_regularization='none', high_regularization='none', 
                  activation_leak=0.05,
-                 lowWD=0, highWD=0, noise=0, description=''):
+                 lowWD=0, highWD=0, noise=0, description='', ml_indexer=None):
         super().__init__()
         
         # Create the base TunableModel
@@ -765,7 +808,8 @@ class CombinedNetwork(nn.Module):
             middleLayerDown=middleLayerDown,
             low_regularization=low_regularization,
             high_regularization=high_regularization,
-            activation_leak=activation_leak
+            activation_leak=activation_leak,
+            ml_indexer=ml_indexer
         )
         
         # Create the MidLevelNetwork (which inherits from TunableModel)
@@ -780,7 +824,8 @@ class CombinedNetwork(nn.Module):
             lowWD=lowWD,
             highWD=highWD,
             noise=noise,
-            description=description
+            description=description,
+            ml_indexer=ml_indexer
         )
         
         # Store configuration
