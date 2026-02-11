@@ -115,15 +115,48 @@ def sanity_check_bundle(bundle_path: Path, tolerance=1e-3, bulk_tol_frac=1e-3) -
     features = bundle.features
     free_outputs = getattr(bundle, 'free_outputs', None)
 
-    assert labels.shape[1] == indexer.ncompsVaried, (
-        f"labels has {labels.shape[1]} columns, expected VC={indexer.ncompsVaried}"
-    )
-    assert binary_labels.shape[1] == indexer.nphases, (
-        f"binary_labels has {binary_labels.shape[1]} columns, expected P={indexer.nphases}"
-    )
-    assert molar_labels.shape[1] == indexer.nphases, (
-        f"molar_labels has {molar_labels.shape[1]} columns, expected P={indexer.nphases}"
-    )
+    outpath = bundle_path.parent / 'logs'  # Path to print .csvs for FAILURES
+    
+    def _export_on_failure():
+        """Export bundle arrays to CSV when a sanity check fails."""
+        try:
+            export_bundle_arrays_to_csv(bundle, output_dir=outpath)
+            print(f"\n[EXPORTED] Bundle arrays saved to {outpath} for debugging")
+        except Exception as e:
+            print(f"\n[WARN] Failed to export bundle arrays: {e}")
+    
+
+    def _format_indices(idxs, limit=10):
+        idxs = np.asarray(idxs, dtype=int)
+        if idxs.size == 0:
+            return "[]"
+        shown = idxs[:limit]
+        suffix = "..." if idxs.size > limit else ""
+        return f"[{', '.join(map(str, shown))}{suffix}]"
+
+    try:
+        assert labels.shape[1] == indexer.ncompsVaried, (
+            f"labels has {labels.shape[1]} columns, expected VC={indexer.ncompsVaried}"
+        )
+    except AssertionError:
+        _export_on_failure()
+        raise
+    
+    try:
+        assert binary_labels.shape[1] == indexer.nphases, (
+            f"binary_labels has {binary_labels.shape[1]} columns, expected P={indexer.nphases}"
+        )
+    except AssertionError:
+        _export_on_failure()
+        raise
+    
+    try:
+        assert molar_labels.shape[1] == indexer.nphases, (
+            f"molar_labels has {molar_labels.shape[1]} columns, expected P={indexer.nphases}"
+        )
+    except AssertionError:
+        _export_on_failure()
+        raise
 
     # All bundle arrays should have consistent row counts.
     row_counts = {
@@ -133,13 +166,18 @@ def sanity_check_bundle(bundle_path: Path, tolerance=1e-3, bulk_tol_frac=1e-3) -
         'binary_labels': binary_labels.shape[0],
         'mass_labels': bundle.mass_labels.shape[0],
     }
+
     if free_outputs is not None:
         row_counts['free_outputs'] = free_outputs.shape[0]
 
     unique_row_counts = set(row_counts.values())
-    assert len(unique_row_counts) == 1, (
-        f"Bundle arrays have inconsistent row counts: {row_counts}"
-    )
+    try:
+        assert len(unique_row_counts) == 1, (
+            f"Bundle arrays have inconsistent row counts: {row_counts}"
+        )
+    except AssertionError:
+        _export_on_failure()
+        raise
 
     # Variable-phase label row sums should be 1 if phase present, else 0.
     for phase, idxs in indexer.label_indices_comp.items():
@@ -147,30 +185,69 @@ def sanity_check_bundle(bundle_path: Path, tolerance=1e-3, bulk_tol_frac=1e-3) -
         phase_idx = indexer.mass_phasedict[phase]
         phase_present = binary_labels[:, phase_idx] > 0.5
         row_sums = np.sum(labels[:, idxs], axis=1)
-        assert np.allclose(row_sums[phase_present], 1.0, rtol=0.0, atol=tolerance), (
-            f"{phase}: label rows should sum to 1 when present"
-        )
-        assert np.allclose(row_sums[~phase_present], 0.0, rtol=0.0, atol=tolerance), (
-            f"{phase}: label rows should sum to 0 when absent"
-        )
+        present_mask = phase_present
+        absent_mask = ~phase_present
+        present_diff = np.abs(row_sums[present_mask] - 1.0)
+        absent_diff = np.abs(row_sums[absent_mask] - 0.0)
+        present_fail = np.where(present_diff > tolerance)[0]
+        absent_fail = np.where(absent_diff > tolerance)[0]
+        if present_fail.size > 0:
+            _export_on_failure()
+            worst_idx = present_fail[np.argmax(present_diff[present_fail])]
+            worst_val = row_sums[present_mask][worst_idx]
+            full_idx = np.where(present_mask)[0][present_fail]
+            raise AssertionError(
+                f"{phase}: label rows should sum to 1 when present. "
+                f"failures={present_fail.size}, worst_sum={worst_val:.6f}, "
+                f"worst_abs_diff={present_diff[present_fail].max():.2e}, "
+                f"rows={_format_indices(full_idx)}"
+            )
+        if absent_fail.size > 0:
+            _export_on_failure()
+            worst_idx = absent_fail[np.argmax(absent_diff[absent_fail])]
+            worst_val = row_sums[absent_mask][worst_idx]
+            full_idx = np.where(absent_mask)[0][absent_fail]
+            raise AssertionError(
+                f"{phase}: label rows should sum to 0 when absent. "
+                f"failures={absent_fail.size}, worst_sum={worst_val:.6f}, "
+                f"worst_abs_diff={absent_diff[absent_fail].max():.2e}, "
+                f"rows={_format_indices(full_idx)}"
+            )
 
     # Phase moles > 0 should match binary labels.
     phase_present_from_moles = molar_labels > 0
     phase_present_from_binary = binary_labels > 0.5
-    assert np.array_equal(phase_present_from_moles, phase_present_from_binary), (
-        "(phase moles > 0) must match binary_labels"
-    )
+    if not np.array_equal(phase_present_from_moles, phase_present_from_binary):
+        _export_on_failure()
+        mismatch = np.where(phase_present_from_moles != phase_present_from_binary)
+        row_idxs = mismatch[0]
+        col_idxs = mismatch[1]
+        paired = list(zip(row_idxs.tolist(), col_idxs.tolist()))
+        paired = paired[:10]
+        worst_count = row_idxs.size
+        raise AssertionError(
+            "(phase moles > 0) must match binary_labels. "
+            f"mismatches={worst_count}, first_pairs={paired}"
+        )
 
     # Labels only nonzero where binary labels allow.
     comp_mappings = indexer.comp_mappings
     comp_binaries = np.asarray(indexer.comp_binaries, dtype=int)
     label_implied_binary = labels @ comp_mappings.T
-    assert np.allclose(
-        label_implied_binary,
-        binary_labels[:, comp_binaries],
-        rtol=0.0,
-        atol=tolerance
-    ), "labels are nonzero where binary labels disallow"
+    binary_target = binary_labels[:, comp_binaries]
+    binary_diff = np.abs(label_implied_binary - binary_target)
+    binary_fail = np.where(binary_diff > tolerance)
+    if binary_fail[0].size > 0:
+        _export_on_failure()
+        worst_idx = np.argmax(binary_diff[binary_fail])
+        worst_row = binary_fail[0][worst_idx]
+        worst_col = binary_fail[1][worst_idx]
+        raise AssertionError(
+            "labels are nonzero where binary labels disallow. "
+            f"mismatches={binary_fail[0].size}, "
+            f"worst_abs_diff={binary_diff[binary_fail].max():.2e}, "
+            f"worst_pair=({int(worst_row)}, {int(worst_col)})"
+        )
 
     # Reconstruct bulk element composition from phase moles + component labels.
     phase_to_comp = indexer.phaseToCompMap
@@ -190,10 +267,18 @@ def sanity_check_bundle(bundle_path: Path, tolerance=1e-3, bulk_tol_frac=1e-3) -
     feature_offset = 3
     expected_el = features[:, feature_offset:]
     rel_diff = np.abs(bulk_el - expected_el) / (expected_el + 1e-10)
-    max_rel_diff = np.max(rel_diff)
-    assert max_rel_diff <= bulk_tol_frac, (
-        f"Bulk element mismatch: max rel diff {max_rel_diff:.2e} > {bulk_tol_frac:.2e}"
-    )
+    per_row_max = np.max(rel_diff, axis=1)
+    fail_rows = np.where(per_row_max > bulk_tol_frac)[0]
+    if fail_rows.size > 0:
+        _export_on_failure()
+        worst_row = int(fail_rows[np.argmax(per_row_max[fail_rows])])
+        worst_val = per_row_max[worst_row]
+        raise AssertionError(
+            "Bulk element mismatch. "
+            f"failures={fail_rows.size}, worst_row={worst_row}, "
+            f"worst_rel_diff={worst_val:.2e}, tol={bulk_tol_frac:.2e}, "
+            f"rows={_format_indices(fail_rows)}"
+        )
 
     print(f"[PASS] sanity_check_bundle passed for {bundle_path}")
 
@@ -770,6 +855,8 @@ def run_tests_on_csv(csv_path: Path, test_name: str = "", output_tables: bool = 
     if not hasattr(BMT, 'indexer') or BMT.indexer is None:
         BMT.indexer = DatasetIndexer(BMT)
 
+    
+
     # Generate features/labels with resampling bounds [[1,1]]
     resampling_to_datasets(BMT, resample_bounds=[[1, 1]], indexer=BMT.indexer)
 
@@ -806,9 +893,9 @@ if __name__ == '__main__':
     from src.builder.indexer import DatasetIndexer
 
     # Path to the batch cooling CSV
-    csv_path = Path(project_root) / 'data' / 'MELTStables' / '110' / 'MELTS110_TrainsetFeb3BatchCooling.csv'
-    bundle_path_1 = Path(project_root) / 'data' / 'MLready' / '110' / 'MELTS110_TrainsetFeb3BatchCooling.tar.gz'
-    bundle_path_2 = Path(project_root) / 'data' / 'MLready' / '110' / 'MELTS110_TrainsetFeb3BatchCooling_shuffled.tar.gz'
+    csv_path = Path(project_root) / 'data' / 'MELTStables' / '102' / 'MELTS102_TrainsetFeb9BatchCooling.csv'
+    bundle_path_1 = Path(project_root) / 'data' / 'MLready' / '102' / 'MELTS102_TrainsetFeb9BatchCooling.tar.gz'
+    bundle_path_2 = Path(project_root) / 'data' / 'MLready' / '102' / 'MELTS102_TrainsetFeb9BatchCooling_shuffled.tar.gz'
 
 
     if not csv_path.exists():
@@ -817,6 +904,10 @@ if __name__ == '__main__':
     # Initialize BMT once (will be reused for all tests)
     base_name = str(csv_path).rsplit('.csv', 1)[0]
     BMT = BigMetaTable(base_name, rebuild_memmap=True)
+
+    #Filter out invalid (Low F, frozen comp, NaN / 0 values for mass; should be small fraction of total)
+    BMT.filter_inconsistent_phase_data()
+
     BMT.separate_analcime() # Test essential separate analcime function
     
     #BMT.indexer.table_update(BMT.table)
@@ -852,6 +943,8 @@ if __name__ == '__main__':
     
     # Create new BMT for shuffled CSV
     BMT_shuffled = BigMetaTable(base_name_shuffled, rebuild_memmap=True)
+
+    BMT_shuffled.filter_inconsistent_phase_data()
     #BMT_shuffled.separate_analcime()
     #BMT_shuffled.indexer.table_update(BMT_shuffled.table)
     #if not hasattr(BMT_shuffled, 'indexer') or BMT_shuffled.indexer is None:

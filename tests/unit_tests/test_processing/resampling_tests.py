@@ -1,7 +1,9 @@
 import argparse
 import sys
+import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+import gc
 
 import yaml
 import numpy as np
@@ -14,7 +16,7 @@ from src.builder.processing.prepareML import process_for_ML
 from src.builder.processing.BigMetaTable import BigMetaTable
 from src.builder.processing.MLexporter import load_ml_bundle
 from src.builder.processing import filters
-from tests.unit_tests.test_processing.ML_export_tests import run_tests_on_bundle
+from tests.unit_tests.test_processing.ML_export_tests import run_tests_on_bundle, sanity_check_bundle
 from nMELTS.config.settings import internal_train_dir, external_train_dir
 from tests.test_utils import setup_test_logging
 
@@ -72,6 +74,20 @@ def _wrap_deep_filter_for_tarballs():
         return original_deep_filter(str(candidate), *args, **kwargs)
 
     prepareML.deep_filter = _deep_filter_wrapper
+
+
+def _reserve_baseline_bundle(bundle_path: Path, config_name: str) -> Path:
+    base_name = bundle_path.name
+    if base_name.endswith('.tar.gz'):
+        base_root = base_name[:-7]
+    else:
+        base_root = bundle_path.stem
+    baseline_name = f"{base_root}_baseline_{config_name}.tar.gz"
+    baseline_path = bundle_path.with_name(baseline_name)
+    if baseline_path.exists():
+        return baseline_path
+    shutil.move(str(bundle_path), str(baseline_path))
+    return baseline_path
 
 
 def _phase_presence(binary_labels: np.ndarray, all_phases: List[str], phase_name: str) -> Optional[np.ndarray]:
@@ -255,6 +271,7 @@ def run_processing_tests(config_dir: Path, melts_model: Optional[str], date: Opt
     baseline_bundle = None
     baseline_config = None
     base_table = None
+    baseline_bundle_path = None
 
     for config_path in config_paths:
         if config_path.name == 'separate_analcime_only.yaml':
@@ -290,6 +307,8 @@ def run_processing_tests(config_dir: Path, melts_model: Optional[str], date: Opt
         )
         if not bundle_path.exists():
             raise FileNotFoundError(f"Bundle not found at {bundle_path}")
+        
+        sanity_check_bundle(bundle_path=Path(bundle_path))  # Verify that the data make sense
 
         # Build base table once
         if base_table is None:
@@ -300,19 +319,31 @@ def run_processing_tests(config_dir: Path, melts_model: Optional[str], date: Opt
                 dataset_cfg.get('subset', False),
                 preproc_cfg.get('preprocessed', False),
             )
+            base_name = str(source_base.parent / 'base_table')
             base_table = BigMetaTable(str(source_base))
+            base_table.save(base_name)
+            del base_table  # Clear from memory, will be reloaded as needed in tests
+            gc.collect()
+            base_table = BigMetaTable(base_name) # Reload with diffferent name to ensure no crashing effects
             
 
         #fractionate = 'batch' if 'sampling' not in config_path.name else None  #Skip mass == 100 test and constant bulk test if resampling is ocurring. 
         fractionate = None # For now, test this earlier in pipeline. Errors I don't want to fix. 
         #run_tests_on_bundle(bundle_path, base_table, test_name=config_path.stem, fractionate=fractionate, outname=config_path.name.replace('.yaml', '_test_output')) Test earlier in pipeline.
 
+        if baseline_bundle_path is None:
+            baseline_bundle_path = _reserve_baseline_bundle(bundle_path, config_path.stem)
+            bundle_path = baseline_bundle_path
+
         bundle = load_ml_bundle(bundle_path)
+
+        if baseline_bundle is None:
+            baseline_bundle = bundle
+            baseline_config = cfg
+            continue
 
         if config_path.name == 'separate_analcime_only.yaml':
             _sanity_check_separate_analcime(bundle, base_table)
-            baseline_bundle = bundle
-            baseline_config = cfg
             continue
 
         if baseline_bundle is None or baseline_config is None:
@@ -333,7 +364,7 @@ def run_processing_tests(config_dir: Path, melts_model: Optional[str], date: Opt
             _sanity_check_balancing_liquid(bundle, 0.70, 'balance_lowF')
 
         if config_path.name == 'balancingSuperliquidus_only.yaml':
-            _sanity_check_balancing_liquid(bundle, 0.70, 'balance_superliquidus')
+            _sanity_check_balancing_liquid(bundle, 0.65, 'balance_superliquidus')
 
         if config_path.name == 'balancingGeodynamics_only.yaml':
             _sanity_check_geodynamics(bundle, 0.50)

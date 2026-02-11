@@ -1,11 +1,13 @@
 # Test config: isolate dataset resampling only
 
 dataset:
-  MELTSModel: '110'
-  Date: 'Feb3'
+  MELTSModel: '102'
+  Date: 'Feb9'
   Mode: 'BatchCooling'
   subset: false
   use_external: false
+
+
 
 preprocessing:
   preprocessed: false
@@ -16,6 +18,8 @@ preprocessing:
 upsampling:
   enabled: false
   phases: {}
+
+min_phase_proportion: 0.03    # Minimum phase proportion (0-1) for a sample to be included in training set. Applied after upsampling.
 
 resampling:
   train_bounds:

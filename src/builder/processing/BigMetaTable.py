@@ -274,6 +274,12 @@ class BigMetaTable:
         print(f"[INFO] Preparing to process {nrows} of {file_rows} total rows with {num_cols} columns...")
 
         # Create memmap with provisional shape (max size)
+        if os.path.exists(self.memmap_file):
+            try:
+                os.remove(self.memmap_file)
+                print(f"Existing memmap file {self.memmap_file} removed.")
+            except OSError as exc:
+                print(f"[WARN] Failed to remove existing memmap file {self.memmap_file}: {exc}")
         memmap = np.lib.format.open_memmap(
             self.memmap_file,
             mode='w+',
@@ -724,6 +730,205 @@ class BigMetaTable:
         if to_delete:
             self.delete(np.array(sorted(to_delete), dtype=int))
             print(f"Deleted total {len(to_delete)} simulations with large jumps")
+            
+    def filter_min_phase_proportion(self, min_proportion):
+        """
+        Delete all rows that contain phases whose presence falls below a minimum proportion.
+
+        Parameters:
+        - min_proportion (float): Minimum fraction of rows in which a phase must appear to be kept.
+        """
+        if not isinstance(min_proportion, (float, int)):
+            raise TypeError("min_proportion must be a float between 0 and 1.")
+        if not (0.0 < float(min_proportion) <= 1.0):
+            raise ValueError("min_proportion must be a float between 0 and 1 (exclusive of 0).")
+
+        min_proportion = float(min_proportion)
+        total_rows = self.table.shape[0]
+        if total_rows == 0:
+            print("No rows available; skipping phase proportion filtering.")
+            self.indexer.table_update(self.table)
+            return
+
+        delete_mask = np.zeros(total_rows, dtype=bool)
+        phases_removed = []
+
+        for phase, components in self.indexer.MELTS_indices.items():
+            if phase in self.indexer.EXCLUDED_PHASES:
+                continue
+
+            if phase == 'melts-liquid':
+                mass_col = components.get('liq mass (gm)')
+            else:
+                mass_col = components.get('mass (gm)')
+
+            if mass_col is None:
+                print(f"Skipping phase '{phase}': no mass column found.")
+                continue
+
+            phase_mask = self.table[:, mass_col] > 0
+            phase_count = int(np.sum(phase_mask))
+            phase_proportion = phase_count / total_rows
+
+            if phase_proportion < min_proportion:
+                delete_mask |= phase_mask
+                phases_removed.append(phase)
+                print(
+                    f"Phase '{phase}' proportion {phase_proportion:.6f} below {min_proportion:.6f}; "
+                    f"marking {phase_count} rows for deletion."
+                )
+            else:
+                print(
+                    f"Phase '{phase}' proportion {phase_proportion:.6f} meets threshold {min_proportion:.6f}; keeping."
+                )
+
+        if np.any(delete_mask):
+            indices_to_delete = np.where(delete_mask)[0]
+            print(
+                f"Deleting {len(indices_to_delete)} rows from {len(phases_removed)} underrepresented phases: "
+                f"{phases_removed}"
+            )
+            self.delete(indices_to_delete)
+        else:
+            print("No phases below threshold; no rows deleted.")
+
+        self.indexer.table_update(self.table)
+    
+    def filter_phases_not_in_ml_indexer(self):
+        """
+        Delete all rows that contain phases not present in self.indexer.ml_indexer.all_phases.
+        """
+        if not hasattr(self.indexer, 'ml_indexer'):
+            raise AttributeError("DatasetIndexer has no ml_indexer attached.")
+        if not hasattr(self.indexer.ml_indexer, 'all_phases'):
+            raise AttributeError("ml_indexer has no all_phases attribute.")
+
+        total_rows = self.table.shape[0]
+        if total_rows == 0:
+            print("No rows available; skipping ml_indexer phase filtering.")
+            self.indexer.table_update(self.table)
+            return
+
+        allowed_phases = set(self.indexer.ml_indexer.all_phases)
+        delete_mask = np.zeros(total_rows, dtype=bool)
+        phases_removed = []
+
+        for phase, components in self.indexer.MELTS_indices.items():
+
+            if phase in allowed_phases:
+                continue
+
+            if phase == 'melts-liquid':
+                mass_col = components.get('liq mass (gm)')
+            else:
+                mass_col = components.get('mass (gm)')
+
+            if mass_col is None:
+                print(f"Skipping phase '{phase}': no mass column found.")
+                continue
+
+            phase_mask = self.table[:, mass_col] > 0
+            phase_count = int(np.sum(phase_mask))
+            if phase_count == 0:
+                print(f"Phase '{phase}' not in ml_indexer; no rows contain it.")
+                continue
+
+            delete_mask |= phase_mask
+            phases_removed.append(phase)
+            print(
+                f"Phase '{phase}' not in ml_indexer; marking {phase_count} rows for deletion."
+            )
+
+        if np.any(delete_mask):
+            indices_to_delete = np.where(delete_mask)[0]
+            print(
+                f"Deleting {len(indices_to_delete)} rows from {len(phases_removed)} non-ml phases: "
+                f"{phases_removed}"
+            )
+            self.delete(indices_to_delete)
+        else:
+            print("No rows matched phases outside ml_indexer; no rows deleted.")
+
+        self.indexer.table_update(self.table)
+    
+    def filter_inconsistent_phase_data(self):
+        """
+        Delete rows with inconsistent phase data: mass = 0 but non-zero attributes.
+        
+        Checks all phases in ml_indexer and removes rows where a phase has zero mass
+        but has non-zero values in any of its other attributes (composition, etc.).
+        This indicates corrupted or inconsistent data.
+        """
+        if not hasattr(self.indexer, 'ml_indexer'):
+            raise AttributeError("DatasetIndexer has no ml_indexer attached.")
+        if not hasattr(self.indexer.ml_indexer, 'all_phases'):
+            raise AttributeError("ml_indexer has no all_phases attribute.")
+
+        total_rows = self.table.shape[0]
+        if total_rows == 0:
+            print("No rows available; skipping inconsistent phase data filtering.")
+            return
+
+        delete_mask = np.zeros(total_rows, dtype=bool)
+        inconsistent_phases = {}
+
+        for phase in self.indexer.ml_indexer.all_phases:
+            if phase not in self.indexer.MELTS_indices:
+                continue
+
+            components = self.indexer.MELTS_indices[phase]
+
+            # Get mass column
+            if phase == 'melts-liquid':
+                mass_col = components.get('liq mass (gm)')
+            else:
+                mass_col = components.get('mass (gm)')
+
+            if mass_col is None:
+                continue
+
+            # Get all other attribute columns for this phase
+            other_cols = [col_idx for key, col_idx in components.items() 
+                         if col_idx != mass_col]
+
+            if not other_cols:
+                continue
+
+            # Find rows where mass = 0
+            zero_mass_mask = self.table[:, mass_col] == 0
+
+            # Check if any other attributes are non-zero when mass = 0
+            other_data = self.table[zero_mass_mask][:, other_cols]
+            has_nonzero_attrs = np.any(other_data != 0, axis=1)
+
+            # Mark these rows for deletion
+            zero_mass_indices = np.where(zero_mass_mask)[0]
+            inconsistent_indices = zero_mass_indices[has_nonzero_attrs]
+
+            if len(inconsistent_indices) > 0:
+                delete_mask[inconsistent_indices] = True
+                inconsistent_phases[phase] = len(inconsistent_indices)
+
+        # Count total inconsistent rows
+        num_to_delete = int(np.sum(delete_mask))
+        
+        if num_to_delete > 0:
+            proportion = num_to_delete / total_rows
+            print(f"\n=== Filtering Inconsistent Phase Data ===")
+            print(f"Total rows: {total_rows}")
+            print(f"Rows with inconsistent data: {num_to_delete} ({proportion:.2%})")
+            print(f"\nInconsistent phases detected:")
+            for phase, count in sorted(inconsistent_phases.items(), key=lambda x: -x[1]):
+                phase_proportion = count / total_rows
+                print(f"  {phase:25s}: {count:6d} rows ({phase_proportion:.4%})")
+            
+            indices_to_delete = np.where(delete_mask)[0]
+            self.delete(indices_to_delete)
+            print(f"\nDeleted {num_to_delete} rows with inconsistent phase data.")
+        else:
+            print("No inconsistent phase data found; no rows deleted.")
+
+        self.indexer.table_update(self.table)
             
             
     

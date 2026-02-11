@@ -18,8 +18,8 @@ def create_optimizer(model: torch.nn.Module, config: Dict) -> torch.optim.Optimi
     name = config.get("name", "adamw").lower()
     if name not in _OPTIMIZERS:
         raise ValueError(f"Unknown optimizer: {name}")
-    lr = config.get("lr", 1e-3)
-    weight_decay = config.get("weight_decay", 0.0)
+    lr = float(config.get("lr", 1e-3))
+    weight_decay = float(config.get("weight_decay", 0.0))
     return _OPTIMIZERS[name](model.parameters(), lr=lr, weight_decay=weight_decay)
 
 

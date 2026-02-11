@@ -198,8 +198,12 @@ def forward_ensemble(input_array, keys, batchname, only_phases=None, end=0, Ense
         for FileName in [batchname[i]]:
             shutil.copy(os.path.join(Path(__file__).parent.parent.absolute(), 'batch', FileName),
                        os.path.join(ComputeDir, FileName))
+            shutil.copy(os.path.join(Path(__file__).parent.parent.absolute(), 'batch', 'settings.txt'),
+                       os.path.join(ComputeDir, 'settings.txt')) #Extend min Temp limit (for pMELTS especially)
+
+
         RunAll += 'cd "' + ComputeDir + '" && "'
-        RunAll += os.path.join(alphaMELTSLocation, initializer) + f'" -b {batchname[i]}\n'
+        RunAll += os.path.join(alphaMELTSLocation, initializer) + f'" -m input.melts -f settings.txt -b {batchname[i]}\n'
 
     # Run the script
     if WSL:

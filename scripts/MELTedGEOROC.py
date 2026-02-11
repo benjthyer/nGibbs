@@ -33,9 +33,9 @@ GEOROC_DIR = os.path.join(REPO_ROOT, 'data', 'MELTStables', 'GEOROC')
 os.makedirs(EnsembleLocation, exist_ok=True)
 
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-date = 'Feb5'
+date = 'Feb9'
 
-ZeroOxides = ['MnO', 'NiO', 'CoO'] # List of oxides to set to zero
+ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
 MELTSmodels = ['p', '102'] # MELTS models to run. To add: MAGEmin
 FXes = ['Batch']#, 'FxCryst']
 
@@ -58,8 +58,8 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
 
         if MELTSModel == 'p':
             allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclase','k-feldspar','garnet',
-            'rhm-oxide','alloy-solid','alloy-liquid','apatite','whitlockite','quartz','tridymite','cristobalite','fluid','liquid']
-            for zeroOx in['MnO', 'NiO', 'CoO']: #pMELTS must exclude these...
+            'rhm-oxide','alloy-solid','alloy-liquid','quartz','tridymite','cristobalite','fluid','liquid']
+            for zeroOx in['MnO', 'NiO', 'P2O5']: #pMELTS must exclude these...
                 if zeroOx not in ZeroOxides:
                     ZeroOxides.append(zeroOx)
         else:
@@ -128,7 +128,7 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
         # Run full GEOROC training dataset
         args = {'MELTSModel':MELTSModel, 'GEOROC':GEOROC, 'col_dict':col_dict, 'indexer':indexer, 
                 'itercode':f'a{full_to_run}', 'simcycle':simcycle, 'fxtal': (fractionate == 'FxCryst'), 
-                'startT': startT, 'max_liquid_fraction': max_liquid_fraction}
+                'startT': startT, 'max_liquid_fraction': max_liquid_fraction, zeroOxides: ZeroOxides}
         
         MELTER(output_file=Trainfilename, **args)
 

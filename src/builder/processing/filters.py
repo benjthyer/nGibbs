@@ -433,7 +433,7 @@ def deep_filter(tarball_path, Component_Lower_Bounds=None, Component_Upper_Bound
     from .MLexporter import generate_dataset_stats
     
     tarball_path = Path(tarball_path)
-    sanity_check_bundle(tarball_path)
+    #sanity_check_bundle(tarball_path)
 
     temp_dir = tempfile.mkdtemp()
     
@@ -514,6 +514,8 @@ def deep_filter(tarball_path, Component_Lower_Bounds=None, Component_Upper_Bound
                 if file.is_file() and not file.name.startswith('filtered_'):
                     tar.add(file, arcname=file.name)
         
+
+        #sanity_check_bundle(tarball_path)
         print(f"Filtering complete: {tarball_path}")
         
     finally:

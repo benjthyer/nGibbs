@@ -36,11 +36,11 @@ calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, I
 MELTSModel= 'p'
 fractionate = 'Batch'
 
-date = 'Feb5'
-startT = 1400
+date = 'Feb10'
+startT = 1600
 max_liquid_fraction = 15
 
-ZeroOxides = ['MnO', 'NiO', 'CoO'] # List of oxides to set to zero
+ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
 
 Out_Folder = Path(internal_data_dir(MELTSModel))
 os.makedirs(Out_Folder, exist_ok=True)
@@ -50,8 +50,8 @@ Validfilename = str(Out_Folder / f'MELTS{MELTSModel}_Validset{date}{fractionate}
 
 if MELTSModel == 'p':
     allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclase','k-feldspar','garnet',
-    'rhm-oxide','alloy-solid','alloy-liquid','apatite','whitlockite','quartz','tridymite','cristobalite','fluid','liquid']
-    for zeroOx in ['MnO', 'NiO', 'CoO']: #pMELTS must exclude these...
+    'rhm-oxide','alloy-solid','alloy-liquid','quartz','tridymite','cristobalite','fluid','liquid'] # Apatite/Whitlockite don't seem to crystallize at all for me?
+    for zeroOx in ['MnO', 'NiO', 'P2O5']: #pMELTS must exclude these...
         if zeroOx not in ZeroOxides:
             ZeroOxides.append(zeroOx)
      
@@ -83,7 +83,8 @@ col_dict = {key:i for i, key in enumerate(keys)} # Create col_dict mapping keys 
 maficsGEOROC = GEOROC[GEOROC[:, col_dict['MgO']+1] > 25] # Must add 1 to account for indexing. This is confusing.
 
 args = {'MELTSModel':MELTSModel, 'GEOROC':maficsGEOROC, 'col_dict':col_dict, 'indexer':indexer, 'itercode':f'a{total_to_run}',
-         'simcycle':simcycle, 'fxtal': (fractionate == 'FxCryst'), 'ExFailures':False, 'startT': startT, 'max_liquid_fraction': max_liquid_fraction}
+         'simcycle':simcycle, 'fxtal': (fractionate == 'FxCryst'), 'ExFailures':False, 'startT': startT, 
+         'max_liquid_fraction': max_liquid_fraction, 'zeroOxides': ZeroOxides}
 
 MELTER(output_file=Trainfilename, **args)
 MELTER(output_file=Validfilename, **args)

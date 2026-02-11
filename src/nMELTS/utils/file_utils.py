@@ -274,7 +274,7 @@ def get_baseline_files(directory):
     return {f.name for f in directory.iterdir() if f.is_file()}
 
 
-def clear_new_files(directory, baseline_files):
+def clear_new_files(directory, baseline_files, protected_extensions=None):
     """
     Delete files that were created after a baseline snapshot.
     
@@ -313,6 +313,9 @@ def clear_new_files(directory, baseline_files):
     new_files = current_files - baseline_files
     
     for filename in new_files:
+        if protected_extensions and any(filename.endswith(ext) for ext in protected_extensions):
+            print(f"Skipping protected file: {filename}")
+            continue
         filepath = directory / filename
         try:
             filepath.unlink()

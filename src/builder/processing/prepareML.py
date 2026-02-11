@@ -38,7 +38,7 @@ from builder.processing.MLexporter import resampling_to_datasets, make_harkers, 
 
 # Perhaps migrate the chemistry filters to their own module? 
 from builder.processing.filters import deep_filter, Oxide_Lower_Bounds, Oxide_Upper_Bounds, Component_Upper_Bounds 
-
+from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
 
 
 
@@ -85,8 +85,11 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
     preproc_cfg = config['preprocessing']
     upsample_cfg = config['upsampling']
     resampling_cfg = config['resampling']
+    
     balance_cfg = config['balancing']
     filter_cfg = config['deep_filter']
+    min_phase_cfg = config['min_phase_proportion']
+
     plot_cfg = config.get('plot', {})
     outname = config.get('outname', '').strip()
     
@@ -176,14 +179,19 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         # Process training data
         read_dir = str(external_base) if use_external else None
         TrainMELTS = BigMetaTable(TrainName, read_dir=read_dir)
-        indexer = TrainMELTS.indexer
+        header = TrainMELTS.header  # Capture header for indexer construction
+        pre_filter = TrainMELTS.table.shape[0]
 
+        TrainMELTS.filter_inconsistent_phase_data()  
 
+        assert TrainMELTS.table.shape[0] > pre_filter*0.97, "More than 3% of the dataset has inconsistent phase data! (Zero mass but non-zero other properties)."
 
         if not preprocessed:
-            TrainMELTS.separate_analcime()
-            TrainMELTS.filter_full_metadata()
-            TrainMELTS.filter_legal()
+            if preproc_cfg['separate_analcime']:
+                TrainMELTS.separate_analcime()
+            if preproc_cfg['filter_full_metadata']:
+                TrainMELTS.filter_full_metadata()
+            #TrainMELTS.filter_legal() Deprecated. Filtering handled in deep_filtering step and metadata filtering
 
             # Diagnostic: Check which phases have non-zero abundance after filtering
             if upsample:
@@ -221,21 +229,32 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
                 balance_function(TrainMELTS)
             #else:
                 #filters.balance_lowF(TrainMELTS)
-            
-            TrainMELTS.save(name=f"{TrainName}Filtered", save_csv=False)
+
+            # Exclude exceptionally low-abundance phases, these won't be learned well and may add noise to training. Configured in YAML.
+            if min_phase_cfg != 0:
+                TrainMELTS.filter_min_phase_proportion(min_proportion=min_phase_cfg) # Remove samples where any phase is below the minimum proportion threshold after upsampling
+
+            #TrainMELTS.save(name=f"{TrainName}Filtered", save_csv=False)
+
+        TrainIndexer = TrainMELTS.indexer  # Capture indexer for consistency with validation/test dataset
 
         TrainMELTS.filename = TrainName
+        train_bundle = train_dir / get_bundle_name(TrainName, 'Train')
+
+
         if upsample:
             train_bundle_path = resampling_to_datasets(
                 TrainMELTS,
                 resampling_cfg['train_bounds'],
-                config_path=config_path
+                config_path=config_path,
+                bundle_name=get_bundle_name(TrainName, 'Train')
             )
         else:
             train_bundle_path = resampling_to_datasets(
                 TrainMELTS,
                 [[1, 1]],
-                config_path=config_path
+                config_path=config_path,
+                bundle_name=get_bundle_name(TrainName, 'Train')
             )
 
 
@@ -248,11 +267,10 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         delete_files_with_keyword(str(INTERNAL_DIR), keyword='temp', dry_run=False)
 
         # Rename processed data
-        if not preprocessed:
+        """if not preprocessed:
             os.rename(TrainName + 'Filtered.npy', TrainName + '_processed.npy')
-            os.rename(TrainName + 'Filtered.txt', TrainName + '_processed.txt')
+            os.rename(TrainName + 'Filtered.txt', TrainName + '_processed.txt')"""
 
-        train_bundle = train_dir / get_bundle_name(TrainName, 'Train')
         deep_filter(
             str(train_bundle),
             Oxide_Lower_Bounds=filter_cfg['oxide_lower_bounds'] or None,
@@ -261,15 +279,30 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
             batch_size=filter_cfg['batch_size']
         )
 
+        #sanity_check_bundle(train_bundle)  # Verify training bundle integrity before proceeding
+
         # Process validation and test data
         ValidMELTS = BigMetaTable(ValidName, read_dir=read_dir)
-        
-        if not preprocessed:
-            ValidMELTS.separate_analcime()
-            ValidMELTS.filter_full_metadata()
-            ValidMELTS.filter_legal()
-            ValidMELTS, TestMELTS = ValidMELTS.split(0.30)
+        assert ValidMELTS.header == header, "Validation dataset header does not match training dataset header!" #(This is assummed in later steps, but maybe doesn't need to be?)
 
+        ValidMELTS.indexer = TrainIndexer  # Assign identical indexer for consistency with training dataset
+
+        pre_filter = ValidMELTS.table.shape[0]
+
+        ValidMELTS.filter_inconsistent_phase_data()  
+
+        assert ValidMELTS.table.shape[0] > pre_filter*0.97, "More than 3% of the Validation dataset has inconsistent phase data! (Zero mass but non-zero other properties)."
+
+        if not preprocessed:
+            if preproc_cfg['separate_analcime']:
+                ValidMELTS.separate_analcime()
+            if preproc_cfg['filter_full_metadata']:
+                ValidMELTS.filter_full_metadata()
+            ValidMELTS.filter_phases_not_in_ml_indexer() # Propagate prohibitively rare phase removal from training set to validation/test data
+            #ValidMELTS.filter_legal() Deprecated. Filtering handled in deep_filtering step and metadata filtering
+
+            ValidMELTS, TestMELTS = ValidMELTS.split(0.30) # Future: make configurable. 
+            TestMELTS.indexer = TrainIndexer  # Assign identical indexer for consistency with training dataset 
             if upsample:
                 # Resample configured test set phases from YAML
                 test_phases = upsample_cfg['phases'].get('test_set_phases', {})
@@ -304,12 +337,14 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         test_bundle_path = resampling_to_datasets(
             TestMELTS,
             resampling_cfg['test_bounds'],
-            config_path=config_path
+            config_path=config_path,
+            bundle_name=get_bundle_name(TestName, 'Test')
         )
         valid_bundle_path = resampling_to_datasets(
             ValidMELTS,
             resampling_cfg['test_bounds'],
-            config_path=config_path
+            config_path=config_path,
+            bundle_name=get_bundle_name(ValidName, 'Valid')
         )
 
         # Generate plots (saved to PLOT_DIR, not displayed due to 'Agg' backend)
@@ -341,13 +376,16 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
             batch_size=filter_cfg['batch_size']
         )
 
+        #sanity_check_bundle(test_bundle)  # Verify test bundle integrity before proceeding
+        #sanity_check_bundle(valid_bundle)  # Verify validation bundle integrity before proceeding
+
         # Rename processed data
-        if not preprocessed:
+        """ if not preprocessed: # Preprocessing not supported
             os.rename(ValidName + 'Filtered.npy', ValidName + '_processed.npy')
             os.rename(ValidName + 'Filtered.txt', ValidName + '_processed.txt')
             os.rename(TestName + 'Filtered.npy', TestName + '_processed.npy')
             os.rename(TestName + 'Filtered.txt', TestName + '_processed.txt')
-
+            """
         # Move ALL files to external directory if requested
         if use_external:
             external_data_path = str(external_data_dir(MELTSModel))
@@ -433,7 +471,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         
         # Clean up any temporary files created during processing
         print("\n[Cleanup] Removing remaining new files created during processing...")
-        deleted_count = clear_new_files(INTERNAL_DIR, baseline_files)
+        deleted_count = clear_new_files(INTERNAL_DIR, baseline_files, protected_extensions=['.tar.gz'])
         print(f"[Cleanup] Removed {deleted_count} temporary files from {INTERNAL_DIR}")
 
 
@@ -477,7 +515,7 @@ Examples:
     parser.add_argument('--use-external', dest='use_external', action='store_true',
                         help='Use external storage directory')
     parser.add_argument('--balance-function', type=str, default=None,
-                        choices=['none', 'balance_lowF', 'balance_geodynamics'],
+                        choices=['none', 'balance_lowF', 'balance_geodynamics', 'balance_superliquidus'],
                         help='Balance function to apply')
     
     args = parser.parse_args()
@@ -488,6 +526,8 @@ Examples:
         balance_func = filters.balance_lowF
     elif args.balance_function == 'balance_geodynamics':
         balance_func = filters.balance_geodynamics
+    elif args.balance_function == 'balance_superliquidus':
+        balance_func = filters.balance_Superliquidus_fxtal
     
     # Run processing
     process_for_ML(
