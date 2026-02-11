@@ -117,340 +117,226 @@ def load_from_tar(tar_path):
 # ============================================================================
 # LOAD TRAINING DATA
 # ============================================================================
-print(f"Loading training data from {Trainfilename}.tar.gz")
-train_data = load_from_tar(f'{Trainfilename}.tar.gz')
+def load_ML_data(Trainpath, only_VP=None):
+    print(f"Loading training data from {Trainpath}")
+    train_data = load_from_tar(f'{Trainpath}.tar.gz')
 
-ml_indexer = train_data['ml_indexer']
-featureMap = train_data['features']
-binaryMap = train_data['binary_labels']
-labelMap = train_data['labels']
-moleMap = train_data['molar_labels']
-has_free_outputs = train_data['has_free_outputs']
+    ml_indexer = train_data['ml_indexer']
+    featureMap = train_data['features']
+    binaryMap = train_data['binary_labels']
+    labelMap = train_data['labels']
+    moleMap = train_data['molar_labels']
+    has_free_outputs = train_data['has_free_outputs']
 
-# Extract indexer components for easier access
-label_indices = ml_indexer.label_indices
-label_indices_comp = ml_indexer.label_indices_comp
-compositionally_variable_phases = ml_indexer.compositionally_variable_phases
-mass_phasedict = ml_indexer.mass_phasedict
-compositional_component_subset = ml_indexer.compositional_component_subset
-compToOx = ml_indexer.compToOx
-PxSpTransform = ml_indexer.PxSpTransform
-oxToEl = ml_indexer.OxToEl
-MM = ml_indexer.MM
-Elkeys = ml_indexer.Elkeys
-
-print(f"Feature Shape: {featureMap.shape}")
-print(f"Binary Shape: {binaryMap.shape}")
-print(f"Label Shape: {labelMap.shape}")
-print(f"Mole Shape: {moleMap.shape}")
-if has_free_outputs:
-    print(f"Free Outputs Shape: {train_data['free_outputs'].shape}")
-
-# ============================================================================
-# Apply only_VP restriction if specified
-# ============================================================================
-if only_VP is not None:
-    print(f"\nRestricting to phases: {only_VP}")
-    ml_indexer.restrictVC(only_VP)
-    
-    # Rebuild indexer components after restriction
+    # Extract indexer components for easier access
     label_indices = ml_indexer.label_indices
     label_indices_comp = ml_indexer.label_indices_comp
     compositionally_variable_phases = ml_indexer.compositionally_variable_phases
+    mass_phasedict = ml_indexer.mass_phasedict
     compositional_component_subset = ml_indexer.compositional_component_subset
-    
-    # Subset labels to restricted VC components
-    labelMap = labelMap[:, compositional_component_subset]
-    print(f"Restricted Label Shape: {labelMap.shape}")
+    compToOx = ml_indexer.compToOx
+    PxSpTransform = ml_indexer.PxSpTransform
+    oxToEl = ml_indexer.OxToEl
+    MM = ml_indexer.MM
+    Elkeys = ml_indexer.Elkeys
 
-# ============================================================================
-# Create feature normalizer
-# ============================================================================
-# Determine number of physical features (P, T, fO2) - rest are chemical
-n_physical_features = len(ml_indexer.featureNames) if hasattr(ml_indexer, 'featureNames') else 3
-n_total_features = featureMap.shape[1]
+    print(f"Feature Shape: {featureMap.shape}")
+    print(f"Binary Shape: {binaryMap.shape}")
+    print(f"Label Shape: {labelMap.shape}")
+    print(f"Mole Shape: {moleMap.shape}")
+    if has_free_outputs:
+        print(f"Free Outputs Shape: {train_data['free_outputs'].shape}")
 
-# Calculate min/max for first n_physical_features only
-min_tensor = torch.zeros(n_total_features, device='cpu', dtype=torch.float)
-range_tensor = torch.ones(n_total_features, device='cpu', dtype=torch.float)
-
-# For physical features, calculate from training data
-if n_physical_features > 0:
-    feature_tensor = torch.tensor(featureMap[:, :n_physical_features], device='cpu', dtype=torch.float)
-    min_tensor[:n_physical_features] = torch.min(feature_tensor, dim=0).values
-    range_tensor[:n_physical_features] = torch.max(feature_tensor, dim=0).values - min_tensor[:n_physical_features]
-    
-    # Avoid division by zero (Should be no zero-range columns- let the error fly.
-    #range_tensor[:n_physical_features] = torch.clamp(range_tensor[:n_physical_features], min=1e-7)
-
-# For chemical features, use identity normalization (min=0, range=1)
-# (already set to these values above)
-
-# Store normalizer in ml_indexer
-ml_indexer.feature_normalizer = Normalizer(min_tensor=min_tensor, range_tensor=range_tensor)
-
-# ============================================================================
-# Normalize features
-# ============================================================================
-normf = ml_indexer.feature_normalizer
-Trainnormfeatures = normf.norm(torch.tensor(featureMap, device='cpu', dtype=torch.float))
-del featureMap
-gc.collect()
-
-Trainbinaryfeatures = torch.tensor(binaryMap, device='cpu', dtype=torch.float)
-del binaryMap
-gc.collect()
-
-Trainlabels = torch.tensor(labelMap, device='cpu', dtype=torch.float) @ torch.tensor(
-    PxSpTransform[np.ix_(compositional_component_subset, compositional_component_subset)], dtype=torch.float
-)
-del labelMap
-gc.collect()
-
-Trainmoles = torch.tensor(moleMap, device='cpu', dtype=torch.float).detach().numpy()
-del moleMap
-gc.collect()
-
-if has_free_outputs:
-    Trainfreeoutputs = torch.tensor(train_data['free_outputs'], device='cpu', dtype=torch.float)
-    
     # ============================================================================
-    # Create output normalizer for free outputs
+    # Apply only_VP restriction if specified
     # ============================================================================
-    free_output_tensor = Trainfreeoutputs
-    free_output_min = torch.min(free_output_tensor, dim=0).values
-    free_output_range = torch.max(free_output_tensor, dim=0).values - free_output_min
-    free_output_range = torch.clamp(free_output_range, min=1e-7)
-    
-    ml_indexer.output_normalizer = Normalizer(min_tensor=free_output_min, range_tensor=free_output_range)
-    Trainfreeoutputs_normalized = ml_indexer.output_normalizer.norm(Trainfreeoutputs)
-    
-    del train_data['free_outputs']
-else:
-    Trainfreeoutputs = None
-    Trainfreeoutputs_normalized = None
+    if only_VP is not None:
+        print(f"\nRestricting to phases: {only_VP}")
+        ml_indexer.restrictVC(only_VP)
+        
+        # Rebuild indexer components after restriction
+        label_indices = ml_indexer.label_indices
+        label_indices_comp = ml_indexer.label_indices_comp
+        compositionally_variable_phases = ml_indexer.compositionally_variable_phases
+        compositional_component_subset = ml_indexer.compositional_component_subset
+        
+        # Subset labels to restricted VC components
+        labelMap = labelMap[:, compositional_component_subset]
+        print(f"Restricted Label Shape: {labelMap.shape}")
 
-del train_data
-gc.collect()
+    # ============================================================================
+    # Create feature normalizer
+    # ============================================================================
+    # Determine number of physical features (P, T, fO2) - rest are chemical
+    n_physical_features = len(ml_indexer.featureNames) if hasattr(ml_indexer, 'featureNames') else 3
+    n_total_features = featureMap.shape[1]
+
+    # Calculate min/max for first n_physical_features only
+    min_tensor = torch.zeros(n_total_features, device='cpu', dtype=torch.float)
+    range_tensor = torch.ones(n_total_features, device='cpu', dtype=torch.float)
+
+    # For physical features, calculate from training data
+    if n_physical_features > 0:
+        feature_tensor = torch.tensor(featureMap[:, :n_physical_features], device='cpu', dtype=torch.float)
+        min_tensor[:n_physical_features] = torch.min(feature_tensor, dim=0).values
+        range_tensor[:n_physical_features] = torch.max(feature_tensor, dim=0).values - min_tensor[:n_physical_features]
+        
+        # Avoid division by zero (Should be no zero-range columns- let the error fly.
+        #range_tensor[:n_physical_features] = torch.clamp(range_tensor[:n_physical_features], min=1e-7)
+
+    # For chemical features, use identity normalization (min=0, range=1)
+    # (already set to these values above)
+
+    # Store normalizer in ml_indexer
+    ml_indexer.feature_normalizer = Normalizer(min_tensor=min_tensor, range_tensor=range_tensor)
+
+    # ============================================================================
+    # Normalize features
+    # ============================================================================
+    normf = ml_indexer.feature_normalizer
+    Trainnormfeatures = normf.norm(torch.tensor(featureMap, device='cpu', dtype=torch.float))
+    del featureMap
+    gc.collect()
+
+    Trainbinaryfeatures = torch.tensor(binaryMap, device='cpu', dtype=torch.float)
+    del binaryMap
+    gc.collect()
+
+    Trainlabels = torch.tensor(labelMap, device='cpu', dtype=torch.float) @ torch.tensor(
+        PxSpTransform[np.ix_(compositional_component_subset, compositional_component_subset)], dtype=torch.float
+    )
+    del labelMap
+    gc.collect()
+
+    Trainmoles = torch.tensor(np.log10(moleMap+molar_epsilon), device='cpu', dtype=torch.float)
+    del moleMap
+    gc.collect()
+
+    if has_free_outputs:
+        Trainfreeoutputs = torch.tensor(train_data['free_outputs'], device='cpu', dtype=torch.float)
+        
+        # ============================================================================
+        # Create output normalizer for free outputs
+        # ============================================================================
+        free_output_tensor = Trainfreeoutputs
+        free_output_min = torch.min(free_output_tensor, dim=0).values
+        free_output_range = torch.max(free_output_tensor, dim=0).values - free_output_min
+        free_output_range = torch.clamp(free_output_range, min=1e-7)
+        
+        ml_indexer.output_normalizer = Normalizer(min_tensor=free_output_min, range_tensor=free_output_range)
+        Trainfreeoutputs_normalized = ml_indexer.output_normalizer.norm(Trainfreeoutputs)
+        
+        del train_data['free_outputs']
+    else:
+        Trainfreeoutputs = None
+        Trainfreeoutputs_normalized = None
+
+    del train_data
+    gc.collect()
 
 
-# ============================================================================
-# Process in batches for validation
-# ============================================================================
-def bulk_test_in_batches(Trainnormfeatures, Trainmoles, Trainlabels, batch_size=8192):
+    # ============================================================================
+    # Process in batches for validation
+    # ============================================================================
+    def bulk_test_in_batches(Trainnormfeatures, Trainmoles, Trainlabels, batch_size=8192):
 
-    # Precompute constant matrices as float32 tensors
-    oxToEl_t = torch.tensor(oxToEl[:-1], dtype=torch.float32)
-    MM_t = torch.tensor(MM[:-1, :-1], dtype=torch.float32)
-    compToOx_t = torch.tensor(compToOx, dtype=torch.float32)
-    oxToEl_full_t = torch.tensor(oxToEl, dtype=torch.float32)
+        # Precompute constant matrices as float32 tensors
+        oxToEl_t = torch.tensor(oxToEl[:-1], dtype=torch.float32)
+        MM_t = torch.tensor(MM[:-1, :-1], dtype=torch.float32)
+        compToOx_t = torch.tensor(compToOx, dtype=torch.float32)
+        oxToEl_full_t = torch.tensor(oxToEl, dtype=torch.float32)
 
-    # Inverse only once
-    oxToEl_inv = torch.linalg.inv(oxToEl_t)
+        # Inverse only once
+        oxToEl_inv = torch.linalg.inv(oxToEl_t)
 
-    n_samples = Trainnormfeatures.size(0)
+        n_samples = Trainnormfeatures.size(0)
 
-    bulk_wt_ox_chunks = []
-    GTReconBulk_chunks = []
+        bulk_wt_ox_chunks = []
+        GTReconBulk_chunks = []
 
-    for start in range(0, n_samples, batch_size):
-        end = min(start + batch_size, n_samples)
+        for start in range(0, n_samples, batch_size):
+            end = min(start + batch_size, n_samples)
 
-        # === Bulk weights ===
-        bulk_wt_ox = (
-            (Trainnormfeatures[start:end, 3:] @ oxToEl_inv) @ MM_t
-        )
-        bulk_wt_ox = 100 * bulk_wt_ox / torch.sum(bulk_wt_ox, axis=1).reshape(-1, 1)
-        bulk_wt_ox_chunks.append(bulk_wt_ox)
+            # === Bulk weights ===
+            bulk_wt_ox = (
+                (Trainnormfeatures[start:end, 3:] @ oxToEl_inv) @ MM_t
+            )
+            bulk_wt_ox = 100 * bulk_wt_ox / torch.sum(bulk_wt_ox, axis=1).reshape(-1, 1)
+            bulk_wt_ox_chunks.append(bulk_wt_ox)
 
-        # === Ground truth compositions ===
-        GT_comps = torch.zeros(
-            (end - start, ml_indexer.ncomps),
-            dtype=torch.float32,
-        )
-
-        for phase in np.array(list(label_indices.keys())):
-            moles = torch.tensor(
-                Trainmoles[start:end, mass_phasedict[phase]].reshape(-1, 1),
+            # === Ground truth compositions ===
+            GT_comps = torch.zeros(
+                (end - start, ml_indexer.ncomps),
                 dtype=torch.float32,
             )
-            if phase in compositionally_variable_phases:
-                GT_comps[:, label_indices[phase]] = (
-                    moles * Trainlabels[start:end, label_indices_comp[phase]].to(torch.float32)
+
+            for phase in np.array(list(label_indices.keys())):
+                moles = torch.tensor(
+                    Trainmoles[start:end, mass_phasedict[phase]].reshape(-1, 1),
+                    dtype=torch.float32,
                 )
-            else:
-                GT_comps[:, label_indices[phase]] = moles
+                if phase in compositionally_variable_phases:
+                    GT_comps[:, label_indices[phase]] = (
+                        moles * Trainlabels[start:end, label_indices_comp[phase]].to(torch.float32)
+                    )
+                else:
+                    GT_comps[:, label_indices[phase]] = moles
 
-        # === Recon bulk oxides ===
-        GTReconBulk_oxides = (
-            ((GT_comps @ compToOx_t) @ oxToEl_full_t) @ oxToEl_inv
-        ) @ MM_t
-        GTReconBulk_oxides *= 100 / torch.sum(GTReconBulk_oxides, axis=1, keepdims=True)
+            # === Recon bulk oxides ===
+            GTReconBulk_oxides = (
+                ((GT_comps @ compToOx_t) @ oxToEl_full_t) @ oxToEl_inv
+            ) @ MM_t
+            GTReconBulk_oxides *= 100 / torch.sum(GTReconBulk_oxides, axis=1, keepdims=True)
 
-        GTReconBulk_chunks.append(GTReconBulk_oxides)
+            GTReconBulk_chunks.append(GTReconBulk_oxides)
 
-    # Recombine all batches
-    bulk_wt_ox = torch.cat(bulk_wt_ox_chunks, dim=0)
-    GTReconBulk_oxides = torch.cat(GTReconBulk_chunks, dim=0)
+        # Recombine all batches
+        bulk_wt_ox = torch.cat(bulk_wt_ox_chunks, dim=0)
+        GTReconBulk_oxides = torch.cat(GTReconBulk_chunks, dim=0)
 
-    # === Compare rounded results ===
-    train_mismatches = torch.unique(
-        torch.where(
-            torch.round(bulk_wt_ox, decimals=2) != torch.round(GTReconBulk_oxides, decimals=2)
-        )[0]
-    )
-
-    return train_mismatches
-
-
-train_mismatches = process_in_batches(Trainnormfeatures, Trainmoles, Trainlabels, batch_size=2**13)
-
-print(f"Train mismatches: {train_mismatches.size()[0]}")
-
-OOB = ((Trainlabels > 1).to(float) + (Trainlabels < 0).to(float)).to(bool)
-badMap = torch.unique(torch.where(OOB)[0])
-goodMap = torch.ones(Trainlabels.size()[0]).to(torch.bool)
-goodMap[badMap] = False
-goodMap[train_mismatches] = False
-
-print(f"Train Features: {Trainnormfeatures.size()}, Binaries {Trainbinaryfeatures.size()}, labels: {Trainlabels.size()}")
-Trainnormfeatures = Trainnormfeatures[goodMap]
-Trainbinaryfeatures = Trainbinaryfeatures[goodMap]
-Trainlabels = Trainlabels[goodMap]
-Trainmoles = Trainmoles[goodMap]
-if Trainfreeoutputs is not None:
-    Trainfreeoutputs = Trainfreeoutputs[goodMap]
-print(f"Train Features: {Trainnormfeatures.size()}, Binaries {Trainbinaryfeatures.size()}, labels: {Trainlabels.size()}")
-
-# Create dataset objects based on whether free outputs exist
-if has_free_outputs:
-    full_train_set = TensorDatasetFive(
-        features=Trainnormfeatures,
-        binarylabels=Trainbinaryfeatures,
-        labels=Trainlabels,
-        molelabels=Trainmoles,
-        freeoutputs=Trainfreeoutputs_normalized,
-    )
-else:
-    full_train_set = TensorDatasetFour(
-        features=Trainnormfeatures,
-        binarylabels=Trainbinaryfeatures,
-        labels=Trainlabels,
-        molelabels=Trainmoles,
-    )
-
-
-# ============================================================================
-# LOAD TEST DATA
-# ============================================================================
-print(f"\nLoading test data from {Testfilename}.tar.gz")
-test_data = load_from_tar(f'{Testfilename}.tar.gz')
-
-featureMap = test_data['features']
-binaryMap = test_data['binary_labels']
-labelMap = test_data['labels']
-moleMap = test_data['molar_labels']
-
-# Apply same only_VP restriction if it was applied to training
-if only_VP is not None:
-    labelMap = labelMap[:, compositional_component_subset]
-
-# Use the same normalizer created from training data
-Testnormfeatures = ml_indexer.feature_normalizer.norm(torch.tensor(featureMap, device='cpu', dtype=torch.float))
-del featureMap
-gc.collect()
-
-Testbinaryfeatures = torch.tensor(binaryMap, device='cpu', dtype=torch.float)
-del binaryMap
-gc.collect()
-
-Testlabels = torch.tensor(labelMap, device='cpu', dtype=torch.float) @ torch.tensor(
-    PxSpTransform[np.ix_(compositional_component_subset, compositional_component_subset)], dtype=torch.float
-)
-del labelMap
-gc.collect()
-
-Testmoles = torch.tensor(moleMap, device='cpu', dtype=torch.float).detach().numpy()
-del moleMap
-gc.collect()
-
-if test_data['has_free_outputs']:
-    Testfreeoutputs = torch.tensor(test_data['free_outputs'], device='cpu', dtype=torch.float)
-    # Apply the same output normalizer created from training data
-    if ml_indexer.output_normalizer is not None:
-        Testfreeoutputs_normalized = ml_indexer.output_normalizer.norm(Testfreeoutputs)
-    else:
-        Testfreeoutputs_normalized = Testfreeoutputs
-    del test_data['free_outputs']
-else:
-    Testfreeoutputs = None
-    Testfreeoutputs_normalized = None
-
-# ============================================================================
-# Validate test data
-# ============================================================================
-bulk_wt_ox = (
-    (Testnormfeatures[:, 3:] @ torch.linalg.inv(torch.tensor(oxToEl[:-1], dtype=torch.float32)))
-    @ torch.tensor(MM[:-1, :-1], dtype=torch.float32)
-)
-bulk_wt_ox = 100 * bulk_wt_ox / torch.sum(bulk_wt_ox, axis=1).reshape(-1, 1)
-
-GT_comps = torch.zeros(
-    (Testnormfeatures.size()[0], ml_indexer.ncomps),
-    dtype=torch.float32,
-)
-
-for phase in np.array(list(label_indices.keys())):
-    if phase in compositionally_variable_phases:
-        GT_comps[:, label_indices[phase]] = (
-            (torch.tensor(Testmoles[:, mass_phasedict[phase]].reshape(-1, 1), dtype=torch.float32))
-            * Testlabels[:, label_indices_comp[phase]].to(torch.float32)
-        )
-    else:
-        GT_comps[:, label_indices[phase]] = (
-            torch.tensor(Testmoles[:, mass_phasedict[phase]].reshape(-1, 1), dtype=torch.float32)
+        # === Compare rounded results ===
+        train_mismatches = torch.unique(
+            torch.where(
+                torch.round(bulk_wt_ox, decimals=2) != torch.round(GTReconBulk_oxides, decimals=2)
+            )[0]
         )
 
-GTReconBulk_oxides = (
-    ((GT_comps @ torch.tensor(compToOx, dtype=torch.float32))
-     @ torch.tensor(oxToEl, dtype=torch.float32))
-    @ torch.linalg.inv(torch.tensor(oxToEl[:-1], dtype=torch.float32))
-) @ torch.tensor(MM[:-1, :-1], dtype=torch.float32)
-GTReconBulk_oxides *= 100 / torch.sum(GTReconBulk_oxides, axis=1, keepdims=True)
+        return train_mismatches
 
-test_mismatches = torch.unique(
-    torch.where(torch.round(bulk_wt_ox, decimals=2) != torch.round(GTReconBulk_oxides, decimals=2))[0]
-)
-print(f"Test mismatches: {test_mismatches.size()[0]}")
 
-OOB = ((Testlabels > 1).to(float) + (Testlabels < 0).to(float)).to(bool)
-badMap = torch.unique(torch.where(OOB)[0])
-goodMap = torch.ones(Testlabels.size()[0]).to(torch.bool)
-goodMap[badMap] = False
-goodMap[test_mismatches] = False
-print(f"Test Features: {Testnormfeatures.size()}, Binaries {Testbinaryfeatures.size()}, labels: {Testlabels.size()}")
-Testnormfeatures = Testnormfeatures[goodMap]
-Testbinaryfeatures = Testbinaryfeatures[goodMap]
-Testlabels = Testlabels[goodMap]
-Testmoles = Testmoles[goodMap]
-if Testfreeoutputs is not None:
-    Testfreeoutputs = Testfreeoutputs[goodMap]
-print(f"Test Features: {Testnormfeatures.size()}, Binaries {Testbinaryfeatures.size()}, labels: {Testlabels.size()}")
+    train_mismatches = bulk_test_in_batches(Trainnormfeatures, Trainmoles, Trainlabels, batch_size=2**13)
 
-# Create test dataset objects based on whether free outputs exist
-if has_free_outputs:
-    full_test_set = TensorDatasetFive(
-        features=Testnormfeatures,
-        binarylabels=Testbinaryfeatures,
-        labels=Testlabels,
-        molelabels=Testmoles,
-        freeoutputs=Testfreeoutputs_normalized,
-    )
-else:
-    full_test_set = TensorDatasetFour(
-        features=Testnormfeatures,
-        binarylabels=Testbinaryfeatures,
-        labels=Testlabels,
-        molelabels=Testmoles,
-    )
+    print(f"Train mismatches: {train_mismatches.size()[0]}")
 
+    OOB = ((Trainlabels > 1).to(float) + (Trainlabels < 0).to(float)).to(bool)
+    badMap = torch.unique(torch.where(OOB)[0])
+    goodMap = torch.ones(Trainlabels.size()[0]).to(torch.bool)
+    goodMap[badMap] = False
+    goodMap[train_mismatches] = False
+
+    print(f"Train Features: {Trainnormfeatures.size()}, Binaries {Trainbinaryfeatures.size()}, labels: {Trainlabels.size()}")
+    Trainnormfeatures = Trainnormfeatures[goodMap]
+    Trainbinaryfeatures = Trainbinaryfeatures[goodMap]
+    Trainlabels = Trainlabels[goodMap]
+    Trainmoles = Trainmoles[goodMap]
+    if Trainfreeoutputs is not None:
+        Trainfreeoutputs = Trainfreeoutputs[goodMap]
+    print(f"Train Features: {Trainnormfeatures.size()}, Binaries {Trainbinaryfeatures.size()}, labels: {Trainlabels.size()}")
+
+    # Create dataset objects based on whether free outputs exist
+    if has_free_outputs:
+        full_train_set = TensorDatasetFive(
+            features=Trainnormfeatures,
+            binarylabels=Trainbinaryfeatures,
+            labels=Trainlabels,
+            molelabels=Trainmoles,
+            freeoutputs=Trainfreeoutputs_normalized,
+        )
+    else:
+        full_train_set = TensorDatasetFour(
+            features=Trainnormfeatures,
+            binarylabels=Trainbinaryfeatures,
+            labels=Trainlabels,
+            molelabels=Trainmoles,
+        )                       
+        return full_train_set, ml_indexer
