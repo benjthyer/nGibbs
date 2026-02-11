@@ -1,3 +1,5 @@
+tarname: '102General' #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
+
 lower_model:
   encoderLayerUp: [1, 2, 3]
   encoderLayerDown: [0, 1]
@@ -12,10 +14,10 @@ upper_model:
   noise: [0, 0.01, 0.05]
 
 data:
-  batch_size: 1024
-  num_workers: 0
+  batch_size: 1024 # should this be tunable?
+  num_workers: 4
   pin_memory: true
-  validation_bundle: VALIDMELTS
+  #validation_bundle: VALIDMELTS
 
 training:
   epochs: 20
@@ -23,7 +25,7 @@ training:
   early_stopping_patience: 2
 
 optuna:
-  n_trials: 100
+  n_trials: 0 #100
   study_name: "nMELTS_lower_optuna"
   sampler: "TPESampler"
   pruner: "MedianPruner"

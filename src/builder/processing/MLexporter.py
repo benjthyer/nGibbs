@@ -102,9 +102,17 @@ def load_ml_bundle(bundle_path):
         shutil.rmtree(temp_dir)
 
 
-def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=False, featureNames=featureNames, freeOutputs=freeOutputs, indexer=None, config_path=None):
+def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=False, featureNames=featureNames, freeOutputs=freeOutputs, indexer=None, config_path=None, bundle_name=None):
 
-    """Builds features and labels for training"""
+    """Builds features and labels for training. Converts MELTS tables to .npy files fit for ML work.
+    Self: BigMetaTable Instance.
+
+    Parameters
+    ----------
+    bundle_name : str, optional
+        Optional .tar.gz filename to use for the final bundle (stored in the dataset directory).
+    """
+
     sampleNo = len(resample_bounds)
 
 
@@ -399,7 +407,13 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
         file_mappings[str(stats_path)] = 'stats.txt'
 
     bundle_base = self.filename.split('_working')[0]
-    bundle_path = bundle_base + '.tar.gz'
+    if bundle_name:
+        bundle_filename = Path(bundle_name).name
+        if not bundle_filename.endswith('.tar.gz'):
+            bundle_filename += '.tar.gz'
+        bundle_path = str(Path(bundle_base).parent / bundle_filename)
+    else:
+        bundle_path = bundle_base + '.tar.gz'
 
 
     with tarfile.open(bundle_path, 'w:gz') as tar:
@@ -407,7 +421,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             if os.path.exists(fpath):
                 tar.add(fpath, arcname=arcname)
         
-    sanity_check_bundle(bundle_path=Path(bundle_path)) # Verify that the data make sense
+    #sanity_check_bundle(bundle_path=Path(bundle_path)) # Verify that the data make sense. Expensive for large files, so off for now.
 
 
     # Move bundle to configured training directory

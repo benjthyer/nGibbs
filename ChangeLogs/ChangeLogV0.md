@@ -1,15 +1,28 @@
 _____________________ Unreleased _______________________
 
+2026-02-10
+- Debuged resampling tests -- now functioning
+- sanity_check_bundle to export bundle arrays to CSV only when assertions fail (not unconditionally).
+- Add filter_inconsistent_phase_data() to BigMetaTable to detect and remove rows with zero mass but non-zero attributes.
+- Refactor loadTrainData into load_train_data() to build torch datasets from bundle paths.
+- Wire training main CLI to resolve bundle names from training.yaml and run lower/upper/finetune stages.
+- 
+
+2026-02-09
+- Added BigMetaTable phase proportion filter that removes rows containing underrepresented phases and refreshes the indexer after filtering.
+- Added BigMetaTable filter to drop rows containing phases not present in the ml_indexer for train/validation consistency.
+- Added optional bundle_name parameter to MLexporter.resampling_to_datasets for renaming output tarballs.
+- Added detailed failure diagnostics to ML bundle sanity checks (counts, indices, and worst values).
+
 2026-02-06 
 
-Commit: 
+Commit: 88899b57a2105940337b437beb03325c133f9ef3
 - Added training scripts under src/builder/training with config, data, design, trainer, and tuning modules.
 - Added training .yaml config capability and a template config/training.yaml (including separate validation bundle pointer).
 - Refactored MidLevelNetwork to accept and persist ml_indexer
 - Add config file to ML bundle tarballs during creation, preserving the original filename.
 - Add bundle sanity check helper for ml_indexer consistency, bulk reconstruction, and row-count alignment, plugged into bundle ops
-- Allow ChangeLogs directory to be tracked by Git by adding an explicit exception to .gitignore.
-- Remove the later *logs/ ignore rule so the ChangeLogs exception is not overridden.
+
 
 2026-02-05  
 

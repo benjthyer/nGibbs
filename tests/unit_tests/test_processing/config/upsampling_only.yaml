@@ -1,8 +1,8 @@
 # Test config: isolate rare phase upsampling only
 
 dataset:
-  MELTSModel: '110'
-  Date: 'Feb3'
+  MELTSModel: '102'
+  Date: 'Feb9'
   Mode: 'BatchCooling'
   subset: false
   use_external: false
@@ -12,6 +12,8 @@ preprocessing:
   filter_full_metadata: false
   filter_legal: false
   separate_analcime: true
+
+min_phase_proportion: 0    # Minimum phase proportion (0-1) for a sample to be included in training set. Applied after upsampling.
 
 upsampling:
   enabled: true

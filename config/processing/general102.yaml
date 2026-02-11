@@ -5,13 +5,13 @@
 # DATASET SELECTION
 # ============================================================================
 dataset:
-  MELTSModel: '110'          # MELTS model version: '102', '110', '120', 'p'
-  Date: 'Feb3'               # Date identifier for dataset naming
+  MELTSModel: '102'          # MELTS model version: '102', '110', '120', 'p'
+  Date: 'Feb5'               # Date identifier for dataset naming
   Mode: 'BatchCooling'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
-outname: ''                  # Base name for output folder (without extension). Auto-Generated if blank
+outname: '102General'                  # Base name for output folder (without extension). Auto-Generated if blank
 
 # ============================================================================
 # PREPROCESSING OPTIONS
@@ -23,6 +23,8 @@ preprocessing:
   separate_analcime: true    # Separate analcime phase during preprocessing 
   #(Generally do this, Analcime in MELTS has two distinct compositional fields)
 
+min_phase_proportion: 0.03    # Minimum phase proportion (0-1) for a sample to be included in training set. Applied after upsampling.
+
 # ============================================================================
 # RARE PHASE UPSAMPLING
 # ============================================================================
@@ -30,6 +32,8 @@ preprocessing:
 # For each phase, provide 'n_resamples' (number of resampling iterations)
 # and 'multiplier_bounds' ([lower, upper] bounds for perturbation).
 # Examples of additional phases: alloy-solid, apatite, cristobalite, etc.
+
+
 upsampling:
   enabled: true              # Enable rare phase upsampling
   phases:
@@ -88,8 +92,8 @@ resampling:
   # Multiple entries = multiple resampled versions of the dataset
   train_bounds:
     - [1, 1]          # Identity
-    - [0.8, 1]        # Shift phase proportions by ~20%
-    - [0.5, 1]        # Shift phase proportions by ~50%
+    - [0.95, 1]        # Shift phase proportions by ~5%
+    - [0.9, 1]        # Shift phase proportions by ~10%
   
   # Resampling bounds for test/validation sets (typically just full dataset)
   test_bounds:
@@ -122,19 +126,19 @@ deep_filter:
   
   # Oxide upper bounds: [phase, oxide, maximum_wt%]
   oxide_upper_bounds:
-    - ['k-feldspar', 'CaO', 1]
-    - ['plagioclase', 'K2O', 8]
-    - ['clinopyroxene', 'TiO2', 6]
-    - ['clinopyroxene', 'Al2O3', 8]
-    - ['orthopyroxene', 'TiO2', 2]
-    - ['orthopyroxene', 'Al2O3', 8]
-    - ['orthopyroxene', 'CaO', 4]
+    - ['k-feldspar', 'CaO', 4] #1
+    #- ['plagioclase', 'K2O', 12] #8
+    - ['clinopyroxene', 'TiO2', 10] # 6
+    - ['clinopyroxene', 'Al2O3', 14] #8
+    - ['orthopyroxene', 'TiO2', 5] #2
+    - ['orthopyroxene', 'Al2O3', 14] #8
+    - ['orthopyroxene', 'CaO', 7] #4
     - ['melts-liquid', 'TiO2', 13]
     - ['melts-liquid', 'P2O5', 10]
   
   # Component upper bounds: [phase, component, maximum_wt%]
   # Example: [['plagioclase', 'sanidine', 0.1]]
-  component_upper_bounds: [['plagioclase', 'sanidine', 0.1]]
+  component_upper_bounds: [['plagioclase', 'sanidine', 0.3]] # 0.1
   
   # Processing batch size for "deep" filtering, which targets .npy data products. 
   batch_size: 200000

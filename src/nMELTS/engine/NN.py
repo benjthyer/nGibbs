@@ -9,12 +9,21 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import sys
+from pathlib import Path
+
+file_path = str(Path(__file__).parent)
+if file_path not in sys.path:
+    sys.path.insert(0, file_path)
+src_path = str(Path(__file__).parent.parent.parent)
+if src_path not in sys.path:
+    sys.path.insert(0, src_path)
 
 # Import utility functions
-from ..utils.string_utils import pull_letter, pull_number
+from nMELTS.utils.string_utils import pull_letter, pull_number
 
 # Import constants and mappings from config (fallbacks)
-from ..config import (
+"""from nMELTS.config import (
     Elkeys as DEFAULT_ELKEYS,
     label_indices as DEFAULT_LABEL_INDICES,
     label_indices_comp as DEFAULT_LABEL_INDICES_COMP,
@@ -28,7 +37,7 @@ from ..config import (
     fixed_phaseToCompMap as DEFAULT_FIXED_PHASE_TO_COMP,
     boolTransCompToOx as DEFAULT_BOOL_TRANS_COMP_TO_OX,
     compositionally_variable_subset as DEFAULT_COMP_VAR_SUBSET,
-)
+)"""
 
 
 class TunableModel(nn.Module):
@@ -257,7 +266,7 @@ class TunableModel(nn.Module):
     def _set_indexer(self, ml_indexer):
         self.ml_indexer = ml_indexer
 
-        if ml_indexer is None:
+        """if ml_indexer is None:
             self.Elkeys = DEFAULT_ELKEYS
             self.label_indices = DEFAULT_LABEL_INDICES
             self.label_indices_comp = DEFAULT_LABEL_INDICES_COMP
@@ -271,13 +280,13 @@ class TunableModel(nn.Module):
             self.fixed_phaseToCompMap_raw = DEFAULT_FIXED_PHASE_TO_COMP
             self.boolTransCompToOx_raw = DEFAULT_BOOL_TRANS_COMP_TO_OX
             self.compositionally_variable_subset_raw = DEFAULT_COMP_VAR_SUBSET
-            return
+            return"""
 
         self.Elkeys = ml_indexer.Elkeys
         self.label_indices = ml_indexer.label_indices
         self.label_indices_comp = ml_indexer.label_indices_comp
         self.compToOx_raw = ml_indexer.compToOx
-        self.oxToEl_raw = getattr(ml_indexer, "OxToEl", None) or ml_indexer.oxToEl
+        self.oxToEl_raw = getattr(ml_indexer, "OxToEl", None) 
         self.MM_raw = ml_indexer.MM
         self.Minv_raw = ml_indexer.Minv
         self.Mtot_raw = ml_indexer.Mtot

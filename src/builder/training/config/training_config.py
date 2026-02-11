@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import yaml
 
@@ -20,6 +20,7 @@ def _deep_update(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any
 
 @dataclass
 class TrainingConfig:
+    tarname: Optional[str]
     lower_model: Dict[str, Any]
     upper_model: Dict[str, Any]
     data: Dict[str, Any]
@@ -35,6 +36,7 @@ class TrainingConfig:
             overrides = yaml.safe_load(handle) or {}
         merged = _deep_update(defaults, overrides)
         return cls(
+            tarname=merged.get("tarname"),
             lower_model=merged.get("lower_model", {}),
             upper_model=merged.get("upper_model", {}),
             data=merged.get("data", {}),
@@ -45,6 +47,7 @@ class TrainingConfig:
 
     def as_dict(self) -> Dict[str, Any]:
         return {
+            "tarname": self.tarname,
             "lower_model": self.lower_model,
             "upper_model": self.upper_model,
             "data": self.data,
