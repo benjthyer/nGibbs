@@ -1,6 +1,15 @@
 _____________________ Unreleased _______________________
 
-2026-02-10
+2026-02-11
+- Branched off training and optuna work onto trainDev branch. Focus on getting old code working/adapted on main, maybe revisit optuna later. 
+    - Painfully slow, very little feedback for me to know what was going on
+- Updated upper trainer head-freeze logic to honor which_heads_to_freeze, with a fallback to name-based head attributes.
+- Refactored optimizer_factory: create_optimizer now uses direct arguments (lr, weight_decay), auto-selects Adam if wd=0 else AdamW.
+- Refactored create_scheduler to accept scheduler_name string and **kwargs, using _SCHEDULERS dict to lookup class and metadata.
+
+    
+Merge Commit onto main : 950b8e4e675afd6e958537453365b1f8e663f54e
+2026-02-10 
 - Debuged resampling tests -- now functioning
 - sanity_check_bundle to export bundle arrays to CSV only when assertions fail (not unconditionally).
 - Add filter_inconsistent_phase_data() to BigMetaTable to detect and remove rows with zero mass but non-zero attributes.

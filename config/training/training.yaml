@@ -1,40 +1,71 @@
 tarname: '102General' #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
 
-lower_model:
-  encoderLayerUp: [1, 2, 3]
-  encoderLayerDown: [0, 1]
-  low_regularization: [none, dropout0.2, batchnorm]
-  activation_leak: 0.05
+warm_start: None
 
-upper_model:
-  middleLayerUp: [1, 2, 3]
-  middleLayerDown: [0, 1]
-  high_regularization: [batchnormdropout0, layernormdropout0]
-  highWD: [0, 1e-6, 1e-5, 1e-4]
-  noise: [0, 0.01, 0.05]
+tune: # Comment this out to skip training, warm start from a saved model must be provided
+  lower_model:
+    epochs: 20
+    learning_rate: 1e-3
+    early_stopping_patience: 2
+    encoderLayer: [[1, 1], [1, 0], [2, 2], [2, 1], [3, 2]] # [upsampling layers, downsampling layers]Numbers of upsamplings to try (factors of 2 in neuron increase for each layer)
+    low_regularization: [dropout0, batchnormdropout0, layernormdropout0]
+    activation_leak: 0.05
 
-data:
-  batch_size: 1024 # should this be tunable?
-  num_workers: 4
-  pin_memory: true
-  #validation_bundle: VALIDMELTS
+  upper_model:
+    epochs: 20
+    learning_rate: 1e-3
+    early_stopping_patience: 2
+    middleLayer: [[1, 1], [1, 0], [2, 2], [2, 1], [3, 2]] # Numbers of upsamplings to try (factors of 2 in neuron increase for each layer)
+    high_regularization: [dropout0, batchnormdropout0, layernormdropout0]
+    highWD: [0, 1e-6, 1e-5, 1e-4]
+    noise: [0, 0.01, 0.05]
 
-training:
+train1: # Increase number for another layer of training
+  strategy: lower # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
+  batch_size: 1024 
   epochs: 20
   learning_rate: 1e-3
-  early_stopping_patience: 2
+  early_stopping_patience: 3
+  scheduler:
+    type: ReduceLROnPlateau # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
+    args:
+      factor: 0.2 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
+      patience: 3
+      min_lr: 1e-5
 
-optuna:
-  n_trials: 0 #100
-  study_name: "nMELTS_lower_optuna"
-  sampler: "TPESampler"
-  pruner: "MedianPruner"
+    
 
-training_strategy:
-  stages:
-    - name: lower
-      freeze_encoder: false
-    - name: upper
-      freeze_encoder: true
-    - name: finetune
-      freeze_encoder: false
+
+train2: 
+  strategy: upper # Train upper portion of model, encoder frozen. Saturation predictor still trained, but not used for loss calculation.
+  batch_size: 1024 
+  epochs: 20
+  learning_rate: 1e-3
+  early_stopping_patience: 3
+  scheduler:
+    type: ReduceLROnPlateau # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
+    args:
+      factor: 0.2 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
+      patience: 3
+      min_lr: 1e-5
+
+    weight_dict: # Loss multipliers for each phase, used to upweight underperforming phases. Can be set to 1 for all phases to use unweighted loss.
+    'olivine': 3
+    'nepheline': 15
+    'leucite': 10
+    'alloy-solid': 5
+    'muscovite': 3
+    'k-feldspar': 5
+
+train3: 
+  strategy: finetune # Train entire model with free flowing gradients
+  batch_size: 1024 
+  epochs: 20
+  learning_rate: 1e-3
+  early_stopping_patience: 3
+  scheduler:
+    type: ReduceLROnPlateau # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
+    args:
+      factor: 0.2 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
+      patience: 3
+      min_lr: 1e-5

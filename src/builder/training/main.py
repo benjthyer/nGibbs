@@ -25,7 +25,7 @@ from nMELTS.config import settings
 from builder.training.config.training_config import TrainingConfig
 from builder.training.datasets.loadTrainData import load_train_data
 from builder.training.design.model_factory import create_model
-from builder.training.design.optimizer_factory import create_optimizer, create_scheduler
+from builder.training.optimizer_factory import create_optimizer, create_scheduler
 from builder.training.trainer.lower_trainer import LowerTrainer
 from builder.training.trainer.upper_trainer import UpperTrainer
 from builder.training.tuning.optuna_objectives import objective_lower, objective_upper
@@ -34,6 +34,7 @@ try:
     import optuna
 except ImportError:  # pragma: no cover - optional dependency
     optuna = None
+
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -124,88 +125,11 @@ def _optimizer_config(training_cfg: Dict, stage_cfg: Dict, stage: str) -> Dict:
         cfg.setdefault("weight_decay", stage_cfg.get("highWD", 0.0))
     return cfg
 
-
-def _set_requires_grad(module: torch.nn.Module, requires_grad: bool) -> None:
-    for param in module.parameters():
-        param.requires_grad = requires_grad
-
-
-def _freeze_for_lower(model: torch.nn.Module) -> None:
-    if hasattr(model, "chem_heads"):
-        _set_requires_grad(model.chem_heads, False)
-    if hasattr(model, "mole_head"):
-        _set_requires_grad(model.mole_head, False)
-
-
-def _freeze_for_upper(model: torch.nn.Module, freeze_encoder: bool = True) -> None:
-    if hasattr(model, "sat_head"):
-        _set_requires_grad(model.sat_head, False)
-    if freeze_encoder and hasattr(model, "encoder"):
-        _set_requires_grad(model.encoder, False)
-
-
-def _unfreeze_all(model: torch.nn.Module) -> None:
-    _set_requires_grad(model, True)
-
-
-def _copy_lower_weights(lower_model: torch.nn.Module, upper_model: torch.nn.Module) -> None:
-    if hasattr(lower_model, "encoder") and hasattr(upper_model, "encoder"):
-        upper_model.encoder.load_state_dict(lower_model.encoder.state_dict(), strict=False)
-    if hasattr(lower_model, "sat_head") and hasattr(upper_model, "sat_head"):
-        upper_model.sat_head.load_state_dict(lower_model.sat_head.state_dict(), strict=False)
-
-
-def _build_loaders(train_set, val_set, data_cfg: Dict, device: str) -> Tuple[DataLoader, DataLoader]:
-    batch_size = int(data_cfg.get("batch_size", 1024))
-    num_workers = int(data_cfg.get("num_workers", 0))
-    pin_memory = bool(data_cfg.get("pin_memory", True)) and device == "cuda"
-    train_loader = DataLoader(
-        train_set,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-    )
-    val_loader = DataLoader(
-        val_set,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-    )
-    return train_loader, val_loader
-
-
 def _stage_settings(training_strategy: Dict, stage: str) -> Dict:
     for entry in training_strategy.get("stages", []):
         if entry.get("name") == stage:
             return entry
     return {}
-
-
-def _run_tuning(
-    stage: str,
-    base_config: Dict,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-    trainer_factory,
-    n_trials: int,
-) -> Dict:
-    if optuna is None:
-        raise RuntimeError("Optuna is not installed. Install optuna to run tuning.")
-
-    if stage == "lower":
-        objective_fn = lambda trial: objective_lower(trial, base_config, train_loader, val_loader, trainer_factory)
-    elif stage == "upper":
-        objective_fn = lambda trial: objective_upper(trial, base_config, train_loader, val_loader, trainer_factory)
-    else:
-        raise ValueError(f"Unsupported tuning stage: {stage}")
-
-    study_name = base_config.get("optuna", {}).get("study_name", f"nMELTS_{stage}")
-    study = optuna.create_study(direction="minimize", study_name=study_name)
-    study.optimize(objective_fn, n_trials=n_trials)
-    return study.best_params
-
 
 def _update_stage_config(stage_cfg: Dict, overrides: Dict) -> Dict:
     merged = deepcopy(stage_cfg)
@@ -232,23 +156,14 @@ def main() -> None:
     )
 
     device = "cuda" #if torch.cuda.is_available() else "cpu"
-    train_loader, val_loader = _build_loaders(train_set, val_set, config.data, device)
 
-    stage_order = ["lower", "upper", "finetune"] if args.stage == "all" else [args.stage]
-    training_cfg = config.training
-    n_trials = args.n_trials if args.n_trials is not None else int(config.optuna.get("n_trials", 0))
-
-    lower_config = _normalize_stage_config(config.lower_model)
-    upper_config = _normalize_stage_config(config.upper_model)
-    upper_stage_settings = _stage_settings(config.training_strategy, "upper")
-
-    base_config = config.as_dict()
-    base_config["lower_model"] = lower_config
-    base_config["upper_model"] = upper_config
-    base_config.setdefault("optuna", {})
-    base_config["optuna"].setdefault("search_space", {})
-    base_config["optuna"]["search_space"].setdefault("lower", _infer_search_space(config.lower_model))
-    base_config["optuna"]["search_space"].setdefault("upper", _infer_search_space(config.upper_model))
+    # 
+    binWeights = torch.ones(ml_indexer.nphases, dtype = torch.float32).reshape(1,-1)
+    compWeights = torch.ones(ml_indexer.ncompsVaried, dtype = torch.float32).reshape(1,-1)
+    for phase, W in weight_dict.items(): # Weights removed for 110 due to bad overfitting... Take a look at phase abundances??? 
+        binWeights[:,ml_indexer.mass_phasedict[phase]] = W
+        if phase in ml_indexer.compositionally_variable_phases:
+            compWeights[:,ml_indexer.comp_phasedict[phase]] = W
 
     lower_model = None
     upper_model = None

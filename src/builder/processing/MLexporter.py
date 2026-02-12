@@ -122,7 +122,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             if not (isinstance(FN, (list, tuple)) and len(FN) == 2):
                 raise ValueError(f"Feature entry must be [component, phase], got: {FN}")
             comp, phase = FN[0], FN[1]
-            if (comp, phase) not in allowed_pairs:
+            if ((comp, phase) not in allowed_pairs) and (resample_bounds != [[1,1]]):
                 raise NotImplementedError(f"(Feature {comp}({phase})) Extensive features not implemented for resampling; only PTfO2 allowed")
         print(f"Resampling dataset {sampleNo} times with bounds: {resample_bounds}")
 

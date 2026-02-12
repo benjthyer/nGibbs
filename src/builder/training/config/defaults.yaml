@@ -42,15 +42,4 @@ training:
     bulk:
       type: symmetric_rel_l2
       weight: 0.0
-optuna:
-  n_trials: 50
-  study_name: "nMELTS_optuna"
-  search_space: {}
-training_strategy:
-  stages:
-    - name: lower
-      freeze_encoder: false
-    - name: upper
-      freeze_encoder: true
-    - name: finetune
-      freeze_encoder: false
+

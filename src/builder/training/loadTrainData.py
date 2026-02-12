@@ -14,7 +14,7 @@ src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
-from builder.training.torchDataClass import TensorDataset, TensorDatasetFour, TensorDatasetFive
+from builder.training.torchDataClass import TensorDatasetFour, TensorDatasetFive
 from nMELTS.config.ml_indexer import MLIndexer
 from nMELTS.config.settings import external_base
 
@@ -51,10 +51,6 @@ if not os.path.exists(f'{Testfilename}.tar.gz') or use_external == True:
     Testfilename = str(external_mlready_dir / f'MELTS{MELTSModel}_Testset{date}{CalcType}Cooling')
     if subset:
         Testfilename += '_subset'
-
-PTfO2min = torch.tensor([1, 700, -5], device='cpu', dtype=torch.float)  # if pMELTS, [8000,700,5]
-PTfO2max = torch.tensor([10000, 2000, 5], device='cpu', dtype=torch.float)  # if pMELTS, [40000,2000,5]
-
 
 class Normalizer:
     """Quick Normalizing object that holds minima and ranges for a dataset and converts into and out of [0,1]
