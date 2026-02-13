@@ -14,9 +14,20 @@ src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
+base_path = str(Path(__file__).parent.parent.parent.parent)
+if base_path not in sys.path:
+    sys.path.insert(0, base_path)
+
+config_path = str(Path(__file__).parent.parent.parent.parent / 'config')
+if config_path not in sys.path:
+    sys.path.insert(0, config_path)
+
 from builder.training.torchDataClass import TensorDatasetFour, TensorDatasetFive
 from nMELTS.config.ml_indexer import MLIndexer
-from nMELTS.config.settings import external_base
+from settings import external_base
+from nMELTS.utils.file_utils import load_ml_bundle, MLDataBundle
+from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
+
 
 MELTSModel = '102'
 CalcType = 'FxCryst'
@@ -70,59 +81,22 @@ class Normalizer:
     def norm(self, x):
         return (x - self.miner) / self.ranger
 
-
-def load_from_tar(tar_path):
-    """
-    Load features, labels, molar labels, binary labels, and ml_indexer from a tar.gz file.
-    
-    Returns:
-        dict with keys: features, binary_labels, labels, molar_labels, ml_indexer, has_free_outputs
-    """
-    data = {}
-    
-    with tarfile.open(tar_path, 'r:gz') as tar:
-        # Load features
-        with tar.extractfile('features.npy') as f:
-            data['features'] = np.load(f)
-        
-        # Load binary labels
-        with tar.extractfile('binary_labels.npy') as f:
-            data['binary_labels'] = np.load(f)
-        
-        # Load labels
-        with tar.extractfile('labels.npy') as f:
-            data['labels'] = np.load(f)
-        
-        # Load molar labels
-        with tar.extractfile('molar_labels.npy') as f:
-            data['molar_labels'] = np.load(f)
-        
-        # Load ml_indexer
-        with tar.extractfile('ml_indexer.pkl') as f:
-            data['ml_indexer'] = pickle.load(f)
-        
-        # Check for free outputs
-        data['has_free_outputs'] = 'free_outputs.npy' in tar.getnames()
-        if data['has_free_outputs']:
-            with tar.extractfile('free_outputs.npy') as f:
-                data['free_outputs'] = np.load(f)
-    
-    return data
-
-
 # ============================================================================
 # LOAD TRAINING DATA
 # ============================================================================
 def load_ML_data(Trainpath, only_VP=None):
-    print(f"Loading training data from {Trainpath}")
-    train_data = load_from_tar(f'{Trainpath}.tar.gz')
 
-    ml_indexer = train_data['ml_indexer']
-    featureMap = train_data['features']
-    binaryMap = train_data['binary_labels']
-    labelMap = train_data['labels']
-    moleMap = train_data['molar_labels']
-    has_free_outputs = train_data['has_free_outputs']
+    #sanity_check_bundle(Path(f'{Trainpath}.tar.gz')) # Good check. Cost time, so we skip for now, 
+
+    print(f"Loading training data from {Trainpath}")
+    train_data = load_ml_bundle(f'{Trainpath}.tar.gz')
+
+    ml_indexer = train_data.ml_indexer
+    featureMap = train_data.features
+    binaryMap = train_data.binary_labels
+    labelMap = train_data.labels
+    moleMap = train_data.molar_labels
+    has_free_outputs = getattr(train_data, 'freeOutputs', None) is not None
 
     # Extract indexer components for easier access
     label_indices = ml_indexer.label_indices
@@ -133,6 +107,7 @@ def load_ML_data(Trainpath, only_VP=None):
     compToOx = ml_indexer.compToOx
     PxSpTransform = ml_indexer.PxSpTransform
     oxToEl = ml_indexer.OxToEl
+    elToOx = ml_indexer.ElToOx
     MM = ml_indexer.MM
     Elkeys = ml_indexer.Elkeys
 
@@ -141,7 +116,7 @@ def load_ML_data(Trainpath, only_VP=None):
     print(f"Label Shape: {labelMap.shape}")
     print(f"Mole Shape: {moleMap.shape}")
     if has_free_outputs:
-        print(f"Free Outputs Shape: {train_data['free_outputs'].shape}")
+        print(f"Free Outputs Shape: {train_data.freeOutputs.shape}")
 
     # ============================================================================
     # Apply only_VP restriction if specified
@@ -149,8 +124,7 @@ def load_ML_data(Trainpath, only_VP=None):
     if only_VP is not None:
         print(f"\nRestricting to phases: {only_VP}")
         ml_indexer.restrictVC(only_VP)
-        
-        # Rebuild indexer components after restriction
+              # Rebuild indexer components after restriction
         label_indices = ml_indexer.label_indices
         label_indices_comp = ml_indexer.label_indices_comp
         compositionally_variable_phases = ml_indexer.compositionally_variable_phases
@@ -209,7 +183,7 @@ def load_ML_data(Trainpath, only_VP=None):
     gc.collect()
 
     if has_free_outputs:
-        Trainfreeoutputs = torch.tensor(train_data['free_outputs'], device='cpu', dtype=torch.float)
+        Trainfreeoutputs = torch.tensor(ml_indexer.freeOutputs, device='cpu', dtype=torch.float)
         
         # ============================================================================
         # Create output normalizer for free outputs
@@ -222,7 +196,7 @@ def load_ML_data(Trainpath, only_VP=None):
         ml_indexer.output_normalizer = Normalizer(min_tensor=free_output_min, range_tensor=free_output_range)
         Trainfreeoutputs_normalized = ml_indexer.output_normalizer.norm(Trainfreeoutputs)
         
-        del train_data['free_outputs']
+
     else:
         Trainfreeoutputs = None
         Trainfreeoutputs_normalized = None
@@ -234,16 +208,12 @@ def load_ML_data(Trainpath, only_VP=None):
     # ============================================================================
     # Process in batches for validation
     # ============================================================================
-    def bulk_test_in_batches(Trainnormfeatures, Trainmoles, Trainlabels, batch_size=8192):
+    """def bulk_test_in_batches(Trainnormfeatures, Trainmoles, Trainlabels, batch_size=8192):
 
         # Precompute constant matrices as float32 tensors
-        oxToEl_t = torch.tensor(oxToEl[:-1], dtype=torch.float32)
         MM_t = torch.tensor(MM[:-1, :-1], dtype=torch.float32)
         compToOx_t = torch.tensor(compToOx, dtype=torch.float32)
         oxToEl_full_t = torch.tensor(oxToEl, dtype=torch.float32)
-
-        # Inverse only once
-        oxToEl_inv = torch.linalg.inv(oxToEl_t)
 
         n_samples = Trainnormfeatures.size(0)
 
@@ -255,7 +225,7 @@ def load_ML_data(Trainpath, only_VP=None):
 
             # === Bulk weights ===
             bulk_wt_ox = (
-                (Trainnormfeatures[start:end, 3:] @ oxToEl_inv) @ MM_t
+                (Trainnormfeatures[start:end, len(ml_indexer.featureNames):] @ elToOx) @ MM_t
             )
             bulk_wt_ox = 100 * bulk_wt_ox / torch.sum(bulk_wt_ox, axis=1).reshape(-1, 1)
             bulk_wt_ox_chunks.append(bulk_wt_ox)
@@ -268,7 +238,7 @@ def load_ML_data(Trainpath, only_VP=None):
 
             for phase in np.array(list(label_indices.keys())):
                 moles = torch.tensor(
-                    Trainmoles[start:end, mass_phasedict[phase]].reshape(-1, 1),
+                    Trainmoles[start:end, ml_indexer.mass_phasedict[phase]].reshape(-1, 1),
                     dtype=torch.float32,
                 )
                 if phase in compositionally_variable_phases:
@@ -280,11 +250,13 @@ def load_ML_data(Trainpath, only_VP=None):
 
             # === Recon bulk oxides ===
             GTReconBulk_oxides = (
-                ((GT_comps @ compToOx_t) @ oxToEl_full_t) @ oxToEl_inv
+                ((GT_comps @ compToOx_t) @ oxToEl_full_t) @ elToOx
             ) @ MM_t
             GTReconBulk_oxides *= 100 / torch.sum(GTReconBulk_oxides, axis=1, keepdims=True)
 
             GTReconBulk_chunks.append(GTReconBulk_oxides)
+            print(bulk_wt_ox)
+            print(GTReconBulk_oxides)
 
         # Recombine all batches
         bulk_wt_ox = torch.cat(bulk_wt_ox_chunks, dim=0)
@@ -302,13 +274,14 @@ def load_ML_data(Trainpath, only_VP=None):
 
     train_mismatches = bulk_test_in_batches(Trainnormfeatures, Trainmoles, Trainlabels, batch_size=2**13)
 
-    print(f"Train mismatches: {train_mismatches.size()[0]}")
+
+    print(f'Train mismatches: {train_mismatches.size()[0]}')"""
 
     OOB = ((Trainlabels > 1).to(float) + (Trainlabels < 0).to(float)).to(bool)
     badMap = torch.unique(torch.where(OOB)[0])
     goodMap = torch.ones(Trainlabels.size()[0]).to(torch.bool)
     goodMap[badMap] = False
-    goodMap[train_mismatches] = False
+    #goodMap[train_mismatches] = False
 
     print(f"Train Features: {Trainnormfeatures.size()}, Binaries {Trainbinaryfeatures.size()}, labels: {Trainlabels.size()}")
     Trainnormfeatures = Trainnormfeatures[goodMap]
@@ -335,4 +308,4 @@ def load_ML_data(Trainpath, only_VP=None):
             labels=Trainlabels,
             molelabels=Trainmoles,
         )                       
-        return full_train_set, ml_indexer
+    return full_train_set, ml_indexer

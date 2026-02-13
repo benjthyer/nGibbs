@@ -2,7 +2,6 @@
 
 # Import constants to ensure CSV files are loaded when this module is imported
 from . import constants
-from . import settings
 #from . import indexer
 
 # Export indexer components

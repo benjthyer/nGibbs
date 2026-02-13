@@ -1,16 +1,15 @@
 """
-Configuration settings. This could be revisited and replaced with more concise code later.
+Configuration settings for nMELTS builder tools.
 
-For now, just the paths?
-TO DO: NEW CODE THAT CREATES THE EXTERNAL DIRECTORY STRUCTURE IF IT DON'T EXIST. 
-
+This file is used by builder and processing scripts, NOT by the distributable nMELTS package.
+Data file paths and external storage configuration for development/training workflows.
 """
 from pathlib import Path
 import yaml
 
 
 def _load_user_config():
-    config_path = Path(__file__).resolve().parents[3] / 'config' / 'config.yaml'
+    config_path = Path(__file__).parent / 'config.yaml'
     if not config_path.exists():
         return {}
     with open(config_path, 'r') as f:
@@ -30,10 +29,10 @@ _internal_data_dir = _CFG.get('internal_data_dir')
 if _internal_data_dir:
     _internal_data_dir = Path(_internal_data_dir)
     if not _internal_data_dir.is_absolute():
-        _internal_data_dir = Path(__file__).resolve().parents[3] / _internal_data_dir
+        _internal_data_dir = Path(__file__).resolve().parent.parent / _internal_data_dir
     INT_DATA_DIR = _internal_data_dir
 else:
-    INT_DATA_DIR = Path(__file__).resolve().parents[3] / 'data'
+    INT_DATA_DIR = Path(__file__).resolve().parent.parent / 'data'
 
 DATA_PATH = _CFG.get('data_path', 'MELTStable/') or ''
 if DATA_PATH and not DATA_PATH.endswith('/'):

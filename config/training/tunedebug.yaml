@@ -2,28 +2,49 @@ tarname: 'pGeoDyn' #(Suffix: '_Train', '_Test', '_Valid') - Base name for traini
 
 warm_start: None
 
-tune: # Comment this out to skip training, warm start from a saved model must be provided
+tune1: # Comment this out to skip training, warm start from a saved model must be provided
   lower_model:
     tune_params:
       epochs: 10
-      learning_rate: 1e-3
+      learning_rate: 5e-3
       early_stopping_patience: 2
     model_params:
-      encoderLayer: [[1, 1], [1, 0], [2, 2], [2, 1], [3, 2]] # [upsampling layers, downsampling layers]Numbers of upsamplings to try (factors of 2 in neuron increase for each layer)
-      low_regularization: [dropout0, batchnormdropout0, layernormdropout0]
-      activation_leak: 0.05
+      encoderLayer: [[1, 0]] # [upsampling layers, downsampling layers]Numbers of upsamplings to try (factors of 2 in neuron increase for each layer)
+      low_regularization: [dropout0]
+      activation_leak: [0.05]
       lowWD: [0, 1e-6, 1e-5, 1e-4]
+      max_N_tune: 1.0e6
 
+tune2:
+  lower_model:
+    tune_params:
+      epochs: 10
+      learning_rate: 5e-3
+      early_stopping_patience: 2
+    model_params:
+      encoderLayer: [[2, 1]] # Numbers of upsamplings to try (factors of 2 in neuron increase for each layer)
+      high_regularization: [dropout0]
+      activation_leak: [0.05]
+      highWD: [0, 1e-6, 1e-5, 1e-4]
+      noise: [0, 0.01, 0.05]
+      max_N_tune: 1.0e6
+
+tune3:
   upper_model:
     tune_params:
       epochs: 10
-      learning_rate: 1e-3
+      learning_rate: 5e-3
       early_stopping_patience: 2
     model_params:
-      middleLayer: [[1, 1], [1, 0], [2, 2], [2, 1], [3, 2]] # Numbers of upsamplings to try (factors of 2 in neuron increase for each layer)
-      high_regularization: [dropout0, batchnormdropout0, layernormdropout0]
+      middleLayer: [[2, 1]] # Numbers of upsamplings to try (factors of 2 in neuron increase for each layer)
+      high_regularization: [dropout0]
+      activation_leak: [0.05]
       highWD: [0, 1e-6, 1e-5, 1e-4]
       noise: [0, 0.01, 0.05]
+      max_N_tune: 1.0e6
+
+
+
 
 train1: # Increase number for another layer of training
   strategy: lower # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
@@ -36,10 +57,9 @@ train1: # Increase number for another layer of training
     args:
       factor: 0.2 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
       patience: 3
-      min_lr: 1e-5
-
-    
-
+      min_lr: 1e-6
+  max_N: null
+  DictFilePath: pGeoDynBinaries.pt
 
 train2: 
   strategy: upper # Train upper portion of model, encoder frozen. Saturation predictor still trained, but not used for loss calculation.
@@ -52,15 +72,13 @@ train2:
     args:
       factor: 0.2 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
       patience: 3
-      min_lr: 1e-5
-
-    weight_dict: # Loss multipliers for each phase, used to upweight underperforming phases. Can be set to 1 for all phases to use unweighted loss.
-    'olivine': 3
-    'nepheline': 15
-    'leucite': 10
-    'alloy-solid': 5
-    'muscovite': 3
-    'k-feldspar': 5
+      min_lr: 1e-6
+  DictFilePath: pGeoDynHeads.pt
+  loss_config:
+    bulk:
+      type: symmetric_rel_l2
+      weight: 0.0
+  
 
 train3: 
   strategy: finetune # Train entire model with free flowing gradients
@@ -74,3 +92,9 @@ train3:
       factor: 0.2 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
       patience: 3
       min_lr: 1e-5
+  DictFilePath: pGeoDynWhole.pt
+  loss_config:
+    bulk:
+      type: symmetric_rel_l2
+      weight: 1
+

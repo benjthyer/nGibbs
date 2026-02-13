@@ -1,11 +1,19 @@
 _____________________ Unreleased _______________________
 
+2026-02-12
+- Updated spinel and orthopyroxene correction methods to use ml_indexer.detail_label_indices for component lookups, improving clarity and reducing hardcoded indices.
+- Refactored MLexporter feature parsing to accept MELTStable column-style strings and wired featureNames/freeOutputs from processing .yaml into dataset generation.
+- Updated tune_Lower_MELTS to require Model instance and pass ml_indexer to all new MidLevelNetwork instantiations for consistency.
+- **nMELTS Package cleanup for pip distribution**: 
+    - Moved config/settings.py out of src/nMELTS/ to config/ directory (builder-only)
+
 2026-02-11
+- Training now by .yaml configuration. Now accepts pytorch lr schedulers. 
+    - Motivation: Enable faster hyperparameter search by limiting dataset size during tuning, while allowing full dataset training
 - Branched off training and optuna work onto trainDev branch. Focus on getting old code working/adapted on main, maybe revisit optuna later. 
     - Painfully slow, very little feedback for me to know what was going on
-- Updated upper trainer head-freeze logic to honor which_heads_to_freeze, with a fallback to name-based head attributes.
-- Refactored optimizer_factory: create_optimizer now uses direct arguments (lr, weight_decay), auto-selects Adam if wd=0 else AdamW.
-- Refactored create_scheduler to accept scheduler_name string and **kwargs, using _SCHEDULERS dict to lookup class and metadata.
+- Debugged Training! Mostly. 
+- Added training logger to capture all training/tuning output to timestamped log files in src/builder/training/logs directory.
 
     
 Merge Commit onto main : 950b8e4e675afd6e958537453365b1f8e663f54e

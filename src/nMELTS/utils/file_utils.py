@@ -7,6 +7,10 @@ Extracted from Legacy/BackEnds/EmulatorLibrary.py
 import os
 import shutil
 from pathlib import Path
+import tarfile
+import tempfile
+import pickle
+import numpy as np
 
 
 def delete_files_with_keyword(directory, keyword, dry_run=True):
@@ -325,4 +329,78 @@ def clear_new_files(directory, baseline_files, protected_extensions=None):
             print(f"Error deleting {filepath}: {e}")
     
     return deleted_count
+
+class MLDataBundle:
+    """Container for ML dataset bundle loaded from .tar.gz file."""
+    def __init__(self):
+        self.molar_labels = None
+        self.binary_labels = None
+        self.mass_labels = None
+        self.features = None
+        self.labels = None
+        self.free_outputs = None
+        self.ml_indexer = None
+
+
+def load_ml_bundle(bundle_path):
+    """
+    Load a .tar.gz bundle created by resampling_to_datasets.
+    
+    Extracts all .npy files and the ml_indexer.pkl from the tarball and returns
+    them as a MLDataBundle object with attributes for each file.
+    
+    Parameters
+    ----------
+    bundle_path : str or Path
+        Path to the .tar.gz bundle file
+        
+    Returns
+    -------
+    MLDataBundle
+        Object with attributes: molar_labels, binary_labels, mass_labels, 
+        features, labels, free_outputs (if present), ml_indexer
+    """
+    bundle_path = Path(bundle_path)
+    if not bundle_path.exists():
+        raise FileNotFoundError(f"Bundle file not found: {bundle_path}")
+    
+    # Create temporary directory for extraction
+    temp_dir = tempfile.mkdtemp()
+    try:
+        # Extract tarball
+        with tarfile.open(bundle_path, 'r:gz') as tar:
+            tar.extractall(path=temp_dir)
+        
+        # Create bundle object
+        bundle = MLDataBundle()
+        
+        # Load .npy files
+        npy_files = {
+            'molar_labels': 'molar_labels.npy',
+            'binary_labels': 'binary_labels.npy',
+            'mass_labels': 'mass_labels.npy',
+            'features': 'features.npy',
+            'labels': 'labels.npy',
+            'free_outputs': 'free_outputs.npy',
+        }
+        
+        for attr_name, filename in npy_files.items():
+            file_path = Path(temp_dir) / filename
+            if file_path.exists():
+                setattr(bundle, attr_name, np.load(file_path))
+            elif attr_name != 'free_outputs':
+                raise FileNotFoundError(f"Expected file not found in bundle: {filename}")
+        
+        # Load ml_indexer pickle
+        indexer_path = Path(temp_dir) / 'ml_indexer.pkl'
+        if indexer_path.exists():
+            with open(indexer_path, 'rb') as f:
+                bundle.ml_indexer = pickle.load(f)
+        else:
+            raise FileNotFoundError(f"{indexer_path} not found in bundle")
+        
+        return bundle
+    finally:
+        # Clean up temporary directory
+        shutil.rmtree(temp_dir)
 

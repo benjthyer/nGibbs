@@ -9,15 +9,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import sys
-from pathlib import Path
 
-file_path = str(Path(__file__).parent)
-if file_path not in sys.path:
-    sys.path.insert(0, file_path)
-src_path = str(Path(__file__).parent.parent.parent)
-if src_path not in sys.path:
-    sys.path.insert(0, src_path)
 
 # Import utility functions
 from nMELTS.utils.string_utils import pull_letter, pull_number
@@ -73,7 +65,8 @@ class TunableModel(nn.Module):
         self._set_indexer(ml_indexer)
 
         self.n_phases = len(list(self.label_indices.keys()))
-        input_dim = 3 + len(self.Elkeys)
+        input_dim = len(ml_indexer.featureNames) + len(self.Elkeys)
+
         self.activation_factory = activation_factory
         self.input_dim = input_dim
 
@@ -285,6 +278,7 @@ class TunableModel(nn.Module):
         self.Elkeys = ml_indexer.Elkeys
         self.label_indices = ml_indexer.label_indices
         self.label_indices_comp = ml_indexer.label_indices_comp
+        self.detail_label_indices = ml_indexer.detail_label_indices
         self.compToOx_raw = ml_indexer.compToOx
         self.oxToEl_raw = getattr(ml_indexer, "OxToEl", None) 
         self.MM_raw = ml_indexer.MM
@@ -432,19 +426,33 @@ class MidLevelNetwork(TunableModel):
         return phaseProportions"""
     
     def polish_negative_px(self, intensiveComponents):
+        opx = self.detail_label_indices['orthopyroxene']
+        opx_jadeite = opx['jadeite']
+        opx_essenite = opx['essenite']
+        opx_pos_idxs = [
+            opx['diopside'],
+            opx['clinoenstatite'],
+            opx['hedenbergite'],
+            opx['alumino-buffonite'],
+            opx['buffonite'],
+        ]
         # Send g5 Fliers back to reason, rescale remaining components.
-        fliers = intensiveComponents[:, self.label_indices_comp['orthopyroxene'][6]] > 0.5
-        intensiveComponents[fliers, self.label_indices_comp['orthopyroxene'][6]] = 0.5
-        r_fly, c_fly = torch.meshgrid(torch.nonzero(fliers, as_tuple=False).squeeze(-1).to(torch.int), torch.tensor(self.label_indices_comp['orthopyroxene'][:6],dtype = torch.int, device = intensiveComponents.device), indexing="ij")
+        fliers = intensiveComponents[:, opx_jadeite] > 0.5
+        intensiveComponents[fliers, opx_jadeite] = 0.5
+        r_fly, c_fly = torch.meshgrid(
+            torch.nonzero(fliers, as_tuple=False).squeeze(-1).to(torch.int),
+            torch.tensor(opx_pos_idxs + [opx_essenite], dtype=torch.int, device=intensiveComponents.device),
+            indexing="ij",
+        )
         intensiveComponents[r_fly, c_fly] =intensiveComponents[r_fly, c_fly] * (0.5 / (intensiveComponents[r_fly, c_fly].sum(dim=-1, keepdim=True)))
 
         # Check and correct for below zero CaO
         PosS = torch.sum(
-            intensiveComponents[:, self.label_indices_comp['orthopyroxene'][:5]], dim=-1
+            intensiveComponents[:, opx_pos_idxs], dim=-1
         )  # Sumterm
         NegS = (
-            intensiveComponents[:, self.label_indices_comp['orthopyroxene'][5]] * 2
-        ) + intensiveComponents[:, self.label_indices_comp['orthopyroxene'][6]]
+            intensiveComponents[:, opx_essenite] * 2
+        ) + intensiveComponents[:, opx_jadeite]
 
         illegal = NegS > PosS
 
@@ -453,8 +461,8 @@ class MidLevelNetwork(TunableModel):
             print(NegS[illegal])
             print(torch.where(illegal))
             denom = (
-                2 * intensiveComponents[illegal, self.label_indices_comp['orthopyroxene'][6]]
-                + 3 * intensiveComponents[illegal, self.label_indices_comp['orthopyroxene'][5]]
+                2 * intensiveComponents[illegal, opx_jadeite]
+                + 3 * intensiveComponents[illegal, opx_essenite]
             )
             b = 1.0 / denom
             a = NegS[illegal] / (denom * PosS[illegal])
@@ -463,10 +471,12 @@ class MidLevelNetwork(TunableModel):
             row_idx = torch.nonzero(illegal, as_tuple=False).squeeze(-1).to(torch.int)
             print(row_idx)
             # Column indices (orthopyroxene subset)
-            cols_pos = torch.tensor(self.label_indices_comp['orthopyroxene'][:5],
-                                    device=intensiveComponents.device, dtype = torch.int)
-            cols_neg = torch.tensor(self.label_indices_comp['orthopyroxene'][-2:],
-                                    device=intensiveComponents.device, dtype = torch.int)
+            cols_pos = torch.tensor(
+                opx_pos_idxs, device=intensiveComponents.device, dtype=torch.int
+            )
+            cols_neg = torch.tensor(
+                [opx_essenite, opx_jadeite], device=intensiveComponents.device, dtype=torch.int
+            )
 
             # Build broadcastable index grids
             rr_pos, cc_pos = torch.meshgrid(row_idx, cols_pos, indexing="ij")
@@ -481,10 +491,18 @@ class MidLevelNetwork(TunableModel):
         return intensiveComponents
     
     def polish_negative_spFe(self, intensiveComponents):
+        sp = self.detail_label_indices['spinel']
+        sp_chromite = sp['chromite']
+        sp_hercynite = sp['hercynite']
+        sp_magnetite = sp['magnetite']
+        sp_spinel = sp['spinel']
+        sp_ulvospinel = sp['ulvospinel']
         # Check and correct for below zero FeO
-        PosS = torch.sum(intensiveComponents[:, self.label_indices_comp['spinel'][torch.tensor([0,1,2,4], dtype = torch.int)]], dim=-1
-        ) + ( intensiveComponents[:, self.label_indices_comp['spinel'][4]]*2.25 )# Sumterm
-        NegS = intensiveComponents[:, self.label_indices_comp['spinel'][3]] * 19
+        pos_idxs = [sp_chromite, sp_hercynite, sp_magnetite, sp_ulvospinel]
+        PosS = torch.sum(intensiveComponents[:, pos_idxs], dim=-1) + (
+            intensiveComponents[:, sp_ulvospinel] * 2.25
+        )
+        NegS = intensiveComponents[:, sp_spinel] * 19
 
         illegal = NegS > PosS
         if illegal.any():
@@ -493,10 +511,8 @@ class MidLevelNetwork(TunableModel):
             row_idx = torch.nonzero(illegal, as_tuple=False).squeeze(-1).to(torch.int)
             print(row_idx)
             # Column indices (spinel subset)
-            cols_pos = torch.tensor(self.label_indices_comp['spinel'][torch.tensor([0,1,2,4], dtype = torch.int)],
-                                    device=intensiveComponents.device, dtype = torch.int)
-            cols_neg = torch.tensor(self.label_indices_comp['spinel'][3],
-                                   device=intensiveComponents.device, dtype = torch.int)
+            cols_pos = torch.tensor(pos_idxs, device=intensiveComponents.device, dtype=torch.int)
+            cols_neg = torch.tensor(sp_spinel, device=intensiveComponents.device, dtype=torch.int)
 
             # Build broadcastable index grids
             rr_pos, cc_pos = torch.meshgrid(row_idx, cols_pos, indexing="ij")
@@ -507,7 +523,7 @@ class MidLevelNetwork(TunableModel):
             #print(torch.where(illegal))
             denom = (19*A) + PosS[illegal] 
             a = 19.0 / denom
-            b = PosS[illegal] / (denom *  intensiveComponents[illegal, self.label_indices_comp['spinel'][3]])
+            b = PosS[illegal] / (denom * intensiveComponents[illegal, sp_spinel])
 
             # Scale updates
             intensiveComponents[rr_pos, cc_pos] = a[:, None] * intensiveComponents[rr_pos, cc_pos]
@@ -516,23 +532,40 @@ class MidLevelNetwork(TunableModel):
         return intensiveComponents
     
     def polish_negative_spAl(self, intensiveComponents):
+        sp = self.detail_label_indices['spinel']
+        sp_hercynite = sp['hercynite']
+        sp_magnetite = sp['magnetite']
+        sp_spinel = sp['spinel']
+        sp_ulvospinel = sp['ulvospinel']
         # Check and correct for negative Al in spinel
-        NegS = (intensiveComponents[:,self.label_indices_comp['spinel'][2]] * (2/3)) + (intensiveComponents[:,self.label_indices_comp['spinel'][4]] * (1/4))
-        PosS =  (intensiveComponents[:,self.label_indices_comp['spinel'][1]] ) + (intensiveComponents[:,self.label_indices_comp['spinel'][3]])
+        NegS = (intensiveComponents[:, sp_magnetite] * (2/3)) + (
+            intensiveComponents[:, sp_ulvospinel] * (1/4)
+        )
+        PosS = intensiveComponents[:, sp_hercynite] + intensiveComponents[:, sp_spinel]
         illegal = NegS > PosS
         if illegal.sum():  # Calculate scaling factors to zero out negative hercynite without affecting Chromite
-            A =  (intensiveComponents[illegal,self.label_indices_comp['spinel'][2]] ) + (intensiveComponents[illegal,self.label_indices_comp['spinel'][4]])
+            A = intensiveComponents[illegal, sp_magnetite] + intensiveComponents[illegal, sp_ulvospinel]
             RemS = A + PosS[illegal] # equivalent to 1-chromite
             a = RemS / (A + NegS[illegal])
             b = (RemS * NegS[illegal]) / ( PosS[illegal] * (A + NegS[illegal]) )
-            intensiveComponents[illegal,self.label_indices_comp['spinel'][2]], intensiveComponents[illegal,self.label_indices_comp['spinel'][4]] = a * intensiveComponents[illegal,self.label_indices_comp['spinel'][2]], a * intensiveComponents[illegal,self.label_indices_comp['spinel'][4]]
-            intensiveComponents[illegal,self.label_indices_comp['spinel'][1]], intensiveComponents[illegal,self.label_indices_comp['spinel'][3]] =  b * intensiveComponents[illegal,self.label_indices_comp['spinel'][1]], b * intensiveComponents[illegal,self.label_indices_comp['spinel'][3]] 
+            intensiveComponents[illegal, sp_magnetite], intensiveComponents[illegal, sp_ulvospinel] = (
+                a * intensiveComponents[illegal, sp_magnetite],
+                a * intensiveComponents[illegal, sp_ulvospinel],
+            )
+            intensiveComponents[illegal, sp_hercynite], intensiveComponents[illegal, sp_spinel] = (
+                b * intensiveComponents[illegal, sp_hercynite],
+                b * intensiveComponents[illegal, sp_spinel],
+            )
         return intensiveComponents
     
     def polish_negative_sp(self, intensiveComponents, trial = 0):
         # Indices for spinel components
-        idxs = self.label_indices_comp['spinel']
-        i1, i2, i3, i4, i5 = idxs[0], idxs[1], idxs[2], idxs[3], idxs[4]
+        sp = self.detail_label_indices['spinel']
+        i1 = sp['chromite']
+        i2 = sp['hercynite']
+        i3 = sp['magnetite']
+        i4 = sp['spinel']
+        i5 = sp['ulvospinel']
 
         # Extract components
         c1 = intensiveComponents[:, i1]
@@ -604,7 +637,15 @@ class MidLevelNetwork(TunableModel):
             try:
                 sol = torch.linalg.solve(M, rhs)  # shape (rows, 3). A wannabe pure MgAl2O3 makes a singular matrix. Handle this edge case with a simpler fix then recursion.
             except:
-                rr_e, cc_e = torch.meshgrid(row_idx, torch.tensor(self.label_indices_comp['spinel'], dtype = torch.int, device = intensiveComponents.device), indexing="ij")
+                rr_e, cc_e = torch.meshgrid(
+                    row_idx,
+                    torch.tensor(
+                        [i1, i2, i3, i4, i5],
+                        dtype=torch.int,
+                        device=intensiveComponents.device,
+                    ),
+                    indexing="ij",
+                )
                 print('SPINEL COMPOSITIONS:')
                 print(intensiveComponents[rr_e, cc_e])
                 if trial == 2:

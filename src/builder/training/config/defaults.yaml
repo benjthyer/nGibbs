@@ -26,10 +26,19 @@ data:
   batch_size: 1024
   num_workers: 0
   pin_memory: true
+  only_vp: null
 training:
   epochs: 20
   learning_rate: 0.001
   early_stopping_patience: 2
+  device: cuda
+  max_N: null
+  max_N_tune: 1.0e6
+  log_dir: src/builder/training/logs
+  checkpoints:
+    lower_path: Models/temp_binary_train.pt
+    upper_path: Models/temp_upper_train.pt
+    finetune_path: Models/temp_finetune_train.pt
   loss_config:
     binary:
       weight: 1.0

@@ -6,17 +6,29 @@ from abc import ABC, abstractmethod
 from typing import Dict, Optional
 
 import torch
-import nMELTS.engine.NN as NN
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from torch.optim import AdamW, Adam
-from nMELTS.utils.string_utils import pull_number
 import time
 from tqdm import tqdm
 from torch import nn
 import gc
-from src.builder.training.optimizer_factory import create_optimizer, create_scheduler, SchedulerWrapper
+import sys
+from pathlib import Path
+
+src_path = str(Path(__file__).parent.parent.parent)
+if src_path not in sys.path:
+    sys.path.insert(0, src_path)
+
+from nMELTS.utils.string_utils import pull_number
+from builder.training.optimizer_factory import create_optimizer, create_scheduler, SchedulerWrapper
+import nMELTS.engine.NN as NN
+
+# Set up temp models directory
+TEMP_MODELS_DIR = Path(__file__).parent / "temp_models"
+TEMP_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def symmetric_rel_l1(pred, target, eps=1e-6):
     denom = torch.clamp(torch.abs(pred) + torch.abs(target), min=eps)
@@ -53,7 +65,7 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
     noise = model.config['noise']
     optimizer = create_optimizer(model, lr=lr, weight_decay=model.config['lowWD'])
-    wrappedScheduler = create_scheduler(optimizer, scheduler, scheduler_kwargs) if scheduler else None
+    wrappedScheduler = create_scheduler(optimizer, scheduler, **scheduler_kwargs) if scheduler else SchedulerWrapper()
 
     if 'dropout' in model.config['low_regularization'].lower():
         dropout_rate = pull_number(model.config['low_regularization'].lower())
@@ -77,7 +89,8 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         running_train_loss = 0.0
         N = 0
 
-        for xb, yb in tqdm(train_loader, desc=f"Train Epoch {epoch+1}", leave=False):
+        for output in tqdm(train_loader, desc=f"Train Epoch {epoch+1}", leave=False):
+            xb, yb = output[0], output[1] # We only need the phase saturation data here
             xb, yb = xb.to(device, non_blocking=True), yb.to(device, non_blocking=True)
             #bulk_zero_mask = (x_batch != 0).to(torch.float) # Bulk zero mask different shape for training and testing because this mask is doubling as a filter for the noise
             if noise != 0:
@@ -96,7 +109,7 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                 print(f"Reached max_N={max_N} samples for this epoch. Stopping early.")
                 break
 
-        avg_train_loss = running_train_loss / len(train_loader.dataset)
+        avg_train_loss = running_train_loss / N
         train_losses.append(avg_train_loss)
 
         # --- Evaluate ---
@@ -105,7 +118,8 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         N = 0
 
         with torch.no_grad():
-            for xb, yb in test_loader:
+            for output in test_loader:
+                xb, yb = output[0], output[1] # We only need the phase saturation data here
                 xb, yb = xb.to(device, non_blocking=True), yb.to(device, non_blocking=True)
                 logits = model.forward_binaries(xb)
                 loss = criterion(logits, yb)
@@ -115,7 +129,7 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                     print(f"Reached max_N={max_N} samples for this epoch. Stopping early.")
                     break
 
-        avg_test_loss = running_test_loss / len(test_loader.dataset)
+        avg_test_loss = running_test_loss / N
         test_losses.append(avg_test_loss)
 
         print(f"Epoch {epoch+1:02d}: Train {avg_train_loss:.5f} | Test {avg_test_loss:.5f} | Δt={time.time()-start:.1f}s")
@@ -127,7 +141,7 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         if avg_test_loss < best_test_loss:
             best_test_loss = avg_test_loss
             print(f"New best test loss: {best_test_loss:.5f}. Saving model.")
-            torch.save(model.state_dict(), 'Models/temp_binary_train.pt')
+            torch.save(model.state_dict(), str(TEMP_MODELS_DIR / 'temp_binary_train.pt'))
             if DictFilePath is not None:
                 model.save(DictFilePath)
             early_stopping_counter = 0
@@ -173,7 +187,7 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
         
 
-    model.load_state_dict(torch.load('Models/temp_binary_train.pt'))
+    model.load_state_dict(torch.load(str(TEMP_MODELS_DIR / 'temp_binary_train.pt')))
     print(f"Best Test Loss: {best_test_loss:.5f} at epoch {np.argmin(test_losses)+1}")
     return best_test_loss
 
@@ -205,7 +219,7 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     
     noise = model.config['noise']
     optimizer = create_optimizer(model, lr=lr, weight_decay=model.config['highWD'])
-    wrappedScheduler = create_scheduler(optimizer, scheduler, scheduler_kwargs) if scheduler else None
+    wrappedScheduler = create_scheduler(optimizer, scheduler, **scheduler_kwargs) if scheduler else SchedulerWrapper()
             
 
     if 'dropout' in model.config['high_regularization'].lower():
@@ -222,8 +236,8 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     best_test_loss = np.inf
     train_losses, test_losses = [], []
 
-    binWeights = binWeights.cuda()
-    compWeights = compWeights.cuda()
+    binWeights = binWeights.to(device)
+    compWeights = compWeights.to(device)
 
     criterion_chem = criterion 
     criterion_mole = criterion
@@ -304,7 +318,7 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
             wrappedScheduler.step_batch() # Step scheduler if it's batch-based (Does nothing if it's epoch-based)
 
-        avg_train_loss = running_train_loss / (batch_idx*batch_size)
+        avg_train_loss = running_train_loss / N
 
         print(f"[TRAIN] Running Saturation Loss: {running_sat_loss/(batch_idx*batch_size):.3e}\tRunning Chem Loss: {running_chem_loss/(batch_idx*batch_size):.3e}")
         print(f"[TRAIN] Running Molar Loss: {running_mole_loss/(batch_idx*batch_size):.3e}\tRunning Bulk Loss: {running_bulk_loss/(batch_idx*batch_size):.3e}")
@@ -354,17 +368,17 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                     break
 
 
-        print(f"[TEST] Running Saturation Loss: {running_sat_loss/len(full_test_set):.3e}\tRunning Chem Loss: {running_chem_loss/len(full_test_set):.3e}")
-        print(f"[TEST] Running Molar Loss: {running_mole_loss/len(full_test_set):.3e}\tRunning Bulk Loss: {running_bulk_loss/len(full_test_set):.3e}")
+        print(f"[TEST] Running Saturation Loss: {running_sat_loss/N:.3e}\tRunning Chem Loss: {running_chem_loss/N:.3e}")
+        print(f"[TEST] Running Molar Loss: {running_mole_loss/N:.3e}\tRunning Bulk Loss: {running_bulk_loss/N:.3e}")
 
         
-        avg_test_loss = running_test_loss / len(full_test_set)
+        avg_test_loss = running_test_loss / N
         test_losses.append(avg_test_loss)
         print(f"Epoch {epoch+1:02d}: Train {avg_train_loss:.5f} | Test {avg_test_loss:.5f} | Δt={time.time()-start:.1f}s")
 
         if avg_test_loss < best_test_loss:
             best_test_loss = avg_test_loss
-            torch.save(model.state_dict(), 'Models/temp_upper_train.pt')
+            torch.save(model.state_dict(), str(TEMP_MODELS_DIR / 'temp_upper_train.pt'))
             if DictFilePath is not None:
                 model.save(DictFilePath)
             early_stopping_counter = 0
@@ -411,5 +425,5 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
         
 
-    model.load_state_dict(torch.load('Models/temp_upper_train.pt'))
+    model.load_state_dict(torch.load(str(TEMP_MODELS_DIR / 'temp_upper_train.pt')))
     return best_test_loss

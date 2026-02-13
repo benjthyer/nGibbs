@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "my-package"
+version = "0.1.0" 
+description = "A collection of Super-fast Neural Network Emulators of MELTS (and other) Gibbs Free Energy Softwares for Silicate Multi-component Systems, such as MAGEMin, Perple_X, and "
+authors = [
+  { name="Ben J. Thyer" }
+]
+readme = "README.md"
+license = { file="LICENSE" } # ...What is a license? How is it relevant to me? 
+requires-python = ">=3.9"
+
+dependencies = [
+    "numpy>=1.20.0",
+    "torch>=1.9.0",
+    "pandas>=1.3.0",
+    "molmass>=2021.6.18",
+    "pyyaml>=5.4.1"
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["nMELTS*"]
+exclude = ["builder*"]
+

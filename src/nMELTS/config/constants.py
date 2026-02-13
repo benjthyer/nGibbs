@@ -30,7 +30,7 @@ all_Oxides = default_Oxides #+ ['MnO', 'NiO']
 
 # This object is used to build the indexer and column headers for the MELTSdataset.
 COMPOSITIONAL_COMPONENTS_IN_PHASES: Dict[str, List[str]] = { # Will need to be expanded as more phases are supported. May need to be flexible to MELTS model
-    'System_main': ['Pressure', 'Temperature', 'logfO2-QFM', 'mass', 'F', 'viscosity', 'H', 'Cp', 'S', 'V', 'dVdP*10^6', 'dVdT*10^6'],
+    'System_main': ['Pressure', 'Temperature', 'logfO2-QFM', 'mass', 'F', 'viscosity', 'H', 'Cp', 'S', 'V', 'dVdP*10^6', 'dVdT*10^6', 'rhol', 'rhos'],
     'Bulk_comp': ['mass'] + all_Oxides,
     'olivine': ['forsterite', 'fayalite', 'monticellite', 'tephroite', 'ni-olivine'],
     'orthopyroxene': ['diopside', 'clinoenstatite', 'hedenbergite', 'alumino-buffonite', 'buffonite', 'essenite', 'jadeite'],

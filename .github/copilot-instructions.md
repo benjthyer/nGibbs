@@ -10,6 +10,9 @@ description: This is an evolving guide to the nMELTS agent, to be applied genera
 ## Architecture
 {Source code is divided in two parts: one is a deployable nMELTS package that can be pip installed, and the other is a builder that contains scripts to generate data products and train models. Any code that interfaces with alphamelts should be run in a linux subsystem, where it can take advantage of GNU parallel processing of CPUs.}
 
+Anything within src/nMELTS should never access files from outside src/nMELTS. 
+Outside files though are free to reference the contents of src/nMELTS.
+
 ## Dynamic Indexing
 {The DatasetIndexer() object is used to generate dynamic indexers for the data tables. It spawns an ml_indexer() object that is carried by nMELTS models through training and deployment: carrying names of phases and components and how they map to matrix inputs and outputs. Notably, it contains the matrices used to project data between component, oxide, and element space.}
 
@@ -24,4 +27,5 @@ If the motivation is unclear, please ask for clarification!
 Aggregate changes by date following the format YYYY-MM-DD
 Let there be a ChangeLog for each major version of the codebase.
 }
+Never look in or do anything within any folder labeled "legacy" without explicit instructions to do so. This code is old and will be deleted soon. It is kept for human reference only. 
 ```

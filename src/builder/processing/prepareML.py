@@ -23,6 +23,10 @@ file_path = str(Path(__file__).parent)
 if file_path not in sys.path:
     sys.path.insert(0, file_path)
 
+config_path = str(Path(__file__).parent.parent.parent.parent / 'config')
+if config_path not in sys.path:
+    sys.path.insert(0, config_path)
+
 # Import BigMetaTable
 from builder.processing.BigMetaTable import BigMetaTable
 
@@ -30,7 +34,7 @@ from builder.processing.BigMetaTable import BigMetaTable
 from builder.processing import filters
 
 # Import settings and utilities
-from nMELTS.config.settings import internal_data_dir, external_data_dir, external_base, internal_train_dir, external_train_dir
+from settings import internal_data_dir, external_data_dir, external_base, internal_train_dir, external_train_dir
 from nMELTS.utils.file_utils import delete_files_with_keyword, move_files_with_extension, get_baseline_files, clear_new_files
 
 # Exporter functions
@@ -85,6 +89,8 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
     preproc_cfg = config['preprocessing']
     upsample_cfg = config['upsampling']
     resampling_cfg = config['resampling']
+    feature_names_cfg = config.get('featureNames')
+    free_outputs_cfg = config.get('freeOutputs')
     
     balance_cfg = config['balancing']
     filter_cfg = config['deep_filter']
@@ -92,6 +98,12 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
 
     plot_cfg = config.get('plot', {})
     outname = config.get('outname', '').strip()
+
+    resampling_kwargs = {}
+    if feature_names_cfg is not None:
+        resampling_kwargs['featureNames'] = feature_names_cfg
+    if free_outputs_cfg is not None:
+        resampling_kwargs['freeOutputs'] = free_outputs_cfg
     
     MELTSModel = MELTSModel or dataset_cfg['MELTSModel']
     Date = Date or dataset_cfg['Date']
@@ -247,14 +259,16 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
                 TrainMELTS,
                 resampling_cfg['train_bounds'],
                 config_path=config_path,
-                bundle_name=get_bundle_name(TrainName, 'Train')
+                bundle_name=get_bundle_name(TrainName, 'Train'),
+                **resampling_kwargs,
             )
         else:
             train_bundle_path = resampling_to_datasets(
                 TrainMELTS,
                 [[1, 1]],
                 config_path=config_path,
-                bundle_name=get_bundle_name(TrainName, 'Train')
+                bundle_name=get_bundle_name(TrainName, 'Train'),
+                **resampling_kwargs,
             )
 
 
@@ -338,13 +352,15 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
             TestMELTS,
             resampling_cfg['test_bounds'],
             config_path=config_path,
-            bundle_name=get_bundle_name(TestName, 'Test')
+            bundle_name=get_bundle_name(TestName, 'Test'),
+            **resampling_kwargs,
         )
         valid_bundle_path = resampling_to_datasets(
             ValidMELTS,
             resampling_cfg['test_bounds'],
             config_path=config_path,
-            bundle_name=get_bundle_name(ValidName, 'Valid')
+            bundle_name=get_bundle_name(ValidName, 'Valid'),
+            **resampling_kwargs,
         )
 
         # Generate plots (saved to PLOT_DIR, not displayed due to 'Agg' backend)

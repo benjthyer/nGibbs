@@ -6,12 +6,30 @@
 # ============================================================================
 dataset:
   MELTSModel: 'p'          # MELTS model version: '102', '110', '120', 'p'
-  Date: 'Feb9'               # Date identifier for dataset naming
+  Date: 'Feb11'               # Date identifier for dataset naming
   Mode: 'BatchCooling'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
 outname: 'pGeoDyn'                  # Base name for output folder (without extension). Auto-Generated if blank
+
+# ============================================================================
+# NON-CHEMICAL FEATURE AND LABEL CONFIGURATION (format: attribute(phase): e.g. 'Pressure(System_main)')
+# ============================================================================
+featureNames: # Non-chemical features to include in the dataset
+  - 'Pressure(System_main)'
+  - 'H(System_main)' # Isenthalpic Sims!
+  - 'logfO2-QFM(System_main)'
+
+freeOutputs: # Non-chemical labels to predict. These are used for training the saturation predictor and as auxiliary outputs for the encoder.
+  - 'Temperature(System_main)' # 
+  - 'viscosity(System_main)' # 
+  - 'Cp(System_main)' #
+  - 'rhos(System_main)' # Solid Density g/cc
+  - 'rhol(System_main)' # Liquid density g/cc
+
+#RestrictVC:  # Restrict compoition mapping to selected phase(s) for model focus.  Mass Balance cannot be enforced. Not Implemented yet.
+#  - 'melts_liquid' 
 
 # ============================================================================
 # PREPROCESSING OPTIONS
@@ -90,10 +108,10 @@ resampling:
   # Resampling bounds for training set. These are used to generate random multipliers to phase masses.
   # Intensive properties are constant, but with different phase proportions.
   # Multiple entries = multiple resampled versions of the dataset
-  train_bounds:
+  train_bounds: # Only [1,1] allowed with extensive features.
     - [1, 1]          # Identity
-    - [0.95, 1]        # Shift phase proportions by ~5%
-    - [0.9, 1]        # Shift phase proportions by ~10%
+    #- [0.95, 1]        # Shift phase proportions by ~5%
+    #- [0.9, 1]        # Shift phase proportions by ~10%
   
   # Resampling bounds for test/validation sets (typically just full dataset)
   test_bounds:
@@ -126,19 +144,20 @@ deep_filter:
   
   # Oxide upper bounds: [phase, oxide, maximum_wt%]
   oxide_upper_bounds:
-    - ['k-feldspar', 'CaO', 1]
-    - ['plagioclase', 'K2O', 8]
-    - ['clinopyroxene', 'TiO2', 6]
-    - ['clinopyroxene', 'Al2O3', 8]
-    - ['orthopyroxene', 'TiO2', 2]
-    - ['orthopyroxene', 'Al2O3', 8]
-    - ['orthopyroxene', 'CaO', 4]
+    - ['k-feldspar', 'CaO', 4] #1
+    #- ['plagioclase', 'K2O', 12] #8
+    - ['clinopyroxene', 'TiO2', 10] # 6
+    - ['clinopyroxene', 'Al2O3', 14] #8
+    - ['orthopyroxene', 'TiO2', 5] #2
+    - ['orthopyroxene', 'Al2O3', 14] #8
+    - ['orthopyroxene', 'CaO', 7] #4
     - ['melts-liquid', 'TiO2', 13]
-    - ['melts-liquid', 'P2O5', 10]
+    #- ['melts-liquid', 'P2O5', 10] # No Potassium in pMELTS, throws error. 
   
   # Component upper bounds: [phase, component, maximum_wt%]
   # Example: [['plagioclase', 'sanidine', 0.1]]
-  component_upper_bounds: [['plagioclase', 'sanidine', 0.1]]
+  component_upper_bounds: 
+  #- [['plagioclase', 'sanidine', 0.3]] # 0.1
   
   # Processing batch size for "deep" filtering, which targets .npy data products. 
   batch_size: 200000

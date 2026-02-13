@@ -10,6 +10,8 @@ sys.path.insert(0, str(project_root))
 #from tests.test_utils import is_almost_equal
 from tests.test_utils import setup_test_logging
 import tests.unit_tests.test_indexers.indexer_test as IDX_TEST
+from nMELTS.utils.file_utils import load_ml_bundle
+
 
 ## Functions work on BigMetaTable object, which contains unique indexers 
 # and projection matrices at BMT.indexer.ml_indexer and the full MELTS table at BMT.table. Also these data products, generated
@@ -104,7 +106,6 @@ def sanity_check_bundle(bundle_path: Path, tolerance=1e-3, bulk_tol_frac=1e-3) -
     - Labels only nonzero where binary labels allow.
     - Reconstructed bulk element composition matches features within tolerance.
     """
-    from src.builder.processing.MLexporter import load_ml_bundle
 
     bundle = load_ml_bundle(bundle_path)
     indexer = bundle.ml_indexer
@@ -780,7 +781,6 @@ def run_tests_on_bundle(bundle_path: Path, BMT, test_name: str = "", output_tabl
         output_tables: Whether to export debug tables of transformation matrices
         outname: Optional subdirectory name for exporting CSV versions of .npy files
     """
-    from src.builder.processing.MLexporter import load_ml_bundle
     
     print(f"\n{'='*60}")
     print(f"Running tests on bundle: {test_name if test_name else bundle_path.name}")

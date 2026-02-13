@@ -33,15 +33,15 @@ GEOROC_DIR = os.path.join(REPO_ROOT, 'data', 'MELTStables', 'GEOROC')
 os.makedirs(EnsembleLocation, exist_ok=True)
 
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-date = 'Feb9'
+date = 'Feb11'
 
 ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
-MELTSmodels = ['p', '102'] # MELTS models to run. To add: MAGEmin
+MELTSmodels = ['p']#, '102'] # MELTS models to run. To add: MAGEmin
 FXes = ['Batch']#, 'FxCryst']
 
-startTs = [1400, 1800]
-max_liquid_fractions = [15, 100]
-total_to_run = int(80) # How many total simulations to run
+startTs = [1600]#, 1800]
+max_liquid_fractions = [15]#, 100]
+total_to_run = int(160) # How many total simulations to run
 simcycle = 50 # How many simulations to run per iteration
 
 #storage_directory = f'/mnt/d/Workspace/{MELTSModel}Datasets/'
@@ -128,7 +128,7 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
         # Run full GEOROC training dataset
         args = {'MELTSModel':MELTSModel, 'GEOROC':GEOROC, 'col_dict':col_dict, 'indexer':indexer, 
                 'itercode':f'a{full_to_run}', 'simcycle':simcycle, 'fxtal': (fractionate == 'FxCryst'), 
-                'startT': startT, 'max_liquid_fraction': max_liquid_fraction, zeroOxides: ZeroOxides}
+                'startT': startT, 'max_liquid_fraction': max_liquid_fraction, 'zeroOxides': ZeroOxides}
         
         MELTER(output_file=Trainfilename, **args)
 

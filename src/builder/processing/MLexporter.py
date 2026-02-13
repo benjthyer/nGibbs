@@ -16,90 +16,22 @@ import sys
 src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
+config_path = str(Path(__file__).parent.parent.parent.parent / 'config')
+if config_path not in sys.path:
+    sys.path.insert(0, config_path)
 
 from .filters import filter_invalid_rows
-from nMELTS.config.settings import internal_train_dir, external_train_dir, external_base
+from settings import internal_train_dir, external_train_dir, external_base
 from nMELTS.utils.string_utils import pull_number
 from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
+from nMELTS.utils.file_utils import load_ml_bundle, MLDataBundle
 
-featureNames = [['Pressure', 'System_main'], ['Temperature', 'System_main'], ['logfO2-QFM', 'System_main']]#, 'H(System_main)'] # Must be in MELTS_indices
-#freeOutputs = [['viscocity', 'System_main'], ['liq H (kJ)', 'melts-liquid'], ['Temperature', 'System_main']]
+featureNames = ['Pressure(System_main)', 'Temperature(System_main)', 'logfO2-QFM(System_main)']
+#freeOutputs = ['viscocity(System_main)', 'liq H (kJ)(melts-liquid)', 'Temperature(System_main)']
 freeOutputs = None
 
 
-class MLDataBundle:
-    """Container for ML dataset bundle loaded from .tar.gz file."""
-    def __init__(self):
-        self.molar_labels = None
-        self.binary_labels = None
-        self.mass_labels = None
-        self.features = None
-        self.labels = None
-        self.free_outputs = None
-        self.ml_indexer = None
 
-
-def load_ml_bundle(bundle_path):
-    """
-    Load a .tar.gz bundle created by resampling_to_datasets.
-    
-    Extracts all .npy files and the ml_indexer.pkl from the tarball and returns
-    them as a MLDataBundle object with attributes for each file.
-    
-    Parameters
-    ----------
-    bundle_path : str or Path
-        Path to the .tar.gz bundle file
-        
-    Returns
-    -------
-    MLDataBundle
-        Object with attributes: molar_labels, binary_labels, mass_labels, 
-        features, labels, free_outputs (if present), ml_indexer
-    """
-    bundle_path = Path(bundle_path)
-    if not bundle_path.exists():
-        raise FileNotFoundError(f"Bundle file not found: {bundle_path}")
-    
-    # Create temporary directory for extraction
-    temp_dir = tempfile.mkdtemp()
-    try:
-        # Extract tarball
-        with tarfile.open(bundle_path, 'r:gz') as tar:
-            tar.extractall(path=temp_dir)
-        
-        # Create bundle object
-        bundle = MLDataBundle()
-        
-        # Load .npy files
-        npy_files = {
-            'molar_labels': 'molar_labels.npy',
-            'binary_labels': 'binary_labels.npy',
-            'mass_labels': 'mass_labels.npy',
-            'features': 'features.npy',
-            'labels': 'labels.npy',
-            'free_outputs': 'free_outputs.npy',
-        }
-        
-        for attr_name, filename in npy_files.items():
-            file_path = Path(temp_dir) / filename
-            if file_path.exists():
-                setattr(bundle, attr_name, np.load(file_path))
-            elif attr_name != 'free_outputs':
-                raise FileNotFoundError(f"Expected file not found in bundle: {filename}")
-        
-        # Load ml_indexer pickle
-        indexer_path = Path(temp_dir) / 'ml_indexer.pkl'
-        if indexer_path.exists():
-            with open(indexer_path, 'rb') as f:
-                bundle.ml_indexer = pickle.load(f)
-        else:
-            raise FileNotFoundError(f"{indexer_path} not found in bundle")
-        
-        return bundle
-    finally:
-        # Clean up temporary directory
-        shutil.rmtree(temp_dir)
 
 
 def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=False, featureNames=featureNames, freeOutputs=freeOutputs, indexer=None, config_path=None, bundle_name=None):
@@ -116,14 +48,34 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     sampleNo = len(resample_bounds)
 
 
+    def _parse_feature_entry(entry):
+        if isinstance(entry, (list, tuple)) and len(entry) == 2:
+            return entry[0], entry[1]
+        if isinstance(entry, str):
+            entry = entry.strip()
+            open_idx = entry.rfind('(')
+            close_idx = entry.rfind(')')
+            if open_idx == -1 or close_idx != len(entry) - 1 or open_idx > close_idx:
+                raise ValueError(f"Feature entry must match 'Component(Phase)', got: {entry}")
+            comp = entry[:open_idx].strip()
+            phase = entry[open_idx + 1:close_idx].strip()
+            if not comp or not phase:
+                raise ValueError(f"Feature entry must match 'Component(Phase)', got: {entry}")
+            return comp, phase
+        raise ValueError(f"Feature entry must be 'Component(Phase)' or [component, phase], got: {entry}")
+
     if sampleNo > 1:
-        allowed_pairs = {('Pressure', 'System_main'), ('Temperature', 'System_main'), ('logfO2-QFM', 'System_main')}
+        allowed_pairs = {
+            ('Pressure', 'System_main'),
+            ('Temperature', 'System_main'),
+            ('logfO2-QFM', 'System_main'),
+        }
         for FN in featureNames:
-            if not (isinstance(FN, (list, tuple)) and len(FN) == 2):
-                raise ValueError(f"Feature entry must be [component, phase], got: {FN}")
-            comp, phase = FN[0], FN[1]
+            comp, phase = _parse_feature_entry(FN)
             if ((comp, phase) not in allowed_pairs) and (resample_bounds != [[1,1]]):
-                raise NotImplementedError(f"(Feature {comp}({phase})) Extensive features not implemented for resampling; only PTfO2 allowed")
+                raise NotImplementedError(
+                    f"(Feature {comp}({phase})) Extensive features not implemented for resampling; only PTfO2 allowed"
+                )
         print(f"Resampling dataset {sampleNo} times with bounds: {resample_bounds}")
 
 
@@ -158,9 +110,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
 
     # Parse feature names (as [component, phase]) to column indices in MELTS table
     def _feature_to_index(pair) -> int:
-        if not (isinstance(pair, (list, tuple)) and len(pair) == 2):
-            raise ValueError(f"Invalid feature format: {pair}. Expected [component, phase].")
-        comp, phase = pair[0], pair[1]
+        comp, phase = _parse_feature_entry(pair)
         if phase not in component_indices or comp not in component_indices[phase]:
             raise KeyError(f"Feature {comp}({phase}) not found in MELTS_indices.")
         return component_indices[phase][comp]
@@ -421,7 +371,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             if os.path.exists(fpath):
                 tar.add(fpath, arcname=arcname)
         
-    #sanity_check_bundle(bundle_path=Path(bundle_path)) # Verify that the data make sense. Expensive for large files, so off for now.
+    sanity_check_bundle(bundle_path=Path(bundle_path)) # Verify that the data make sense. Expensive for large files
 
 
     # Move bundle to configured training directory
@@ -715,8 +665,8 @@ def generate_dataset_stats(dataset_name, ml_indexer, output_dir=None):
         f.write("-" * 80 + "\n")
         f.write("CONDITION BOUNDS\n")
         f.write("-" * 80 + "\n")
-        
-        condition_names = ['Pressure (bars)', 'Temperature (°C)', 'logfO2-QFM']
+
+        condition_names = ml_indexer.featureNames #['Pressure (bars)', 'Temperature (°C)', 'logfO2-QFM']
         f.write(f"{'Condition':>20} {'Min':>15} {'Max':>15}\n")
         f.write("-" * 55 + "\n")
         

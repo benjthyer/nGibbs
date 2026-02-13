@@ -31,12 +31,12 @@ GEOROC_DIR = os.path.join(REPO_ROOT, 'data', 'MELTStables', 'GEOROC')
 os.makedirs(EnsembleLocation, exist_ok=True)
 
 total_to_run = int(1) # How many total simulations to run
-simcycle = 16 # How many simulations to run per iteration
+simcycle = 40 # How many simulations to run per iteration
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
 MELTSModel= 'p'
 fractionate = 'Batch'
 
-date = 'Feb10'
+date = 'Feb11'
 startT = 1600
 max_liquid_fraction = 15
 

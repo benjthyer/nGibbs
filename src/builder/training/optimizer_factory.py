@@ -12,6 +12,9 @@ _SCHEDULERS = {
     "cosine": [torch.optim.lr_scheduler.CosineAnnealingLR, 'epoch', False],
     "cosinewarm": [torch.optim.lr_scheduler.CosineAnnealingWarmRestarts, 'epoch', False],
     "plateau": [torch.optim.lr_scheduler.ReduceLROnPlateau, 'epoch', True],
+    "reducelronplateau": [torch.optim.lr_scheduler.ReduceLROnPlateau, 'epoch', True],
+    "cosineannealinglr": [torch.optim.lr_scheduler.CosineAnnealingLR, 'epoch', False],
+    "cosineannealingwarmrestarts": [torch.optim.lr_scheduler.CosineAnnealingWarmRestarts, 'epoch', False],
 }
 
 class SchedulerWrapper:
