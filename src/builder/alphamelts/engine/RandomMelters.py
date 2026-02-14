@@ -10,19 +10,25 @@ import os
 import numpy as np
 from pathlib import Path
 
-# Add parent directory to path to import from src
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..','..','..'))
+REPO_ROOT = Path(__file__).resolve().parents[4]
+SRC_DIR = REPO_ROOT / 'src'
+
+# Add repo root and src to path so repo-local packages resolve from repo root.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 # Import MELTS ensemble functions
 from . import alphamelts_functions
 
 # Import utility functions
-from src.nMELTS.utils.string_utils import pull_number, random_char
-from src.nMELTS.utils.file_utils import count_csv_rows, count_file_lines
+from nMELTS.utils.string_utils import pull_number, random_char
+from nMELTS.utils.file_utils import count_csv_rows, count_file_lines
 
 # Import indexer and header generation
-from src.builder.indexer import DatasetIndexer, verify_csv_headers_match
-from src.nMELTS.config.settings import internal_scratch_dir
+from builder.indexer import DatasetIndexer, verify_csv_headers_match
+from config.settings import internal_scratch_dir
 
 # Set up paths
 EnsembleLocation = str(internal_scratch_dir())

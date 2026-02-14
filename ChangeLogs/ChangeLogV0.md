@@ -1,15 +1,33 @@
 _____________________ Unreleased _______________________
 
+2026-02-13
+- Added/Debugged Detailed model metadata inclusion with .tar files
+- Removed automatic .update_table() calls to ml_indices for more granular control of indexer 
+- Implemented log normalized molar predictions
+- Debugging training.
+
 2026-02-12
-- Updated spinel and orthopyroxene correction methods to use ml_indexer.detail_label_indices for component lookups, improving clarity and reducing hardcoded indices.
+- **MLIndexer and Normalization Save State, not Pickled objects**
+    - Added `MLIndexer.save(directory)` method that exports all state to JSON and NPZ files
+    - Implemented `load_ml_indexer_from_state(state_dict)` function to reconstruct MLIndexer bypassing `__init__`
+    - Serialization includes: metadata, structure mappings, transformation matrices, normalizer states
+
+- **NN Models Now Stored in Zip Packaging** - Complete model state bundling with metadata
+    - Zip contents: state_dict.pt, config.json, ml_indexer/ (full state), metadata.json, optional model.yaml, training.yaml, stats.txt, log.txt
+
+
+- **Sequential Training/Tuning Orchestration** - Multi-episode episode-based training from YAML
+    - Implemented `_discover_episodes()` for automatic discovery and ordering of tune1, train1, tune2, train2, ... episodes
+    - Episode-based execution: Sequential numbered train/tune commands execute. Before only one of each allowwed! 
+
+- Updated spinel and orthopyroxene correction methods in NN.py to use name indexers and not hard coded positional indexers, which now are meaningless after archetecture made flexible
 - Refactored MLexporter feature parsing to accept MELTStable column-style strings and wired featureNames/freeOutputs from processing .yaml into dataset generation.
 - Updated tune_Lower_MELTS to require Model instance and pass ml_indexer to all new MidLevelNetwork instantiations for consistency.
-- **nMELTS Package cleanup for pip distribution**: 
+- **nMELTS Package Isolated from builder/ dir for pip distribution**: 
     - Moved config/settings.py out of src/nMELTS/ to config/ directory (builder-only)
 
 2026-02-11
-- Training now by .yaml configuration. Now accepts pytorch lr schedulers. 
-    - Motivation: Enable faster hyperparameter search by limiting dataset size during tuning, while allowing full dataset training
+- Training now by .yaml configuration. Now accepts pytorch lr schedulers.
 - Branched off training and optuna work onto trainDev branch. Focus on getting old code working/adapted on main, maybe revisit optuna later. 
     - Painfully slow, very little feedback for me to know what was going on
 - Debugged Training! Mostly. 

@@ -9,6 +9,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import json
+import zipfile
+from pathlib import Path
+from datetime import datetime
 
 
 # Import utility functions
@@ -244,7 +248,7 @@ class TunableModel(nn.Module):
         mole_layers = [nn.Linear(middle_out, 64)]
         mole_layers += self._reg_modules(64)
         mole_layers.append(nn.Linear(64, self.n_phases))
-        mole_layers.append(nn.Softplus())
+        #mole_layers.append(nn.Softplus()) # Not a good fit with logspace transform
         self.mole_head = nn.Sequential(*mole_layers)
 
         # Now build actual chem_heads with correct input_dim = middle_out
@@ -300,7 +304,7 @@ class MidLevelNetwork(TunableModel):
                  highWD = 0,
                  noise = 0,
                  description='',
-                 ml_indexer=None):# Use Description Arg to keep track of model's target (e.g. 'MELTS 1.0, Fxtal, NoCr')
+                 ml_indexer=None):
         # call TunableModel constructor
         super().__init__(
             encoderLayerUp,
@@ -359,8 +363,6 @@ class MidLevelNetwork(TunableModel):
         if len(self.comp_binariesL) > 0:
             pure_bool[self.comp_binariesL] = False
 
-
-
         self.compToOx = torch.tensor(self.compToOx_raw, dtype=torch.float, device='cuda')
         self.oxToEl = torch.tensor(self.oxToEl_raw, dtype=torch.float, device='cuda')
         self.elToOx = torch.linalg.inv(self.oxToEl[:len(self.Elkeys)]) # For FeOt only
@@ -368,15 +370,102 @@ class MidLevelNetwork(TunableModel):
         self.MM = torch.tensor(self.MM_raw, dtype=torch.float, device='cuda')
         self.Mtot = torch.tensor(self.Mtot_raw, dtype=torch.float, device='cuda').flatten()
 
-        self.register_buffer('boolTransCompToOx', torch.tensor(self.boolTransCompToOx_raw))
+        self.register_buffer('boolTransCompToEl', torch.tensor(self.boolTransCompToOx_raw @ self.oxToEl_raw, dtype=torch.int))
         self.register_buffer('compositionally_variable_subset', torch.tensor(self.compositionally_variable_subset_raw, dtype=int))
         self.register_buffer('phaseToCompMap', torch.tensor(self.phaseToCompMap_raw, dtype=torch.float))
         self.register_buffer('variedToAllComp', torch.tensor(self.variedToAllComp_raw, dtype=torch.float))
         self.register_buffer('fixed_phaseToCompMap', torch.tensor(self.fixed_phaseToCompMap_raw, dtype=torch.float))
         self.register_buffer('compToEl', torch.tensor(self.compToOx_raw @ self.oxToEl_raw, dtype=torch.float))
+        self.register_buffer('molar_epsilon', torch.tensor(self.ml_indexer.molar_epsilon, dtype=torch.float32))
 
-    def save(self, DictFilePath):
-        torch.save({'state_dict': self.state_dict(), 'config': self.config, 'ml_indexer': self.ml_indexer}, DictFilePath)
+    def save(self, DictFilePath, config_yaml=None, training_yaml=None, processing_yaml=None, stats=None, log_text=None):
+        """
+        Save model as zip package with complete metadata for deployment and checkpointing.
+        
+        Creates a zip file (.pt format for compatibility) containing:
+        - state_dict.pt: PyTorch state_dict() binary
+        - config.json: Model configuration (architecture hyperparameters)
+        - ml_indexer/: Directory with saved ml_indexer state (metadata.json, structure.json, arrays.npz)
+        - model.yaml: YAML used to train this model
+        - training.yaml: Original training data bundle YAML (if provided)
+        - stats.txt: Post-filtering statistics from training data (if provided)
+        - log.txt: Training/tuning log (if provided)
+        
+        Parameters
+        ----------
+        DictFilePath : str or Path
+            Full path to save zip file. Should end in .pt for compatibility.
+        config_yaml : str, optional
+            YAML string of model configuration used during training
+        training_yaml : str, optional
+            YAML string of training data bundle configuration
+        stats : str, optional
+            Post-filtering statistics from training data
+        log_text : str, optional
+            Complete log from training and optional tuning operations
+        """
+        DictFilePath = Path(DictFilePath)
+        if DictFilePath.suffix == "":
+            DictFilePath = DictFilePath.with_suffix(".pt")
+        DictFilePath.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Create temporary directory for zip contents
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            
+            # === 1. Save state_dict as .pt ===
+            state_dict_path = temp_path / 'state_dict.pt'
+            torch.save(self.state_dict(), state_dict_path)
+            
+            # === 2. Save config as JSON ===
+            config_path = temp_path / 'config.json'
+            with open(config_path, 'w') as f:
+                json.dump(self.config, f, indent=2)
+            
+            # === 3. Save ml_indexer state ===
+            indexer_dir = temp_path / 'ml_indexer'
+            self.ml_indexer.save(str(indexer_dir))
+            
+            # === 4. Save metadata about when this was saved ===
+            metadata = {
+                'saved_at': datetime.now().isoformat(),
+                'torch_version': torch.__version__,
+                'numpy_version': np.__version__,
+            }
+            metadata_path = temp_path / 'metadata.json'
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=2)
+            
+            # === 5. Save optional YAML and logs ===
+            if config_yaml is not None:
+                with open(temp_path / 'model.yaml', 'w') as f:
+                    f.write(config_yaml)
+            
+            if processing_yaml is not None:
+                with open(temp_path / 'data_processing.yaml', 'w') as f:
+                    f.write(processing_yaml)
+            
+            if training_yaml is not None:
+                with open(temp_path / 'training.yaml', 'w') as f:
+                    f.write(training_yaml)
+
+            if stats is not None:
+                with open(temp_path / 'stats.txt', 'w') as f:
+                    f.write(stats)
+            
+            if log_text is not None:
+                with open(temp_path / 'log.txt', 'w') as f:
+                    f.write(log_text)
+            
+            # === 6. Create zip archive ===
+            # Use zipfile instead of gzip for better compatibility and faster access
+            with zipfile.ZipFile(DictFilePath, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for file_path in temp_path.glob('**/*'):
+                    if file_path.is_file():
+                        arcname = file_path.relative_to(temp_path)
+                        zf.write(file_path, arcname=arcname)
+
 
     def forward_binaries(self, x):
         """Outputs satuation logits only, to be passed through sigmoid. Useful for training with BCEwithlogits loss"""
@@ -394,8 +483,9 @@ class MidLevelNetwork(TunableModel):
 
     def forward_phase_moles(self, latentx, binary_mask, intensiveComponents, details_out = False):
         """Predicts molar abundance of phases and reconstructs bulk composition."""
-
-        phaseMoles = self.mole_head(latentx) * binary_mask
+        logMoles = (self.mole_head(latentx) * binary_mask) # Apply binary mask to zero out non-present phases        eps = logMoles.new_tensor(self.ml_indexer.molar_epsilon)
+        eps = self.molar_epsilon #* torch.ones_like(logMoles, dtype=logMoles.dtype, device=logMoles.device) # Use registered buffer for molar epsilon
+        phaseMoles = (torch.exp(logMoles * torch.log(torch.tensor(10, device=logMoles.device, dtype=logMoles.dtype))) - eps) * binary_mask #  invert log transform; add small epsilon to assert lower bound for the outputs
         compMultipliers = phaseMoles @ self.phaseToCompMap #(B,C)
         intensivePhaseProportions = intensiveComponents @ self.variedToAllComp #BV, VC -> BC #NEED TO GET BINARIES AND PROPORTIONS TOGETHER IN COMPONENT FORM, RECREATE PHASETOCOMP (B,P,C).vASK IF INDEXING TO BUILD IS THE MOST EFFICIENT WAY
         phaseProportions = intensivePhaseProportions + self.fixed_phaseToCompMap # How to project? BC + 1C -> BC. Get ones where all pure phase components are
@@ -407,9 +497,9 @@ class MidLevelNetwork(TunableModel):
         reconBulk = reconBulkUnNormed / totals.unsqueeze(-1) # How to project? BE / B1 -> BE
 
         if details_out:
-            return phaseMoles, reconBulk, componentMoles / totals.unsqueeze(-1), phaseProportions # Apply identical normalization to components for equality
+            return logMoles, reconBulk, componentMoles / totals.unsqueeze(-1), phaseProportions # Apply identical normalization to components for equality
         else:
-            return phaseMoles, reconBulk
+            return logMoles, reconBulk
 
     """def polish_negative_px(self, phaseProportions):
         # Check and correct for below zero CaO
@@ -683,7 +773,7 @@ class MidLevelNetwork(TunableModel):
         latent = self.encoder(x)
 
         # Build mask to exclude components that require elements not in inputs
-        inf_mask = ((x[:,3:] == 0).to(torch.float32) @ self.boolTransCompToOx[self.compositionally_variable_subset].T.to(torch.float32)) != 0 #be,ec->bc 
+        inf_mask = ((x[:,len(self.ml_indexer.featureNames):] == 0).to(torch.float32) @ self.boolTransCompToEl[self.compositionally_variable_subset].T.to(torch.float32)) != 0 #be,ec->bc 
 
 
         # Phase saturation logits (not yet sigmoid)
@@ -764,7 +854,7 @@ class MidLevelNetwork(TunableModel):
             # Overwrite liquid component columns with feature composition
             liq_idx = torch.tensor(self.label_indices_comp['melts-liquid'], device=chem_out.device)
             #chem_out[superliquidus][:, liq_idx] = features[superliquidus, 3:]
-            chem_out[superliquidus, -len(liq_idx):] = features[superliquidus, 3:]
+            chem_out[superliquidus, -len(liq_idx):] = features[superliquidus, len(self.ml_indexer.featureNames):]
 
             print(f"NANs in chem_out after superliquidus assignment: {torch.isnan(chem_out).sum()}")
 
@@ -781,7 +871,7 @@ class MidLevelNetwork(TunableModel):
 
             # Overwrite liquid component columns with feature composition
             liq_idx = torch.tensor(self.label_indices_comp['melts-liquid'], device=chem_out.device)
-            chem_out[superliquidus][:, liq_idx] = features[superliquidus, 3:]
+            chem_out[superliquidus][:, liq_idx] = features[superliquidus, len(self.ml_indexer.featureNames):]
 
 
         # Compute phase properties
@@ -792,10 +882,10 @@ class MidLevelNetwork(TunableModel):
         # Assign direct values for superliquidus rows
         liq_idx_phase = torch.tensor(self.label_indices['melts-liquid'], device=chem_out.device)
 
-        reconBulk[superliquidus] = features[superliquidus, 3:]
-        componentMoles[superliquidus][:, liq_idx_phase] = features[superliquidus, 3:]
-        phaseProportions[superliquidus][:, liq_idx_phase] = features[superliquidus, 3:]
-        reconBulk[superliquidus] = features[superliquidus, 3:]
+        reconBulk[superliquidus] = features[superliquidus, len(self.ml_indexer.featureNames):]
+        componentMoles[superliquidus][:, liq_idx_phase] = features[superliquidus, len(self.ml_indexer.featureNames):]
+        phaseProportions[superliquidus][:, liq_idx_phase] = features[superliquidus, len(self.ml_indexer.featureNames):]
+        reconBulk[superliquidus] = features[superliquidus, len(self.ml_indexer.featureNames):]
         phaseMass[superliquidus, -1] = 1.0
 
 
@@ -941,7 +1031,7 @@ class CombinedNetwork(nn.Module):
             latentx, binary_mask, intensiveComponents, details_out=details_out
         )
     
-    def save(self, DictFilePath):
+    def save(self, DictFilePath, config_yaml=None, training_yaml=None, stats=None, log_text=None):
         """
         Save model state and configuration.
         
@@ -950,7 +1040,13 @@ class CombinedNetwork(nn.Module):
         DictFilePath : str
             Path to save the model
         """
-        self.midlevel_network.save(DictFilePath)
+        self.midlevel_network.save(
+            DictFilePath,
+            config_yaml=config_yaml,
+            training_yaml=training_yaml,
+            stats=stats,
+            log_text=log_text,
+        )
     
     @property
     def encoder(self):
@@ -979,23 +1075,142 @@ class CombinedNetwork(nn.Module):
 
 
 
-def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only = False):
-    """Loads MELTS NN with saved archetecture. Requires saved .config dictionary attribute.
-    substitutions are dictionaries with configurations to instantiate in the new model that were not 
-    in the old one to load. Useful for building upper model on trained lower model.
-    If allowed_prefixes list is none, will load all weights. Otherwise just specified weights"""
+def load_model_from_zip(zip_path, substitutions=None, low_only=False):
+    """
+    Load MidLevelNetwork from zip package created by MidLevelNetwork.save().
+    
+    Reconstructs model architecture, loads weights, and restores ml_indexer state
+    without requiring access to original data or CSV projection matrices.
+    
+    Parameters
+    ----------
+    zip_path : str or Path
+        Path to model zip file (.pt extension)
+    substitutions : dict, optional
+        Architecture parameter overrides. Applied after loading config.
+        Useful for building upper model on lower model weights.
+    low_only : bool, default=False
+        If True, only load encoder and saturation heads (lower model components).
+        Useful for warm-starting upper model training.
+    
+    Returns
+    -------
+    MidLevelNetwork
+        Reconstructed model with loaded weights, config, and ml_indexer state.
+    
+    Raises
+    ------
+    FileNotFoundError
+        If zip file or required contents are missing.
+    """
+    from nMELTS.config.ml_indexer import load_ml_indexer_from_state
+    
+    zip_path = Path(zip_path)
+    
+    # Extract to temporary directory and load
+    import tempfile
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        
+        # Extract zip contents
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            zf.extractall(temp_path)
+        
+        # === Load config ===
+        with open(temp_path / 'config.json', 'r') as f:
+            config = json.load(f)
+        
+        # === Apply substitutions ===
+        if substitutions is not None:
+            for parameter, setting in substitutions.items():
+                config[parameter] = setting
+        
+        # === Load ml_indexer ===
+        ml_indexer = load_ml_indexer_from_state(temp_path / 'ml_indexer')
+        config['ml_indexer'] = ml_indexer
+        
+        # === Create model with loaded config ===
+        model = MidLevelNetwork(**config)
+        
+        # === Load state_dict ===
+        state_dict_path = temp_path / 'state_dict.pt'
+        saved_state_dict = torch.load(state_dict_path, map_location='cpu')
+        
+        if low_only:
+            # Only load lower model (encoder + sat_head)
+            model_dict = model.state_dict()
+            allowed_prefixes = ["encoder.", "sat_head."]
+            filtered_dict = {
+                k: v for k, v in saved_state_dict.items()
+                if any(k.startswith(p) for p in allowed_prefixes)
+            }
+            model_dict.update(filtered_dict)
+            model.load_state_dict(model_dict, strict=False)
+        else:
+            # Load full model
+            model.load_state_dict(saved_state_dict, strict=False)
+    
+    return model
 
-    ckpt = torch.load(DictFilePath)
+
+def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only=False):
+    """
+    Load MELTS NN model from checkpoint file.
+    
+    Handles both legacy single-file format (.pt with dict) and new zip format.
+    Reconstructs architecture, loads weights, and applies configuration substitutions.
+    
+    Parameters
+    ----------
+    DictFilePath : str or Path
+        Path to model file (.pt). May be:
+        - Legacy single-file format: dict with 'config', 'state_dict', 'ml_indexer' keys
+        - New zip format: .pt file containing state_dict.pt, config.json, ml_indexer/, etc.
+    substitutions : dict, optional
+        Configuration overrides. Applied to architecture parameters.
+        Useful for building upper model on trained lower model.
+    low_only : bool, default=False
+        If True, only load encoder and saturation heads (lower model components).
+    
+    Returns
+    -------
+    MidLevelNetwork
+        Reconstructed model with loaded weights and restored state.
+    """
+    DictFilePath = Path(DictFilePath)
+    if DictFilePath.suffix == "":
+        pt_candidate = DictFilePath.with_suffix(".pt")
+        zip_candidate = DictFilePath.with_suffix(".zip")
+        if zip_candidate.exists():
+            DictFilePath = zip_candidate
+        else: 
+            raise FileNotFoundError(f"No file found at {DictFilePath} with .zip extension.")
+    
+    # Try to detect format: zip or legacy dict
+    try:
+        # Attempt to open as zip
+        if zipfile.is_zipfile(DictFilePath):
+            return load_model_from_zip(DictFilePath, substitutions=substitutions, low_only=low_only)
+    except:
+        pass
+    
+    # Fall back to legacy format
+    ckpt = torch.load(DictFilePath, map_location='cpu')
     configuration = ckpt['config']
+    
     if substitutions is not None:
         for parameter, setting in substitutions.items():
             configuration[parameter] = setting
-            
+    
+    # Handle both old ml_indexer objects and restore if available
+    if 'ml_indexer' in ckpt:
+        configuration['ml_indexer'] = ckpt['ml_indexer']
+    
     model = MidLevelNetwork(**configuration)
-
-    if low_only: # Only load lower model
+    
+    if low_only:  # Only load lower model
         model_dict = model.state_dict()
-        allowed_prefixes = ["encoder.", "sat_head."]        
+        allowed_prefixes = ["encoder.", "sat_head."]
         filtered_dict = {
             k: v for k, v in ckpt['state_dict'].items()
             if any(k.startswith(p) for p in allowed_prefixes)
@@ -1003,6 +1218,6 @@ def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only = False):
         model_dict.update(filtered_dict)
         model.load_state_dict(model_dict, strict=False)
     else:
-        model.load_state_dict(ckpt['state_dict'], strict = False)   
-
+        model.load_state_dict(ckpt['state_dict'], strict=False)
+    
     return model

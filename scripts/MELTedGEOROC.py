@@ -3,11 +3,18 @@ The linux virtual environment is loaded by calling: source ~/melts_env/venv/bin/
 
 import sys
 import os
-# Add parent directory to path to import from src
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-# Add src to path so we can import modules without src prefix
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src'))
-from nMELTS.config.settings import internal_data_dir, internal_scratch_dir
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_DIR = REPO_ROOT / 'src'
+
+# Add repo root and src to path so repo-local packages resolve from repo root.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from config.settings import internal_data_dir, internal_scratch_dir
 #from builder.alphamelts.engine import alphamelts_functions # The essential ensemble MELTS functions
 #from nMELTS.utils.string_utils import pull_number, random_char
 from builder.alphamelts.engine import RandomMelters as RM
@@ -16,11 +23,9 @@ import numpy as np
 import pandas as pd
 #import warnings
 #warnings.filterwarnings("ignore", category=UserWarning)
-from pathlib import Path
 import shutil
 
     
-REPO_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = REPO_ROOT / 'data'
 
 alphaMELTSLocation = os.path.join(REPO_ROOT, 'src', 'builder', 'alphamelts', 'engine', 'alphamelts-app-2.3.1-linux', 'alphamelts_linux')

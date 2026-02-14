@@ -10,7 +10,9 @@ import pandas as pd
 import molmass as ms
 from pathlib import Path
 from typing import List, Dict, Set, Tuple, Optional, Any
+import json
 from .constants import default_Elkeys, all_Elkeys
+from nMELTS.utils.math_utils import Normalizer
 
 # Make torch optional for alphamelts in WSL
 try:
@@ -483,3 +485,257 @@ class MLIndexer:
         
         # Rebuild all VC-dependent structures with proper renumbering
         self._rebuild_vc_structures()
+
+    def save(self, directory: str) -> None:
+        """
+        Save MLIndexer state to directory without rebuilding from CSVs.
+        
+        Exports all critical state in JSON and numpy formats that allows
+        reconstruction via load_ml_indexer_from_state() without calling __init__
+        or requiring access to original CSV projection matrices.
+        
+        Parameters
+        ----------
+        directory : str or Path
+            Directory path where state files will be saved. Created if not exists.
+        
+        Notes
+        -----
+        Files created:
+        - indexer_metadata.json: Configuration (components_in_phases, Elkeys, do_bulk, featureNames, freeOutputs)
+        - indexer_structure.json: All dictionary mappings (indices, phases, detail mappings)
+        - indexer_arrays.npz: All numpy arrays (indices, matrices, mappings, normalizer state)
+        
+        Normalizers (feature_normalizer, output_normalizer) are saved as state dicts in the NPZ file
+        with keys 'normalizer_feature_state' and 'normalizer_output_state'. These contain only
+        the 1D min and range arrays needed to reconstruct Normalizer objects via from_state_dict().
+        """
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        
+        # === PART 1: Metadata (JSON) ===
+        metadata = {
+            'components_in_phases': self.components_in_phases,
+            'Elkeys': self.Elkeys,
+            'Oxides': self.Oxides,
+            'WRkeys': self.WRkeys,
+            'do_bulk': bool(self.do_bulk),
+            'ncomps': int(self.ncomps),
+            'ncompsVaried': int(self.ncompsVaried),
+            'nphases': int(self.nphases),
+            'label_names': self.label_names,
+            'all_phases': self.all_phases,
+            'compositionally_variable_phases': self.compositionally_variable_phases,
+            'featureNames': getattr(self, 'featureNames', None),  # May not exist
+            'freeOutputs': getattr(self, 'freeOutputs', None),     # May not exist
+            'has_feature_normalizer': self.feature_normalizer is not None,
+            'has_output_normalizer': self.output_normalizer is not None,
+            'molar_epsilon': getattr(self, 'molar_epsilon', None),
+        }
+        
+        with open(directory / 'indexer_metadata.json', 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        # === PART 2: Structure dictionaries (JSON) ===
+        # Convert dictionaries with numpy arrays to serializable format
+        structure_dict = {
+            'label_indices': {k: v.tolist() if isinstance(v, np.ndarray) else v 
+                            for k, v in self.label_indices.items()},
+            'label_indices_comp': {k: v.tolist() if isinstance(v, np.ndarray) else v 
+                                  for k, v in self.label_indices_comp.items()},
+            'mass_phasedict': self.mass_phasedict,
+            'comp_phasedict': self.comp_phasedict,
+            'detail_label_indices': {
+                phase: {comp: int(idx) for comp, idx in comp_dict.items()}
+                for phase, comp_dict in self.detail_label_indices.items()
+            },
+            'compositionally_variable_binaries': self.compositionally_variable_binaries.tolist() 
+                if isinstance(self.compositionally_variable_binaries, np.ndarray) else self.compositionally_variable_binaries,
+        }
+        
+        with open(directory / 'indexer_structure.json', 'w') as f:
+            json.dump(structure_dict, f, indent=2)
+        
+        # === PART 3: Large numpy arrays (NPZ) ===
+        # Store all matrices efficiently + normalizer states
+        arrays_dict = {
+            'compToOxLoad': self.compToOxLoad,
+            'PxSpTransform': self.PxSpTransform,
+            'compToOx': self.compToOx,
+            'boolTransCompToOx': self.boolTransCompToOx if self.boolTransCompToOx is not None else np.array([]),
+            'OxToEl': self.OxToEl,
+            'ElToOx': self.ElToOx,
+            'MM': self.MM,
+            'Minv': self.Minv,
+            'Mtot': self.Mtot,
+            'phaseToCompMap': self.phaseToCompMap,
+            'variedToAllComp': self.variedToAllComp,
+            'fixed_phaseToCompMap': self.fixed_phaseToCompMap,
+            'compositionally_variable_subset': self.compositionally_variable_subset,
+            'compositional_component_subset': self.compositional_component_subset,
+            'comp_binaries': self.comp_binaries,
+            'comp_mappings': self.comp_mappings,
+        }
+        
+        # Add normalizer states (only 1D min/range arrays, no objects)
+        if self.feature_normalizer is not None:
+            feature_state = self.feature_normalizer.to_state_dict()
+            arrays_dict['normalizer_feature_min'] = feature_state['min']
+            arrays_dict['normalizer_feature_range'] = feature_state['range']
+        
+        if self.output_normalizer is not None:
+            output_state = self.output_normalizer.to_state_dict()
+            arrays_dict['normalizer_output_min'] = output_state['min']
+            arrays_dict['normalizer_output_range'] = output_state['range']
+        
+        np.savez_compressed(directory / 'indexer_arrays.npz', **arrays_dict)
+
+
+def load_ml_indexer_from_state(directory: str) -> 'MLIndexer':
+    """
+    Load MLIndexer instance from saved state directory without calling __init__.
+    
+    Reconstructs a complete MLIndexer instance from files saved by MLIndexer.save().
+    This bypasses __init__ entirely, avoiding CSV projection matrix reloading and
+    expensive rebuilds. Useful for deployment and checkpointing.
+    
+    Parameters
+    ----------
+    directory : str or Path
+        Directory containing the saved indexer state files.
+        Expected files:
+        - indexer_metadata.json: Configuration and metadata
+        - indexer_structure.json: Dictionary mappings
+        - indexer_arrays.npz: Large numpy arrays (matrices, mappings)
+        - indexer_normalizers.pkl: Normalizers and torch tensors
+    
+    Returns
+    -------
+    MLIndexer
+        Fully reconstructed MLIndexer instance with all attributes populated.
+    
+    Raises
+    ------
+    FileNotFoundError
+        If required state files are missing from directory.
+    """
+    directory = Path(directory)
+    
+    # === LOAD PART 1: Metadata (JSON) ===
+    with open(directory / 'indexer_metadata.json', 'r') as f:
+        metadata = json.load(f)
+    
+    # === LOAD PART 2: Structure (JSON) ===
+    with open(directory / 'indexer_structure.json', 'r') as f:
+        structure_dict = json.load(f)
+    
+    # === LOAD PART 3: Arrays (NPZ) ===
+    arrays_data = np.load(directory / 'indexer_arrays.npz', allow_pickle=True)
+    arrays_dict = {key: arrays_data[key] for key in arrays_data.files}
+    
+    # === CREATE BLANK INDEXER INSTANCE ===
+    # Create instance without running __init__ to avoid CSV loading
+    indexer = object.__new__(MLIndexer)
+    
+    # === RESTORE METADATA ===
+    indexer.components_in_phases = metadata['components_in_phases']
+    indexer.Elkeys = metadata['Elkeys']
+    indexer.Oxides = metadata['Oxides']
+    indexer.WRkeys = metadata['WRkeys']
+    indexer.do_bulk = metadata['do_bulk']
+    indexer.ncomps = metadata['ncomps']
+    indexer.ncompsVaried = metadata['ncompsVaried']
+    indexer.nphases = metadata['nphases']
+    indexer.label_names = metadata['label_names']
+    indexer.all_phases = metadata['all_phases']
+    indexer.compositionally_variable_phases = metadata['compositionally_variable_phases']
+    indexer.projections_dir = Path(__file__).parent / 'projections'  # Set default; may not be used
+    indexer.molar_epsilon = metadata.get('molar_epsilon', None) # May not exist before training.
+    
+    # Restore optional attributes
+    if metadata.get('featureNames') is not None:
+        indexer.featureNames = metadata['featureNames']
+    if metadata.get('freeOutputs') is not None:
+        indexer.freeOutputs = metadata['freeOutputs']
+    
+    # === RESTORE STRUCTURE DICTIONARIES ===
+    # Convert lists back to numpy arrays
+    indexer.label_indices = {
+        k: np.array(v, dtype=int) 
+        for k, v in structure_dict['label_indices'].items()
+    }
+    indexer.label_indices_comp = {
+        k: np.array(v, dtype=int) 
+        for k, v in structure_dict['label_indices_comp'].items()
+    }
+    indexer.mass_phasedict = structure_dict['mass_phasedict']
+    indexer.comp_phasedict = structure_dict['comp_phasedict']
+    
+    # Restore detail_label_indices
+    indexer.detail_label_indices = {
+        phase: {comp: int(idx) for comp, idx in comp_dict.items()}
+        for phase, comp_dict in structure_dict['detail_label_indices'].items()
+    }
+    
+    # Restore binary array
+    indexer.compositionally_variable_binaries = np.array(
+        structure_dict['compositionally_variable_binaries'], dtype=int
+    )
+    
+    # === RESTORE ARRAYS ===
+    indexer.compToOxLoad = arrays_dict['compToOxLoad'].astype(np.float32)
+    indexer.PxSpTransform = arrays_dict['PxSpTransform'].astype(np.float32)
+    indexer.compToOx = arrays_dict['compToOx'].astype(np.float32)
+    
+    # Handle boolTransCompToOx which might be empty
+    bool_array = arrays_dict['boolTransCompToOx']
+    indexer.boolTransCompToOx = bool_array.astype(int) if bool_array.size > 0 else None
+    
+    indexer.OxToEl = arrays_dict['OxToEl'].astype(np.float32)
+    indexer.ElToOx = arrays_dict['ElToOx'].astype(np.float32)
+    indexer.MM = arrays_dict['MM'].astype(np.float32)
+    indexer.Minv = arrays_dict['Minv'].astype(np.float32)
+    indexer.Mtot = arrays_dict['Mtot'].astype(np.float32)
+    indexer.phaseToCompMap = arrays_dict['phaseToCompMap'].astype(np.float32)
+    indexer.variedToAllComp = arrays_dict['variedToAllComp'].astype(np.float32)
+    indexer.fixed_phaseToCompMap = arrays_dict['fixed_phaseToCompMap'].astype(np.float32)
+    indexer.compositionally_variable_subset = arrays_dict['compositionally_variable_subset'].astype(int)
+    indexer.compositional_component_subset = arrays_dict['compositional_component_subset'].astype(int)
+    indexer.comp_binaries = arrays_dict['comp_binaries'].astype(int)
+    indexer.comp_mappings = arrays_dict['comp_mappings'].astype(np.float32)
+    
+    # === RESTORE NORMALIZERS ===
+    # Reconstruct from state dicts if they exist
+    
+    if metadata.get('has_feature_normalizer', False):
+        feature_state = {
+            'min': arrays_dict['normalizer_feature_min'],
+            'range': arrays_dict['normalizer_feature_range'],
+            'device': 'cpu'
+        }
+        indexer.feature_normalizer = Normalizer.from_state_dict(feature_state, cuda=False)
+    else:
+        indexer.feature_normalizer = None
+    
+    if metadata.get('has_output_normalizer', False):
+        output_state = {
+            'min': arrays_dict['normalizer_output_min'],
+            'range': arrays_dict['normalizer_output_range'],
+            'device': 'cpu'
+        }
+        indexer.output_normalizer = Normalizer.from_state_dict(output_state, cuda=False)
+    else:
+        indexer.output_normalizer = None
+    
+    # comp_variable_IDMAT is not saved as it's torch-specific and can be None
+    indexer.comp_variable_IDMAT = None
+    if TORCH_AVAILABLE and len(indexer.compositionally_variable_binaries) > 0:
+        indexer.comp_variable_IDMAT = torch.tensor(
+            np.diag(indexer.compositionally_variable_binaries), dtype=torch.float
+        )
+    
+    # === BACKWARD COMPATIBILITY ===
+    indexer.comp_map = indexer.label_indices_comp
+    
+    return indexer
+

@@ -7,7 +7,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 # Add src to path so we can import modules without src prefix
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src'))
-from nMELTS.config.settings import internal_data_dir, internal_scratch_dir
+from config.settings import internal_data_dir, internal_scratch_dir
 #from builder.alphamelts.engine import alphamelts_functions # The essential ensemble MELTS functions
 #from nMELTS.utils.string_utils import pull_number, random_char
 from builder.alphamelts.engine import RandomMelters as RM
@@ -33,12 +33,12 @@ os.makedirs(EnsembleLocation, exist_ok=True)
 total_to_run = int(1) # How many total simulations to run
 simcycle = 40 # How many simulations to run per iteration
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-MELTSModel= 'p'
+MELTSModel= '110'
 fractionate = 'Batch'
 
-date = 'Feb11'
+date = 'Feb13'
 startT = 1600
-max_liquid_fraction = 15
+max_liquid_fraction = 100
 
 ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
 

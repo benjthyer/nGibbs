@@ -747,7 +747,6 @@ class BigMetaTable:
         total_rows = self.table.shape[0]
         if total_rows == 0:
             print("No rows available; skipping phase proportion filtering.")
-            self.indexer.table_update(self.table)
             return
 
         delete_mask = np.zeros(total_rows, dtype=bool)
@@ -791,8 +790,6 @@ class BigMetaTable:
             self.delete(indices_to_delete)
         else:
             print("No phases below threshold; no rows deleted.")
-
-        self.indexer.table_update(self.table)
     
     def filter_phases_not_in_ml_indexer(self):
         """
@@ -806,7 +803,6 @@ class BigMetaTable:
         total_rows = self.table.shape[0]
         if total_rows == 0:
             print("No rows available; skipping ml_indexer phase filtering.")
-            self.indexer.table_update(self.table)
             return
 
         allowed_phases = set(self.indexer.ml_indexer.all_phases)
@@ -848,8 +844,6 @@ class BigMetaTable:
             self.delete(indices_to_delete)
         else:
             print("No rows matched phases outside ml_indexer; no rows deleted.")
-
-        self.indexer.table_update(self.table)
     
     def filter_inconsistent_phase_data(self):
         """
@@ -927,8 +921,6 @@ class BigMetaTable:
             print(f"\nDeleted {num_to_delete} rows with inconsistent phase data.")
         else:
             print("No inconsistent phase data found; no rows deleted.")
-
-        self.indexer.table_update(self.table)
             
             
     

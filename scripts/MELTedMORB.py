@@ -12,7 +12,7 @@ from builder.alphamelts.engine import alphamelts_functions # The essential ensem
 from nMELTS.utils.string_utils import  random_char
 from nMELTS.utils.math_utils import  grid_sample
 from builder.indexer import generate_column_headers, DatasetIndexer
-from nMELTS.config.settings import internal_data_dir, internal_scratch_dir
+from config.settings import internal_data_dir, internal_scratch_dir
 
 import numpy as np
 import time

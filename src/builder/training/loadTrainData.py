@@ -9,23 +9,20 @@ import numpy as np
 import torch
 from pathlib import Path
 
-# Ensure src is on path
+# Ensure repo root and src are on path
+repo_root = str(Path(__file__).resolve().parents[3])
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
+
 src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
-base_path = str(Path(__file__).parent.parent.parent.parent)
-if base_path not in sys.path:
-    sys.path.insert(0, base_path)
-
-config_path = str(Path(__file__).parent.parent.parent.parent / 'config')
-if config_path not in sys.path:
-    sys.path.insert(0, config_path)
-
 from builder.training.torchDataClass import TensorDatasetFour, TensorDatasetFive
 from nMELTS.config.ml_indexer import MLIndexer
-from settings import external_base
+from config.settings import external_base
 from nMELTS.utils.file_utils import load_ml_bundle, MLDataBundle
+from nMELTS.utils.math_utils import Normalizer
 from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
 
 
@@ -63,24 +60,6 @@ if not os.path.exists(f'{Testfilename}.tar.gz') or use_external == True:
     if subset:
         Testfilename += '_subset'
 
-class Normalizer:
-    """Quick Normalizing object that holds minima and ranges for a dataset and converts into and out of [0,1]
-    minmax normalization for interfacing with neural networks"""
-
-    def __init__(self, min_tensor, range_tensor):
-        assert len(min_tensor) == len(range_tensor), 'Minimum and range are not equal!'
-        self.miner = min_tensor
-        self.ranger = range_tensor
-
-    def __len__(self):
-        return len(self.miner)
-
-    def denorm(self, x):
-        return x * self.ranger + self.miner
-
-    def norm(self, x):
-        return (x - self.miner) / self.ranger
-
 # ============================================================================
 # LOAD TRAINING DATA
 # ============================================================================
@@ -97,6 +76,8 @@ def load_ML_data(Trainpath, only_VP=None):
     labelMap = train_data.labels
     moleMap = train_data.molar_labels
     has_free_outputs = getattr(train_data, 'freeOutputs', None) is not None
+
+    ml_indexer.molar_epsilon = molar_epsilon # Save 
 
     # Extract indexer components for easier access
     label_indices = ml_indexer.label_indices

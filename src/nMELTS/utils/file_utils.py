@@ -391,13 +391,19 @@ def load_ml_bundle(bundle_path):
             elif attr_name != 'free_outputs':
                 raise FileNotFoundError(f"Expected file not found in bundle: {filename}")
         
-        # Load ml_indexer pickle
-        indexer_path = Path(temp_dir) / 'ml_indexer.pkl'
-        if indexer_path.exists():
-            with open(indexer_path, 'rb') as f:
-                bundle.ml_indexer = pickle.load(f)
+        # Load ml_indexer state directory (preferred)
+        indexer_dir = Path(temp_dir) / 'ml_indexer'
+        if indexer_dir.exists():
+            from nMELTS.config.ml_indexer import load_ml_indexer_from_state
+            bundle.ml_indexer = load_ml_indexer_from_state(indexer_dir)
         else:
-            raise FileNotFoundError(f"{indexer_path} not found in bundle")
+            # Backward compatibility: fallback to pickle if present
+            indexer_path = Path(temp_dir) / 'ml_indexer.pkl'
+            if indexer_path.exists():
+                with open(indexer_path, 'rb') as f:
+                    bundle.ml_indexer = pickle.load(f)
+            else:
+                raise FileNotFoundError("ml_indexer state directory or pickle not found in bundle")
         
         return bundle
     finally:

@@ -1,55 +1,24 @@
-tarname: 'pGeoDyn' #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
+tarname: '102General' #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
 
 warm_start: None
 
-tune1: # Comment this out to skip training, warm start from a saved model must be provided
-  lower_model:
-    tune_params:
-      epochs: 10
-      learning_rate: 5e-3
-      early_stopping_patience: 2
-    model_params:
-      encoderLayer: [[1, 0]] # [upsampling layers, downsampling layers]Numbers of upsamplings to try (factors of 2 in neuron increase for each layer)
-      low_regularization: [dropout0]
-      activation_leak: [0.05]
-      lowWD: [1e-5]
-      max_N_tune: 1.0e6
-
-tune2:
-  lower_model:
-    tune_params:
-      epochs: 10
-      learning_rate: 5e-3
-      early_stopping_patience: 2
-    model_params:
-      encoderLayer: [[2, 1]] # Numbers of upsamplings to try (factors of 2 in neuron increase for each layer)
-      high_regularization: [dropout0]
-      activation_leak: [0.05]
-      highWD: [0, 1e-6, 1e-5, 1e-4]
-      noise: [0, 0.01, 0.05]
-      max_N_tune: 1.0e6
-
-tune3:
-  upper_model:
-    tune_params:
-      epochs: 10
-      learning_rate: 5e-3
-      early_stopping_patience: 2
-    model_params:
-      middleLayer: [[2, 1]] # Numbers of upsamplings to try (factors of 2 in neuron increase for each layer)
-      high_regularization: [dropout0]
-      activation_leak: [0.05]
-      highWD: [0, 1e-6, 1e-5, 1e-4]
-      noise: [0, 0.01, 0.05]
-      max_N_tune: 1.0e6
-
-
-
+model:
+  encoderLayerUp: 2
+  encoderLayerDown: 1
+  middleLayerUp: 2
+  middleLayerDown: 1
+  low_regularization: dropout0
+  high_regularization: batchnormdropout0
+  activation_leak: 0.05
+  lowWD: 1E-5
+  highWD: 1E-5
+  noise: 0.02 # 2%
+  description: ""
 
 train1: # Increase number for another layer of training
   strategy: lower # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
   batch_size: 1024 
-  epochs: 25
+  epochs: 1
   learning_rate: 1e-3
   early_stopping_patience: 3
   scheduler:
@@ -59,7 +28,7 @@ train1: # Increase number for another layer of training
       patience: 3
       min_lr: 1e-6
   max_N: null
-  DictFilePath: pGeoDynBinaries.pt
+  DictFilePath: 110GeneralBinaries
 
 train2: 
   strategy: upper # Train upper portion of model, encoder frozen. Saturation predictor still trained, but not used for loss calculation.
@@ -73,7 +42,7 @@ train2:
       factor: 0.2 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
       patience: 3
       min_lr: 1e-6
-  DictFilePath: pGeoDynHeads.pt
+  DictFilePath: 110GeneralHeads
   loss_config:
     bulk:
       type: symmetric_rel_l2
@@ -92,7 +61,7 @@ train3:
       factor: 0.2 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
       patience: 3
       min_lr: 1e-5
-  DictFilePath: pGeoDynWhole.pt
+  DictFilePath: 110GeneralWhole
   loss_config:
     bulk:
       type: symmetric_rel_l2

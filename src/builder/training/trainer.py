@@ -30,6 +30,15 @@ TEMP_MODELS_DIR = Path(__file__).parent / "temp_models"
 TEMP_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _read_text_file(path: Optional[str]) -> Optional[str]:
+    if not path:
+        return None
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
 def symmetric_rel_l1(pred, target, eps=1e-6):
     denom = torch.clamp(torch.abs(pred) + torch.abs(target), min=eps)
     return torch.mean(torch.abs(pred - target) / denom)
@@ -45,7 +54,8 @@ def symmetric_rel_l2(pred, target, eps=1e-6):
 def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = {},
                       batch_size = 1024, criterion = nn.BCEWithLogitsLoss(), lr = 1e-4, 
                       Epochs = 30, device = 'cuda',
-                      max_N = np.inf, early_stopping_patience = 5, DictFilePath = None):
+                      max_N = np.inf, early_stopping_patience = 5, DictFilePath = None,
+                      config_yaml = None, training_yaml = None, processing_yaml = None, stats = None, log_path = None):
     
     """    # --- Build (copy) model ---
     scheduler is text: one of ['steplr', 'cosine', 'cosinewarm', 'plateau'] or None for no scheduler. 
@@ -132,7 +142,7 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         avg_test_loss = running_test_loss / N
         test_losses.append(avg_test_loss)
 
-        print(f"Epoch {epoch+1:02d}: Train {avg_train_loss:.5f} | Test {avg_test_loss:.5f} | Δt={time.time()-start:.1f}s")
+        print(f"Epoch {epoch+1:02d}: Train {avg_train_loss:.5f} | Test {avg_test_loss:.5f} | time = {time.time()-start:.1f}s")
 
 
         wrappedScheduler.step_epoch(avg_test_loss)
@@ -143,7 +153,15 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
             print(f"New best test loss: {best_test_loss:.5f}. Saving model.")
             torch.save(model.state_dict(), str(TEMP_MODELS_DIR / 'temp_binary_train.pt'))
             if DictFilePath is not None:
-                model.save(DictFilePath)
+                log_text = _read_text_file(log_path)
+                model.save(
+                    DictFilePath,
+                    config_yaml=config_yaml,
+                    processing_yaml=processing_yaml,
+                    training_yaml=training_yaml,
+                    stats=stats,
+                    log_text=log_text,
+                )
             early_stopping_counter = 0
         elif avg_test_loss > best_test_loss * 1.01:
             early_stopping_counter += 1
@@ -196,7 +214,8 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = {}, criterion = symmetric_rel_l2, criterion_sat = nn.BCEWithLogitsLoss(), 
                       chem_alpha = 1, mole_alpha = 1, bulk_alpha = 0, Epochs = 20, batch_size = 1024, lr = 1e-4,
                       binWeights = torch.ones(1), compWeights = torch.ones(1), full_test_set = None, 
-                      device = 'cuda', max_N = np.inf, early_stopping_patience = 5, which_heads_to_freeze = ['sat_head', 'encoder'], DictFilePath = None):
+                      device = 'cuda', max_N = np.inf, early_stopping_patience = 5, which_heads_to_freeze = ['sat_head', 'encoder'], DictFilePath = None,
+                      config_yaml = None, training_yaml = None, processing_yaml = None, stats = None, log_path = None):
     # iF which_heads_to_freeze is [], then this is a full model trainer!
     # Currently does not handle limited VC training!! Need to adjust model to make bulk output optional, then not use it in this loop
     """model = NN.MidLevelNetwork(**Model.config)#.to(Model.device) # Copy the old model, so no overwriting. 
@@ -330,7 +349,7 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         running_chem_loss = 0
         running_mole_loss = 0
         running_bulk_loss = 0
-        
+        N=0
         with torch.no_grad():
             for batch_idx, (x_batch, b_batch, y_batch, m_batch) in enumerate(test_loader):
                 x_batch, b_batch, y_batch, m_batch = x_batch.to(device, non_blocking=True), b_batch.to(device, non_blocking=True), y_batch.to(device, non_blocking=True), m_batch.to(device, non_blocking=True)
@@ -374,13 +393,21 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         
         avg_test_loss = running_test_loss / N
         test_losses.append(avg_test_loss)
-        print(f"Epoch {epoch+1:02d}: Train {avg_train_loss:.5f} | Test {avg_test_loss:.5f} | Δt={time.time()-start:.1f}s")
+        print(f"Epoch {epoch+1:02d}: Train {avg_train_loss:.5f} | Test {avg_test_loss:.5f} | time = {time.time()-start:.1f}s")
 
         if avg_test_loss < best_test_loss:
             best_test_loss = avg_test_loss
             torch.save(model.state_dict(), str(TEMP_MODELS_DIR / 'temp_upper_train.pt'))
             if DictFilePath is not None:
-                model.save(DictFilePath)
+                log_text = _read_text_file(log_path)
+                model.save(
+                    DictFilePath,
+                    config_yaml=config_yaml,
+                    processing_yaml=processing_yaml,
+                    training_yaml=training_yaml,
+                    stats=stats,
+                    log_text=log_text,
+                )
             early_stopping_counter = 0
         elif avg_test_loss > best_test_loss * 1.01:
             early_stopping_counter += 1

@@ -52,10 +52,10 @@ class SchedulerWrapper:
 
 def create_optimizer(model: torch.nn.Module, lr: float = 1e-3, weight_decay: float = 0.0) -> torch.optim.Optimizer:
     """Create optimizer based on weight_decay: Adam if wd=0, else AdamW."""
-    if weight_decay == 0:
+    if float(weight_decay) == 0:
         return torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
     else:
-        return torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=lr, weight_decay=weight_decay)
+        return torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=lr, weight_decay=float(weight_decay))
 
 
 def create_scheduler(optimizer: torch.optim.Optimizer, scheduler_name: str, **kwargs) -> Optional[SchedulerWrapper]:

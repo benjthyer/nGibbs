@@ -1,7 +1,5 @@
 """
 Mathematical utilities.
-
-Extracted from Legacy/BackEnds/EmulatorLibrary.py
 """
 
 import numpy as np
@@ -348,9 +346,7 @@ class Normalizer:
             self.ranger = range_tensor.cpu()
             self.dev = 'cpu'
 
-
     def denorm(self, x):
-
         return x * self.ranger + self.miner
     
     def norm(self, x):
@@ -366,5 +362,65 @@ class Normalizer:
             return out
         else:
             raise TypeError("Input must be a NumPy array or a PyTorch tensor.")
+    
+    def to_state_dict(self):
+        """
+        Export Normalizer state to a dictionary.
+        
+        Returns a dict with 'min' and 'range' as numpy arrays for serialization.
+        Device information ('cuda' or 'cpu') is included for reconstruction.
+        
+        Returns
+        -------
+        dict
+            Dictionary with keys: 'min', 'range', 'device'
+        """
+        # Convert to numpy for JSON/NPZ serialization
+        if isinstance(self.miner, torch.Tensor):
+            min_array = self.miner.cpu().numpy()
+            range_array = self.ranger.cpu().numpy()
+        else:
+            min_array = np.asarray(self.miner)
+            range_array = np.asarray(self.ranger)
+        
+        return {
+            'min': min_array.astype(np.float32),
+            'range': range_array.astype(np.float32),
+            'device': self.dev
+        }
+    
+    @classmethod
+    def from_state_dict(cls, state_dict, cuda=False, device='cpu'):
+        """
+        Reconstruct Normalizer from saved state dictionary.
+        
+        Parameters
+        ----------
+        state_dict : dict
+            Dictionary with 'min' and 'range' keys containing numpy arrays
+        cuda : bool, optional
+            Deprecated. Use 'device' parameter instead.
+        device : str, optional
+            Device to place tensors on ('cpu' or 'cuda'). Defaults to 'cpu'.
+        
+        Returns
+        -------
+        Normalizer
+            Reconstructed Normalizer instance
+        """
+        # Handle legacy cuda parameter
+        if cuda:
+            device = 'cuda'
+        
+        # Convert numpy arrays to torch tensors
+        if TORCH_AVAILABLE:
+            min_tensor = torch.from_numpy(state_dict['min']).float()
+            range_tensor = torch.from_numpy(state_dict['range']).float()
+        else:
+            min_tensor = state_dict['min']
+            range_tensor = state_dict['range']
+        
+        return Normalizer(min_tensor, range_tensor, cuda=(device == 'cuda'))
+
 
 

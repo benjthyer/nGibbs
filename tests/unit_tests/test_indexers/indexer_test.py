@@ -11,6 +11,7 @@ import pytest
 from pathlib import Path
 import sys
 from datetime import datetime
+import tempfile
 
 
 project_root = Path(__file__).parent.parent.parent.parent # Add top directory to path.
@@ -579,13 +580,131 @@ def test_ml_indexer(indexer):
     print(f"✓ Phase aggregation validated")
     
     # ========================================================================
+    # 14. SAVE/LOAD ROUND-TRIP TESTS
+    # ========================================================================
+    print("\n[36] Testing save/load round-trip...")
+    from nMELTS.config.ml_indexer import load_ml_indexer_from_state
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        indexer.save(tmp_dir)
+        reloaded = load_ml_indexer_from_state(tmp_dir)
+
+    # Basic metadata checks
+    assert reloaded.ncomps == indexer.ncomps, "ncomps mismatch after reload"
+    assert reloaded.ncompsVaried == indexer.ncompsVaried, "ncompsVaried mismatch after reload"
+    assert reloaded.nphases == indexer.nphases, "nphases mismatch after reload"
+    assert reloaded.label_names == indexer.label_names, "label_names mismatch after reload"
+    assert reloaded.all_phases == indexer.all_phases, "all_phases mismatch after reload"
+    assert reloaded.compositionally_variable_phases == indexer.compositionally_variable_phases, "compositionally_variable_phases mismatch"
+    assert reloaded.Elkeys == indexer.Elkeys, "Elkeys mismatch after reload"
+    assert reloaded.Oxides == indexer.Oxides, "Oxides mismatch after reload"
+    assert reloaded.WRkeys == indexer.WRkeys, "WRkeys mismatch after reload"
+    assert reloaded.do_bulk == indexer.do_bulk, "do_bulk mismatch after reload"
+
+    # Dictionary + array checks
+    dict_array_attrs = [
+        "label_indices",
+        "label_indices_comp",
+    ]
+    for attr in dict_array_attrs:
+        original = getattr(indexer, attr)
+        loaded = getattr(reloaded, attr)
+        assert original.keys() == loaded.keys(), f"{attr} keys mismatch after reload"
+        for key in original:
+            np.testing.assert_array_equal(loaded[key], original[key], err_msg=f"{attr}[{key}] mismatch")
+
+    dict_attrs = [
+        "mass_phasedict",
+        "comp_phasedict",
+        "detail_label_indices",
+    ]
+    for attr in dict_attrs:
+        assert getattr(reloaded, attr) == getattr(indexer, attr), f"{attr} mismatch after reload"
+
+    array_float_attrs = [
+        "compToOxLoad",
+        "PxSpTransform",
+        "compToOx",
+        "OxToEl",
+        "ElToOx",
+        "MM",
+        "Minv",
+        "Mtot",
+        "phaseToCompMap",
+        "variedToAllComp",
+        "fixed_phaseToCompMap",
+        "comp_mappings",
+    ]
+    for attr in array_float_attrs:
+        np.testing.assert_allclose(
+            getattr(reloaded, attr),
+            getattr(indexer, attr),
+            rtol=1e-6,
+            err_msg=f"{attr} mismatch after reload"
+        )
+
+    array_int_attrs = [
+        "compositionally_variable_subset",
+        "compositional_component_subset",
+        "comp_binaries",
+        "compositionally_variable_binaries",
+    ]
+    for attr in array_int_attrs:
+        np.testing.assert_array_equal(
+            getattr(reloaded, attr),
+            getattr(indexer, attr),
+            err_msg=f"{attr} mismatch after reload"
+        )
+
+    if indexer.boolTransCompToOx is None:
+        assert reloaded.boolTransCompToOx is None, "boolTransCompToOx mismatch after reload"
+    else:
+        np.testing.assert_array_equal(
+            reloaded.boolTransCompToOx,
+            indexer.boolTransCompToOx,
+            err_msg="boolTransCompToOx mismatch after reload"
+        )
+
+    # Normalizer state checks (if present)
+    if indexer.feature_normalizer is None:
+        assert reloaded.feature_normalizer is None, "feature_normalizer mismatch after reload"
+    else:
+        original_state = indexer.feature_normalizer.to_state_dict()
+        reloaded_state = reloaded.feature_normalizer.to_state_dict()
+        np.testing.assert_allclose(original_state["min"], reloaded_state["min"], rtol=1e-6)
+        np.testing.assert_allclose(original_state["range"], reloaded_state["range"], rtol=1e-6)
+
+    if indexer.output_normalizer is None:
+        assert reloaded.output_normalizer is None, "output_normalizer mismatch after reload"
+    else:
+        original_state = indexer.output_normalizer.to_state_dict()
+        reloaded_state = reloaded.output_normalizer.to_state_dict()
+        np.testing.assert_allclose(original_state["min"], reloaded_state["min"], rtol=1e-6)
+        np.testing.assert_allclose(original_state["range"], reloaded_state["range"], rtol=1e-6)
+
+    # Torch-specific matrix (optional)
+    try:
+        import torch
+    except ImportError:
+        torch = None
+
+    if getattr(indexer, "comp_variable_IDMAT", None) is None:
+        assert reloaded.comp_variable_IDMAT is None, "comp_variable_IDMAT mismatch after reload"
+    else:
+        assert reloaded.comp_variable_IDMAT is not None, "comp_variable_IDMAT missing after reload"
+        if torch is not None:
+            assert torch.allclose(reloaded.comp_variable_IDMAT, indexer.comp_variable_IDMAT), "comp_variable_IDMAT mismatch"
+
+    print("✓ save/load round-trip: all checked attributes match")
+
+    # ========================================================================
     # SUMMARY
     # ========================================================================
     print("\n" + "=" * 50)
     print("✓ ALL TESTS PASSED")
     print("=" * 50)
     print(f"\nDimensions verified: C={C}, P={P}, VP={VP}, VC={VC}, E={E}, O={O}, WR={WR}")
-    print(f"All {35} test categories completed successfully")
+    print(f"All {36} test categories completed successfully")
 
 
 def test_restrictVC(ml_indexer):
@@ -1046,7 +1165,7 @@ if __name__ == '__main__':
 
     #NOW TRY WITH AUTO EXCLUDE! 
 
-    csv_path = Path(project_root) / 'data' / 'MELTStables' / 'p' / 'MELTSp_TrainsetFeb4BatchCooling.csv'
+    csv_path = Path(project_root) / 'data' / 'MELTStables' / '110' / 'MELTS110_TrainsetFeb3BatchCooling.csv'
     DF = pd.read_csv(csv_path)
     headers = list(DF.columns)
     indexer_auto = DatasetIndexer(headers=headers)

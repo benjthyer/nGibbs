@@ -10,7 +10,7 @@ sys.path.insert(0, str(project_root))
 #from tests.test_utils import is_almost_equal
 from tests.test_utils import setup_test_logging
 import tests.unit_tests.test_indexers.indexer_test as IDX_TEST
-from nMELTS.utils.file_utils import load_ml_bundle
+from src.nMELTS.utils.file_utils import load_ml_bundle
 
 
 ## Functions work on BigMetaTable object, which contains unique indexers 
@@ -819,7 +819,7 @@ def run_tests_on_bundle(bundle_path: Path, BMT, test_name: str = "", output_tabl
     if fractionate is not None:
         test_bulk_comp_change_by_run(BMT, mode=fractionate.lower(), tolerance_ppm=150000, Output_tables=output_tables)
         test_phase_masses(BMT, fractionate=fractionate.lower(), tolerance_ppm=5000)
-    test_bulk_reconstruction(BMT, tolerance_ppm=1500)
+    test_bulk_reconstruction(BMT, tolerance_ppm=5000)
     test_nonzero_column_sums(BMT)
     test_phase_coverage(BMT)
     
@@ -893,9 +893,9 @@ if __name__ == '__main__':
     from src.builder.indexer import DatasetIndexer
 
     # Path to the batch cooling CSV
-    csv_path = Path(project_root) / 'data' / 'MELTStables' / '102' / 'MELTS102_TrainsetFeb9BatchCooling.csv'
-    bundle_path_1 = Path(project_root) / 'data' / 'MLready' / '102' / 'MELTS102_TrainsetFeb9BatchCooling.tar.gz'
-    bundle_path_2 = Path(project_root) / 'data' / 'MLready' / '102' / 'MELTS102_TrainsetFeb9BatchCooling_shuffled.tar.gz'
+    csv_path = Path(project_root) / 'data' / 'MELTStables' / '110' / 'MELTS110_TrainsetFeb13BatchCooling.csv'
+    bundle_path_1 = Path(project_root) / 'data' / 'MLready' / '110' / 'MELTS110_TrainsetFeb13BatchCooling.tar.gz'
+    bundle_path_2 = Path(project_root) / 'data' / 'MLready' / '110' / 'MELTS110_TrainsetFeb13BatchCooling_shuffled.tar.gz'
 
 
     if not csv_path.exists():

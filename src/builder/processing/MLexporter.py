@@ -2,7 +2,6 @@ from tqdm import tqdm
 import numpy as np
 import gc
 import os
-import pickle
 import tarfile
 import tempfile
 import shutil
@@ -11,20 +10,21 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import re
 
-# Ensure src is on path
+# Ensure repo root and src are on path
 import sys
+repo_root = str(Path(__file__).resolve().parents[3])
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
 src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
-config_path = str(Path(__file__).parent.parent.parent.parent / 'config')
-if config_path not in sys.path:
-    sys.path.insert(0, config_path)
 
 from .filters import filter_invalid_rows
-from settings import internal_train_dir, external_train_dir, external_base
+from config.settings import internal_train_dir, external_train_dir, external_base
 from nMELTS.utils.string_utils import pull_number
 from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
 from nMELTS.utils.file_utils import load_ml_bundle, MLDataBundle
+from nMELTS.utils.math_utils import Normalizer
 
 featureNames = ['Pressure(System_main)', 'Temperature(System_main)', 'logfO2-QFM(System_main)']
 #freeOutputs = ['viscocity(System_main)', 'liq H (kJ)(melts-liquid)', 'Temperature(System_main)']
@@ -79,16 +79,12 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
         print(f"Resampling dataset {sampleNo} times with bounds: {resample_bounds}")
 
 
-    # Use the provided indexer or fall back to self.indexer
+    # Use the provided indexer or fall back to self.indexe
     if indexer is None:
         if hasattr(self, 'indexer'):
             indexer = self.indexer
         else:
             raise ValueError("No indexer provided and self.indexer not found")
-
-    # Update indexer after filters to current table
-
-    indexer.table_update(self.table)
 
     #if hasattr(indexer, 'ml_indexer'):
     indexer.ml_indexer.featureNames = featureNames
@@ -326,9 +322,8 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             del self.freeOutputs
         gc.collect()
 
-    pickle_path = self.filename + 'ml_indexer.pkl'
-    with open(pickle_path, 'wb') as handle:
-        pickle.dump(indexer.ml_indexer, handle)
+    indexer_dir = self.filename + 'ml_indexer'
+    indexer.ml_indexer.save(indexer_dir)
 
     # Generate dataset statistics
     stats_path = generate_dataset_stats(
@@ -344,7 +339,6 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
         self.filename + 'mass_labels.npy': 'mass_labels.npy',
         self.filename + 'features.npy': 'features.npy',
         self.filename + 'labels.npy': 'labels.npy',
-        pickle_path: 'ml_indexer.pkl',
     }
     if config_path:
         config_basename = Path(config_path).name
@@ -370,6 +364,8 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
         for fpath, arcname in file_mappings.items():
             if os.path.exists(fpath):
                 tar.add(fpath, arcname=arcname)
+        if os.path.isdir(indexer_dir):
+            tar.add(indexer_dir, arcname='ml_indexer')
         
     sanity_check_bundle(bundle_path=Path(bundle_path)) # Verify that the data make sense. Expensive for large files
 

@@ -4,6 +4,7 @@ Batch Melting data processing workflow.
 Processes MELTS simulation data for machine learning training, validation, and testing.
 """
 
+from copy import deepcopy
 import os
 import gc
 from pathlib import Path
@@ -13,8 +14,12 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend - save plots without displaying
 
-# Ensure src is on path
+# Ensure repo root and src are on path
 import sys
+repo_root = str(Path(__file__).resolve().parents[3])
+if repo_root not in sys.path:
+    sys.path.insert(0, repo_root)
+
 src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
@@ -23,10 +28,6 @@ file_path = str(Path(__file__).parent)
 if file_path not in sys.path:
     sys.path.insert(0, file_path)
 
-config_path = str(Path(__file__).parent.parent.parent.parent / 'config')
-if config_path not in sys.path:
-    sys.path.insert(0, config_path)
-
 # Import BigMetaTable
 from builder.processing.BigMetaTable import BigMetaTable
 
@@ -34,7 +35,7 @@ from builder.processing.BigMetaTable import BigMetaTable
 from builder.processing import filters
 
 # Import settings and utilities
-from settings import internal_data_dir, external_data_dir, external_base, internal_train_dir, external_train_dir
+from config.settings import internal_data_dir, external_data_dir, external_base, internal_train_dir, external_train_dir
 from nMELTS.utils.file_utils import delete_files_with_keyword, move_files_with_extension, get_baseline_files, clear_new_files
 
 # Exporter functions
@@ -248,7 +249,8 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
 
             #TrainMELTS.save(name=f"{TrainName}Filtered", save_csv=False)
 
-        TrainIndexer = TrainMELTS.indexer  # Capture indexer for consistency with validation/test dataset
+        TrainMELTS.indexer.table_update(TrainMELTS.table) 
+        TrainIndexer = deepcopy(TrainMELTS.indexer)  # Capture indexer for consistency with validation/test dataset
 
         TrainMELTS.filename = TrainName
         train_bundle = train_dir / get_bundle_name(TrainName, 'Train')
@@ -300,6 +302,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         assert ValidMELTS.header == header, "Validation dataset header does not match training dataset header!" #(This is assummed in later steps, but maybe doesn't need to be?)
 
         ValidMELTS.indexer = TrainIndexer  # Assign identical indexer for consistency with training dataset
+        ValidMELTS.indexer.ml_indexer = TrainIndexer.ml_indexer  # Ensure ml_indexer is also consistent, this is used in filtering and upsampling steps
 
         pre_filter = ValidMELTS.table.shape[0]
 
@@ -317,6 +320,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
 
             ValidMELTS, TestMELTS = ValidMELTS.split(0.30) # Future: make configurable. 
             TestMELTS.indexer = TrainIndexer  # Assign identical indexer for consistency with training dataset 
+            TestMELTS.indexer.ml_indexer = TrainIndexer.ml_indexer # Ensure ml_indexer is also consistent, this is used in filtering and upsampling steps
             if upsample:
                 # Resample configured test set phases from YAML
                 test_phases = upsample_cfg['phases'].get('test_set_phases', {})

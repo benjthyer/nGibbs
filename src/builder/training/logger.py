@@ -14,11 +14,13 @@ class TeeLogger:
     def __init__(self, log_path: Optional[str] = None):
         self.terminal = sys.stdout
         self.log_file: Optional[TextIO] = None
+        self.log_path: Optional[str] = None
         
         if log_path:
             log_path = Path(log_path)
             log_path.parent.mkdir(parents=True, exist_ok=True)
             self.log_file = open(log_path, 'w', encoding='utf-8')
+            self.log_path = str(log_path)
             self.write(f"=== Log started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n")
     
     def write(self, message: str):

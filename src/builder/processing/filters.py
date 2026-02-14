@@ -28,6 +28,7 @@ if top_path not in sys.path:
 from typing import Optional
 from builder.indexer import DatasetIndexer
 from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
+from nMELTS.config.ml_indexer import MLIndexer, load_ml_indexer_from_state
 
 
 # Oxide bounds configuration
@@ -453,12 +454,14 @@ def deep_filter(tarball_path, Component_Lower_Bounds=None, Component_Upper_Bound
             print(f"Renamed stats.txt → stats_prefilter.txt")
         
         # Load ml_indexer for filtering and regenerating stats
-        ml_indexer_path = temp_path / 'ml_indexer.pkl'
+        """ml_indexer_path = temp_path / 'ml_indexer.pkl' #OLD PKL. DEPRECATED. 
         if ml_indexer_path.exists():
             with open(ml_indexer_path, 'rb') as f:
                 ml_indexer = pickle.load(f)
         else:
-            ml_indexer = None
+            ml_indexer = None"""
+        ml_indexer_path = temp_path / 'ml_indexer'
+        ml_indexer = load_ml_indexer_from_state(ml_indexer_path)
         
         # Apply filtering to the .npy files using temporary filename prefix
         temp_filename_prefix = str(temp_path / 'filtered_')
@@ -513,100 +516,15 @@ def deep_filter(tarball_path, Component_Lower_Bounds=None, Component_Upper_Bound
             for file in temp_path.glob('*'):
                 if file.is_file() and not file.name.startswith('filtered_'):
                     tar.add(file, arcname=file.name)
+            
+            # Re-add ml_indexer directory if present
+            ml_indexer_dir = temp_path / 'ml_indexer'
+            if ml_indexer_dir.is_dir():
+                print("Re-packing ml_indexer state directory...")
+                tar.add(ml_indexer_dir, arcname='ml_indexer')
         
 
         #sanity_check_bundle(tarball_path)
-        print(f"Filtering complete: {tarball_path}")
-        
-    finally:
-        # Clean up temporary directory
-        shutil.rmtree(temp_dir)
-
-
-def _deep_filter_tarball(tarball_path, Component_Lower_Bounds=None, Component_Upper_Bounds=None, 
-                        Oxide_Lower_Bounds=None, Oxide_Upper_Bounds=None, Mass_Upper_Bounds=None, 
-                        indexer: Optional[DatasetIndexer] = None, batch_size=200_000):
-    """Filter files within a tar.gz bundle."""
-    from .MLexporter import generate_dataset_stats
-    
-    tarball_path = Path(tarball_path)
-    temp_dir = tempfile.mkdtemp()
-    
-    try:
-        # Extract tarball
-        print(f"Extracting {tarball_path}...")
-        with tarfile.open(tarball_path, 'r:gz') as tar:
-            tar.extractall(path=temp_dir)
-        
-        temp_path = Path(temp_dir)
-        
-        # Rename stats.txt to stats_prefilter.txt
-        stats_file = temp_path / 'stats.txt'
-        if stats_file.exists():
-            prefilter_stats = temp_path / 'stats_prefilter.txt'
-            os.rename(stats_file, prefilter_stats)
-            print(f"Renamed stats.txt → stats_prefilter.txt")
-        
-        # Load ml_indexer for filtering and regenerating stats
-        ml_indexer_path = temp_path / 'ml_indexer.pkl'
-        if ml_indexer_path.exists():
-            with open(ml_indexer_path, 'rb') as f:
-                ml_indexer = pickle.load(f)
-        else:
-            ml_indexer = None
-        
-        # Apply filtering to the .npy files using temporary filename prefix
-        temp_filename_prefix = str(temp_path / 'filtered_')
-        
-        # Copy .npy files to temp location with prefix
-        npy_files = ['labels.npy', 'features.npy', 'binary_labels.npy', 'molar_labels.npy', 'mass_labels.npy']
-        for npy_file in npy_files:
-            src = temp_path / npy_file
-            if src.exists():
-                dst = Path(f"{temp_filename_prefix}{npy_file}")
-                shutil.copy(src, dst)
-        
-        # Apply filtering
-        _deep_filter_npy(
-            temp_filename_prefix,
-            Component_Lower_Bounds=Component_Lower_Bounds,
-            Component_Upper_Bounds=Component_Upper_Bounds,
-            Oxide_Lower_Bounds=Oxide_Lower_Bounds,
-            Oxide_Upper_Bounds=Oxide_Upper_Bounds,
-            Mass_Upper_Bounds=Mass_Upper_Bounds,
-            batch_size=batch_size,
-            ml_indexer=ml_indexer
-        )
-        
-        # Move filtered files back to original names
-        for npy_file in npy_files:
-            filtered_src = Path(f"{temp_filename_prefix}{npy_file}")
-            if filtered_src.exists():
-                dst = temp_path / npy_file
-                shutil.move(filtered_src, dst)
-        
-        # Generate stats_postfilter.txt
-        if ml_indexer is not None:
-            print("Generating post-filter statistics...")
-            generate_dataset_stats(
-                dataset_name=str(temp_path / 'filtered_'),
-                ml_indexer=ml_indexer,
-                output_dir=temp_path
-            )
-            # Rename to stats_postfilter.txt
-            postfilter_tmp = temp_path / 'filtered__stats.txt'
-            postfilter_stats = temp_path / 'stats_postfilter.txt'
-            if postfilter_tmp.exists():
-                os.rename(postfilter_tmp, postfilter_stats)
-                print(f"Created stats_postfilter.txt")
-        
-        # Repack tarball
-        print(f"Repacking filtered data into {tarball_path}...")
-        with tarfile.open(tarball_path, 'w:gz') as tar:
-            for file in temp_path.glob('*'):
-                if file.is_file() and not file.name.startswith('filtered_'):
-                    tar.add(file, arcname=file.name)
-        
         print(f"Filtering complete: {tarball_path}")
         
     finally:
@@ -641,6 +559,9 @@ def _deep_filter_npy(filename, Component_Lower_Bounds=None, Component_Upper_Boun
     # === Full-array filters for components (cheap)
     if Component_Lower_Bounds is not None:
         for phase, comp, bound in Component_Lower_Bounds:
+            if phase not in detail_label_indices or comp not in detail_label_indices[phase]:
+                print(f"Warning: {phase} or {comp} not found in detail_label_indices. Skipping this filter.")
+                continue
             idx = detail_label_indices[phase][comp]
             to_delete = np.where((components[:, idx] < bound)*(components[:, idx] != 0))[0]
             print(f"Deleting {len(to_delete)} for {bound} Lower Bound {phase} {comp}")
@@ -648,6 +569,9 @@ def _deep_filter_npy(filename, Component_Lower_Bounds=None, Component_Upper_Boun
             
     if Component_Upper_Bounds is not None:
         for phase, comp, bound in Component_Upper_Bounds:
+            if phase not in detail_label_indices or comp not in detail_label_indices[phase]:
+                print(f"Warning: {phase} or {comp} not found in detail_label_indices. Skipping this filter.")
+                continue
             idx = detail_label_indices[phase][comp]
             to_delete = np.where(components[:, idx] > bound)[0]
             print(f"Deleting {len(to_delete)} for {bound} Upper Bound {phase} {comp}")
@@ -673,6 +597,9 @@ def _deep_filter_npy(filename, Component_Lower_Bounds=None, Component_Upper_Boun
         # Oxide Lower Bounds
         if Oxide_Lower_Bounds is not None:
             for phase, ox, bound in Oxide_Lower_Bounds:
+                if phase not in detail_label_indices or ox not in oxide_dict:
+                    print(f"Warning: {phase} or {ox} not found in detail_label_indices or oxide_dict. Skipping this filter.")
+                    continue
                 print(f"Processing {phase} {ox} Lower Bound filter...")
                 print(f"comp_batch shape: {comp_batch.shape}, label_indices_comp[phase]: {label_indices_comp[phase]}, compToOxLoad shape: {compToOxLoad.shape}")
                 oxides_GT = (comp_batch[:,label_indices_comp[phase]] @ compToOxLoad[label_indices[phase]]) 
@@ -687,6 +614,9 @@ def _deep_filter_npy(filename, Component_Lower_Bounds=None, Component_Upper_Boun
         # Oxide Upper Bounds
         if Oxide_Upper_Bounds is not None:
             for phase, ox, bound in Oxide_Upper_Bounds:
+                if phase not in detail_label_indices or ox not in oxide_dict:
+                    print(f"Warning: {phase} or {ox} not found in detail_label_indices or oxide_dict. Skipping this filter.")
+                    continue
                 oxides_GT = (comp_batch[:,label_indices_comp[phase]] @ compToOxLoad[label_indices[phase]]) 
 
                 oxides_GT = oxides_GT @ MM
