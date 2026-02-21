@@ -16,9 +16,10 @@ from datetime import datetime
 
 
 # Import utility functions
-from nMELTS.utils.string_utils import pull_letter, pull_number
+from nMELTS.utils.string_utils import pull_letter, pull_number, apply_type_conversions
 
 # Import constants and mappings from config (fallbacks)
+from nMELTS.config.constants import TYPE_CONVERSION_MAP
 """from nMELTS.config import (
     Elkeys as DEFAULT_ELKEYS,
     label_indices as DEFAULT_LABEL_INDICES,
@@ -73,6 +74,7 @@ class TunableModel(nn.Module):
 
         self.activation_factory = activation_factory
         self.input_dim = input_dim
+        #self.molar_epsilon = ml_indexer.molar_epsilon
 
         # Regularization factory -> returns list of modules to append to layer list
 
@@ -248,7 +250,11 @@ class TunableModel(nn.Module):
         mole_layers = [nn.Linear(middle_out, 64)]
         mole_layers += self._reg_modules(64)
         mole_layers.append(nn.Linear(64, self.n_phases))
-        #mole_layers.append(nn.Softplus()) # Not a good fit with logspace transform
+        if not self.ml_indexer.molar_epsilon:
+            print("YOU HAVE INSTANTIATED A LINEAR MOLE HEAD WITH SOFTPLUS ACTIVATION.")
+            mole_layers.append(nn.Softplus()) # Not a good fit with logspace transform
+        else:
+            print("YOU HAVE INSTANTIATED A LOG-SPACE MOLE HEAD (eps: {}) WITH NO ACTIVATION.".format(self.ml_indexer.molar_epsilon))
         self.mole_head = nn.Sequential(*mole_layers)
 
         # Now build actual chem_heads with correct input_dim = middle_out
@@ -328,7 +334,7 @@ class MidLevelNetwork(TunableModel):
             activation_leak=activation_leak,
             lowWD=lowWD,
             highWD=highWD,
-            noise = 0,
+            noise=noise,
             description=description)
 
         self.encoderLayerUp=encoderLayerUp
@@ -420,8 +426,11 @@ class MidLevelNetwork(TunableModel):
             
             # === 2. Save config as JSON ===
             config_path = temp_path / 'config.json'
+            # Apply type conversions for JSON safety: convert matching keys to target types,
+            # and convert any unmatched values to strings to avoid JSON serialization issues
+            safe_config = apply_type_conversions(self.config, TYPE_CONVERSION_MAP, default_dtype=str)
             with open(config_path, 'w') as f:
-                json.dump(self.config, f, indent=2)
+                json.dump(safe_config, f, indent=2)
             
             # === 3. Save ml_indexer state ===
             indexer_dir = temp_path / 'ml_indexer'
@@ -485,7 +494,10 @@ class MidLevelNetwork(TunableModel):
         """Predicts molar abundance of phases and reconstructs bulk composition."""
         logMoles = (self.mole_head(latentx) * binary_mask) # Apply binary mask to zero out non-present phases        eps = logMoles.new_tensor(self.ml_indexer.molar_epsilon)
         eps = self.molar_epsilon #* torch.ones_like(logMoles, dtype=logMoles.dtype, device=logMoles.device) # Use registered buffer for molar epsilon
-        phaseMoles = (torch.exp(logMoles * torch.log(torch.tensor(10, device=logMoles.device, dtype=logMoles.dtype))) - eps) * binary_mask #  invert log transform; add small epsilon to assert lower bound for the outputs
+        if eps:
+            phaseMoles = (torch.exp(logMoles * torch.log(torch.tensor(10, device=logMoles.device, dtype=logMoles.dtype))) - eps) * binary_mask #  invert log transform; add small epsilon to assert lower bound for the outputs
+        else:
+            phaseMoles = logMoles
         compMultipliers = phaseMoles @ self.phaseToCompMap #(B,C)
         intensivePhaseProportions = intensiveComponents @ self.variedToAllComp #BV, VC -> BC #NEED TO GET BINARIES AND PROPORTIONS TOGETHER IN COMPONENT FORM, RECREATE PHASETOCOMP (B,P,C).vASK IF INDEXING TO BUILD IS THE MOST EFFICIENT WAY
         phaseProportions = intensivePhaseProportions + self.fixed_phaseToCompMap # How to project? BC + 1C -> BC. Get ones where all pure phase components are
@@ -497,7 +509,7 @@ class MidLevelNetwork(TunableModel):
         reconBulk = reconBulkUnNormed / totals.unsqueeze(-1) # How to project? BE / B1 -> BE
 
         if details_out:
-            return logMoles, reconBulk, componentMoles / totals.unsqueeze(-1), phaseProportions # Apply identical normalization to components for equality
+            return logMoles, reconBulk, componentMoles / totals.unsqueeze(-1), phaseProportions, phaseMoles # Apply identical normalization to components for equality
         else:
             return logMoles, reconBulk
 
@@ -582,13 +594,15 @@ class MidLevelNetwork(TunableModel):
     
     def polish_negative_spFe(self, intensiveComponents):
         sp = self.detail_label_indices['spinel']
-        sp_chromite = sp['chromite']
+        sp_chromite = sp['chromite'] if 'chromite' in sp else None
         sp_hercynite = sp['hercynite']
         sp_magnetite = sp['magnetite']
         sp_spinel = sp['spinel']
         sp_ulvospinel = sp['ulvospinel']
         # Check and correct for below zero FeO
-        pos_idxs = [sp_chromite, sp_hercynite, sp_magnetite, sp_ulvospinel]
+        pos_idxs = [sp_hercynite, sp_magnetite, sp_ulvospinel]
+        if 'chromite' in sp:
+            pos_idxs = [sp_chromite] + pos_idxs
         PosS = torch.sum(intensiveComponents[:, pos_idxs], dim=-1) + (
             intensiveComponents[:, sp_ulvospinel] * 2.25
         )
@@ -651,14 +665,18 @@ class MidLevelNetwork(TunableModel):
     def polish_negative_sp(self, intensiveComponents, trial = 0):
         # Indices for spinel components
         sp = self.detail_label_indices['spinel']
-        i1 = sp['chromite']
         i2 = sp['hercynite']
         i3 = sp['magnetite']
         i4 = sp['spinel']
         i5 = sp['ulvospinel']
 
         # Extract components
-        c1 = intensiveComponents[:, i1]
+        if 'chromitte' in sp:
+            i1 = sp['chromite']
+            c1 = intensiveComponents[:, i1]
+        else:
+            i1 = None
+            c1 = torch.zeros_like(intensiveComponents[:, i2])
         c2 = intensiveComponents[:, i2]
         c3 = intensiveComponents[:, i3]
         c4 = intensiveComponents[:, i4]
@@ -680,7 +698,10 @@ class MidLevelNetwork(TunableModel):
             row_idx = torch.nonzero(illegal, as_tuple=False).squeeze(-1).to(torch.int)
 
             # Define groups
-            cols_a = torch.tensor([i1, i2], device=intensiveComponents.device, dtype=torch.int)
+            if i1 is not None:
+                cols_a = torch.tensor([i1, i2], device=intensiveComponents.device, dtype=torch.int)
+            else:
+                cols_a = torch.tensor([i2], device=intensiveComponents.device, dtype=torch.int)
             cols_b = torch.tensor([i3, i5], device=intensiveComponents.device, dtype=torch.int)
             cols_c = torch.tensor([i4], device=intensiveComponents.device, dtype=torch.int)
 
@@ -689,12 +710,18 @@ class MidLevelNetwork(TunableModel):
             rr_c, cc_c = torch.meshgrid(row_idx, cols_c, indexing="ij")
 
             # Extract per-row values
-            A = intensiveComponents[row_idx][:, [i1, i2]].sum(dim=-1)  # sum(c1,c2)
+            if i1 is not None:
+                A = intensiveComponents[row_idx][:, [i1, i2]].sum(dim=-1)  # sum(c1,c2)
+            else:
+                A = intensiveComponents[row_idx][:, i2]
             B = intensiveComponents[row_idx][:, [i3, i5]].sum(dim=-1)  # sum(c3,c5)
             C = intensiveComponents[row_idx][:, i4]                    # c4
 
             # Terms for constraints
-            L1_c1c2 = intensiveComponents[row_idx][:, [i1, i2]].sum(dim=-1)
+            if i1 is not None:
+                L1_c1c2 = intensiveComponents[row_idx][:, [i1, i2]].sum(dim=-1)
+            else:
+                L1_c1c2 = intensiveComponents[row_idx][:, i2]
             L1_c3c5 = intensiveComponents[row_idx][:, i3] + 2.25 * intensiveComponents[row_idx][:, i5]
 
             L2_c2 = intensiveComponents[row_idx][:, i2]
@@ -727,10 +754,13 @@ class MidLevelNetwork(TunableModel):
             try:
                 sol = torch.linalg.solve(M, rhs)  # shape (rows, 3). A wannabe pure MgAl2O3 makes a singular matrix. Handle this edge case with a simpler fix then recursion.
             except:
+                lIDX = [i2, i3, i4, i5]
+                if i1 is not None:
+                    lIDX = [i1] + lIDX
                 rr_e, cc_e = torch.meshgrid(
                     row_idx,
                     torch.tensor(
-                        [i1, i2, i3, i4, i5],
+                        lIDX,
                         dtype=torch.int,
                         device=intensiveComponents.device,
                     ),
@@ -825,7 +855,7 @@ class MidLevelNetwork(TunableModel):
         binary_pred = (likelihoods > 0.5).float()
 
         # Identify superliquidus rows: only the last head > 0.5
-        superliquidus = (binary_pred[:, :-1].sum(dim=1) == 0) #& (binary_pred[:, -1] == 1)
+        superliquidus = (binary_pred.sum(dim=1) == 1) #& (binary_pred[:, -1] == 1) # ASSUMES MELTS IS THE ONLY SINGLE PHASE. I've never seen MELTS report anything monomineralic, though it is possible.
         non_super = ~superliquidus
 
         if binaries is None:
@@ -835,9 +865,9 @@ class MidLevelNetwork(TunableModel):
         features = x  # alias for clarity
 
         if self.middleBrain is not None: # If there is a middle encoder, use it. Otherwise prepare first encodings and phase saturation
-            CoreOutput = self.middleBrain(torch.cat([latent, binary_inp, features], dim=1))
+            CoreOutput = self.middleBrain(torch.cat([latent, logits, features], dim=1))
         else: 
-            CoreOutput = torch.cat([latent, binary_inp, features], dim=1)
+            CoreOutput = torch.cat([latent, logits, features], dim=1)
 
         zero_mask = binary_inp[:, self.comp_binaries] @ self.comp_mappings  # [batch, n_components]
 
@@ -858,9 +888,9 @@ class MidLevelNetwork(TunableModel):
 
             print(f"NANs in chem_out after superliquidus assignment: {torch.isnan(chem_out).sum()}")
 
-            if not NN_only and non_super.any():
+            """if not NN_only and non_super.any():
                 chem_out[non_super] = self.polish_negative_px(chem_out[non_super])
-                chem_out[non_super] = self.polish_negative_sp(chem_out[non_super])
+                chem_out[non_super] = self.polish_negative_sp(chem_out[non_super])"""
 
         else:  # Training
             chem_outputs = [
@@ -871,11 +901,11 @@ class MidLevelNetwork(TunableModel):
 
             # Overwrite liquid component columns with feature composition
             liq_idx = torch.tensor(self.label_indices_comp['melts-liquid'], device=chem_out.device)
-            chem_out[superliquidus][:, liq_idx] = features[superliquidus, len(self.ml_indexer.featureNames):]
+            chem_out[superliquidus][:, liq_idx] = features[superliquidus, len(self.ml_indexer.featureNames):] # Assumes same element ordering in liquid and features
 
 
         # Compute phase properties
-        phaseMass, reconBulk, componentMoles, phaseProportions = self.forward_phase_moles(
+        logMoles, reconBulk, componentMoles, phaseProportions, phaseMoles = self.forward_phase_moles(
             CoreOutput, binary_mask=binary_pred.detach(), intensiveComponents=chem_out, details_out=True
         )
 
@@ -886,196 +916,27 @@ class MidLevelNetwork(TunableModel):
         componentMoles[superliquidus][:, liq_idx_phase] = features[superliquidus, len(self.ml_indexer.featureNames):]
         phaseProportions[superliquidus][:, liq_idx_phase] = features[superliquidus, len(self.ml_indexer.featureNames):]
         reconBulk[superliquidus] = features[superliquidus, len(self.ml_indexer.featureNames):]
-        phaseMass[superliquidus, -1] = 1.0
+        phaseMoles[superliquidus, self.ml_indexer.mass_phasedict['melts-liquid']] = 1.0
+        # Set logMoles such that phaseMoles = 1.0 when inverted: log10(1 + eps)
+        if self.molar_epsilon:
+            log_ten = torch.log(torch.tensor(10.0, device=logMoles.device, dtype=logMoles.dtype))
+            target_logMoles = torch.log(1.0 + self.molar_epsilon) / log_ten
+            logMoles[superliquidus, self.ml_indexer.mass_phasedict['melts-liquid']] = target_logMoles
+        else:
+            logMoles = phaseMoles
+
 
 
         if binaries is None:
             if detailed:
-                return likelihoods, chem_out*zero_mask, phaseMass, reconBulk, componentMoles, phaseProportions # Inference with residual fitting
+                return likelihoods, chem_out*zero_mask, logMoles, reconBulk, componentMoles, phaseProportions, phaseMoles # Inference with residual fitting
             else:
-                return likelihoods, chem_out*zero_mask, phaseMass, reconBulk # Inference
+                return likelihoods, chem_out*zero_mask, logMoles, reconBulk # Inference
         else:
-            return logits, chem_out*zero_mask, zero_mask, phaseMass, reconBulk # Training, return zero mask for loss masking of intensive chemistries"""
+            return logits, chem_out*zero_mask, zero_mask, logMoles, reconBulk # Training, return zero mask for loss masking of intensive chemistries"""
 
 
-class CombinedNetwork(nn.Module):
-    """
-    A combined class that wraps both TunableModel and MidLevelNetwork objects.
-    
-    This class provides a unified interface to both the base TunableModel
-    and the extended MidLevelNetwork functionality, allowing flexible use
-    of either component as needed.
-    
-    Parameters
-    ----------
-    encoderLayerUp : int, default=0
-        Number of layers to expand encodings
-    encoderLayerDown : int, default=0
-        Number of layers to downscale the encodings
-    middleLayerUp : int, default=0
-        Number of middle layers to expand
-    middleLayerDown : int, default=0
-        Number of middle layers to compress
-    low_regularization : str, default='none'
-        Regularization for encoder layers
-    high_regularization : str, default='none'
-        Regularization for middle layers
-    activation_leak : float, default=0.05
-        Leak parameter for LeakyReLU activation
-    lowWD : float, default=0
-        Weight decay for lower model layers
-    highWD : float, default=0
-        Weight decay for upper model layers
-    noise : float, default=0
-        Noise level for training
-    description : str, default=''
-        Description of the model's target
-    ml_indexer : object, optional
-        MLIndexer instance to supply phase/component mappings
-    """
-    def __init__(self, encoderLayerUp=0, encoderLayerDown=0,
-                 middleLayerUp=0, middleLayerDown=0,
-                 low_regularization='none', high_regularization='none', 
-                 activation_leak=0.05,
-                 lowWD=0, highWD=0, noise=0, description='', ml_indexer=None):
-        super().__init__()
-        
-        # Create the base TunableModel
-        self.tunable_model = TunableModel(
-            encoderLayerUp=encoderLayerUp,
-            encoderLayerDown=encoderLayerDown,
-            middleLayerUp=middleLayerUp,
-            middleLayerDown=middleLayerDown,
-            low_regularization=low_regularization,
-            high_regularization=high_regularization,
-            activation_leak=activation_leak,
-            ml_indexer=ml_indexer
-        )
-        
-        # Create the MidLevelNetwork (which inherits from TunableModel)
-        self.midlevel_network = MidLevelNetwork(
-            encoderLayerUp=encoderLayerUp,
-            encoderLayerDown=encoderLayerDown,
-            middleLayerUp=middleLayerUp,
-            middleLayerDown=middleLayerDown,
-            low_regularization=low_regularization,
-            high_regularization=high_regularization,
-            activation_leak=activation_leak,
-            lowWD=lowWD,
-            highWD=highWD,
-            noise=noise,
-            description=description,
-            ml_indexer=ml_indexer
-        )
-        
-        # Store configuration
-        self.config = self.midlevel_network.config
-        
-    def forward(self, x, binaries=None, detailed=False, NN_only=False):
-        """
-        Forward pass using the MidLevelNetwork.
-        
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor
-        binaries : torch.Tensor or None
-            Binary phase labels (for training)
-        detailed : bool, default=False
-            Whether to return detailed outputs
-        NN_only : bool, default=False
-            Whether to skip physics polishing
-            
-        Returns
-        -------
-        Output from MidLevelNetwork.forward()
-        """
-        return self.midlevel_network.forward(x, binaries=binaries, detailed=detailed, NN_only=NN_only)
-    
-    def forward_binaries(self, x):
-        """
-        Forward pass for binary predictions only.
-        
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor
-            
-        Returns
-        -------
-        torch.Tensor
-            Binary saturation logits
-        """
-        return self.midlevel_network.forward_binaries(x)
-    
-    def forward_phase_moles(self, latentx, binary_mask, intensiveComponents, details_out=False):
-        """
-        Predict phase moles and reconstruct bulk composition.
-        
-        Parameters
-        ----------
-        latentx : torch.Tensor
-            Latent representation
-        binary_mask : torch.Tensor
-            Binary phase mask
-        intensiveComponents : torch.Tensor
-            Intensive component predictions
-        details_out : bool, default=False
-            Whether to return detailed outputs
-            
-        Returns
-        -------
-        Output from MidLevelNetwork.forward_phase_moles()
-        """
-        return self.midlevel_network.forward_phase_moles(
-            latentx, binary_mask, intensiveComponents, details_out=details_out
-        )
-    
-    def save(self, DictFilePath, config_yaml=None, training_yaml=None, stats=None, log_text=None):
-        """
-        Save model state and configuration.
-        
-        Parameters
-        ----------
-        DictFilePath : str
-            Path to save the model
-        """
-        self.midlevel_network.save(
-            DictFilePath,
-            config_yaml=config_yaml,
-            training_yaml=training_yaml,
-            stats=stats,
-            log_text=log_text,
-        )
-    
-    @property
-    def encoder(self):
-        """Access to the encoder from MidLevelNetwork."""
-        return self.midlevel_network.encoder
-    
-    @property
-    def sat_head(self):
-        """Access to saturation heads from MidLevelNetwork."""
-        return self.midlevel_network.sat_head
-    
-    @property
-    def chem_heads(self):
-        """Access to chemical heads from MidLevelNetwork."""
-        return self.midlevel_network.chem_heads
-    
-    @property
-    def middleBrain(self):
-        """Access to middle brain from MidLevelNetwork."""
-        return self.midlevel_network.middleBrain
-    
-    @property
-    def mole_head(self):
-        """Access to mole head from MidLevelNetwork."""
-        return self.midlevel_network.mole_head
-
-
-
-def load_model_from_zip(zip_path, substitutions=None, low_only=False):
+def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = None):
     """
     Load MidLevelNetwork from zip package created by MidLevelNetwork.save().
     
@@ -1127,6 +988,8 @@ def load_model_from_zip(zip_path, substitutions=None, low_only=False):
         
         # === Load ml_indexer ===
         ml_indexer = load_ml_indexer_from_state(temp_path / 'ml_indexer')
+        if epsilon is not None:
+            ml_indexer.molar_epsilon = epsilon
         config['ml_indexer'] = ml_indexer
         
         # === Create model with loaded config ===
@@ -1153,7 +1016,7 @@ def load_model_from_zip(zip_path, substitutions=None, low_only=False):
     return model
 
 
-def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only=False):
+def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only=False, ml_indexer=None, epsilon = None):
     """
     Load MELTS NN model from checkpoint file.
     
@@ -1171,7 +1034,7 @@ def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only=False):
         Useful for building upper model on trained lower model.
     low_only : bool, default=False
         If True, only load encoder and saturation heads (lower model components).
-    
+    ml_indexer : MlIndexer, optional. Necesary if loading legacy format without ml_indexer state. Ignored if ml_indexer state is present in checkpoint.
     Returns
     -------
     MidLevelNetwork
@@ -1179,45 +1042,59 @@ def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only=False):
     """
     DictFilePath = Path(DictFilePath)
     if DictFilePath.suffix == "":
-        pt_candidate = DictFilePath.with_suffix(".pt")
+        #pt_candidate = DictFilePath.with_suffix(".pt")
         zip_candidate = DictFilePath.with_suffix(".zip")
         if zip_candidate.exists():
             DictFilePath = zip_candidate
-        else: 
-            raise FileNotFoundError(f"No file found at {DictFilePath} with .zip extension.")
+        #else: 
+        #    raise FileNotFoundError(f"No file found at {DictFilePath} with .zip extension.")
     
-    # Try to detect format: zip or legacy dict
+    # Check extension first: explicit .zip files should use zip loading
+    if DictFilePath.suffix == '.zip':
+        print(f"Attempting to load model from .zip file: {DictFilePath}")
+        return load_model_from_zip(DictFilePath, substitutions=substitutions, low_only=low_onl, epsilon=epsilon)
+    
+    print(f"Attempting to load model from .pt file: {DictFilePath}")
+
+    # Try legacy format first, fall back to zip if it's actually a zip file
     try:
-        # Attempt to open as zip
+        ckpt = torch.load(DictFilePath, map_location='cpu')
+        configuration = ckpt['config']
+        
+        if substitutions is not None:
+            for parameter, setting in substitutions.items():
+                print(f"Overriding config parameter '{parameter}' with value: {setting}")
+                configuration[parameter] = setting
+        
+        # Handle both old ml_indexer objects and restore if available
+        if 'ml_indexer' in ckpt:
+            configuration['ml_indexer'] = ckpt['ml_indexer']
+        elif ml_indexer is not None:
+            configuration['ml_indexer'] = ml_indexer
+        
+        if epsilon is not None:
+            configuration['ml_indexer'].molar_epsilon = epsilon
+
+        model = MidLevelNetwork(**configuration)
+        
+        if low_only:  # Only load lower model
+            model_dict = model.state_dict()
+            allowed_prefixes = ["encoder.", "sat_head."]
+            filtered_dict = {
+                k: v for k, v in ckpt['state_dict'].items()
+                if any(k.startswith(p) for p in allowed_prefixes)
+            }
+            model_dict.update(filtered_dict)
+            model.load_state_dict(model_dict, strict=False)
+        else:
+            model.load_state_dict(ckpt['state_dict'], strict=False)
+        
+        return model
+    
+    except Exception as e:
+        # If legacy format failed and file is actually a zip, try zip format
         if zipfile.is_zipfile(DictFilePath):
-            return load_model_from_zip(DictFilePath, substitutions=substitutions, low_only=low_only)
-    except:
-        pass
-    
-    # Fall back to legacy format
-    ckpt = torch.load(DictFilePath, map_location='cpu')
-    configuration = ckpt['config']
-    
-    if substitutions is not None:
-        for parameter, setting in substitutions.items():
-            configuration[parameter] = setting
-    
-    # Handle both old ml_indexer objects and restore if available
-    if 'ml_indexer' in ckpt:
-        configuration['ml_indexer'] = ckpt['ml_indexer']
-    
-    model = MidLevelNetwork(**configuration)
-    
-    if low_only:  # Only load lower model
-        model_dict = model.state_dict()
-        allowed_prefixes = ["encoder.", "sat_head."]
-        filtered_dict = {
-            k: v for k, v in ckpt['state_dict'].items()
-            if any(k.startswith(p) for p in allowed_prefixes)
-        }
-        model_dict.update(filtered_dict)
-        model.load_state_dict(model_dict, strict=False)
-    else:
-        model.load_state_dict(ckpt['state_dict'], strict=False)
-    
-    return model
+            print(f"Legacy format failed, attempting to load as zip format: {e}")
+            return load_model_from_zip(DictFilePath, substitutions=substitutions, low_only=low_only, epsilon=epsilon)
+        else:
+            raise e

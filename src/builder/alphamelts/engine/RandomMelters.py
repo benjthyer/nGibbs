@@ -257,7 +257,8 @@ def alphaMELTScompress(output_file, MELTSModel, GEOROC, col_dict, indexer, iterc
     
 
 def alphaMELTScooling(output_file, MELTSModel, GEOROC, col_dict, indexer, itercode='a1', simcycle=50, fxtal=False, 
-                      ExFailures=False, zeroOxides = ['MnO', 'NiO'], startT=1925, max_liquid_fraction=100, end=700):
+                      ExFailures=False, zeroOxides = ['MnO', 'NiO'], startT=1925, max_liquid_fraction=100, end=700, 
+                      Prange = None, delta = -1):
     """
     Perform ensemble MELTS cooling calculations with random compositions.
     
@@ -293,10 +294,11 @@ def alphaMELTScooling(output_file, MELTSModel, GEOROC, col_dict, indexer, iterco
     iter = int(itercode[1:])
 
     # Set pressure range and end temperature based on MELTS model
-    if MELTSModel == 'p':
-        Prange = [8000, 30000]  # Pressure in bars
-    else:
-        Prange = [1, 12000]  # Pressure in bars
+    if Prange is None:
+        if MELTSModel == 'p':
+            Prange = [8000, 30000]  # Pressure in bars
+        else:
+            Prange = [1, 12000]  # Pressure in bars
 
     if iter <= 0 or iter != int(iter):
         print('Must have integer positive nonzero for iteration "iter" argument. Substituting 1.')
@@ -368,7 +370,7 @@ def alphaMELTScooling(output_file, MELTSModel, GEOROC, col_dict, indexer, iterco
             only_phases=indexer.get_phase_list(),
             end=end, fxtal=fxtal,
             EnsembleLocation=EnsembleLocation, WSL=True,
-            compression=False, delta=-1
+            compression=False, delta=delta
         )
         
         # Update batch names with metadata

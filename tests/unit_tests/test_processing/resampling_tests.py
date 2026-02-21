@@ -17,6 +17,7 @@ from src.builder.processing.BigMetaTable import BigMetaTable
 from src.builder.processing.MLexporter import load_ml_bundle
 from src.builder.processing import filters
 from tests.unit_tests.test_processing.ML_export_tests import run_tests_on_bundle, sanity_check_bundle
+from tests.unit_tests.test_indexers.indexer_test import _ml_indexer_is_equal
 from config.settings import internal_train_dir, external_train_dir
 from tests.test_utils import setup_test_logging
 
@@ -256,6 +257,101 @@ def _balance_function_from_config(balance_name: Optional[str]):
     return None
 
 
+def _sanity_check_bundle_consistency(train_bundle_path: Path, test_bundle_path: Path, 
+                                     valid_bundle_path: Path, label: str = "Bundle Consistency") -> None:
+    """
+    Check that all three bundles (train, test, valid) have:
+    1. Same number of columns in all arrays
+    2. Identical ml_indexer instances
+    
+    Parameters
+    ----------
+    train_bundle_path : Path
+        Path to training bundle
+    test_bundle_path : Path
+        Path to test bundle
+    valid_bundle_path : Path
+        Path to validation bundle
+    label : str
+        Label for error messages
+        
+    Raises
+    ------
+    AssertionError
+        If column counts mismatch or indexers are not identical
+    """
+    print(f"\n[Bundle Consistency] Loading bundles...")
+    train_bundle = load_ml_bundle(train_bundle_path)
+    test_bundle = load_ml_bundle(test_bundle_path)
+    valid_bundle = load_ml_bundle(valid_bundle_path)
+    
+    # ========================================================================
+    # 1. CHECK COLUMN CONSISTENCY ACROSS BUNDLES
+    # ========================================================================
+    print(f"[Bundle Consistency] Checking column consistency...")
+    
+    array_attrs = [
+        'features', 'binary_labels', 'mass_labels', 'molar_labels', 
+        'labels', 'label_indices', 'label_indices_comp'
+    ]
+    
+    for attr in array_attrs:
+        # Skip if attributes don't exist on all bundles
+        if not all(hasattr(b, attr) for b in [train_bundle, test_bundle, valid_bundle]):
+            continue
+        
+        train_attr = getattr(train_bundle, attr)
+        test_attr = getattr(test_bundle, attr)
+        valid_attr = getattr(valid_bundle, attr)
+        
+        # Skip non-array attributes (like dicts) - check only numpy arrays
+        if not isinstance(train_attr, np.ndarray):
+            continue
+        
+        if not isinstance(test_attr, np.ndarray):
+            continue
+            
+        if not isinstance(valid_attr, np.ndarray):
+            continue
+        
+        # Check second dimension (columns) consistency
+        train_cols = train_attr.shape[1] if train_attr.ndim > 1 else 1
+        test_cols = test_attr.shape[1] if test_attr.ndim > 1 else 1
+        valid_cols = valid_attr.shape[1] if valid_attr.ndim > 1 else 1
+        
+        assert train_cols == test_cols, (
+            f"{label}: {attr} column mismatch - train={train_cols} vs test={test_cols}"
+        )
+        assert train_cols == valid_cols, (
+            f"{label}: {attr} column mismatch - train={train_cols} vs valid={valid_cols}"
+        )
+        
+        print(f"  ✓ {attr}: {train_cols} columns (consistent across train/test/valid)")
+    
+    # ========================================================================
+    # 2. CHECK INDEXER CONSISTENCY
+    # ========================================================================
+    print(f"[Bundle Consistency] Checking indexer consistency...")
+    
+    try:
+        _ml_indexer_is_equal(train_bundle.ml_indexer, test_bundle.ml_indexer)
+        print(f"  ✓ train and test indexers identical")
+    except AssertionError as e:
+        raise AssertionError(f"{label}: train vs test indexer mismatch - {e}")
+    
+    try:
+        _ml_indexer_is_equal(train_bundle.ml_indexer, valid_bundle.ml_indexer)
+        print(f"  ✓ train and valid indexers identical")
+    except AssertionError as e:
+        raise AssertionError(f"{label}: train vs valid indexer mismatch - {e}")
+    
+    print(f"✓ {label}: All consistency checks passed")
+    
+    # Cleanup
+    del train_bundle, test_bundle, valid_bundle
+    gc.collect()
+
+
 def run_processing_tests(config_dir: Path, melts_model: Optional[str], date: Optional[str], mode: Optional[str]):
     #from tests.unit_tests.test_processing.ML_export_tests import export_bundle_arrays_to_csv
 
@@ -290,7 +386,7 @@ def run_processing_tests(config_dir: Path, melts_model: Optional[str], date: Opt
         balance_func = _balance_function_from_config(balance_cfg.get('function'))
 
         print(f"\n=== Running process_for_ML for {config_path.name} ===")
-        process_for_ML(
+        train_path, valid_path, test_path  = process_for_ML(
             config_path=str(config_path),
             MELTSModel=cfg_model,
             Date=cfg_date,
@@ -309,6 +405,13 @@ def run_processing_tests(config_dir: Path, melts_model: Optional[str], date: Opt
             raise FileNotFoundError(f"Bundle not found at {bundle_path}")
         
         sanity_check_bundle(bundle_path=Path(bundle_path))  # Verify that the data make sense
+        
+        # Check consistency across train/test/valid splits
+
+        _sanity_check_bundle_consistency(
+            train_path, test_path, valid_path,
+            label=f"Bundle Consistency ({config_path.name})"
+        )
 
         # Build base table once
         if base_table is None:

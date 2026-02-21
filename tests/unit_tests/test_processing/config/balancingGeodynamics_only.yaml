@@ -1,8 +1,8 @@
 # Test config: isolate liquid-fraction balancing only
 
 dataset:
-  MELTSModel: '102'
-  Date: 'Feb9'
+  MELTSModel: '110'
+  Date: 'Feb13'
   Mode: 'BatchCooling'
   subset: false
   use_external: false
@@ -33,4 +33,5 @@ deep_filter:
   oxide_lower_bounds: []
   oxide_upper_bounds: []
   component_upper_bounds: []
+  component_lower_bounds: []
   batch_size: 200000

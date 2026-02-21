@@ -1,42 +1,48 @@
-model:
-  encoderLayerUp: 1
-  encoderLayerDown: 0
-  middleLayerUp: 2
-  middleLayerDown: 1
-  low_regularization: none
-  high_regularization: none
-  activation_leak: 0.05
-  lowWD: 0.0
-  highWD: 0.0
-  noise: 0.0
-  description: ""
-data:
-  batch_size: 1024
-  num_workers: 0
-  pin_memory: true
-  only_vp: null
-training:
-  epochs: 20
-  learning_rate: 0.001
-  early_stopping_patience: 2
-  device: cuda
-  max_N: null
-  max_N_tune: 1.0e6
-  log_dir: src/builder/training/logs
-  checkpoints:
-    lower_path: Models/temp_binary_train.pt
-    upper_path: Models/temp_upper_train.pt
-    finetune_path: Models/temp_finetune_train.pt
-  loss_config:
-    binary:
-      weight: 10
-    chemistry:
-      type: symmetric_rel_l2
-      weight: 100
-    moles:
-      type: huber
-      weight: 1
-    bulk:
-      type: symmetric_rel_l2
-      weight: 100
+######### model:
+encoderLayerUp: 1
+encoderLayerDown: 0
+middleLayerUp: 2
+middleLayerDown: 1
+low_regularization: none
+high_regularization: none
+activation_leak: 0.05
+lowWD: 0.0
+highWD: 0.0
+noise: 0.0
+description: ""
+######### data:
+batch_size: 1024
+num_workers: 0
+pin_memory: true
+only_vp: null
+######### training:
+epochs: 20
+learning_rate: 0.001
+early_stopping_patience: 2
+device: cuda
+max_N: null
+max_N_tune: 1.0e6
+log_dir: src/builder/training/logs
+checkpoints: # All relative to training
+  lower_path: temp_models/temp_binary_train.pt
+  upper_path: temp_models/temp_upper_train.pt
+  finetune_path: temp_models/temp_finetune_train.pt
+  save_dir: temp_models/
+  load_dir: temp_models/
+loss_config:
+  binary:
+    weight: 10
+  chemistry:
+    type: symmetric_rel_l2
+    weight: 100
+  moles:
+    type: huber
+    weight: 1
+  bulk:
+    type: symmetric_rel_l2
+    weight: 100
+weight_dict:
+  melts-liquid: 1
+  clinopyroxene: 1
+  plagioclase: 1 # How much should we weight assemblages containing these phases? Not implemented for lower model training, although it'd be easy to do. 
 

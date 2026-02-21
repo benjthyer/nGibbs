@@ -588,8 +588,27 @@ def test_ml_indexer(indexer):
     with tempfile.TemporaryDirectory() as tmp_dir:
         indexer.save(tmp_dir)
         reloaded = load_ml_indexer_from_state(tmp_dir)
+    
+    _ml_indexer_is_equal(indexer, reloaded)
 
-    # Basic metadata checks
+    # ========================================================================
+    # SUMMARY
+    # ========================================================================
+    print("\n" + "=" * 50)
+    print("✓ ALL TESTS PASSED")
+    print("=" * 50)
+    print(f"\nDimensions verified: C={C}, P={P}, VP={VP}, VC={VC}, E={E}, O={O}, WR={WR}")
+    print(f"All {36} test categories completed successfully")
+
+
+def _ml_indexer_is_equal(indexer1, indexer2):
+
+    """Verifies that two MLIndexer instances are equivalent in all attributes, including nested structures and arrays. Raises AssertionError if any mismatch is found."""
+    # Adapted code
+    
+    indexer = indexer1
+    reloaded = indexer2
+
     assert reloaded.ncomps == indexer.ncomps, "ncomps mismatch after reload"
     assert reloaded.ncompsVaried == indexer.ncompsVaried, "ncompsVaried mismatch after reload"
     assert reloaded.nphases == indexer.nphases, "nphases mismatch after reload"
@@ -696,15 +715,6 @@ def test_ml_indexer(indexer):
             assert torch.allclose(reloaded.comp_variable_IDMAT, indexer.comp_variable_IDMAT), "comp_variable_IDMAT mismatch"
 
     print("✓ save/load round-trip: all checked attributes match")
-
-    # ========================================================================
-    # SUMMARY
-    # ========================================================================
-    print("\n" + "=" * 50)
-    print("✓ ALL TESTS PASSED")
-    print("=" * 50)
-    print(f"\nDimensions verified: C={C}, P={P}, VP={VP}, VC={VC}, E={E}, O={O}, WR={WR}")
-    print(f"All {36} test categories completed successfully")
 
 
 def test_restrictVC(ml_indexer):

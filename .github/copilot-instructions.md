@@ -1,6 +1,6 @@
 ---
 name: nMELTSagent.md
-description: This is an evolving guide to the nMELTS agent, to be applied generally whenever an agent is changing code.
+description: This is an evolving guide to the nMELTS agent, to be applied generally whenever an agent is changing code or writing new code.
 ---
 
 
@@ -22,10 +22,13 @@ Always refer to [ml_indexer_readme.md](..\src\nMELTS\config\README_MLIndexer.md)
 {For now, no automatic testing, although test suggestions are welcome}
 
 ## Project Conventions
-{Every time the agent codes, the changes should be documented in the ChangeLogs folder. This sould include the motivation for the changes (e.g. addressing known issue x, improving performance, reorganization for simplicity/brevity, etc)  
-If the motivation is unclear, please ask for clarification!
+{Every time the agent codes, the changes should be documented in the ChangeLogs folder. 
+Value Brevity — when describing changes, be concise and high level. Limit each line in the changelog to 80 charecters.
 Aggregate changes by date following the format YYYY-MM-DD
 Let there be a ChangeLog for each major version of the codebase.
 }
-Never look in or do anything within any folder labeled "legacy" without explicit instructions to do so. This code is old and will be deleted soon. It is kept for human reference only. 
+{If the motivation, goals, or mechanism to accomplish some requested code is unclear, please ask for clarification!}
+{Never look in or do anything within any folder labeled "legacy" without explicit instructions to do so. This code is old and will be deleted soon. It is kept for human reference only.}
+{Never use emojis or unusual characters in print statements: they can cause errors when writing to and parsing log files.
+For instance, instead of '→', use '->'}
 ```

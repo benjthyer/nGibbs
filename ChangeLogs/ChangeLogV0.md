@@ -1,5 +1,23 @@
 _____________________ Unreleased _______________________
 
+2026-02-20
+- **Training Debugging**
+- Stabilized Bulk loss (cannot use dropout at all when using bulk loss...)
+- Excluded mole_head and chem_heads from adaptive dropout updates.
+
+2026-02-16
+
+- **Adapted old 1:1 Recovery Plots**
+
+- Memmap debugging for deep filters and other MLbundle operating functions
+
+- **Refactored NN_MELTS Emulator Class to use ml_indexer Architecture**
+  
+- Added bundle_insanity_filter() to filters.py that performs sanity checks and deletes failing rows instead of raising errors.
+- Added Cr/NoCr split workflow to separate chrome for train/valid datasets based on bulk Cr2O3.
+- Added BigMetaTable.manual_split to use the provided indices when splitting blurredbinaries.
+
+Commit: 9760356478a2072402fcb8275276c1e9d4cd3d28
 2026-02-13
 - Added/Debugged Detailed model metadata inclusion with .tar files
 - Removed automatic .update_table() calls to ml_indices for more granular control of indexer 

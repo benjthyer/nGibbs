@@ -31,6 +31,8 @@ from builder.training.loadTrainData import load_ML_data
 from builder.training.trainer import train_Lower_MELTS, train_Upper_MELTS, symmetric_rel_l1, symmetric_rel_l2
 from builder.training.tuners import tune_Lower_MELTS, tune_Upper_MELTS
 from builder.training.logger import setup_training_logger, redirect_output, restore_output
+from nMELTS.utils.string_utils import apply_type_conversions
+from nMELTS.config.constants import TYPE_CONVERSION_MAP
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="nMELTS training CLI")
@@ -141,15 +143,6 @@ def _normalize_scheduler_name(name: Optional[str]) -> Optional[str]:
     return name.strip().lower()
 
 
-def _load_warm_start(path: str, ml_indexer) -> NN.MidLevelNetwork:
-    ckpt = torch.load(path, map_location="cpu")
-    config = ckpt.get("config", {})
-    model = NN.MidLevelNetwork(**config, ml_indexer=ml_indexer)
-    state_dict = ckpt.get("state_dict", ckpt)
-    model.load_state_dict(state_dict, strict=False)
-    return model
-
-
 def _loss_fn_from_type(type_name: Optional[str]):
     if not type_name:
         return symmetric_rel_l2
@@ -190,31 +183,25 @@ def _discover_episodes(config: Dict[str, Any]) -> List[Tuple[str, str, Dict[str,
     """
     episodes = []
     
-    # Find all episode keys
-    tune_keys = {k: v for k, v in config.items() if re.match(r'^tune\d+$', k)}
-    train_keys = {k: v for k, v in config.items() if re.match(r'^train\d+$', k)}
-    
     # Extract episode numbers
     def get_episode_num(key: str) -> int:
         match = re.search(r'\d+', key)
-        return int(match.group()) if match else 999
+        if not match:
+            return int(0)
+        return int(match.group())
     
-    # Interleave tune and train in episode number order
-    all_episodes = {}
-    for key, cfg in tune_keys.items():
+    # Tune and train in order of definition in YAML
+    for key, cfg in config.items():
+        if re.match(r'^tune\d+$', key):
+            EpType = 'tune'
+        elif re.match(r'^train\d+$', key):
+            EpType = 'train'
+        else:
+            continue
         num = get_episode_num(key)
-        all_episodes.setdefault(num, []).append(('tune', key, cfg))
-    
-    for key, cfg in train_keys.items():
-        num = get_episode_num(key)
-        all_episodes.setdefault(num, []).append(('train', key, cfg))
-    
-    # Sort by episode number, then tune before train within same episode
-    for num in sorted(all_episodes.keys()):
-        # Sort so 'tune' comes before 'train' for same episode number
-        for ep_type, ep_key, ep_cfg in sorted(all_episodes[num], key=lambda x: (x[0] != 'tune',)):
-            episodes.append((ep_key, ep_type, ep_cfg))
-    
+        episodes.append((key, EpType, cfg))
+
+    print(episodes)
     return episodes
 
 
@@ -239,7 +226,7 @@ def _resolve_dict_filepath(
     tarname : str
         Base tarname for naming
     default_base : Path, optional
-        Default base directory. If None, uses nMELTS/TrainedModel
+        Default base directory. If None, uses temp_models
     
     Returns
     -------
@@ -249,7 +236,7 @@ def _resolve_dict_filepath(
 
     # auto-generate in default directory
     if default_base is None:
-        default_base = Path(__file__).parent.parent.parent / 'nMELTS' / 'engine' / 'TrainedModel'
+        default_base = Path(__file__).parent / 'temp_models'
     
     default_base.mkdir(parents=True, exist_ok=True)
 
@@ -262,36 +249,6 @@ def _resolve_dict_filepath(
     
     # Generate name: {tarname}_{episode_key}.tar
     return default_base / f"{tarname}_{episode_key}.tar"
-
-
-def _extract_best_loss(tune_result: Tuple) -> Optional[float]:
-    """Extract best_loss from tune result tuple."""
-    # tune returns (model, best_loss)
-    if isinstance(tune_result, tuple) and len(tune_result) >= 2:
-        return tune_result[1]
-    return None
-
-
-def _merge_locked_config(
-    previous_best_config: Dict[str, Any],
-    current_tune_params: Dict[str, Any]
-) -> Dict[str, Any]:
-    """
-    Merge previous episode's best config with current tune parameters.
-    
-    Locked config: use all items from previous_best_config, but allow
-    current_tune_params to override or add new keys.
-    
-    This implements config locking where previous optimizations are preserved.
-    """
-    merged = deepcopy(previous_best_config)
-    
-    # Add/override with new parameters from current episode
-    for key, value in current_tune_params.items():
-        merged[key] = value
-    
-    return merged
-
 
 def main() -> None:
     """
@@ -314,6 +271,7 @@ def main() -> None:
         overrides = yaml.safe_load(handle) or {}
 
     config = _deep_update(deepcopy(defaults), overrides)
+    #print(config)
     config_yaml_text = yaml.safe_dump(config, sort_keys=False)
     training_yaml_text = _read_text_file(Path(args.config))
 
@@ -322,12 +280,12 @@ def main() -> None:
         raise ValueError("training.yaml must define tarname")
 
     # Set up logging
-    log_dir = config.get("training", {}).get("log_dir", "src/builder/training/logs")
+    log_dir = config["log_dir"]
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
     # Load data
-    only_vp = config.get("data", {}).get("only_vp")
+    only_vp = config["only_vp"]
     roots = _resolve_train_roots()
     train_bundle = _resolve_bundle_path(f"{tarname}_Train", roots)
     test_bundle = _resolve_bundle_path(f"{tarname}_Test", roots)
@@ -337,38 +295,80 @@ def main() -> None:
     train_set, ml_indexer = load_ML_data(train_bundle, only_VP=only_vp)
     test_set, _ = load_ML_data(test_bundle, only_VP=only_vp)
 
-    device = config.get("training", {}).get("device", "cuda")
-    
-    # Loss configuration
-    loss_config = config.get("training", {}).get("loss_config", {})
-    chem_cfg = loss_config.get("chemistry", {})
-    mole_cfg = loss_config.get("moles", {})
-    bulk_cfg = loss_config.get("bulk", {})
-    chem_alpha = float(chem_cfg.get("weight", 1.0))
-    mole_alpha = float(mole_cfg.get("weight", 1.0))
-    bulk_alpha = float(bulk_cfg.get("weight", 0.0))
-    criterion = _loss_fn_from_type(chem_cfg.get("type"))
+    print(f"MOLAR EPSILON FROM LOADED DATA: {ml_indexer.molar_epsilon}")
 
-    # Initialize model
-    model_config = deepcopy(config.get("model", {}))
-    warm_start = config.get("warm_start", 'None')
+    warm_start = config["warm_start"]
+
+    # Apply type conversions to config using centralized mapping
+    config = apply_type_conversions(config, TYPE_CONVERSION_MAP)
+
     if warm_start.lower() != 'none':
-        model = NN.rebuild_MELTS_model(warm_start, ml_indexer=ml_indexer)
+        best_model = NN.rebuild_MELTS_model(Path(__file__).parent / config['checkpoints']['load_dir'] / (warm_start + '.tar'), 
+                                            epsilon=ml_indexer.molar_epsilon) # Override default epsilon with training data value so model initializes appropriately
     else:
-        model = NN.MidLevelNetwork(**model_config, ml_indexer=ml_indexer)
+        # Initialize model, pull relevant subset of configs to initialize model
+        model_config = {}
+        modelArgs = ['encoderLayerUp', 'encoderLayerDown',
+                 'middleLayerUp', 'middleLayerDown',
+                 'low_regularization', 'high_regularization', 
+                 'activation_leak', 'lowWD', 'highWD', 'noise',
+                 'description'
+                    ]
+               
+        for key, val in deepcopy(config).items():
+            if key in modelArgs:
+                model_config[key] = val
+        best_model = NN.MidLevelNetwork(**model_config, ml_indexer=ml_indexer)
 
     # State for sequential episodes
-    best_model = model
     best_loss = None
-    best_config = {}
 
     # Discover and execute episodes in order
     episodes = _discover_episodes(config)
     
-    for episode_key, episode_type, episode_cfg in episodes:
-        if episode_cfg is None:
+    for episode_key, episode_type, episode_cfgI in episodes:
+
+        if episode_cfgI is None:
+            print(f'No config passed for {episode_type}{episode_key}! Skippping.')
             continue
         
+        episode_cfg = _deep_update(deepcopy(config), episode_cfgI) # Inherit Globals, overprint episode configurration
+
+        # Apply type conversions to episode config
+        episode_cfg = apply_type_conversions(episode_cfg, TYPE_CONVERSION_MAP)
+    
+        # === Apply episode-specific model configuration ===
+        modelArgs = ['encoderLayerUp', 'encoderLayerDown',
+                     'middleLayerUp', 'middleLayerDown',
+                     'low_regularization', 'high_regularization', 
+                     'activation_leak', 'lowWD', 'highWD', 'noise',
+                     'description']
+        
+        # Check if any model parameters have changed in episode config
+        model_config_changed = False
+        new_model_config = {}
+        for param in modelArgs:
+            episode_val = episode_cfg.get(param)
+            current_val = best_model.config.get(param)
+            new_model_config[param] = episode_val if episode_val is not None else current_val
+            if episode_val is not None and episode_val != current_val:
+                model_config_changed = True
+                print(f"Model param '{param}' changing: {current_val} -> {episode_val}")
+        
+        # Rebuild model if configuration changed
+        if model_config_changed:
+            print(f"Rebuilding model with episode-specific configuration for {episode_key}")
+            full_model_config = deepcopy(best_model.config)
+            full_model_config.update(new_model_config)
+            new_model = NN.MidLevelNetwork(**full_model_config, ml_indexer=ml_indexer)
+            # Try to load weights from previous model (strict=False allows for architecture changes)
+            try:
+                new_model.load_state_dict(best_model.state_dict(), strict=False)
+                print(f"Loaded compatible weights from previous episode")
+            except Exception as e:
+                print(f"Could not load weights from previous episode: {e}")
+            best_model = new_model
+
         if not _stage_allowed(args.stage, episode_type):
             continue
 
@@ -377,59 +377,103 @@ def main() -> None:
         print(f"{'='*60}")
 
         # Determine DictFilePath for saving
-        dict_filepath = _resolve_dict_filepath(episode_key, episode_cfg, tarname)
+        dict_filepath = _resolve_dict_filepath(episode_key, episode_cfg, tarname, default_base=Path(__file__).parent / config['checkpoints']['save_dir']) 
         print(f"Model save path: {dict_filepath}")
+
+        strategy = episode_cfg.get('strategy', '')
+        Imax_N = episode_cfg["max_N"]
+        if Imax_N in ['null', 'None', 'inf', '0', None]:
+            max_N = np.inf
+        else:
+            max_N = float(Imax_N) or np.inf
+        ESP = int(episode_cfg["early_stopping_patience"])
+        batch_size=int(episode_cfg["batch_size"])
+        Epochs = int(episode_cfg["epochs"])
+        lr = float(episode_cfg["learning_rate"])
+        eps = float(episode_cfg.get("eps", 1E-8))
+        amsgrad = bool(episode_cfg.get("amsgrad", True))
+
+        binWeights, compWeights = _build_phase_weights(ml_indexer, episode_cfg['weight_dict'])
+        which_heads_to_freeze = episode_cfg.get('which_heads_to_freeze', None)
+        if which_heads_to_freeze is None: # what portion of model is frozen can be manually overridden, or is inferred from the strategy.
+            if strategy == 'upper':
+                which_heads_to_freeze = ['sat_head', 'encoder', 'mole_head'] # Lower model and abundances turned off
+            elif strategy == 'isolate':
+                which_heads_to_freeze = ['encoder', 'middleBrain'] # Shared cores of model turned off
+            else:
+                which_heads_to_freeze = []
+
+        device = episode_cfg["device"]
+    
+        # Loss configuration
+        loss_config = episode_cfg["loss_config"]
+        chem_cfg = loss_config["chemistry"]
+        sat_cfg = loss_config["binary"]
+        mole_cfg = loss_config["moles"]
+        bulk_cfg = loss_config["bulk"]
+        chem_alpha = float(chem_cfg["weight"])
+        mole_alpha = float(mole_cfg["weight"])
+        bulk_alpha = float(bulk_cfg["weight"])
+        sat_alpha = float(sat_cfg["weight"])
+        criterion = _loss_fn_from_type(chem_cfg["type"])
 
         if episode_type == 'tune':
             # ===== TUNING EPISODE =====
-            tune_params = episode_cfg.get("tune_params", {})
-            model_params = episode_cfg.get("model_params", {})
             
-            # Implement config locking: merge previous best_config with new params
-            if best_config:
-                model_params = _merge_locked_config(best_config, model_params)
-            
+            # Apply type conversions to tune_params
+            episode_cfg['tune_params'] = apply_type_conversions(episode_cfg['tune_params'], TYPE_CONVERSION_MAP)
+
             # Set up logging
             logger = setup_training_logger(str(log_dir), episode_key, args.command)
             original_stdout = sys.stdout
             redirect_output(logger)
             log_path = getattr(logger, "log_path", None)
-            
+
+            #Strategy determines which heads are frozen, which part of model is trained
             try:
-                if 'lower' in episode_key:
+                if strategy == 'lower': # No phase weighting implemented for lower model training...
                     model, best_loss = tune_Lower_MELTS(
                         Model=best_model,
                         trainData=train_set,
                         testData=test_set,
-                        lr=float(tune_params.get("learning_rate", config.get("training", {}).get("learning_rate", 1e-3))),
-                        Epochs=int(tune_params.get("epochs", config.get("training", {}).get("epochs", 10))),
-                        batch_size=int(tune_params.get("batch_size", config.get("data", {}).get("batch_size", 1024))),
-                        early_stopping_patience=int(tune_params.get("early_stopping_patience", config.get("training", {}).get("early_stopping_patience", 5))),
-                        Param_Dict=model_params,
-                        max_N=float(tune_params.get("max_N", config.get("training", {}).get("max_N_tune", 1e6))),
-                        baseline_loss=best_loss  # Pass previous best_loss
+                        lr=lr,
+                        Epochs=Epochs,
+                        batch_size=batch_size,
+                        early_stopping_patience=ESP,
+                        max_N=max_N,
+                        Param_Dict=episode_cfg['tune_params'],
+                        best_loss=best_loss  # Pass previous best_loss
                     )
                 else:
-                    binWeights, compWeights = _build_phase_weights(ml_indexer, None)
                     model, best_loss = tune_Upper_MELTS(
                         Model=best_model,
                         trainData=train_set,
                         testData=test_set,
-                        lr=float(tune_params.get("learning_rate", config.get("training", {}).get("learning_rate", 1e-3))),
-                        Epochs=int(tune_params.get("epochs", config.get("training", {}).get("epochs", 10))),
-                        batch_size=int(tune_params.get("batch_size", config.get("data", {}).get("batch_size", 1024))),
-                        early_stopping_patience=int(tune_params.get("early_stopping_patience", config.get("training", {}).get("early_stopping_patience", 5))),
-                        Param_Dict=model_params,
+                        lr=lr,
+                        Epochs=Epochs,
+                        batch_size=batch_size,
+                        early_stopping_patience=ESP,
+                        max_N=max_N,
+                        Param_Dict=episode_cfg['tune_params'],
                         binWeights=binWeights,
                         compWeights=compWeights,
-                        max_N=float(tune_params.get("max_N", config.get("training", {}).get("max_N_tune", 1e6))),
-                        baseline_loss=best_loss # Pass previous best_loss
+                        best_loss=best_loss, # Pass previous best_loss,
+                        which_heads_to_freeze=which_heads_to_freeze,
+                        chem_alpha=chem_alpha,
+                        mole_alpha=mole_alpha,
+                        bulk_alpha=bulk_alpha, 
+                        sat_alpha=sat_alpha,
+                        eps=eps,
+                        amsgrad=amsgrad,
                     )
                 
                 # Update best_model and best_config for next episode
-                best_model = model
-                best_config = model_params
-                
+                #best_model = NN.rebuild_MELTS_model(str(dict_filepath))
+                best_model = model # No need to reload from disk, we have the tuned model in memory
+
+                #Save tuned configs to global!
+                config = _deep_update(config, best_model.config) # Update global config with episode-specific config (including tuned params) for next episode to inherit
+
                 # Save model to DictFilePath
                 log_text = _read_text_file(Path(log_path)) if log_path else None
                 model.save(
@@ -447,17 +491,9 @@ def main() -> None:
 
         else:
             # ===== TRAINING EPISODE =====
-            strategy = episode_cfg.get("strategy", "lower")
-            scheduler_cfg = episode_cfg.get("scheduler", {}) or {}
-            scheduler_name = _normalize_scheduler_name(scheduler_cfg.get("type"))
-            scheduler_kwargs = scheduler_cfg.get("args", {}) or {}
-            
-            max_n = episode_cfg.get("max_N", config.get("training", {}).get("max_N"))
-            max_n = np.inf if max_n in {None, "",  "None"} else max_n
-            batch_size = int(episode_cfg.get("batch_size", config.get("data", {}).get("batch_size", 1024)))
-            lr = float(episode_cfg.get("learning_rate", config.get("training", {}).get("learning_rate", 1e-3)))
-            epochs = int(episode_cfg.get("epochs", config.get("training", {}).get("epochs", 50)))
-            patience = int(episode_cfg.get("early_stopping_patience", config.get("training", {}).get("early_stopping_patience", 5)))
+            scheduler_cfg = episode_cfg["scheduler"]
+            scheduler_name = _normalize_scheduler_name(scheduler_cfg["type"])
+            scheduler_kwargs = scheduler_cfg["args"]
 
             # Set up logging
             logger = setup_training_logger(str(log_dir), episode_key, args.command)
@@ -473,12 +509,12 @@ def main() -> None:
                         test_set,
                         scheduler=scheduler_name,
                         scheduler_kwargs=scheduler_kwargs,
-                        batch_size=batch_size,
                         lr=lr,
-                        Epochs=epochs,
+                        Epochs=Epochs,
+                        batch_size=batch_size,
+                        early_stopping_patience=ESP,
+                        max_N=max_N,
                         device=device,
-                        max_N=max_n,
-                        early_stopping_patience=patience,
                         DictFilePath=str(dict_filepath),
                         config_yaml=config_yaml_text,
                         training_yaml=training_yaml_text,
@@ -487,9 +523,7 @@ def main() -> None:
                         log_path=log_path,
                     )
                 else:
-                    weight_dict = episode_cfg.get("weight_dict")
-                    binWeights, compWeights = _build_phase_weights(ml_indexer, weight_dict)
-                    which_heads_to_freeze = [] if strategy == "finetune" else ["sat_head", "encoder"]
+                    #raise ValueError('This temporary config works on lower model only')
                     #with torch.autograd.set_detect_anomaly(True):
                     train_Upper_MELTS(
                         best_model,
@@ -501,15 +535,15 @@ def main() -> None:
                         chem_alpha=chem_alpha,
                         mole_alpha=mole_alpha,
                         bulk_alpha=bulk_alpha,
-                        Epochs=epochs,
+                        sat_alpha=sat_alpha,
+                        Epochs=Epochs,
                         batch_size=batch_size,
                         lr=lr,
                         binWeights=binWeights,
                         compWeights=compWeights,
-                        full_test_set=test_set,
                         device=device,
-                        max_N=max_n,
-                        early_stopping_patience=patience,
+                        max_N=max_N,
+                        early_stopping_patience=ESP,
                         which_heads_to_freeze=which_heads_to_freeze,
                         DictFilePath=str(dict_filepath),
                         config_yaml=config_yaml_text,
@@ -517,6 +551,8 @@ def main() -> None:
                         processing_yaml=processing_yaml_text,
                         stats=stats_text,
                         log_path=log_path,
+                        eps=eps,
+                        amsgrad=amsgrad
                     )
                 
                 # Reload and update best_model for next episode (warm-start)
@@ -533,4 +569,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    """print('Waiting')
+    import time
+    time.sleep(8000)"""
     main()

@@ -31,7 +31,7 @@ CalcType = 'FxCryst'
 date = 'Nov9'
 use_external = True  # Is data on external drive? Path defined in nMELTS.config.settings
 subset = False
-molar_epsilon = 1e-4 # Used for log-scaling phase molar abundances
+molar_epsilon = 0 #1e-4 # Used for log-scaling phase molar abundances. 0 means no log scaling!
 
 ####################
 # This is a list that will be passed to ml_indexer.restrictVC(), or None to not restrict. Makes smaller model.
@@ -159,7 +159,12 @@ def load_ML_data(Trainpath, only_VP=None):
     del labelMap
     gc.collect()
 
-    Trainmoles = torch.tensor(np.log10(moleMap+molar_epsilon), device='cpu', dtype=torch.float)
+    if molar_epsilon:
+        print(f"Applying log10 transform to mole labels with epsilon={molar_epsilon}")
+        Trainmoles = torch.tensor(np.log10(moleMap+molar_epsilon), device='cpu', dtype=torch.float)
+    else:
+        print("No log transform applied to mole labels.")
+        Trainmoles = torch.tensor(moleMap, device='cpu', dtype=torch.float)
     del moleMap
     gc.collect()
 
@@ -263,7 +268,7 @@ def load_ML_data(Trainpath, only_VP=None):
     goodMap = torch.ones(Trainlabels.size()[0]).to(torch.bool)
     goodMap[badMap] = False
     #goodMap[train_mismatches] = False
-
+    print(f"Total samples: {Trainlabels.size()[0]}, Bad samples: {badMap.size()[0]}, Good samples: {goodMap.sum()}")
     print(f"Train Features: {Trainnormfeatures.size()}, Binaries {Trainbinaryfeatures.size()}, labels: {Trainlabels.size()}")
     Trainnormfeatures = Trainnormfeatures[goodMap]
     Trainbinaryfeatures = Trainbinaryfeatures[goodMap]

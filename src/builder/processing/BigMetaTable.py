@@ -598,6 +598,138 @@ class BigMetaTable:
         return newself, new_table
 
 
+    def manual_split(self, sep_idx):
+        """
+        Splits the BigMetaTable into two, moving the rows given by the sep_idx argument to a new BigMetaTable.
+
+        Parameters:
+        - sep_idx (arr, type: int): Array of row indices to move to the new table.
+
+        Returns:
+        - remainder, new_table (BigMetaTable): Self without sep_idx, A new BigMetaTable with the rows specified by sep_idx.
+        """
+
+        if not isinstance(sep_idx, np.ndarray):
+            sep_idx = np.array(sep_idx)
+        if not np.all((sep_idx >= 0) & (sep_idx < self.table.shape[0])):
+            raise ValueError("Some indices in sep_idx are out of bounds.")
+
+
+        total_rows = self.table.shape[0]
+       
+
+        # Randomly select indices to move (without replacement)
+        all_indices = np.arange(total_rows)
+        keep_mask = np.ones(total_rows, dtype=bool)
+        keep_mask[sep_idx] = False
+        keep_indices = all_indices[keep_mask]
+        num_to_move = len(sep_idx)
+        move_indices = sep_idx
+
+        # Create memmap files for both splits
+        dtype = self.table.dtype
+        col_count = self.table.shape[1]
+
+        new_filename = f"{self.filename}_split"
+        new_path = f"{new_filename}.npy"
+        remaining_filename = f"{self.filename}_remaining"
+
+        # Write moved data
+        new_table_data = np.lib.format.open_memmap(
+            new_path, mode='w+', dtype=dtype, shape=(num_to_move, col_count)
+        )
+        new_table_data[:] = self.table[sep_idx]
+        new_table_data.flush()
+
+        #...and moved text
+        with open(new_filename+'.txt', 'w') as f:
+            for line in self.meta[sep_idx]:
+                f.write(line + '\n')
+        
+        # Save headers for new table
+        
+        new_header_file = new_path.replace('.npy', '_headers.pkl')
+        with open(new_header_file, 'wb') as f:
+            pickle.dump(self.header, f)
+        
+        # Write kept data
+        remaining_data = np.lib.format.open_memmap(
+            remaining_filename+'.npy', mode='w+', dtype=dtype, shape=(total_rows - num_to_move, col_count)
+        )
+        remaining_data[:] = self.table[keep_indices]
+        remaining_data.flush()
+        
+        #...and kept text
+        self.meta = self.meta[keep_indices]
+        self.run_indices = self.run_indices[keep_indices]
+        self.MELTSversion = self.MELTSversion[keep_indices]
+        self.metadata = self.metadata[keep_indices]
+            
+        # Now clear memmaps, reinitialize new memmap, and replace memmaps for this object
+        del new_table_data
+        del remaining_data
+        del self.table
+        gc.collect()
+        
+        
+        
+        #self.table = np.load(remaining_filename+'.npy', mmap_mode='r+')
+        self.filename = remaining_filename 
+        self.csv_file = self.filename + '.csv'
+        self.memmap_file = self.filename + '.npy'
+        self.txt_file = self.filename + '.txt'
+        
+        self.save_txt()
+        
+        # Build new BigMetaTable
+        new_table = BigMetaTable(new_filename)
+        
+        # Move BlurredBinaries
+        if self.blurredbinaries is not None:
+            new_table.blurredbinaries = np.lib.format.open_memmap(
+                new_filename+'blurredbinaries.npy', mode='w+', dtype=np.float32, shape=(num_to_move, self.indexer.nphases)
+                )
+            new_table.blurredbinaries[:] = self.blurredbinaries[move_indices]
+            new_table.blurredbinaries.flush()
+            print(f"First Row blurredbinaries split Memmap write mode:{new_table.blurredbinaries[0]}")
+            #Reopen blurred binaries for split data in read mode
+            del new_table.blurredbinaries
+            gc.collect()
+            new_table.blurredbinaries = np.load(new_filename+'blurredbinaries.npy', mmap_mode = 'r')
+            assert np.shape(new_table.blurredbinaries)[0] == np.shape(new_table.table)[0], "Shape of split binary and main tables are not equal!"
+            print(f"First Row blurredbinaries split Memmap read mode:{new_table.blurredbinaries[0]}")
+            
+            
+            #Update remaining blurredboundaries object
+            binary_name = self.filename + 'blurredbinaries.npy'
+            if os.path.exists(binary_name):
+                temp_binary_filename = self.filename + 'blurredbinaries_temp.npy'
+            else: 
+                temp_binary_filename = binary_name
+                
+            new_binary_memmap = np.lib.format.open_memmap(temp_binary_filename, dtype=np.float32, mode='w+', shape=(total_rows - num_to_move, self.indexer.nphases))
+
+            # Write filtered rows to new memmap file
+            new_binary_memmap[:] = self.blurredbinaries[keep_indices]
+            new_binary_memmap.flush()
+
+            # Clear memory mapping and update file
+            del new_binary_memmap, self.blurredbinaries
+            gc.collect()
+            
+            if os.path.exists(self.filename + 'blurredbinaries_temp.npy'):
+                os.replace(temp_binary_filename, binary_name)
+
+            # Update reference to new memmap in read mode
+            #self.blurredbinaries = np.load(binary_name, mmap_mode='r')
+            
+        del self
+        gc.collect()
+        newself = BigMetaTable(remaining_filename)
+            
+        return newself, new_table
+
+
     def filter_twophase(self, ExFail): # Function used to delete simulations that predicted multiple phases. Now deprecated, this is better handled in MELTS directly
         to_delete = []
 
@@ -902,6 +1034,7 @@ class BigMetaTable:
             if len(inconsistent_indices) > 0:
                 delete_mask[inconsistent_indices] = True
                 inconsistent_phases[phase] = len(inconsistent_indices)
+            assert delete_mask.sum()/self.table.shape[0] < 0.03, f'Too many ({100*delete_mask.sum()/self.table.shape[0]} %) broken assemblages... What is going on? '
 
         # Count total inconsistent rows
         num_to_delete = int(np.sum(delete_mask))

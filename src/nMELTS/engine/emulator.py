@@ -9,155 +9,150 @@ import time
 import numpy as np
 import torch
 
-# Import constants and mappings from config
-from ..config import (
-    MELTS_indices,
-    Elkeys,
-    compToOx,
-    oxToEl,
-    MM,
-    Minv,
-    Mtot,
-    label_indices,
-    label_indices_comp,
-    mass_phasedict,
-    phaseToCompMap,
-    variedToAllComp,
-    oxide_dict,
-    boolTransCompToOx,
-    compositionally_variable_binaries,
-    fixed_phaseToCompMap,
-)
-
 # Import utility functions
-from ..utils.math_utils import QFM_fO2, Fe2O3_FeO_ratio
-
-# Import Normalizer from math_utils
-from ..utils.math_utils import Normalizer
+from ..utils.math_utils import QFM_fO2, Fe2O3_FeO_ratio, QFM_fO2_torch, Normalizer
 
 from ..engine.NN import MidLevelNetwork
-# NOTE: MidLevelNetwork needs to be imported from the models module or Legacy
-# For now, this will need to be imported separately:
-# from ..engine.Legacy.nnMELTS import MidLevelNetwork
-# or from a future models module
-
-# Default normalization tensors
-# These should ideally be loaded from a saved model or configuration file
-PTfO2min = torch.tensor([1, 700, -5], device='cpu', dtype=torch.float)
-PTfO2max = torch.tensor([10000, 2000, 5], device='cpu', dtype=torch.float)
-min_tensor = torch.zeros(len(Elkeys) + 3, device='cpu', dtype=torch.float)
-min_tensor[:3] = PTfO2min
-range_tensor = torch.ones(len(Elkeys) + 3, device='cpu', dtype=torch.float)
-range_tensor[:3] = PTfO2max - PTfO2min
 
 
 class NN_MELTS:
     """
     Neural Network Emulator of MELTS.
     
-    Holds the neural network model for binary phase saturation and mass/chemistry prediction.
-    All inputs are elemental molar, normalized to total = 1.
+    Wrapper around MidLevelNetwork providing high-level interfaces for:
+    - Phase saturation prediction
+    - Mass balancing and composition calculations
+    - Fractional crystallization simulations
+    - Unit conversions (oxides <-> elements, intensive <-> extensive)
+    
+    All algebraic operations and unit conversions are handled here, keeping the
+    neural network focused on prediction tasks.
     """
     
-    def __init__(self, Model, min_tensor=min_tensor, range_tensor=range_tensor, cuda=False):
+    def __init__(self, model, cuda=False):
         """
         Initialize the NN_MELTS emulator.
         
-        Parameters:
-        -----------
-        Model : torch.nn.Module
-            The neural network model (typically MidLevelNetwork)
-        min_tensor : torch.Tensor, optional
-            Minimum values for normalization (default: module-level min_tensor)
-        range_tensor : torch.Tensor, optional
-            Range values for normalization (default: module-level range_tensor)
+        Parameters
+        ----------
+        model : MidLevelNetwork
+            The neural network model with attached ml_indexer
         cuda : bool, default=False
-            Whether to use CUDA/GPU
+            Whether to use CUDA/GPU acceleration
         """
-        if cuda:
-            self.model = Model.eval().cuda()
-            self.phaseToCompMap = torch.tensor(phaseToCompMap, dtype=torch.float, device='cuda')
-            self.variedToAllComp = torch.tensor(variedToAllComp, dtype=torch.float, device='cuda')
-            self.fixed_phaseToCompMap = torch.tensor(fixed_phaseToCompMap, dtype=torch.float, device='cuda')
-            self.dev = 'cuda'
-            self.compToOx = torch.tensor(compToOx, dtype=torch.float, device='cuda')
-            self.boolTransCompToOx = torch.tensor(boolTransCompToOx, dtype=torch.float, device='cuda')
-            self.oxToEl = torch.tensor(oxToEl, dtype=torch.float, device='cuda')
-            self.elToOx = torch.linalg.inv(self.oxToEl[:len(Elkeys)])  # For FeOt only
-            self.Minv = torch.tensor(Minv, dtype=torch.float, device='cuda')
-            self.MM = torch.tensor(MM, dtype=torch.float, device='cuda')
-            self.Mtot = torch.tensor(Mtot, dtype=torch.float, device='cuda').flatten()
-        else:
-            self.model = Model.eval().cpu()
-            self.phaseToCompMap = torch.tensor(phaseToCompMap, dtype=torch.float, device='cpu')
-            self.variedToAllComp = torch.tensor(variedToAllComp, dtype=torch.float, device='cpu')
-            self.fixed_phaseToCompMap = torch.tensor(fixed_phaseToCompMap, dtype=torch.float, device='cpu')
-            self.dev = 'cpu'
-            self.compToOx = torch.tensor(compToOx, dtype=torch.float)
-            self.boolTransCompToOx = torch.tensor(boolTransCompToOx, dtype=torch.float, device='cpu')
-            self.oxToEl = torch.tensor(oxToEl, dtype=torch.float)
-            self.elToOx = torch.linalg.inv(self.oxToEl[:len(Elkeys)])  # For FeOt only
-            self.Minv = torch.tensor(Minv, dtype=torch.float)
-            self.MM = torch.tensor(MM, dtype=torch.float)
-            self.Mtot = torch.tensor(Mtot, dtype=torch.float).flatten()
+        # Validate input
+        if not isinstance(model, MidLevelNetwork):
+            raise TypeError(f"Model must be MidLevelNetwork, got {type(model)}")
+        if not hasattr(model, 'ml_indexer') or model.ml_indexer is None:
+            raise ValueError("Model must have an attached ml_indexer")
         
+        # Store model and set evaluation mode
+        self.model = model.eval()
+        self.ml_indexer = model.ml_indexer
+        
+        # Set device
+        self.dev = 'cuda' if cuda else 'cpu'
+        if cuda:
+            self.model = self.model.cuda()
+        else:
+            self.model = self.model.cpu()
+        
+        # Extract and convert indexer attributes to tensors on appropriate device
+        self._setup_indexer_tensors()
+        
+        # Setup normalizer from ml_indexer
+        self._setup_normalizer()
+        
+        # Derive compound matrices
         self.compToEl = self.compToOx @ self.oxToEl
-        self.norm_features = Normalizer(min_tensor=min_tensor, range_tensor=range_tensor, cuda=cuda)
+
+
+    
+    def _setup_indexer_tensors(self):
+        """Convert ml_indexer numpy arrays to torch tensors on correct device."""
+        idx = self.ml_indexer
+        dev = self.dev
+        
+        # Element and phase mappings
+        self.Elkeys = idx.Elkeys
+        self.Oxides = idx.Oxides
+        self.all_phases = idx.all_phases
+        self.label_indices = idx.label_indices
+        self.label_indices_comp = idx.label_indices_comp
+        self.detail_label_indices = idx.detail_label_indices
+        self.mass_phasedict = idx.mass_phasedict
+        self.compositionally_variable_subset = idx.compositionally_variable_subset
+        
+        # Transformation matrices
+        self.compToOx = torch.tensor(idx.compToOx, dtype=torch.float32, device=dev)
+        self.oxToEl = torch.tensor(idx.OxToEl, dtype=torch.float32, device=dev)
+        self.MM = torch.tensor(idx.MM, dtype=torch.float32, device=dev)
+        self.Minv = torch.tensor(idx.Minv, dtype=torch.float32, device=dev)
+        self.Mtot = torch.tensor(idx.Mtot, dtype=torch.float32, device=dev).flatten()
+        self.phaseToCompMap = torch.tensor(idx.phaseToCompMap, dtype=torch.float32, device=dev)
+        self.variedToAllComp = torch.tensor(idx.variedToAllComp, dtype=torch.float32, device=dev)
+        self.fixed_phaseToCompMap = torch.tensor(idx.fixed_phaseToCompMap, dtype=torch.float32, device=dev)
+        self.boolTransCompToOx = torch.tensor(idx.boolTransCompToOx, dtype=torch.float32, device=dev)
+        self.elToOx = torch.tensor(idx.ElToOx, dtype=torch.float32, device=dev)
+        
+        # Feature offset (number of non-element features before element columns)
+        self.feature_offset = len(idx.featureNames)
+        
+        # Oxide dictionary for iron speciation
+        self.oxide_dict = {ox: i for i, ox in enumerate(self.Oxides)}
+    
+    def _setup_normalizer(self):
+        """Setup normalizer from ml_indexer state."""
+        idx = self.ml_indexer
+        self.norm_features = idx.feature_normalizer
+        """
+        if hasattr(idx, 'normalizer_state') and idx.normalizer_state is not None:
+            # Use saved normalizer state
+            min_array = idx.normalizer_state['min']
+            range_array = idx.normalizer_state['range']
+            min_tensor = torch.tensor(min_array, dtype=torch.float32)
+            range_tensor = torch.tensor(range_array, dtype=torch.float32)
+            self.norm_features = Normalizer(min_tensor, range_tensor, cuda=(self.dev == 'cuda'))
+        else:
+            print(ml_indexer.)
+            raise ValueError("No normalizer state found in ml_indexer. Normalization cannot be performed.")
+            # Fallback: no normalization (identity)
+            dummy_shape = self.feature_offset + len(self.Elkeys)
+            min_tensor = torch.zeros(dummy_shape, dtype=torch.float32)
+            range_tensor = torch.ones(dummy_shape, dtype=torch.float32)
+            self.norm_features = Normalizer(min_tensor, range_tensor, cuda=(self.dev == 'cuda'))
+            print("Warning: No normalizer state found in ml_indexer. Using identity normalization.")"""
 
     def convertOxToMol(self, features, convert=True):
         """
         Convert oxide weight percent to elemental moles.
         
-        Parameters:
-        -----------
+        Parameters
+        ----------
         features : torch.Tensor
-            Input features with [P, T, logfO2, ...oxides...]
+            Input features with [intensive_features..., oxides...]
         convert : bool, default=True
             Whether to perform conversion
             
-        Returns:
-        --------
+        Returns
+        -------
         torch.Tensor
             Features with oxides converted to elemental moles
         """
         if convert:
-            colsize = features.shape[1] - 3
-            unclosed = (features[:, 3:] @ self.Minv[:colsize, :colsize]) @ self.oxToEl[:colsize]
+            # Split features into non-chemical condition and composition
+            conditions = features[:, :self.feature_offset]
+            oxides = features[:, self.feature_offset:]
+            
+            # Convert oxides to elements
+            colsize = oxides.shape[1]
+            unclosed = (oxides @ self.Minv[:colsize, :colsize]) @ self.oxToEl[:colsize]
             closedmoles = unclosed / unclosed.sum(dim=1, keepdim=True)
-            return torch.cat([features[:, :3], closedmoles], dim=1)
+            return torch.cat([conditions, closedmoles], dim=1)
         else:
             return features
 
-    def forward_binary(self, features, normalize=True, WtPercent=True):
-        """
-        Outputs probability of phase saturation.
-        
-        Still does not explicitly prevent impossible phases (e.g. apatite when no PO4 present).
-        
-        Parameters:
-        -----------
-        features : torch.Tensor
-            Input features
-        normalize : bool, default=True
-            Whether to normalize features
-        WtPercent : bool, default=True
-            Whether input is in weight percent (needs conversion)
-            
-        Returns:
-        --------
-        torch.Tensor
-            Phase saturation probabilities (sigmoid output)
-        """
-        if normalize:
-            unNormed = features.clone()
-            feat_input = self.norm_features.norm(self.convertOxToMol(unNormed, convert=WtPercent))
-        else:
-            feat_input = self.convertOxToMol(features.clone(), convert=WtPercent)
-        print(feat_input)
-        with torch.no_grad():
-            return torch.sigmoid(self.model.forward_binaries(feat_input))
-
-    def forward(self, features, Normalize=True, WtPercent=True, comp_table_out='oxides'):
+    def forwardMB(self, features, Normalize=True, WtPercent=True, comp_table_out='oxides'):
         """
         Forward pass through the model with mass balancing.
         
@@ -182,9 +177,10 @@ class NN_MELTS:
         else:
             norm_features = self.convertOxToMol(features, convert=WtPercent)
         with torch.no_grad():
-            likelihoods, chem_out, phaseMoles, reconBulk, componentMoles, phaseProportions = self.model.forward(
+            likelihoods, chem_out, logMoles, reconBulk, componentMoles, phaseProportions, phaseMoles = self.model.forward(
                 norm_features, detailed=True
             )
+            
             transcomponent_hat, massTens = self.polish_masses( # Tunable parameters. 
                 phaseMoles, reconBulk, componentMoles, phaseProportions,
                 features=norm_features, optimize_masses=False, protect_opx=True,
@@ -192,30 +188,41 @@ class NN_MELTS:
             )
             return transcomponent_hat, massTens
 
-    def Iron_Speciator(self, oxides, Normedfeatures):
+    def Iron_Speciator(self, oxides, Normedfeatures=None, P=None, T=None, fO2=None):
         """
         Speciate iron between FeO and Fe2O3 based on fO2.
         
-        Parameters:
-        -----------
+        Parameters
+        ----------
         oxides : torch.Tensor
             Tensor of size (n, O) where columns are liquid molar oxides (except for Fe2O3)
         Normedfeatures : torch.Tensor
             Normalized features (assumed normalized)
+        P : float, optional
+            Pressure in bars (if not provided, uses features)
+        T : float, optional
+            Temperature in Celsius (if not provided, uses features)
+        fO2 : float, optional
+            log(fO2) relative to QFM (if not provided, uses features)
             
-        Returns:
-        --------
+        Returns
+        -------
         torch.Tensor
             Oxides with Fe2O3 column added
         """
-        features = self.norm_features.denorm(Normedfeatures)[:, :3]
-        unNormed = oxides.clone()[:, :len(Elkeys)]  # Ensure we don't grab the potentially empty ferric column
+
+        assert (P is not None) or ('Pressure(System_main)' in self.ml_indexer.featureNames), "Pressure must be provided or present in features"
+        assert (T is not None) or ('Temperature(System_main)' in self.ml_indexer.featureNames), "Temperature must be provided or present in features"
+        assert (fO2 is not None) or ('logfO2-QFM(System_main)' in self.ml_indexer.featureNames), "logfO2 (Delta QFM) must be provided or present in features"
+
+        features = self.norm_features.denorm(Normedfeatures)[:, :self.feature_offset]
+        unNormed = oxides.clone()[:, :len(self.Elkeys)]  # Ensure we don't grab the potentially empty ferric column
         
         fO2_composition_Nos = torch.tensor(
-            [oxide_dict[ox] for ox in ['Al2O3', 'FeO', 'CaO', 'Na2O', 'K2O']],
+            [self.oxide_dict[ox] for ox in ['Al2O3', 'FeO', 'CaO', 'Na2O', 'K2O']],
             device=self.dev
         )
-        fO2_composition_ind = torch.zeros(len(Elkeys), device=self.dev).to(torch.bool)
+        fO2_composition_ind = torch.zeros(len(self.Elkeys), device=self.dev).to(torch.bool)
         fO2_composition_ind[fO2_composition_Nos] = True
         
         row_sums = unNormed.sum(dim=1, keepdim=True)
@@ -224,15 +231,25 @@ class NN_MELTS:
         temp_renorm = unNormed * (1 / row_sums)
         temp_renorm[~nonzero_mask.expand_as(unNormed)] = 0.0
         
+        # Extract P, T, fO2 from features using feature names if not passed as arguments
+        if P is None:
+            P_idx = self.ml_indexer.featureNames.index('Pressure(System_main)') 
+            P = features[nonzero_mask.flatten()][:, P_idx]
+        if T is None:
+            T_idx = self.ml_indexer.featureNames.index('Temperature(System_main)') 
+            T = features[nonzero_mask.flatten()][:, T_idx]
+        if fO2 is None:
+            fO2_idx = self.ml_indexer.featureNames.index('logfO2-QFM(System_main)') 
+            fO2 = features[nonzero_mask.flatten()][:, fO2_idx]
+   
+        T_C = T # alter-ego
+        fO2_delta = fO2 
+        
         # Get ferric/ferrous ratio
         IronR = Fe2O3_FeO_ratio(
-            fO2=10**(QFM_fO2(
-                K=features[nonzero_mask.flatten()][:, 1] + 273,
-                P=features[nonzero_mask.flatten()][:, 0],
-                use_torch=True
-            ) + features[nonzero_mask.flatten()][:, 2]),
-            T=features[nonzero_mask.flatten()][:, 1] + 273,
-            P=1e5 * features[nonzero_mask.flatten()][:, 0],
+            fO2=10**(QFM_fO2_torch(P=P, K=T_C + 273.15, use_torch=True) + fO2_delta),
+            T=T_C + 273.15,
+            P=1e5 * P,
             composition=temp_renorm[nonzero_mask.flatten()][:, fO2_composition_ind],
             use_torch=True,
             device=self.dev
@@ -244,8 +261,8 @@ class NN_MELTS:
         ferric = torch.zeros((unNormed.size()[0], 1), device=self.dev, dtype=torch.float32)
         idx = nonzero_mask.flatten().nonzero(as_tuple=True)[0]
 
-        ferric[idx, 0] = unNormed[idx, oxide_dict['FeO']] * ferricPerTot
-        unNormed[idx, oxide_dict['FeO']] *= ferrousPerTot
+        ferric[idx, 0] = unNormed[idx, self.oxide_dict['FeO']] * ferricPerTot
+        unNormed[idx, self.oxide_dict['FeO']] *= ferrousPerTot
 
         unNormed_out = torch.cat([unNormed, ferric], dim=1)
         return unNormed_out
@@ -462,7 +479,7 @@ class NN_MELTS:
             # Normalize oxide masses within each phase to 100%
             phaseSums = phaseOxMass.sum(dim=-1, keepdim=True)  # (B, P, 1)
             phaseOxWt = 100.0 * phaseOxMass / (phaseSums + eps)
-            return phaseOxWt[:, torch.tensor(compositionally_variable_binaries, dtype=torch.bool)], phaseMassNorm
+            return phaseOxWt[:, self.model.comp_binaries], phaseMassNorm
 
         elif out in ['comps', 'components']:
             # Returns intensive, chemically variable components
@@ -479,8 +496,8 @@ class NN_MELTS:
         """
         Retrieve phase masses from components and binaries.
         
-        Parameters:
-        -----------
+        Parameters
+        ----------
         components : torch.Tensor
             Intensive component matrix
         features : torch.Tensor
@@ -494,8 +511,8 @@ class NN_MELTS:
         verbose : bool, default=False
             Whether to print verbose output
             
-        Returns:
-        --------
+        Returns
+        -------
         tuple
             (compTens, massTens) - component and mass tensors
         """
@@ -515,18 +532,18 @@ class NN_MELTS:
         nrows = components.size()[0]
         ncomps = self.ml_indexer.ncomps
         nphases = self.ml_indexer.nphases
-        bulk = features[:, 3:].clone()
+        bulk = features[:, self.feature_offset:].clone()
 
         # Organize phaseToComp Matrix w/ NN output
         phaseToComp = torch.zeros((nrows, nphases, ncomps), device=fundev)  # (B, P, C)
         phaseToCompMap = torch.zeros((nphases, ncomps), device=fundev)  # (P, C)
 
-        for phase, binary_ind in mass_phasedict.items():
-            phaseToCompMap[binary_ind, label_indices[phase]] = 1
-            if len(label_indices[phase]) > 1:
-                phaseToComp[:, binary_ind, label_indices[phase]] = components[:, label_indices_comp[phase]]
+        for phase, binary_ind in self.mass_phasedict.items():
+            phaseToCompMap[binary_ind, self.label_indices[phase]] = 1
+            if len(self.label_indices[phase]) > 1:
+                phaseToComp[:, binary_ind, self.label_indices[phase]] = components[:, self.label_indices_comp[phase]]
             else:
-                phaseToComp[:, binary_ind, label_indices[phase]] = binaries[:, binary_ind].unsqueeze(-1)
+                phaseToComp[:, binary_ind, self.label_indices[phase]] = binaries[:, binary_ind].unsqueeze(-1)
 
         print(self.compToOx.size())
         print(self.compToOx.device)
@@ -599,37 +616,6 @@ class NN_MELTS:
         massTens = massTens.detach().cpu().numpy()
         return compTens, massTens
 
-    def polish_negative_px(self, phaseProportions):
-        """Check for below zero CaO in orthopyroxene and correct."""
-        PosS = torch.sum(phaseProportions[:, label_indices_comp['orthopyroxene'][:5]], dim=-1)
-        NegS = (phaseProportions[:, label_indices_comp['orthopyroxene'][5]] * 2) + phaseProportions[:, label_indices_comp['orthopyroxene'][6]]
-        illegal = NegS > PosS
-        if illegal.sum():
-            denom = ((2 * phaseProportions[illegal, label_indices_comp['orthopyroxene'][6]]) +
-                     (3 * phaseProportions[illegal, label_indices_comp['orthopyroxene'][5]]))
-            b = 1 / denom
-            a = NegS[illegal] / (denom * PosS[illegal])
-            phaseProportions[illegal, label_indices_comp['orthopyroxene'][:5]] = a * phaseProportions[illegal, label_indices_comp['orthopyroxene'][:5]]
-            phaseProportions[illegal, label_indices_comp['orthopyroxene'][-2:]] = b * phaseProportions[illegal, label_indices_comp['orthopyroxene'][-2:]]
-
-    def polish_negative_sp(self, phaseProportions):
-        """Check for negative hercynite in spinel and correct."""
-        NegS = (phaseProportions[:, label_indices_comp['spinel'][2]] * (2/3)) + (phaseProportions[:, label_indices_comp['spinel'][4]] * (1/4))
-        PosS = (phaseProportions[:, label_indices_comp['spinel'][1]]) + (phaseProportions[:, label_indices_comp['spinel'][3]])
-        illegal = NegS > PosS
-        if illegal.sum():
-            A = (phaseProportions[illegal, label_indices_comp['spinel'][2]]) + (phaseProportions[illegal, label_indices_comp['spinel'][4]])
-            RemS = A + PosS[illegal]
-            a = RemS / (A + NegS[illegal])
-            b = (RemS * NegS[illegal]) / (PosS[illegal] * (A + NegS[illegal]))
-            phaseProportions[illegal, label_indices_comp['spinel'][2]], phaseProportions[illegal, label_indices_comp['spinel'][4]] = (
-                a * phaseProportions[illegal, label_indices_comp['spinel'][2]],
-                a * phaseProportions[illegal, label_indices_comp['spinel'][4]]
-            )
-            phaseProportions[illegal, label_indices_comp['spinel'][1]], phaseProportions[illegal, label_indices_comp['spinel'][3]] = (
-                b * phaseProportions[illegal, label_indices_comp['spinel'][1]],
-                b * phaseProportions[illegal, label_indices_comp['spinel'][3]]
-            )
 
     def polish_masses(self, phaseMoles, reconBulk, componentMoles, phaseProportions, features,
                       optimize_masses=True, output_componentMoles=False, protect_opx=False, comp_table_out='oxides'):
@@ -667,7 +653,7 @@ class NN_MELTS:
         componentMoles = componentMoles.to('cpu')
         phaseProportions = phaseProportions.to('cpu')
         feats = features.to('cpu')
-        bulk = feats[:, 3:]
+        bulk = feats[:, self.feature_offset:]
         compToEl = self.compToEl.to('cpu')
         compToOx = self.compToOx.to('cpu')
         phaseToCompMap = self.phaseToCompMap.to('cpu')
@@ -694,7 +680,7 @@ class NN_MELTS:
         # Solve underconstrained problem
         componentAtomMoles = componentMoles.unsqueeze(-1) * compToEl  # (B, C, E)
         if protect_opx:
-            componentAtomMoles[:, label_indices['orthopyroxene']] *= 0
+            componentAtomMoles[:, self.label_indices['orthopyroxene']] *= 0
         print('componentAtomMoles')
         print(componentAtomMoles)
         if torch.any(torch.isnan(componentAtomMoles)):
@@ -716,10 +702,11 @@ class NN_MELTS:
 
     def find_liquidus(self, features, resolution=25):
         """Returns lowest identified superliquidus temperature between 800 and 2000 C"""
+        T_idx = self.ml_indexer.featureNames.index('Temperature')
         T_test = torch.tensor(np.linspace(800, 2000, int(1200/resolution) + 1), device=self.dev)
         feat_input = np.zeros((int(1200/resolution) + 1, len(features)))
         feat_input[:] = features
-        feat_input[:, 1] = T_test
+        feat_input[:, T_idx] = T_test
         binaries = self.forward_binary(torch.tensor(feat_input, device=self.dev) > 0.5).float()
         liquids = binaries[:, :-1].sum(dim=1) == 0
         lowL = torch.where(liquids)[0]
@@ -736,7 +723,7 @@ class NN_MELTS:
         Parameters:
         -----------
         features : torch.Tensor
-            (N, F) where F >= 2 and column 1 is temperature
+            (N, F) where F >= 2 and temperature is in featureNames
         resolution : int, default=25
             Temperature resolution
         weightOxinput : bool, default=False
@@ -752,11 +739,12 @@ class NN_MELTS:
         else:
             features_batch = features
         N, F = features_batch.shape
+        T_idx = self.ml_indexer.featureNames.index('Temperature')
         T_test = torch.linspace(800, 2000, steps=int(1200 / resolution) + 1)
         n_temps = T_test.shape[0]
 
         feat_input = features_batch.unsqueeze(1).repeat(1, n_temps, 1)  # [N, T, F]
-        feat_input[:, :, 1] = T_test.unsqueeze(0).repeat(N, 1)
+        feat_input[:, :, T_idx] = T_test.unsqueeze(0).repeat(N, 1)
         feat_input = feat_input.view(N * n_temps, F)
 
         with torch.no_grad():
@@ -773,51 +761,6 @@ class NN_MELTS:
 
         return liquidus_temperatures
 
-    def find_mineral_cosaturation(self, features, T_initial_C, phase_cols, dt_C=1, weightOxinput=False):
-        """
-        Vectorized version to find mineral co-saturation temperatures.
-        
-        Parameters:
-        -----------
-        features : torch.Tensor
-            (N, F) where F >= 2 and column 1 is temperature
-        T_initial_C : float
-            Initial temperature in Celsius
-        phase_cols : list
-            List of phase column indices
-        dt_C : float, default=1
-            Temperature step size
-        weightOxinput : bool, default=False
-            Whether input is in weight percent
-            
-        Returns:
-        --------
-        torch.Tensor
-            (N, Pc) - Saturation temperatures for each phase
-        """
-        if weightOxinput:
-            features_batch = self.convertOxToMol(features)
-        else:
-            features_batch = features
-
-        N, F = features_batch.shape
-        T_test = torch.linspace(700, T_initial_C, steps=int((T_initial_C - 700) / dt_C) + 1, device=features.device)
-        n_temps = T_test.shape[0]
-
-        feat_input = features_batch.unsqueeze(1).repeat(1, n_temps, 1)  # [N, T, F]
-        feat_input[:, :, 1] = T_test.unsqueeze(0).repeat(N, 1)
-        feat_input = feat_input.view(N * n_temps, F)
-
-        with torch.no_grad():
-            binaries = (self.forward_binary(feat_input) > 0.5).float()
-
-        binaries = binaries[:, phase_cols]
-        binaries = binaries.view(N, n_temps, -1)
-
-        T_masked = T_test.view(1, n_temps, 1) * binaries
-        saturation_temps, _ = T_masked.max(dim=1)
-
-        return saturation_temps
 
     def fractional_crystalization(self, features, T_path, fit_residual=True, WtPercent=True):
         """
@@ -826,11 +769,9 @@ class NN_MELTS:
         Parameters:
         -----------
         features : torch.Tensor
-            (nB, n_features) where:
-            - [:, 0] = pressure
-            - [:, 1] = temperature (to be updated each step)
-            - [:, 2] = log fO2 delta QFM
-            - [:, 3:] = elemental composition (normalized to 1)
+            (nB, n_features) where features follow ml_indexer ordering:
+            - [:, :feature_offset] = intensive variables (P, T, fO2, etc.)
+            - [:, feature_offset:] = elemental/oxide composition (normalized to 1)
         T_path : list or torch.Tensor
             Sequence of temperatures to iterate through
         fit_residual : bool, default=True
@@ -854,13 +795,14 @@ class NN_MELTS:
             nC = self.ml_indexer.ncomps
             nP = self.ml_indexer.nphases
             nSteps = len(T_path)
+            T_idx = self.ml_indexer.featureNames.index('Temperature')
 
             component_tensor = torch.zeros((nB, nC, nSteps), dtype=torch.float32, device=self.dev)
             mass_tensor = torch.zeros((nB, nP, nSteps), dtype=torch.float32, device=self.dev)
 
             is_alive = torch.ones(nB, dtype=torch.bool, device=self.dev)
             prev_melt_frac = torch.ones(nB, dtype=torch.float32, device=self.dev)
-            active_comps = inp_tensor[:, 3:].clone().to(self.dev)
+            active_comps = inp_tensor[:, self.feature_offset:].clone().to(self.dev)
 
             for i, temp in enumerate(T_path):
                 print(temp)
@@ -870,15 +812,15 @@ class NN_MELTS:
 
                 idx_alive = torch.nonzero(is_alive, as_tuple=True)[0]
                 inp_batch = inp_tensor[idx_alive]
-                inp_batch[:, 1] = temp
-                inp_batch[:, 3:] = active_comps
+                inp_batch[:, T_idx] = temp
+                inp_batch[:, self.feature_offset:] = active_comps
 
                 if inp_batch.numel() == 0:
                     raise RuntimeError("inp_batch is empty before normalization.")
 
                 print(inp_batch)
                 print(idx_alive)
-                _, transcomponent_hat, phaseMoles, reconBulk, componentMoles, phaseProportions = self.model.forward(
+                _, transcomponent_hat, logMoles, reconBulk, componentMoles, phaseProportions, phaseMoles = self.model.forward(
                     self.norm_features.norm(inp_batch), detailed=True
                 )
                 
@@ -907,64 +849,3 @@ class NN_MELTS:
                 active_comps = new_liquid_el[is_alive].clone()
 
             return component_tensor, mass_tensor
-
-
-def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only=False):
-    """
-    Loads MELTS NN with saved architecture.
-    
-    Requires saved .config dictionary attribute.
-    Substitutions are dictionaries with configurations to instantiate in the new model
-    that were not in the old one to load. Useful for building upper model on trained lower model.
-    
-    Parameters:
-    -----------
-    DictFilePath : str
-        Path to saved model checkpoint
-    substitutions : dict, optional
-        Configuration substitutions
-    low_only : bool, default=False
-        If True, only load lower model weights
-        
-    Returns:
-    --------
-    torch.nn.Module
-        Loaded model
-        
-    Note:
-    -----
-    MidLevelNetwork must be imported separately, e.g.:
-    from ..engine.Legacy.nnMELTS import MidLevelNetwork
-    """
-    # NOTE: This function requires MidLevelNetwork to be imported
-    # For now, users will need to import it separately
-    # TODO: Create a proper models module and import from there
-    try:
-        from ..engine.Legacy.nnMELTS import MidLevelNetwork
-    except ImportError:
-        raise ImportError(
-            "MidLevelNetwork not found. Please import it from the appropriate module:\n"
-            "from ..engine.Legacy.nnMELTS import MidLevelNetwork"
-        )
-    
-    ckpt = torch.load(DictFilePath)
-    configuration = ckpt['config']
-    if substitutions is not None:
-        for parameter, setting in substitutions.items():
-            configuration[parameter] = setting
-
-    model = MidLevelNetwork(**configuration)
-
-    if low_only:
-        model_dict = model.state_dict()
-        allowed_prefixes = ["encoder.", "sat_head."]
-        filtered_dict = {
-            k: v for k, v in ckpt['state_dict'].items()
-            if any(k.startswith(p) for p in allowed_prefixes)
-        }
-        model_dict.update(filtered_dict)
-        model.load_state_dict(model_dict, strict=False)
-    else:
-        model.load_state_dict(ckpt['state_dict'], strict=False)
-
-    return model

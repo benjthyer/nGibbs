@@ -410,3 +410,82 @@ def load_ml_bundle(bundle_path):
         # Clean up temporary directory
         shutil.rmtree(temp_dir)
 
+
+def save_ml_bundle(bundle, output_path):
+    """
+    Save an MLBundle object to a .tar.gz file.
+    
+    Saves all numpy arrays, the ml_indexer state, and creates a tar.gz archive.
+    Complementary function to load_ml_bundle.
+    
+    Parameters
+    ----------
+    bundle : MLDataBundle or dict-like object
+        Bundle object with attributes or dict keys:
+        - features: np.ndarray
+        - binary_labels: np.ndarray
+        - mass_labels: np.ndarray
+        - molar_labels: np.ndarray
+        - labels: np.ndarray
+        - ml_indexer: MLIndexer instance
+        - free_outputs: np.ndarray (optional)
+        
+    output_path : str or Path
+        Path where to save the .tar.gz bundle file
+        
+    Examples
+    --------
+    >>> from nMELTS.utils.file_utils import load_ml_bundle, save_ml_bundle
+    >>> bundle = load_ml_bundle('existing_bundle.tar.gz')
+    >>> # ... modify bundle data ...
+    >>> save_ml_bundle(bundle, 'modified_bundle.tar.gz')
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Create temporary directory for staging
+    temp_dir = tempfile.mkdtemp()
+    try:
+        # Helper to get attribute or dict key
+        def get_attr(obj, name, default=None):
+            if hasattr(obj, name):
+                return getattr(obj, name)
+            elif isinstance(obj, dict) and name in obj:
+                return obj[name]
+            else:
+                return default
+        
+        # Save .npy files
+        arrays_to_save = {
+            'features': get_attr(bundle, 'features'),
+            'binary_labels': get_attr(bundle, 'binary_labels'),
+            'mass_labels': get_attr(bundle, 'mass_labels'),
+            'molar_labels': get_attr(bundle, 'molar_labels'),
+            'labels': get_attr(bundle, 'labels'),
+            'free_outputs': get_attr(bundle, 'free_outputs'),  # optional
+        }
+        
+        for filename, array in arrays_to_save.items():
+            if array is not None:
+                np.save(Path(temp_dir) / f'{filename}.npy', array)
+        
+        # Save ml_indexer
+        ml_indexer = get_attr(bundle, 'ml_indexer')
+        if ml_indexer is None:
+            raise ValueError("Bundle must have an ml_indexer attribute")
+        
+        # Save indexer state directory
+        indexer_state_dir = Path(temp_dir) / 'ml_indexer'
+        ml_indexer.save(str(indexer_state_dir))
+        
+        # Create tar.gz archive
+        with tarfile.open(output_path, 'w:gz') as tar:
+            tar.add(temp_dir, arcname='.')
+        
+        print(f"Saved bundle to {output_path}")
+        
+    finally:
+        # Clean up temporary directory
+        shutil.rmtree(temp_dir)
+
+

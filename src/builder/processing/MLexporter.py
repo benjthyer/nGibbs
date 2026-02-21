@@ -367,7 +367,8 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
         if os.path.isdir(indexer_dir):
             tar.add(indexer_dir, arcname='ml_indexer')
         
-    sanity_check_bundle(bundle_path=Path(bundle_path)) # Verify that the data make sense. Expensive for large files
+    #sanity_check_bundle(bundle_path=Path(bundle_path)) # Verify that the data make sense. Expensive for large files
+    
 
 
     # Move bundle to configured training directory

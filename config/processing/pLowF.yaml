@@ -11,18 +11,20 @@ dataset:
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
-outname: 'pGeoDyn'                  # Base name for output folder (without extension). Auto-Generated if blank
+outname: 'pGeoDynamicsIsothermal'                  # Base name for output folder (without extension). Auto-Generated if blank
 
 # ============================================================================
 # NON-CHEMICAL FEATURE AND LABEL CONFIGURATION (format: attribute(phase): e.g. 'Pressure(System_main)')
 # ============================================================================
 featureNames: # Non-chemical features to include in the dataset
   - 'Pressure(System_main)'
-  - 'H(System_main)' # Isenthalpic Sims!
+  - 'Temperature(System_main)'
+  #- 'H(System_main)' # Isenthalpic Sims!
   - 'logfO2-QFM(System_main)'
 
 freeOutputs: # Non-chemical labels to predict. These are used for training the saturation predictor and as auxiliary outputs for the encoder.
-  - 'Temperature(System_main)' # 
+  #- 'Temperature(System_main)' # 
+  - 'H(System_main)'
   - 'viscosity(System_main)' # 
   - 'Cp(System_main)' #
   - 'rhos(System_main)' # Solid Density g/cc

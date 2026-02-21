@@ -27,29 +27,7 @@ if top_path not in sys.path:
 # Import DatasetIndexer type for type hints
 from typing import Optional
 from builder.indexer import DatasetIndexer
-from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
 from nMELTS.config.ml_indexer import MLIndexer, load_ml_indexer_from_state
-
-
-# Oxide bounds configuration
-Oxide_Lower_Bounds = [
-    ['k-feldspar', 'K2O', 8],
-    ['clinopyroxene', 'CaO', 7]
-]
-
-easy_build_oxide_upper_bounds = {
-    'k-feldspar': [['CaO', 1]],
-    'plagioclase': [['K2O', 8]],
-    'clinopyroxene': [['TiO2', 6], ['Al2O3', 8]],
-    'orthopyroxene': [['TiO2', 2], ['Al2O3', 8], ['CaO', 4]],
-}
-
-Oxide_Upper_Bounds = []
-for phase, boundlist in easy_build_oxide_upper_bounds.items():
-    for ox, bound in boundlist:
-        Oxide_Upper_Bounds.append([phase, ox, bound])
-
-Component_Upper_Bounds = []  # [ ['plagioclase', 'highsanidine', 0.1] ]
 
 
 def balance_lowF(MetaTable, indexer: Optional[DatasetIndexer] = None, sacred_phases=None, batch_size=200_000):
@@ -391,7 +369,16 @@ def _delete_memmap_rows(filename, indices_to_delete):
     )
     new_arr[:] = arr[keep_mask]
     new_arr.flush()
+    
+    # Explicitly close mmap handles to release file locks on Windows
+    if hasattr(arr, '_mmap') and arr._mmap is not None:
+        arr._mmap.close()
+    if hasattr(new_arr, '_mmap') and new_arr._mmap is not None:
+        new_arr._mmap.close()
+    
     del arr, new_arr
+    gc.collect()
+    
     os.replace(new_filename, filename)
 
 def safe_delete_batched(filename, delete_indices, batch_size=200000):
@@ -421,11 +408,256 @@ def safe_delete_batched(filename, delete_indices, batch_size=200000):
         result = np.vstack(kept_rows)
         np.save(f, result)
     
+    # Explicitly close memmap if it has _mmap attribute (helps on Windows)
+    if hasattr(original, '_mmap') and original._mmap is not None:
+        original._mmap.close()
     del original
     gc.collect()
     
     os.replace(tmp_filename, filename)  # Overwrite original
     
+
+def bundle_insanity_filter(tarball_path, tolerance=1e-3, bulk_tol_frac=1e-3, batch_size=200_000):
+    """
+    Filter rows that fail sanity checks from a tar.gz bundle.
+    
+    Performs the same checks as sanity_check_bundle but deletes failing rows
+    instead of raising errors. Asserts that less than 0.1% of dataset is deleted.
+    
+    Checks:
+    - Variable-phase label rows sum to 1 when phase present, else 0
+    - (phase moles > 0) matches binary labels
+    - Labels only nonzero where binary labels allow
+    - Reconstructed bulk element composition matches features within tolerance
+    
+    Parameters
+    ----------
+    tarball_path : str or Path
+        Path to the .tar.gz bundle file
+    tolerance : float, default=1e-3
+        Tolerance for component sum checks
+    bulk_tol_frac : float, default=1e-3
+        Fractional tolerance for bulk composition reconstruction
+    batch_size : int, default=200000
+        Batch size for processing
+    """
+    from .MLexporter import generate_dataset_stats
+    
+    tarball_path = Path(tarball_path)
+    temp_dir = tempfile.mkdtemp()
+    
+    try:
+        # Extract tarball
+        print(f"\n[INSANITY FILTER] Extracting {tarball_path}...")
+        with tarfile.open(tarball_path, 'r:gz') as tar:
+            tar.extractall(path=temp_dir)
+        
+        temp_path = Path(temp_dir)
+        
+        # Load ml_indexer and arrays
+        ml_indexer_path = temp_path / 'ml_indexer'
+        ml_indexer = load_ml_indexer_from_state(ml_indexer_path)
+        
+        # Load arrays into memory (not mmap) to avoid file handle issues on Windows
+        labels = np.load(temp_path / 'labels.npy')
+        molar_labels = np.load(temp_path / 'molar_labels.npy')
+        binary_labels = np.load(temp_path / 'binary_labels.npy')
+        features = np.load(temp_path / 'features.npy')
+        
+        total_rows = labels.shape[0]
+        delete_mask = np.zeros(total_rows, dtype=bool)
+        
+        print(f"[INSANITY FILTER] Total rows: {total_rows}")
+        
+        # Check 1: Variable-phase label row sums
+        print("[INSANITY FILTER] Check 1: Variable-phase label row sums...")
+        for phase, idxs in ml_indexer.label_indices_comp.items():
+            idxs = np.asarray(idxs, dtype=int)
+            phase_idx = ml_indexer.mass_phasedict[phase]
+            phase_present = binary_labels[:, phase_idx] > 0.5
+            row_sums = np.sum(labels[:, idxs], axis=1)
+            
+            present_mask = phase_present
+            absent_mask = ~phase_present
+            present_diff = np.abs(row_sums[present_mask] - 1.0)
+            absent_diff = np.abs(row_sums[absent_mask] - 0.0)
+            
+            present_fail_local = present_diff > tolerance
+            absent_fail_local = absent_diff > tolerance
+            
+            # Map back to global indices
+            present_indices = np.where(present_mask)[0]
+            absent_indices = np.where(absent_mask)[0]
+            
+            delete_mask[present_indices[present_fail_local]] = True
+            delete_mask[absent_indices[absent_fail_local]] = True
+            
+            if present_fail_local.any() or absent_fail_local.any():
+                print(f"  {phase}: {present_fail_local.sum()} present failures, {absent_fail_local.sum()} absent failures")
+        
+        # Check 2: Phase moles > 0 matches binary labels
+        print("[INSANITY FILTER] Check 2: Phase moles vs binary labels...")
+        phase_present_from_moles = molar_labels > 0
+        phase_present_from_binary = binary_labels > 0.5
+        mismatch = phase_present_from_moles != phase_present_from_binary
+        mismatch_rows = np.any(mismatch, axis=1)
+        delete_mask[mismatch_rows] = True
+        print(f"  {mismatch_rows.sum()} rows with phase mole/binary mismatches")
+        
+        # Check 3: Labels only nonzero where binary labels allow. Also fails if intensive components do not sum to 1 when present within a given phase.
+        print("[INSANITY FILTER] Check 3: Labels vs binary label constraints...")
+        comp_mappings = ml_indexer.comp_mappings
+        comp_binaries = np.asarray(ml_indexer.comp_binaries, dtype=int)
+        label_implied_binary = labels @ comp_mappings.T
+        binary_target = binary_labels[:, comp_binaries]
+        binary_diff = np.abs(label_implied_binary - binary_target)
+        binary_fail = np.any(binary_diff > tolerance, axis=1)
+        delete_mask[binary_fail] = True
+        print(f"  {binary_fail.sum()} rows with label/binary constraint violations")
+        
+        # Check 4: Bulk element reconstruction
+        print("[INSANITY FILTER] Check 4: Bulk element reconstruction...")
+        phase_to_comp = ml_indexer.phaseToCompMap
+        comp_moles = molar_labels @ phase_to_comp
+        
+        varied_to_all = ml_indexer.variedToAllComp
+        labels_full = labels @ varied_to_all
+        var_idx = np.asarray(ml_indexer.compositionally_variable_subset, dtype=int)
+        
+        comp_frac = np.ones_like(labels_full)
+        comp_frac[:, var_idx] = labels_full[:, var_idx]
+        comp_moles = comp_moles * comp_frac
+        
+        bulk_el = (comp_moles @ ml_indexer.compToOxLoad) @ ml_indexer.OxToEl
+        bulk_el = bulk_el / np.sum(bulk_el, axis=1, keepdims=True)
+        
+        feature_offset = 3
+        expected_el = features[:, feature_offset:]
+        rel_diff = np.abs(bulk_el - expected_el) / (expected_el + 1e-10)
+        per_row_max = np.max(rel_diff, axis=1)
+        bulk_fail = per_row_max > bulk_tol_frac
+        delete_mask[bulk_fail] = True
+        print(f"  {bulk_fail.sum()} rows with bulk composition mismatches")
+        
+        # Cleanup loaded arrays
+        del labels, molar_labels, binary_labels, features
+        gc.collect()
+        
+        # Get indices to delete
+        delete_indices = np.where(delete_mask)[0]
+        num_to_delete = len(delete_indices)
+        deletion_fraction = num_to_delete / total_rows
+        
+        print(f"\n[INSANITY FILTER] Total rows to delete: {num_to_delete} ({deletion_fraction:.4%})")
+        
+        # Assert less than 0.1% deleted
+        assert deletion_fraction < 0.001, (
+            f"Insanity filter would delete {deletion_fraction:.4%} of dataset "
+            f"(threshold: 0.1%). Dataset may have serious quality issues."
+        )
+        
+        if num_to_delete == 0:
+            print("[INSANITY FILTER] No rows to delete. Bundle passed all sanity checks.")
+            # Clean up ml_indexer reference to avoid handle issues
+            del ml_indexer
+            gc.collect()
+            return
+        
+        # Apply deletion to all .npy files
+        temp_filename_prefix = str(temp_path / 'filtered_')
+        npy_files = ['labels.npy', 'features.npy', 'binary_labels.npy', 'molar_labels.npy', 'mass_labels.npy']
+        
+        for npy_file in npy_files:
+            src = temp_path / npy_file
+            if src.exists():
+                dst = Path(f"{temp_filename_prefix}{npy_file}")
+                shutil.copy(src, dst)
+        
+        # Copy free_outputs if present
+        free_outputs_src = temp_path / 'free_outputs.npy'
+        if free_outputs_src.exists():
+            shutil.copy(free_outputs_src, Path(f"{temp_filename_prefix}free_outputs.npy"))
+        
+        # Delete rows from all files
+        for npy_file in npy_files:
+            file_path = f"{temp_filename_prefix}{npy_file}"
+            if Path(file_path).exists():
+                safe_delete_batched(file_path, delete_indices, batch_size=batch_size)
+        
+        if Path(f"{temp_filename_prefix}free_outputs.npy").exists():
+            safe_delete_batched(f"{temp_filename_prefix}free_outputs.npy", delete_indices, batch_size=batch_size)
+        
+        # Generate post-filter stats
+        print("[INSANITY FILTER] Generating post-filter statistics...")
+        generate_dataset_stats(
+            dataset_name=temp_filename_prefix,
+            ml_indexer=ml_indexer,
+            output_dir=temp_path
+        )
+        
+        # Move filtered files back to original names (use os.replace for atomic overwrite on Windows)
+        for npy_file in npy_files:
+            filtered_src = Path(f"{temp_filename_prefix}{npy_file}")
+            if filtered_src.exists():
+                dst = temp_path / npy_file
+                if dst.exists():
+                    os.remove(dst)
+                os.replace(filtered_src, dst)
+        
+        filtered_free_outputs = Path(f"{temp_filename_prefix}free_outputs.npy")
+        if filtered_free_outputs.exists():
+            dst = temp_path / 'free_outputs.npy'
+            if dst.exists():
+                os.remove(dst)
+            os.replace(filtered_free_outputs, dst)
+        
+        # Rename stats
+        postfilter_tmp = temp_path / 'filtered__stats.txt'
+        if postfilter_tmp.exists():
+            # Rename existing stats.txt to stats_prefilter.txt if present
+            stats_file = temp_path / 'stats.txt'
+            if stats_file.exists():
+                os.rename(stats_file, temp_path / 'stats_prefilter.txt')
+            # Rename new stats to stats.txt
+            os.rename(postfilter_tmp, temp_path / 'stats.txt')
+        
+        # Clean up ml_indexer reference before repacking to release any file handles
+        del ml_indexer
+        gc.collect()
+        
+        # Repack tarball
+        print(f"[INSANITY FILTER] Repacking filtered data into {tarball_path}...")
+        with tarfile.open(tarball_path, 'w:gz') as tar:
+            for file in temp_path.glob('*'):
+                if file.is_file() and not file.name.startswith('filtered_'):
+                    tar.add(file, arcname=file.name)
+            
+            # Re-add ml_indexer directory
+            ml_indexer_dir = temp_path / 'ml_indexer'
+            if ml_indexer_dir.is_dir():
+                tar.add(ml_indexer_dir, arcname='ml_indexer')
+        
+        # Ensure tarball is fully closed before cleanup
+        gc.collect()
+        
+        print(f"[INSANITY FILTER] Complete. Deleted {num_to_delete} rows ({deletion_fraction:.4%})")
+        
+    finally:
+        # Clean up temporary directory with retry on Windows
+        try:
+            shutil.rmtree(temp_dir)
+        except PermissionError:
+            # Windows may still have file handles open, force garbage collection and retry
+            gc.collect()
+            import time
+            time.sleep(0.1)  # Brief delay to allow handles to close
+            try:
+                shutil.rmtree(temp_dir)
+            except PermissionError:
+                # If still failing, try to remove files individually
+                print(f"[INSANITY FILTER] Warning: Could not remove temp directory {temp_dir} due to open file handles")
+                print(f"[INSANITY FILTER] You may need to manually delete: {temp_dir}")
+
 
 def deep_filter(tarball_path, Component_Lower_Bounds=None, Component_Upper_Bounds=None, 
                         Oxide_Lower_Bounds=None, Oxide_Upper_Bounds=None, Mass_Upper_Bounds=None, 
@@ -496,12 +728,14 @@ def deep_filter(tarball_path, Component_Lower_Bounds=None, Component_Upper_Bound
                 output_dir=temp_path
             )
 
-            # Move filtered files back to original names
+            # Move filtered files back to original names (use os.replace for atomic overwrite on Windows)
             for npy_file in npy_files:
                 filtered_src = Path(f"{temp_filename_prefix}{npy_file}")
                 if filtered_src.exists():
                     dst = temp_path / npy_file
-                    shutil.move(filtered_src, dst)
+                    if dst.exists():
+                        os.remove(dst)
+                    os.replace(filtered_src, dst)
 
             # Rename to stats_postfilter.txt
             postfilter_tmp = temp_path / 'filtered__stats.txt'
@@ -634,6 +868,12 @@ def _deep_filter_npy(filename, Component_Lower_Bounds=None, Component_Upper_Boun
     delete_indices = np.unique(delete_indices)
     print(f"Rows after deleting: {n_rows-len(delete_indices)}")
 
+    # Explicitly close mmap handles before deletion to release file locks on Windows
+    if hasattr(components, '_mmap') and components._mmap is not None:
+        components._mmap.close()
+    if hasattr(binary_labels, '_mmap') and binary_labels._mmap is not None:
+        binary_labels._mmap.close()
+    
     del components, binary_labels
     gc.collect()
     

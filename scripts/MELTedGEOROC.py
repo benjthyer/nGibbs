@@ -38,14 +38,14 @@ GEOROC_DIR = os.path.join(REPO_ROOT, 'data', 'MELTStables', 'GEOROC')
 os.makedirs(EnsembleLocation, exist_ok=True)
 
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-date = 'Feb11'
+date = 'Feb14'
 
 ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
-MELTSmodels = ['p']#, '102'] # MELTS models to run. To add: MAGEmin
+MELTSmodels = ['102']#, '102'] # MELTS models to run. To add: MAGEmin
 FXes = ['Batch']#, 'FxCryst']
 
-startTs = [1600]#, 1800]
-max_liquid_fractions = [15]#, 100]
+startTs = [1800]#, 1800]
+max_liquid_fractions = [120]#, 100] # Make above 100 to allow for superliquidus
 total_to_run = int(160) # How many total simulations to run
 simcycle = 50 # How many simulations to run per iteration
 

@@ -42,7 +42,7 @@ from nMELTS.utils.file_utils import delete_files_with_keyword, move_files_with_e
 from builder.processing.MLexporter import resampling_to_datasets, make_harkers, make_Tplots
 
 # Perhaps migrate the chemistry filters to their own module? 
-from builder.processing.filters import deep_filter, Oxide_Lower_Bounds, Oxide_Upper_Bounds, Component_Upper_Bounds 
+from builder.processing.filters import deep_filter, bundle_insanity_filter
 from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
 
 
@@ -250,7 +250,6 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
             #TrainMELTS.save(name=f"{TrainName}Filtered", save_csv=False)
 
         TrainMELTS.indexer.table_update(TrainMELTS.table) 
-        TrainIndexer = deepcopy(TrainMELTS.indexer)  # Capture indexer for consistency with validation/test dataset
 
         TrainMELTS.filename = TrainName
         train_bundle = train_dir / get_bundle_name(TrainName, 'Train')
@@ -273,6 +272,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
                 **resampling_kwargs,
             )
 
+        TrainIndexer = deepcopy(TrainMELTS.indexer)  # Capture indexer for consistency with validation/test dataset
 
         del TrainMELTS.table
         del TrainMELTS
@@ -292,8 +292,11 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
             Oxide_Lower_Bounds=filter_cfg['oxide_lower_bounds'] or None,
             Oxide_Upper_Bounds=filter_cfg['oxide_upper_bounds'] or None,
             Component_Upper_Bounds=filter_cfg['component_upper_bounds'] or None,
+            Component_Lower_Bounds=filter_cfg.get('component_lower_bounds', []),
             batch_size=filter_cfg['batch_size']
         )
+
+        bundle_insanity_filter(train_bundle)
 
         #sanity_check_bundle(train_bundle)  # Verify training bundle integrity before proceeding
 
@@ -303,6 +306,8 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
 
         ValidMELTS.indexer = TrainIndexer  # Assign identical indexer for consistency with training dataset
         ValidMELTS.indexer.ml_indexer = TrainIndexer.ml_indexer  # Ensure ml_indexer is also consistent, this is used in filtering and upsampling steps
+
+
 
         pre_filter = ValidMELTS.table.shape[0]
 
@@ -321,6 +326,8 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
             ValidMELTS, TestMELTS = ValidMELTS.split(0.30) # Future: make configurable. 
             TestMELTS.indexer = TrainIndexer  # Assign identical indexer for consistency with training dataset 
             TestMELTS.indexer.ml_indexer = TrainIndexer.ml_indexer # Ensure ml_indexer is also consistent, this is used in filtering and upsampling steps
+            ValidMELTS.indexer = TrainIndexer  # ValidMELTS is reinitialized; must transfer indexer again after split. (The split method should make children inherit parent's idx!)
+            ValidMELTS.indexer.ml_indexer = TrainIndexer.ml_indexer 
             if upsample:
                 # Resample configured test set phases from YAML
                 test_phases = upsample_cfg['phases'].get('test_set_phases', {})
@@ -385,6 +392,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
             Oxide_Lower_Bounds=filter_cfg['oxide_lower_bounds'] or None,
             Oxide_Upper_Bounds=filter_cfg['oxide_upper_bounds'] or None,
             Component_Upper_Bounds=filter_cfg['component_upper_bounds'] or None,
+            Component_Lower_Bounds=filter_cfg.get('component_lower_bounds', []),
             batch_size=filter_cfg['batch_size']
         )
         valid_bundle = train_dir / get_bundle_name(ValidName, 'Valid')
@@ -393,11 +401,16 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
             Oxide_Lower_Bounds=filter_cfg['oxide_lower_bounds'] or None,
             Oxide_Upper_Bounds=filter_cfg['oxide_upper_bounds'] or None,
             Component_Upper_Bounds=filter_cfg['component_upper_bounds'] or None,
+            Component_Lower_Bounds=filter_cfg.get('component_lower_bounds', []),
             batch_size=filter_cfg['batch_size']
         )
 
+        bundle_insanity_filter(test_bundle)
+        bundle_insanity_filter(valid_bundle)
         #sanity_check_bundle(test_bundle)  # Verify test bundle integrity before proceeding
         #sanity_check_bundle(valid_bundle)  # Verify validation bundle integrity before proceeding
+
+        
 
         # Rename processed data
         """ if not preprocessed: # Preprocessing not supported
@@ -494,6 +507,8 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         deleted_count = clear_new_files(INTERNAL_DIR, baseline_files, protected_extensions=['.tar.gz'])
         print(f"[Cleanup] Removed {deleted_count} temporary files from {INTERNAL_DIR}")
 
+        return train_bundle_path, valid_bundle_path, test_bundle_path
+
 
 if __name__ == '__main__':
     import argparse
@@ -549,7 +564,10 @@ Examples:
     elif args.balance_function == 'balance_superliquidus':
         balance_func = filters.balance_Superliquidus_fxtal
     
-    # Run processing
+    """print('Waiting')
+    import time
+    time.sleep(4500)"""
+        # Run processing
     process_for_ML(
         config_path=args.config,
         MELTSModel=args.MELTSModel,
@@ -561,4 +579,3 @@ Examples:
         use_external=args.use_external if args.use_external else None,
         balance_function=balance_func
     )
-

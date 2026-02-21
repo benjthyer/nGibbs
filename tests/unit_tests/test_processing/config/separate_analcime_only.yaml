@@ -1,8 +1,7 @@
 # Test config: isolate separate_analcime only
-
 dataset:
-  MELTSModel: '102'
-  Date: 'Feb9'
+  MELTSModel: '110'
+  Date: 'Feb13'
   Mode: 'BatchCooling'
   subset: false
   use_external: false

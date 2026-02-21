@@ -19,6 +19,26 @@ _CONFIG_DIR = Path(__file__).parent
 _PROJECTIONS_DIR = _CONFIG_DIR / 'projections'
 _OLD_TRANSFORMS_DIR = _CONFIG_DIR / 'old_transforms'
 
+# Type conversion mappings for training/model configuration
+# These define which config parameters should be converted to specific types
+TYPE_CONVERSION_MAP = {
+    'activation_leak': float,
+    'lowWD': float,
+    'highWD': float,
+    'noise': float,
+    'lr': float,
+    'learning_rate': float,
+    'encoderLayerUp': int,
+    'encoderLayerDown': int,
+    'middleLayerUp': int,
+    'middleLayerDown': int,
+    'encoderLayer': int,
+    'middleLayer': int,
+    'batch_size': int,
+    'epochs': int,
+    'early_stopping_patience': int,
+}
+
 # Required elements (must always be present)
 REQUIRED_ELEMENTS = {'Si','Ti', 'Al', 'Fe', 'Mg', 'Ca', 'Na'}
 
@@ -109,3 +129,4 @@ active_oxide_lists = {
     'analcime': ['SiO2', 'Na2O', 'K2O', 'H2O'],
     'melts-liquid': default_Oxides
         }
+

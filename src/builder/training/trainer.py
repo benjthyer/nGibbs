@@ -48,6 +48,18 @@ def symmetric_rel_l2(pred, target, eps=1e-6):
     return torch.mean((pred - target)**2 / denom)
 
 
+def _iter_adaptive_dropout_modules(model: nn.Module):
+    excluded_ids = set()
+    for attr_name in ("mole_head"):
+        if hasattr(model, attr_name):
+            head_module = getattr(model, attr_name)
+            excluded_ids.update(id(module) for module in head_module.modules())
+
+    for module in model.modules():
+        if isinstance(module, nn.Dropout) and id(module) not in excluded_ids:
+            yield module
+
+
 
 
 
@@ -63,9 +75,13 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     model.load_state_dict(**Model.config)
     model = model.to(device)"""
 
+    print('###### config ######')
+    print(model.config)
+    print('####################')
+
     model = model.to(device)
 
-    # freeze all but encoder and original code
+    # freeze all but encoder and saturation head
     for p in model.parameters():
         p.requires_grad = False
     for p in model.sat_head.parameters():
@@ -74,14 +90,16 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         p.requires_grad = True
 
     noise = model.config['noise']
-    optimizer = create_optimizer(model, lr=lr, weight_decay=model.config['lowWD'])
+    optimizer = create_optimizer(model, lr=lr, lowWD=model.config['lowWD'])
     wrappedScheduler = create_scheduler(optimizer, scheduler, **scheduler_kwargs) if scheduler else SchedulerWrapper()
 
-    if 'dropout' in model.config['low_regularization'].lower():
+    if 'dropout' in model.config['low_regularization'].lower(): # Only use adaptive dropout if we're not using bulk loss.
         dropout_rate = pull_number(model.config['low_regularization'].lower())
         print(f"dropout in {model.config['low_regularization']}: {pull_number(model.config['low_regularization'])}")
+        max_drop = 0.6
     else:
         dropout_rate = 0
+        max_drop = 0 # Max dropout rate for adaptive dropout
 
     # --- Loaders (same for both "Cr" and "NoCr" if you only want one test here) ---
 
@@ -108,7 +126,7 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
             optimizer.zero_grad()
             logits = model.forward_binaries(xb)
-            loss = criterion(logits, yb)
+            loss = criterion(logits, yb)*1E2 # Scale loss to be large wrt to Epsilon for optimizer stability.
             loss.backward()
             optimizer.step()
             wrappedScheduler.step_batch() # Step scheduler if it's batch-based (Does nothing if it's epoch-based)
@@ -132,7 +150,7 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                 xb, yb = output[0], output[1] # We only need the phase saturation data here
                 xb, yb = xb.to(device, non_blocking=True), yb.to(device, non_blocking=True)
                 logits = model.forward_binaries(xb)
-                loss = criterion(logits, yb)
+                loss = criterion(logits, yb)*1E2
                 running_test_loss += loss.item() * xb.size(0)
                 N += xb.size(0)
                 if N >= max_N:
@@ -171,15 +189,14 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                 break
 
         #ADAPTIVE DROPOUT
-        if avg_test_loss > avg_train_loss * 1.02:
+        if avg_test_loss > avg_train_loss * 1.01:
             anyDropout = False
-            if min(dropout_rate + 0.05, 0.6) > dropout_rate:
+            if min(dropout_rate + 0.05, max_drop) > dropout_rate:
                 old_drop = dropout_rate
-                dropout_rate = min(dropout_rate + 0.05, 0.6)
-                for module in model.modules():
-                    if isinstance(module, nn.Dropout):
-                        module.p = dropout_rate
-                        anyDropout  = True
+                dropout_rate = min(dropout_rate + 0.05, max_drop)
+                for module in _iter_adaptive_dropout_modules(model):
+                    module.p = dropout_rate
+                    anyDropout  = True
                 if anyDropout:
                     print(f"Overfitting. Increasing Dropout: {old_drop} -> {dropout_rate}")
             else: 
@@ -191,10 +208,9 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
             if max(dropout_rate - 0.02, 0) < dropout_rate:
                 old_drop = dropout_rate
                 dropout_rate = max(dropout_rate - 0.02, 0) 
-                for module in model.modules():
-                    if isinstance(module, nn.Dropout):
-                        module.p = dropout_rate
-                        anyDropout  = True
+                for module in _iter_adaptive_dropout_modules(model):
+                    module.p = dropout_rate
+                    anyDropout  = True
                 if anyDropout:
                     print(f"Underfitting. Decreasing Dropout: {old_drop}->{dropout_rate}")
 
@@ -212,40 +228,48 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
 
 def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = {}, criterion = symmetric_rel_l2, criterion_sat = nn.BCEWithLogitsLoss(), 
-                      chem_alpha = 1, mole_alpha = 1, bulk_alpha = 0, Epochs = 20, batch_size = 1024, lr = 1e-4,
-                      binWeights = torch.ones(1), compWeights = torch.ones(1), full_test_set = None, 
+                      chem_alpha = 1, mole_alpha = 1, bulk_alpha = 0, sat_alpha = 1, Epochs = 20, batch_size = 1024, lr = 1e-4,
+                      binWeights = torch.ones(1), compWeights = torch.ones(1), 
                       device = 'cuda', max_N = np.inf, early_stopping_patience = 5, which_heads_to_freeze = ['sat_head', 'encoder'], DictFilePath = None,
-                      config_yaml = None, training_yaml = None, processing_yaml = None, stats = None, log_path = None):
+                      config_yaml = None, training_yaml = None, processing_yaml = None, stats = None, log_path = None, amsgrad=True, eps = 1E-4):
     # iF which_heads_to_freeze is [], then this is a full model trainer!
     # Currently does not handle limited VC training!! Need to adjust model to make bulk output optional, then not use it in this loop
     """model = NN.MidLevelNetwork(**Model.config)#.to(Model.device) # Copy the old model, so no overwriting. 
     model.load_state_dict(**Model.config)"""
+    print('###### config ######')
+    print(model.config)
+    print('####################')
     feature_offset = len(model.ml_indexer.featureNames)
     ## Copy Lower Parameters! 
     #model.sat_head.load_state_dict(Model.sat_head.state_dict())
     #model.encoder.load_state_dict(Model.encoder.state_dict())
-
     model = model.to(device)
     # freeze heads based on which_heads_to_freeze
     for p in model.parameters():
         p.requires_grad = True
     for frozen_head in which_heads_to_freeze:
         if hasattr(model, frozen_head):
+            print(f"Freezing head: {frozen_head}")
             for p in getattr(model, frozen_head).parameters():
                 p.requires_grad = False
         else:
             raise ValueError(f"Warning: Model does not have a head named '{frozen_head}' to freeze.")
     
     noise = model.config['noise']
-    optimizer = create_optimizer(model, lr=lr, weight_decay=model.config['highWD'])
+    optimizer = create_optimizer(model, lr=lr, highWD=model.config['highWD'], lowWD=model.config['lowWD'], amsgrad=amsgrad, eps=eps)
     wrappedScheduler = create_scheduler(optimizer, scheduler, **scheduler_kwargs) if scheduler else SchedulerWrapper()
             
 
     if 'dropout' in model.config['high_regularization'].lower():
         dropout_rate = pull_number(model.config['high_regularization'].lower())
         print(f"dropout in {model.config['high_regularization']}: {pull_number(model.config['high_regularization'])}")
+        if bulk_alpha != 0: # Need to limit max dropout to avoid NaNs. 
+            max_drop = 0
+        else:
+            max_drop = 0.6
     else:
         dropout_rate = 0
+        max_drop = 0 # Max dropout rate for adaptive dropout
 
     # --- Loaders (same for both "Cr" and "NoCr" if you only want one test here) ---
 
@@ -305,19 +329,27 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
             mole_loss_masked = (mole_loss_raw * mole_zero_mask * binWeights).sum() / (mole_zero_mask * binWeights).sum().clamp(min=1)
             bulk_loss_masked = (bulk_loss_raw * bulk_zero_mask[:,feature_offset:]).sum() / (bulk_zero_mask[:,feature_offset:]).sum().clamp(min=1)
             
-            running_sat_loss += loss_sat.item()
-            running_mole_loss += mole_loss_masked.item()
-            running_chem_loss += chem_loss_masked.item()
-            running_bulk_loss += bulk_loss_masked.item()
+            batch_size_curr = x_batch.size(0)
+            running_sat_loss += loss_sat.item() * batch_size_curr
+            running_mole_loss += mole_loss_masked.item() * batch_size_curr
+            running_chem_loss += chem_loss_masked.item() * batch_size_curr
+            running_bulk_loss += bulk_loss_masked.item() * batch_size_curr
             
             
-            
-            loss = loss_sat + chem_alpha*chem_loss_masked + mole_alpha*mole_loss_masked + bulk_alpha*bulk_loss_masked
+            if bulk_alpha == 0: # Scale loss to be large wrt to Epsilon for optimizer stability. 
+                loss = 1E2*(sat_alpha*loss_sat + chem_alpha*chem_loss_masked + mole_alpha*mole_loss_masked) # Bulk can be numerically unstable...
+            else:
+                loss = 1E2*(sat_alpha*loss_sat + chem_alpha*chem_loss_masked + mole_alpha*mole_loss_masked + bulk_alpha*bulk_loss_masked)
+
             #print(f"Sat loss: {loss_sat.item()}, Chem loss: {chem_loss_masked.item()}")
 
             if not torch.isfinite(loss):
                 print("Non-finite loss detected!")
                 print(f"Sat loss: {loss_sat.item()}, Chem loss: {chem_loss_masked.item()}, Mole loss: {mole_loss_masked}, Bulk loss: {bulk_loss_masked}")
+                print('ENDING EARLY')
+                early_stopping_counter = early_stopping_patience+1 # trigger early stopping
+                break
+                #raise ValueError("Non-finite loss, stopping training.")
                 continue
 
             loss.backward()
@@ -325,13 +357,28 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
             optimizer.step()
 
-            running_train_loss += loss.item() * x_batch.size(0)
+            running_train_loss += loss.item() * batch_size_curr
+
+
+
+            """if np.random.rand() < 0.001: # Occasionally print gradient norms 
+                total = 0
+                count = 0
+                for p in model.parameters():
+                    if p.grad is not None:
+                        total += (p.grad**2).mean()
+                        count += 1
+
+                grad_rms = (total / count).sqrt()
+                print(f"Gradient RMS: {grad_rms.item()}")
+                print(f"Update Loss: {loss.item():.3e}")"""
+                
 
             #if batch_idx % 200 == 0:
                 #percent_done = 100 * batch_idx / len(train_loader)
                 #train_losses.append(loss.item())
                 #print(f"[{percent_done:>5.1f}%] Batch {batch_idx:>5d} Loss: {loss.item():.4f}")
-            N += x_batch.size(0)
+            N += batch_size_curr
             if N > max_N:
                 break
 
@@ -339,8 +386,16 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
         avg_train_loss = running_train_loss / N
 
-        print(f"[TRAIN] Running Saturation Loss: {running_sat_loss/(batch_idx*batch_size):.3e}\tRunning Chem Loss: {running_chem_loss/(batch_idx*batch_size):.3e}")
-        print(f"[TRAIN] Running Molar Loss: {running_mole_loss/(batch_idx*batch_size):.3e}\tRunning Bulk Loss: {running_bulk_loss/(batch_idx*batch_size):.3e}")
+        print(f"[TRAIN] Running Saturation Loss: {running_sat_loss/(N):.3e}\tRunning Chem Loss: {running_chem_loss/(N):.3e}")
+        print(f"[TRAIN] Running Molar Loss: {running_mole_loss/(N):.3e}\tRunning Bulk Loss: {running_bulk_loss/(N):.3e}")
+
+        print(f"[TRAIN] Running WEIGHTED Saturation Loss: {sat_alpha*running_sat_loss/(N):.3e}\tRunning Weighted Chem Loss: {chem_alpha*running_chem_loss/(N):.3e}")
+        print(f"[TRAIN] Running WEIGHTED Molar Loss: {mole_alpha*running_mole_loss/(N):.3e}\tRunning Weighted Bulk Loss: {bulk_alpha*running_bulk_loss/(N):.3e}")
+
+        """lrT = optimizer.param_groups[0]['lr']
+        v = state['exp_avg_sq']
+        lr_eff = lrT / (v.mean().sqrt() + optimizer.param_groups[0]['eps'])
+        print(lr_eff.item())"""
 
         # ---- Evaluation ----
         model.eval()
@@ -370,19 +425,23 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                 mole_loss_masked = (mole_loss_raw * mole_zero_mask*binWeights).sum() / (mole_zero_mask*binWeights).sum().clamp(min=1)
                 bulk_loss_masked = (bulk_loss_raw * bulk_zero_mask).sum() / bulk_zero_mask.sum().clamp(min=1)
                 
-                running_sat_loss += loss_sat.item()
-                running_mole_loss += mole_loss_masked.item()
-                running_chem_loss += chem_loss_masked.item()
-                running_bulk_loss += bulk_loss_masked.item()
+                batch_size_curr = x_batch.size(0)
+                running_sat_loss += loss_sat.item() * batch_size_curr
+                running_mole_loss += mole_loss_masked.item() * batch_size_curr
+                running_chem_loss += chem_loss_masked.item() * batch_size_curr
+                running_bulk_loss += bulk_loss_masked.item() * batch_size_curr
                 
                 # Total loss
                 #loss = loss_sat + chem_alpha*chem_loss_masked
                 #loss = mole_alpha*mole_loss_masked + bulk_alpha*bulk_loss_masked
-                loss = loss_sat + chem_alpha*chem_loss_masked + mole_alpha*mole_loss_masked + bulk_alpha*bulk_loss_masked
-                
+                if bulk_alpha == 0:
+                    loss = 1E2*(sat_alpha*loss_sat + chem_alpha*chem_loss_masked + mole_alpha*mole_loss_masked) # Bulk can be numerically unstable...
+                else:
+                    loss = 1E2*(sat_alpha*loss_sat + chem_alpha*chem_loss_masked + mole_alpha*mole_loss_masked + bulk_alpha*bulk_loss_masked)
 
-                running_test_loss += loss.item() * x_batch.size(0)
-                N += x_batch.size(0)
+
+                running_test_loss += loss.item() * batch_size_curr
+                N += batch_size_curr
                 if N > max_N:
                     break
 
@@ -396,6 +455,7 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         print(f"Epoch {epoch+1:02d}: Train {avg_train_loss:.5f} | Test {avg_test_loss:.5f} | time = {time.time()-start:.1f}s")
 
         if avg_test_loss < best_test_loss:
+            print(f"New best test loss: {avg_test_loss:.5f} (improvement of {(best_test_loss-avg_test_loss)/best_test_loss*100:.2f}%) Saving model.")
             best_test_loss = avg_test_loss
             torch.save(model.state_dict(), str(TEMP_MODELS_DIR / 'temp_upper_train.pt'))
             if DictFilePath is not None:
@@ -409,7 +469,7 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                     log_text=log_text,
                 )
             early_stopping_counter = 0
-        elif avg_test_loss > best_test_loss * 1.01:
+        else:
             early_stopping_counter += 1
             print(f"No improvement. Counter: {early_stopping_counter}/{early_stopping_patience}")
             if early_stopping_counter >= early_stopping_patience:
@@ -420,13 +480,12 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         #ADAPTIVE DROPOUT
         if avg_test_loss > avg_train_loss * 1.02:
             anyDropout = False
-            if min(dropout_rate + 0.05, 0.6) > dropout_rate:
+            if min(dropout_rate + 0.05, max_drop) > dropout_rate:
                 old_drop = dropout_rate
-                dropout_rate = min(dropout_rate + 0.05, 0.6)
-                for module in model.modules():
-                    if isinstance(module, nn.Dropout):
-                        module.p = dropout_rate
-                        anyDropout  = True
+                dropout_rate = min(dropout_rate + 0.05, max_drop)
+                for module in _iter_adaptive_dropout_modules(model):
+                    module.p = dropout_rate
+                    anyDropout  = True
                 if anyDropout:
                     print(f"Overfitting. Increasing Dropout: {old_drop} -> {dropout_rate}")
             else: 
@@ -438,10 +497,9 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
             if max(dropout_rate - 0.02, 0) < dropout_rate:
                 old_drop = dropout_rate
                 dropout_rate = max(dropout_rate - 0.02, 0) 
-                for module in model.modules():
-                    if isinstance(module, nn.Dropout):
-                        module.p = dropout_rate
-                        anyDropout  = True
+                for module in _iter_adaptive_dropout_modules(model):
+                    module.p = dropout_rate
+                    anyDropout  = True
                 if anyDropout:
                     print(f"Underfitting. Decreasing Dropout: {old_drop}->{dropout_rate}")
 
