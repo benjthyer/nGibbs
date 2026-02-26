@@ -8,6 +8,7 @@ high-level interfaces for phase prediction, mass balancing, and fractional cryst
 import time
 import numpy as np
 import torch
+import pandas as pd
 
 # Import utility functions
 from ..utils.math_utils import QFM_fO2, Fe2O3_FeO_ratio, QFM_fO2_torch, Normalizer
@@ -122,6 +123,124 @@ class NN_MELTS:
             range_tensor = torch.ones(dummy_shape, dtype=torch.float32)
             self.norm_features = Normalizer(min_tensor, range_tensor, cuda=(self.dev == 'cuda'))
             print("Warning: No normalizer state found in ml_indexer. Using identity normalization.")"""
+
+    def reorder_input_table(self, table, headers=None, composition_space='elements',
+                            strict=True, fill_value=0.0, return_type='same'):
+        """
+        Reorder input table columns into NN_MELTS feature order.
+
+        Supports either:
+        - Headered table-like inputs (e.g., pandas DataFrame), or
+        - Array/tensor inputs with a separate ``headers`` argument.
+
+        Parameters
+        ----------
+        table : array-like, torch.Tensor, or DataFrame-like
+            Input rows of conditions + composition columns.
+        headers : sequence of str, optional
+            Column names for ``table`` when ``table`` does not carry headers.
+            If provided, these are used even when ``table`` has columns.
+        composition_space : str, default='elements'
+            Composition columns expected in ``table``:
+            - 'elements': uses ``self.Elkeys``
+            - 'oxides': uses ``self.Oxides[:len(self.Elkeys)]`` (excludes ferric column)
+        strict : bool, default=True
+            If True, raises on missing expected columns.
+            If False, fills missing expected columns with ``fill_value``.
+        fill_value : float, default=0.0
+            Value used to fill missing expected columns when ``strict=False``.
+        return_type : str, default='same'
+            Output type:
+            - 'same': keep input style when possible
+            - 'numpy': return numpy.ndarray
+            - 'torch': return torch.Tensor on ``self.dev``
+            - 'dataframe': return pandas.DataFrame (requires pandas)
+
+        Returns
+        -------
+        array-like
+            Reordered table with columns in:
+            ``self.ml_indexer.featureNames + composition_headers``
+        """
+        composition_key = composition_space.lower()
+        if composition_key not in ['elements', 'oxides']:
+            raise ValueError("composition_space must be 'elements' or 'oxides'")
+
+        if composition_key == 'elements':
+            composition_headers = list(self.Elkeys)
+        else:
+            composition_headers = list(self.Oxides[:len(self.Elkeys)]) # Eventually we will support constant ferric iron and we will need to refactor to handle
+
+        expected_headers = list(self.ml_indexer.featureNames) + composition_headers
+
+        has_columns = hasattr(table, 'columns') and hasattr(table, 'to_numpy')
+        if headers is None:
+            if not has_columns:
+                raise ValueError(
+                    "headers must be provided when table has no column labels"
+                )
+            input_headers = [str(col) for col in table.columns]
+        else:
+            input_headers = [str(col) for col in headers]
+
+        if len(input_headers) != len(set(input_headers)):
+            raise ValueError("Input headers contain duplicates")
+
+        if torch.is_tensor(table):
+            values = table.detach().cpu().numpy()
+        elif has_columns:
+            values = table.to_numpy()
+        else:
+            values = np.asarray(table)
+
+        if values.ndim != 2:
+            raise ValueError(f"table must be 2D, got shape {values.shape}")
+        if values.shape[1] != len(input_headers):
+            raise ValueError(
+                f"Header count ({len(input_headers)}) does not match "
+                f"table columns ({values.shape[1]})"
+            )
+
+        header_to_idx = {name: idx for idx, name in enumerate(input_headers)}
+        missing = [name for name in expected_headers if name not in header_to_idx]
+
+        if missing and strict:
+            missing_str = ", ".join(missing)
+            raise ValueError(f"Missing required input columns: {missing_str}")
+
+        reordered = np.full(
+            (values.shape[0], len(expected_headers)),
+            fill_value,
+            dtype=np.float32
+        )
+
+        for out_idx, name in enumerate(expected_headers):
+            if name in header_to_idx:
+                reordered[:, out_idx] = values[:, header_to_idx[name]]
+
+        out_key = return_type.lower()
+        if out_key not in ['same', 'numpy', 'torch', 'dataframe']:
+            raise ValueError("return_type must be one of: same, numpy, torch, dataframe")
+
+        if out_key == 'numpy':
+            return reordered
+
+        if out_key == 'torch':
+            return torch.tensor(reordered, dtype=torch.float32, device=self.dev)
+
+        if out_key == 'dataframe':
+            return pd.DataFrame(reordered, columns=expected_headers)
+
+        if has_columns:
+            try:
+                return table.__class__(reordered, columns=expected_headers, index=table.index)
+            except Exception:
+                pass
+
+        if torch.is_tensor(table):
+            return torch.tensor(reordered, dtype=table.dtype, device=table.device)
+
+        return reordered
 
     def convertOxToMol(self, features, convert=True):
         """

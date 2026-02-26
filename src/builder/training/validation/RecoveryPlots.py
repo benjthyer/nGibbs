@@ -44,6 +44,31 @@ def _safe_div(numerator: float, denominator: float) -> float:
     return numerator / denominator
 
 
+def _write_phase_metrics(
+    output_path: Path,
+    phase_names: list[str],
+    real_pos: np.ndarray,
+    pred_pos: np.ndarray,
+) -> None:
+    metrics_path = output_path / "phase_binary_metrics.txt"
+    header = "phase,precision,recall,gt_abundance_pct,pred_abundance_pct\n"
+    with metrics_path.open("w", encoding="utf-8") as handle:
+        handle.write(header)
+        for phase in phase_names:
+            phase_real = real_pos[phase]
+            phase_pred = pred_pos[phase]
+            tp = np.sum(phase_real & phase_pred)
+            fp = np.sum(~phase_real & phase_pred)
+            fn = np.sum(phase_real & ~phase_pred)
+            precision = _safe_div(tp, tp + fp)
+            recall = _safe_div(tp, tp + fn)
+            gt_abundance = 100.0 * _safe_div(np.sum(phase_real), phase_real.size)
+            pred_abundance = 100.0 * _safe_div(np.sum(phase_pred), phase_pred.size)
+            handle.write(
+                f"{phase},{precision:.6f},{recall:.6f},{gt_abundance:.3f},{pred_abundance:.3f}\n"
+            )
+
+
 def _resolve_bundle_path(bundle_path: str) -> Path:
     path = Path(bundle_path)
     if path.suffixes[-2:] == [".tar", ".gz"]:
@@ -130,6 +155,8 @@ def run_recovery_plots(
     if normalize_features:
         features_tensor = emulator.norm_features.norm(features_tensor)
 
+    print(f"emulator.molar_epsilon = {emulator.model.molar_epsilon}")
+
     with torch.no_grad():
         start_time = time.time()
         likelihoods, transcomponent_hat, log_moles, recon_bulk, component_moles, phase_proportions, phase_moles = (
@@ -166,10 +193,15 @@ def run_recovery_plots(
     correct_phases = np.all((validation_binaries[subset] > 0.5).astype(float) == binary_hat, axis=1)
     datalen = len(component_hat)
 
+    real_pos_map: dict[str, np.ndarray] = {}
+    pred_pos_map: dict[str, np.ndarray] = {}
+
     for phase in label_indices:
         phase_idx = mass_phasedict[phase]
         real_pos = validation_binaries[subset, phase_idx] > 0.5
         pred_pos = binary_hat[:, phase_idx] > 0.5
+        real_pos_map[phase] = real_pos
+        pred_pos_map[phase] = pred_pos
         plotable = np.logical_or(real_pos, pred_pos)
 
         fp = _safe_div(np.sum(real_pos[plotable] == 0), np.sum(plotable))
@@ -431,6 +463,8 @@ def run_recovery_plots(
                 plt.close()
 
         gc.collect()
+
+    _write_phase_metrics(output_path, list(label_indices.keys()), real_pos_map, pred_pos_map)
 
 
 def build_parser() -> argparse.ArgumentParser:

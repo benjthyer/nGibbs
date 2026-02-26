@@ -148,7 +148,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
     # Create destination directories if they don't exist
     out_Dir = Path(internal_train_dir(MELTSModel))
     train_dir = Path(external_train_dir(MELTSModel)) if use_external else out_Dir
-    PLOT_DIR = out_Dir / 'Plots'
+    PLOT_DIR = out_Dir / 'Plots' / f'MELTS{MELTSModel}_{Date}{Mode}'
     PLOT_DIR.mkdir(parents=True, exist_ok=True)
 
     if subset:

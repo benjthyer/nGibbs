@@ -43,18 +43,18 @@ import time
 time.sleep(8000)"""
 
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-input_date = 'Feb20mafics'
+input_date = 'Feb16'
 
 input_ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
-MELTSmodels = ['102']#, '102'] # MELTS models to run. To add: MAGEmin
+MELTSmodels = ['p']#, '102'] # MELTS models to run. To add: MAGEmin
 FXes = ['Batch']#, 'FxCryst']
 Prange = None # Auto if None, for lithosphere/aesthenospere (p)
 
-total_to_run = int(1000) # How many total simulations to run
+total_to_run = int(300) # How many total simulations to run
 mafics_to_run = int(total_to_run * 0.8)
 full_to_run = int(total_to_run * 0.2)
 
-startTs = [1400]#, 1800]
+startTs = [1600]#, 1800]
 delta = -4
 input_liquid_fractions = [15]#, 100] # Make above 100 to allow for superliquidus
 simcycle = 50 # How many simulations to run per iteration

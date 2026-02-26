@@ -1,0 +1,44 @@
+tarname: '102NoCrGeneral'       #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
+
+warm_start: 102NoCrNoBulk #None # 102CrMoleLinear
+
+encoderLayerUp: 1
+encoderLayerDown: 0
+middleLayerUp: 2
+middleLayerDown: 0
+low_regularization: batchnormdropout0.3
+high_regularization: batchnormdropout0.3
+activation_leak: 0.05
+lowWD: 0 #1E-3 #1E-5 bulk (shouldn't be used at all?)
+highWD: 1E-4 #1E-3 #1E-4 #1E-3 bulk
+noise:  0 #0.005 #bulk
+description: ""
+
+
+
+train5: # Increase number for another layer of training
+  strategy: finetune # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
+  batch_size: 1024 
+  lowWD: 0 # No WD for frozen layers
+  epochs: 50
+  learning_rate: 1E-4
+  early_stopping_patience: 15
+  scheduler:
+    type: CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
+    args:
+      T_max: 7 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
+  max_N: null # none, 0 and inf all mean 'no limit'
+  DictFilePath: 102NoCrFull_lowred
+  loss_config:
+    binary:
+      weight: 0
+    chemistry:
+      type: symmetric_rel_l2
+      weight: 100
+    moles:
+      type: huber
+      weight: 50
+    bulk:
+      type: symmetric_rel_l2
+      weight: 100
+  which_heads_to_freeze: ['encoder', 'sat_head'] #['encoder', 'sat_head', 'middleBrain', 'chem_heads']

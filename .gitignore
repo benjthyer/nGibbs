@@ -155,3 +155,6 @@ dmypy.json
 *.tmp
 *.temp
 *.log
+*temp_models/
+src/builder/training/temp_models/
+C:/Git_Repositories/nMELTS/src/builder/training/temp_models

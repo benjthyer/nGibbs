@@ -94,9 +94,9 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     wrappedScheduler = create_scheduler(optimizer, scheduler, **scheduler_kwargs) if scheduler else SchedulerWrapper()
 
     if 'dropout' in model.config['low_regularization'].lower(): # Only use adaptive dropout if we're not using bulk loss.
-        dropout_rate = pull_number(model.config['low_regularization'].lower())
-        print(f"dropout in {model.config['low_regularization']}: {pull_number(model.config['low_regularization'])}")
-        max_drop = 0.6
+        max_drop = pull_number(model.config['low_regularization'].lower())
+        print(f"dropout in {model.config['low_regularization']}: {pull_number(model.config['low_regularization'])} (upper limit)")
+        dropout_rate = 0  # Start at 0, adaptive dropout will adjust up to max_drop
     else:
         dropout_rate = 0
         max_drop = 0 # Max dropout rate for adaptive dropout
@@ -261,12 +261,14 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
             
 
     if 'dropout' in model.config['high_regularization'].lower():
-        dropout_rate = pull_number(model.config['high_regularization'].lower())
-        print(f"dropout in {model.config['high_regularization']}: {pull_number(model.config['high_regularization'])}")
+        configured_max = pull_number(model.config['high_regularization'].lower())
+        print(f"dropout in {model.config['high_regularization']}: {configured_max} (upper limit)")
         if bulk_alpha != 0: # Need to limit max dropout to avoid NaNs. 
             max_drop = 0
+            print(f"  Bulk loss enabled, disabling dropout (max_drop=0)")
         else:
-            max_drop = 0.6
+            max_drop = configured_max
+        dropout_rate = 0  # Start at 0, adaptive dropout will adjust up to max_drop
     else:
         dropout_rate = 0
         max_drop = 0 # Max dropout rate for adaptive dropout

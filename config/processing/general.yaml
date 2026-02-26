@@ -6,12 +6,12 @@
 # ============================================================================
 dataset:
   MELTSModel: '102'          # MELTS model version: '102', '110', '120', 'p'. Affects which directory dataproducts are read from and written to
-  Date: 'Feb14Cr'               # Date identifier for dataset naming
+  Date: 'Feb14NoCr'               # Date identifier for dataset naming
   Mode: 'BatchCooling'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
-outname: '102CrGeneral'                  # Base name for output folder (without extension). Auto-Generated if blank
+outname: '102NoCrGeneral2'                  # Base name for output folder (without extension). Auto-Generated if blank
 
 # ============================================================================
 # PREPROCESSING OPTIONS
@@ -92,8 +92,8 @@ resampling:
   # Multiple entries = multiple resampled versions of the dataset
   train_bounds:
     - [1, 1]          # Identity
-    - [0.95, 1]        # Shift phase proportions by ~5%
-    - [0.9, 1]        # Shift phase proportions by ~10%
+    #- [0.95, 1]        # Shift phase proportions by ~5%
+    #- [0.9, 1]        # Shift phase proportions by ~10%
   
   # Resampling bounds for test/validation sets (typically just full dataset)
   test_bounds:
@@ -109,7 +109,7 @@ plot:
 # BALANCING FUNCTION
 # ============================================================================
 balancing:                    # Selectively "culling" dataset to balance liquid fractions
-  function: balance_lowF              # Options: null = no balancing applied 
+  function: null  #balance_lowF            # Options: null = no balancing applied 
                               # 'balance_lowF' = Weigh all liquid fractions ~equalLy. Removes subsolidus bias  
                               # 'balance_superliquidus' = Favor subliquidus over superliquidus for Frac. Xtal. 
                               # 'balance_geodynamics' = Keep only 10% liq fraction and less. Used for geodynamics

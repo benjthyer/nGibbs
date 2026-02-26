@@ -60,12 +60,25 @@ CrCondition_str = {'SiO2': 48.68,
 'P2O5': 0.08,
 'H2O': 0.20}
 
+#Peridotite
+"""CrCondition_str = {'SiO2': 45.14,
+'TiO2': 0.1,
+'Al2O3':3.17,
+'Cr2O3': 0.42,
+'FeO': 7.69+(ferric_to_ferrous*0.89),
+'MgO': 39.92,
+'CaO': 0.6,
+'Na2O': 0.24,
+'K2O': 0.01,
+'P2O5': 0.1,
+'H2O': 0.05}"""
+
 NoCrCondition_str = copy(CrCondition_str)
 del NoCrCondition_str['Cr2O3']
 
 
 
-for L, MELTSmodel in enumerate(['110']): #Which MELTS models to use
+for L, MELTSmodel in enumerate(['102']): #Which MELTS models to use
     for j in range(2):
         condition_str = [NoCrCondition_str, CrCondition_str][j]
         suffix = ["NoCr", "Cr"][j]
@@ -87,18 +100,18 @@ for L, MELTSmodel in enumerate(['110']): #Which MELTS models to use
 
         Fxtal = False
         fxLabel = 'Fxtal' if Fxtal else 'Batch' 
-        csv_name = os.path.join(Out_Folder, f'GTMELTS{MELTSmodel}_{suffix}_MORB_{fxLabel}_PsuedoSections_smallOx2.csv')
+        csv_name = os.path.join(Out_Folder, f'GTMELTS{MELTSmodel}_{suffix}_MORB_{fxLabel}_phasediagrams.csv')
 
         BatchName = f"{MELTSmodel}Batch"
 
-        #in_array = grid_sample([[1,10000,50],[1600,1600,1],[1,2,2]]) #Phase diagrams
+        in_array = grid_sample([[1,10000,50],[1600,1600,1],[-4,4,5]]) #Phase diagrams
         #in_array = grid_sample([[1,10000,50],[1600,1600,1],[0,0,1]]) #Phase diagrams
         #in_array = grid_sample([[1000,1000,1],[1600,1600,1],[0,0,1]]) #Small Test
 
 
         #in_array = grid_sample([[1000,10000,3],[2000,2000,1],[-4,4,5]]) # Harkers
         #in_array = grid_sample([[1000,10000,3],[1600,1600,1],[-4,4,5]]) # Harkers
-        in_array = grid_sample([[1000,8000,4],[1600,1600,1],[-1,1,2]]) # performance benchmarking
+        #in_array = grid_sample([[1000,8000,4],[1600,1600,1],[-1,1,2]]) # performance benchmarking
 
         nrow = in_array.shape[0]
         for key, val in condition_str.items():

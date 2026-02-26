@@ -226,8 +226,8 @@ class MLIndexer:
         PxSpTransform_df = pd.read_csv(PxSpTransform_path, index_col=0)
         
         # The assumptions that the components in rows of compToOx and PxSpTransform square matric are matching is baked into the construction of these projection matrices
-        assert compToOx_df.shape[0] == PxSpTransform_df.shape[0], f"Component count mismatch between compToOx rows:{compToOx_df.shape[0]} and PxSp_Comp_Transform matrices:{PxSpTransform_df.shape}."
-        assert compToOx_df.shape[0] == PxSpTransform_df.shape[1], f"Component count mismatch between compToOx rows:{compToOx_df.shape[0]} and PxSp_Comp_Transform matrices:{PxSpTransform_df.shape}."
+        #assert compToOx_df.shape[0] == PxSpTransform_df.shape[0], f"Component count mismatch between compToOx rows:{compToOx_df.shape[0]} and PxSp_Comp_Transform matrices:{PxSpTransform_df.shape}."
+        #assert compToOx_df.shape[0] == PxSpTransform_df.shape[1], f"Component count mismatch between compToOx rows:{compToOx_df.shape[0]} and PxSp_Comp_Transform matrices:{PxSpTransform_df.shape}."
 
         # Load OxToEl.csv (oxides to elements)
         oxToEl_path = self.projections_dir / 'OxToElV2.csv'

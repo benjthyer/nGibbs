@@ -133,7 +133,7 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
 
         else: 
             # Include current parameter value if missing, handled for encoderlayer case above
-            current_val = getattr(Model, parameter)
+            current_val = best_config.get(parameter)
             if current_val is not None and current_val not in trials:
                 trials.append(current_val)
 
@@ -142,9 +142,15 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
             best_weights_WD = deepcopy(best_weights)
             trials = sorted(set(trials))
             zero_idx = trials.index(Model.config[parameter])
-            current_idx = zero_idx + 1
-            go_up = current_idx < len(trials)
-            go_down = True
+            go_up = (zero_idx + 1) < len(trials)
+            go_down = (zero_idx - 1) >= 0
+            if go_up:
+                current_idx = zero_idx + 1
+            elif go_down:
+                current_idx = zero_idx - 1
+            else:
+                current_idx = -1
+                print(f"No alternate values to test for {parameter}.")
 
             while 0 <= current_idx < len(trials):
                 working_config = deepcopy(best_config)
@@ -177,6 +183,7 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
 
             Model = NN.MidLevelNetwork(**best_config, ml_indexer=ml_indexer)
             best_weights = best_weights_WD
+            Model.load_state_dict(best_weights)
             
 
         # --- Handle Unordered Categorical Parameters: Try every option with no early abort ---
@@ -207,6 +214,7 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
                     print(f"No improvement ({trial_loss:.4e})")
 
             Model = NN.MidLevelNetwork(**best_config, ml_indexer=ml_indexer)
+            Model.load_state_dict(best_weights)
 
         # === Summary for this parameter ===
         print("\n" + "-" * 80)
@@ -362,7 +370,7 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
 
         else: 
             # Include current parameter value if missing, handled for encoderlayer case above
-            current_val = getattr(Model, parameter)
+            current_val = Model.config.get(parameter)
             if current_val is not None and current_val not in trials:
                 trials.append(current_val)
 
@@ -371,9 +379,15 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
             
             trials = sorted(set(trials))
             zero_idx = trials.index(Model.config[parameter])
-            current_idx = zero_idx + 1
-            go_up = current_idx < len(trials)
-            go_down = True
+            go_up = (zero_idx + 1) < len(trials)
+            go_down = (zero_idx - 1) >= 0
+            if go_up:
+                current_idx = zero_idx + 1
+            elif go_down:
+                current_idx = zero_idx - 1
+            else:
+                current_idx = -1
+                print(f"No alternate values to test for {parameter}.")
 
             while 0 <= current_idx < len(trials):
                 
@@ -404,6 +418,10 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
                 else:
                     print("No improvement — stopping search for this parameter.")
                     break
+            Model = rebuild_MELTS_model(
+                str(TEMP_MODELS_DIR / 'Temp_Upper_Tune.pt'),
+                ml_indexer=Model.ml_indexer,
+            )
 
         # --- Handle Unordered Categorical Parameters ---
         if parameter in ['activation_leak', 'low_regularization', 'high_regularization']: # Actually activation leak is a continuous parameter and should be treated as such.

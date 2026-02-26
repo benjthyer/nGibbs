@@ -278,7 +278,7 @@ def get_baseline_files(directory):
     return {f.name for f in directory.iterdir() if f.is_file()}
 
 
-def clear_new_files(directory, baseline_files, protected_extensions=None):
+def clear_new_files(directory, baseline_files, protected_extensions=None, dry_run=False):
     """
     Delete files that were created after a baseline snapshot.
     
@@ -293,10 +293,13 @@ def clear_new_files(directory, baseline_files, protected_extensions=None):
     baseline_files : set
         Set of baseline filenames (from get_baseline_files())
         
+    dry_run : bool, default=False
+        If True, print files that would be deleted but do not delete them
+
     Returns
     -------
     int
-        Number of files deleted
+        Number of files deleted (or that would be deleted if dry_run=True)
         
     Examples
     --------
@@ -321,6 +324,10 @@ def clear_new_files(directory, baseline_files, protected_extensions=None):
             print(f"Skipping protected file: {filename}")
             continue
         filepath = directory / filename
+        if dry_run:
+            print(f"[DRY RUN] Would delete temporary file: {filepath}")
+            deleted_count += 1
+            continue
         try:
             filepath.unlink()
             print(f"Deleted temporary file: {filepath}")

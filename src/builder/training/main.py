@@ -174,6 +174,21 @@ def _stage_allowed(selected_stage: str, stage_name: str) -> bool:
     return selected_stage == stage_name
 
 
+def _best_loss_from_tune_results(results: Any) -> Optional[float]:
+    if not isinstance(results, list) or not results:
+        return None
+    losses: List[float] = []
+    for entry in results:
+        if isinstance(entry, dict) and "loss" in entry:
+            try:
+                losses.append(float(entry["loss"]))
+            except (TypeError, ValueError):
+                continue
+    if not losses:
+        return None
+    return min(losses)
+
+
 def _discover_episodes(config: Dict[str, Any]) -> List[Tuple[str, str, Dict[str, Any]]]:
     """
     Discover and order all numbered episodes (tune1, train1, tune2, train2, etc.).
@@ -334,6 +349,9 @@ def main() -> None:
         
         episode_cfg = _deep_update(deepcopy(config), episode_cfgI) # Inherit Globals, overprint episode configurration
 
+        if best_loss is None:
+            best_loss = episode_cfg.get('best_loss', None) # Initialize best_loss from config if not set by previous tune episode
+
         # Apply type conversions to episode config
         episode_cfg = apply_type_conversions(episode_cfg, TYPE_CONVERSION_MAP)
     
@@ -432,7 +450,7 @@ def main() -> None:
             #Strategy determines which heads are frozen, which part of model is trained
             try:
                 if strategy == 'lower': # No phase weighting implemented for lower model training...
-                    model, best_loss = tune_Lower_MELTS(
+                    model, tune_results = tune_Lower_MELTS(
                         Model=best_model,
                         trainData=train_set,
                         testData=test_set,
@@ -444,8 +462,11 @@ def main() -> None:
                         Param_Dict=episode_cfg['tune_params'],
                         best_loss=best_loss  # Pass previous best_loss
                     )
+                    tuned_best_loss = _best_loss_from_tune_results(tune_results)
+                    if tuned_best_loss is not None:
+                        best_loss = tuned_best_loss
                 else:
-                    model, best_loss = tune_Upper_MELTS(
+                    model, tune_results = tune_Upper_MELTS(
                         Model=best_model,
                         trainData=train_set,
                         testData=test_set,
@@ -466,6 +487,9 @@ def main() -> None:
                         eps=eps,
                         amsgrad=amsgrad,
                     )
+                    tuned_best_loss = _best_loss_from_tune_results(tune_results)
+                    if tuned_best_loss is not None:
+                        best_loss = tuned_best_loss
                 
                 # Update best_model and best_config for next episode
                 #best_model = NN.rebuild_MELTS_model(str(dict_filepath))
@@ -569,7 +593,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    """print('Waiting')
-    import time
-    time.sleep(8000)"""
+    #print('Waiting')
+    #import time
+    #time.sleep(2700)
     main()

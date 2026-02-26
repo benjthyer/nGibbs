@@ -1,24 +1,40 @@
 _____________________ Unreleased _______________________
 
+2026-02-25
+- Added processing/export_only.py CLI to export one bundle from csv/txt input without any filtering logic. Useful for Ground Truthing phase diagrams and harders. 
+- Added method to NN_MELTS to reorder arbitrary labeled input tables with header-based feature reordering.
+- Preparing to add constant Fe2O3 functionality, necesary for geodynamics. 
+
+2026-02-24
+- Appended HeFESTo phase/component rows to compToOxV2 projection table.
+    - Removed test forcing compToOx to have same rows as PsSp transform. This transform will not be applied to HeFESTo data. Will need separate loading script for HeFESTo data. 
+- Added recovery plot binary metrics text output per phase. (need to pretty-fy)
+- Fixed tuning logic bug where WD/Noise parameters could be skipped in certain cases
+- Fixed bug where tuned parameters often overwritten. Reloading best state now before every call to trainers within tuning scripts
+
+2026-02-23
+- Tested model molar_epsilon 1E-3. Not as effective as linear softmax it seems 
+    - Fixed overwriting bug for molar epsilon by high level NN_MELTS object
+- ***Adaptive dropout now treats regularization config value as upper limit, not initial rate.***
+- Added CLI Phase Diagrams validation tool. Buggy. 
+
+Commit: 12a4a971804a360e39f30129038319c8de70ccca
 2026-02-20
-- **Training Debugging**
+- Training Debugging
 - Stabilized Bulk loss (cannot use dropout at all when using bulk loss...)
+- Selectively apply weight decay to active parameters only, and not to mole heads. 
+    - Low and High models now can use distinct weight decay
 - Excluded mole_head and chem_heads from adaptive dropout updates.
 
 2026-02-16
+- Adapted 1:1 Recovery Plots. Old bugs still present (some phases do not plot missed assemblages at all)
+- Refactored NN_MELTS Emulator Class to use ml_indexer Architecture
+- Added bundle_insanity_filter() to filter out bad runs from MELTS. Req'd to be less than 0.1% of data
+- Added Cr/NoCr split workflow to separate chrome
 
-- **Adapted old 1:1 Recovery Plots**
-
-- Memmap debugging for deep filters and other MLbundle operating functions
-
-- **Refactored NN_MELTS Emulator Class to use ml_indexer Architecture**
-  
-- Added bundle_insanity_filter() to filters.py that performs sanity checks and deletes failing rows instead of raising errors.
-- Added Cr/NoCr split workflow to separate chrome for train/valid datasets based on bulk Cr2O3.
-- Added BigMetaTable.manual_split to use the provided indices when splitting blurredbinaries.
 
 Commit: 9760356478a2072402fcb8275276c1e9d4cd3d28
-2026-02-13
+2026-02-13: Training focus
 - Added/Debugged Detailed model metadata inclusion with .tar files
 - Removed automatic .update_table() calls to ml_indices for more granular control of indexer 
 - Implemented log normalized molar predictions

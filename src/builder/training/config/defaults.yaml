@@ -3,6 +3,7 @@ encoderLayerUp: 1
 encoderLayerDown: 0
 middleLayerUp: 2
 middleLayerDown: 1
+best_loss: null
 low_regularization: none
 high_regularization: none
 activation_leak: 0.05

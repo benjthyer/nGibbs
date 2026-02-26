@@ -383,6 +383,7 @@ class MidLevelNetwork(TunableModel):
         self.register_buffer('fixed_phaseToCompMap', torch.tensor(self.fixed_phaseToCompMap_raw, dtype=torch.float))
         self.register_buffer('compToEl', torch.tensor(self.compToOx_raw @ self.oxToEl_raw, dtype=torch.float))
         self.register_buffer('molar_epsilon', torch.tensor(self.ml_indexer.molar_epsilon, dtype=torch.float32))
+        print("Registered molar_epsilon buffer with value: {}".format(self.molar_epsilon.item()))
 
     def save(self, DictFilePath, config_yaml=None, training_yaml=None, processing_yaml=None, stats=None, log_text=None):
         """
@@ -495,9 +496,11 @@ class MidLevelNetwork(TunableModel):
         logMoles = (self.mole_head(latentx) * binary_mask) # Apply binary mask to zero out non-present phases        eps = logMoles.new_tensor(self.ml_indexer.molar_epsilon)
         eps = self.molar_epsilon #* torch.ones_like(logMoles, dtype=logMoles.dtype, device=logMoles.device) # Use registered buffer for molar epsilon
         if eps:
+            #print("Applying molar epsilon in forward_phase_moles: {}".format(eps.item()))
             phaseMoles = (torch.exp(logMoles * torch.log(torch.tensor(10, device=logMoles.device, dtype=logMoles.dtype))) - eps) * binary_mask #  invert log transform; add small epsilon to assert lower bound for the outputs
         else:
             phaseMoles = logMoles
+            #print("No molar epsilon applied in forward_phase_moles; using raw mole head outputs as phase moles.")
         compMultipliers = phaseMoles @ self.phaseToCompMap #(B,C)
         intensivePhaseProportions = intensiveComponents @ self.variedToAllComp #BV, VC -> BC #NEED TO GET BINARIES AND PROPORTIONS TOGETHER IN COMPONENT FORM, RECREATE PHASETOCOMP (B,P,C).vASK IF INDEXING TO BUILD IS THE MOST EFFICIENT WAY
         phaseProportions = intensivePhaseProportions + self.fixed_phaseToCompMap # How to project? BC + 1C -> BC. Get ones where all pure phase components are
@@ -888,9 +891,9 @@ class MidLevelNetwork(TunableModel):
 
             print(f"NANs in chem_out after superliquidus assignment: {torch.isnan(chem_out).sum()}")
 
-            """if not NN_only and non_super.any():
+            if not NN_only and non_super.any():
                 chem_out[non_super] = self.polish_negative_px(chem_out[non_super])
-                chem_out[non_super] = self.polish_negative_sp(chem_out[non_super])"""
+                chem_out[non_super] = self.polish_negative_sp(chem_out[non_super])
 
         else:  # Training
             chem_outputs = [
@@ -919,6 +922,7 @@ class MidLevelNetwork(TunableModel):
         phaseMoles[superliquidus, self.ml_indexer.mass_phasedict['melts-liquid']] = 1.0
         # Set logMoles such that phaseMoles = 1.0 when inverted: log10(1 + eps)
         if self.molar_epsilon:
+            #print("Applying molar epsilon for superliquidus logMoles assignment: {}".format(self.molar_epsilon.item()))
             log_ten = torch.log(torch.tensor(10.0, device=logMoles.device, dtype=logMoles.dtype))
             target_logMoles = torch.log(1.0 + self.molar_epsilon) / log_ten
             logMoles[superliquidus, self.ml_indexer.mass_phasedict['melts-liquid']] = target_logMoles
@@ -992,6 +996,7 @@ def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = 
             ml_indexer.molar_epsilon = epsilon
         config['ml_indexer'] = ml_indexer
         
+        print(f"ml_indexer.molar_epsilon = {ml_indexer.molar_epsilon}")
         # === Create model with loaded config ===
         model = MidLevelNetwork(**config)
         
@@ -1012,6 +1017,8 @@ def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = 
         else:
             # Load full model
             model.load_state_dict(saved_state_dict, strict=False)
+
+        model.molar_epsilon.fill_(float(model.ml_indexer.molar_epsilon))
     
     return model
 
@@ -1052,7 +1059,7 @@ def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only=False, ml_ind
     # Check extension first: explicit .zip files should use zip loading
     if DictFilePath.suffix == '.zip':
         print(f"Attempting to load model from .zip file: {DictFilePath}")
-        return load_model_from_zip(DictFilePath, substitutions=substitutions, low_only=low_onl, epsilon=epsilon)
+        return load_model_from_zip(DictFilePath, substitutions=substitutions, low_only=low_only, epsilon=epsilon)
     
     print(f"Attempting to load model from .pt file: {DictFilePath}")
 
@@ -1088,6 +1095,8 @@ def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only=False, ml_ind
             model.load_state_dict(model_dict, strict=False)
         else:
             model.load_state_dict(ckpt['state_dict'], strict=False)
+
+        model.molar_epsilon.fill_(float(model.ml_indexer.molar_epsilon))
         
         return model
     
