@@ -7,6 +7,7 @@ _____________________ Unreleased _______________________
 - Added YAML training orchestration docs: defaults, global, episode overrides.
 - Added schematic NN_MELTS wrapper-style usage for table-based inference.
 - Updated README module-structure tree to reflect current src files/directories.
+- Added README trees for trained model package and ml_indexer state files.
 
 2026-02-26
 - Replaced hardcoded [:-1] chemistry matrix cuts with [:len(Elkeys)].
@@ -17,17 +18,10 @@ _____________________ Unreleased _______________________
 - Sanitized NaNs in compToOxLoad/OxToEl to prevent molarlabels NaN propagation.
 
 2026-02-25
-- Added processing/export_only.py CLI to export one bundle from csv/txt input without any filtering logic. Useful for Ground Truthing phase diagrams and harders. 
-- Added method to NN_MELTS to reorder arbitrary labeled input tables with header-based feature reordering.
-- Preparing to add constant Fe2O3 functionality, necesary for geodynamics. 
-
-2026-02-24
-- Appended HeFESTo phase/component rows to compToOxV2 projection table.
-    - Removed test forcing compToOx to have same rows as PsSp transform. This transform will not be applied to HeFESTo data. Will need separate loading script for HeFESTo data. 
-- Added recovery plot binary metrics text output per phase. (need to pretty-fy)
+- Removed test forcing compToOx to have same rows as PsSp transform.
+- This transform will not be applied to HeFESTo data.
+- Will need separate loading script for HeFESTo data.
 - Fixed tuning logic bug where WD/Noise parameters could be skipped in certain cases
-- Fixed bug where tuned parameters often overwritten. Reloading best state now before every call to trainers within tuning scripts
-
 2026-02-23
 - Tested model molar_epsilon 1E-3. Not as effective as linear softmax it seems 
     - Fixed overwriting bug for molar epsilon by high level NN_MELTS object
