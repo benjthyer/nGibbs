@@ -78,13 +78,19 @@ def strip_filename_suffixes(filename, suffixes=None):
 
 class BigMetaTable:
     def __init__(self, filename, read_dir=None, memmap_mode='r+', rebuild_memmap=False,
-                 allow_differing_lengths=False, headers=None):
+                 allow_differing_lengths=False, headers=None, Model='MELTS', OXYGEN=None):
         
         self.filename = filename
         self.memmap_file = self.filename + '.npy'
         self.csv_file =  self.filename + '.csv'
         self.txt_file =  self.filename + '.txt'
-        
+        if 'hefesto' in filename.lower() and Model.lower() != 'hefesto': # Overwrite if HeFESTo is detected in filename, but only if not already set to HeFESTo 
+            self.Model = 'HeFESTo'
+            print('OVERRIDING MODEL TO HeFESTo BASED ON FILENAME, AFFECTS PXSP TRANSFORMATIONS!')
+        else:
+            self.Model = Model
+
+        self.OXYGEN = OXYGEN
 
         if read_dir is None:
             self.read_dir = ''
@@ -130,7 +136,7 @@ class BigMetaTable:
                 self.file_rows = file_rows
             
             # Build DatasetIndexer from headers
-            self.indexer = DatasetIndexer(self.header)
+            self.indexer = DatasetIndexer(self.header, MODEL = self.Model, OXYGEN = self.OXYGEN)
         
                 
             total_rows = file_rows
@@ -174,7 +180,7 @@ class BigMetaTable:
             self.file_rows = file_rows
            
             # Build DatasetIndexer from loaded headers
-            self.indexer = DatasetIndexer(self.header)
+            self.indexer = DatasetIndexer(self.header, MODEL = self.Model, OXYGEN = self.OXYGEN)
             
             total_rows = file_rows
             self.total_rows = total_rows
@@ -550,7 +556,7 @@ class BigMetaTable:
         self.save_txt()
         
         # Build new BigMetaTable
-        new_table = BigMetaTable(new_filename)
+        new_table = BigMetaTable(new_filename, Model=self.Model, OXYGEN=self.OXYGEN)
         
         # Move BlurredBinaries
         if self.blurredbinaries is not None:
@@ -591,9 +597,11 @@ class BigMetaTable:
             # Update reference to new memmap in read mode
             #self.blurredbinaries = np.load(binary_name, mmap_mode='r')
             
+        OXYGEN = self.OXYGEN
+        Model = self.Model
         del self
         gc.collect()
-        newself = BigMetaTable(remaining_filename)
+        newself = BigMetaTable(remaining_filename, Model=Model, OXYGEN=OXYGEN)
             
         return newself, new_table
 
@@ -682,7 +690,7 @@ class BigMetaTable:
         self.save_txt()
         
         # Build new BigMetaTable
-        new_table = BigMetaTable(new_filename)
+        new_table = BigMetaTable(new_filename, Model=self.Model, OXYGEN=self.OXYGEN)
         
         # Move BlurredBinaries
         if self.blurredbinaries is not None:
@@ -723,9 +731,11 @@ class BigMetaTable:
             # Update reference to new memmap in read mode
             #self.blurredbinaries = np.load(binary_name, mmap_mode='r')
             
-        del self
+        OXYGEN = self.OXYGEN
+        Model = self.Model
+        del self # Deletion for memory management. 
         gc.collect()
-        newself = BigMetaTable(remaining_filename)
+        newself = BigMetaTable(remaining_filename, Model=Model, OXYGEN=OXYGEN)
             
         return newself, new_table
 
@@ -1291,9 +1301,6 @@ class BigMetaTable:
         Minv = self.indexer.ml_indexer.Minv                  # Inverse molar mass matrix (diagonal)
         Oxides = self.indexer.ml_indexer.Oxides              # List of oxide names
 
-        print(compToOxLoad)
-        print(self.table1)
-        
         # ========== Initialize output memmap ==========
         total_rows = self.table1.shape[0]
         num_cols = self.indexer.ml_indexer.ncomps

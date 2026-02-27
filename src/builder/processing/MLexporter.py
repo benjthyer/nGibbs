@@ -26,15 +26,15 @@ from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
 from nMELTS.utils.file_utils import load_ml_bundle, MLDataBundle
 from nMELTS.utils.math_utils import Normalizer
 
-featureNames = ['Pressure(System_main)', 'Temperature(System_main)', 'logfO2-QFM(System_main)']
+#featureNames = ['Pressure(System_main)', 'Temperature(System_main)', 'logfO2-QFM(System_main)']
 #freeOutputs = ['viscocity(System_main)', 'liq H (kJ)(melts-liquid)', 'Temperature(System_main)']
-freeOutputs = None
+#freeOutputs = None
 
 
 
 
 
-def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=False, featureNames=featureNames, freeOutputs=freeOutputs, indexer=None, config_path=None, bundle_name=None):
+def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=False, featureNames=None, freeOutputs=None, indexer=None, config_path=None, bundle_name=None):
 
     """Builds features and labels for training. Converts MELTS tables to .npy files fit for ML work.
     Self: BigMetaTable Instance.
@@ -289,7 +289,10 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
 
         ## Filter out data where features are improperly summed. Why is that? 
         """
-        bulk_wt_ox = (self.features[:,feature_offset:] @ np.linalg.inv(OxToEl[:-1])) @ MM[:-1,:-1]
+        bulk_wt_ox = (
+            self.features[:, feature_offset:]
+            @ np.linalg.inv(OxToEl[:len(Elkeys), :len(Elkeys)])
+        ) @ MM[:len(Elkeys), :len(Elkeys)]
         bulk_wt_ox = 100*bulk_wt_ox/np.sum(bulk_wt_ox, axis = 1).reshape(-1,1)
 
         GT_comps = np.zeros((self.features.shape[0], indexer.ml_indexer.ncomps))
@@ -300,7 +303,11 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             else:
                 GT_comps[:,label_indices[phase]] = (self.molarlabels[:, mass_phasedict[phase]]).reshape(-1,1)
 
-        GTReconBulk_oxides = (((GT_comps @ compToOxLoad) @ OxToEl) @ np.linalg.inv(OxToEl[:-1])) @ MM[:-1,:-1]
+        GTReconBulk_oxides = (
+            (((GT_comps @ compToOxLoad) @ OxToEl)
+             @ np.linalg.inv(OxToEl[:len(Elkeys), :len(Elkeys)]))
+            @ MM[:len(Elkeys), :len(Elkeys)]
+        )
         GTReconBulk_oxides =  GTReconBulk_oxides*100/np.sum(GTReconBulk_oxides,axis=1, keepdims=True)
 
 
@@ -591,7 +598,7 @@ def generate_dataset_stats(dataset_name, ml_indexer, output_dir=None):
     mass_labels = np.load(f"{dataset_name}mass_labels.npy")
     
     n_samples = features.shape[0]
-    n_conditions = 3  # P, T, fO2
+    n_conditions = len(ml_indexer.featureNames)  # P, T, fO2
     n_chem_features = features.shape[1] - n_conditions
     
     # Helper function for horizontal histogram
@@ -639,7 +646,7 @@ def generate_dataset_stats(dataset_name, ml_indexer, output_dir=None):
         oxide_moles = chem_features @ ElToOx
         
         # Oxide moles to wt% (multiply by molar mass and normalize)
-        MM_ox = ml_indexer.MM[:-1,:-1]  # Molar masses, not including ferric iron.
+        MM_ox = ml_indexer.MM[:len(ml_indexer.Elkeys), :len(ml_indexer.Elkeys)]
         oxide_names = ml_indexer.Oxides
         
         # Calculate oxide wt% for each sample

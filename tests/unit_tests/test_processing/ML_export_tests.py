@@ -265,7 +265,7 @@ def sanity_check_bundle(bundle_path: Path, tolerance=1e-3, bulk_tol_frac=1e-3) -
     bulk_el = (comp_moles @ indexer.compToOxLoad) @ indexer.OxToEl
     bulk_el = bulk_el / np.sum(bulk_el, axis=1, keepdims=True)
 
-    feature_offset = 3
+    feature_offset = len(indexer.featureNames)
     expected_el = features[:, feature_offset:]
     rel_diff = np.abs(bulk_el - expected_el) / (expected_el + 1e-10)
     per_row_max = np.max(rel_diff, axis=1)
@@ -378,7 +378,7 @@ def test_bulk_reconstruction(BMT, tolerance_ppm=0.1, export_failures_path: Optio
     bulk_element_fractions = bulk_moles_elements / (total_moles + 1e-10)
     
     # Expected values from features (columns 3: onwards, assuming PTfO2 features)
-    feature_offset = 3
+    feature_offset = len(BMT.indexer.ml_indexer.featureNames)
     expected_element_fractions = BMT.features[:, feature_offset:]
     
     # Compare
@@ -439,7 +439,7 @@ def test_bulk_reconstruction(BMT, tolerance_ppm=0.1, export_failures_path: Optio
         if export_failures_path is None:
             export_failures_path = Path(__file__).parent / "logs" /  'reconstruction_test_failures.csv'
 
-        feature_offset = 3
+        feature_offset = len(BMT.indexer.ml_indexer.featureNames)
         elkeys = BMT.indexer.ml_indexer.Elkeys
         comp_subset = BMT.indexer.compositionally_variable_subset
         label_names = BMT.indexer.ml_indexer.label_names
@@ -564,7 +564,7 @@ def test_bulk_comp_change_by_run(BMT, mode='batch', tolerance_ppm=0.1, frac_chan
         frac_change_threshold: minimum fraction of runs that must change for fractional mode.
     """
     # Use features' element fractions for robustness (already normalized to 1)
-    feature_offset = 3
+    feature_offset = len(BMT.indexer.ml_indexer.featureNames)
     assert hasattr(BMT, 'features') and BMT.features is not None, "BMT.features must be loaded before running this test."
 
     run_ids = np.unique(BMT.run_indices)

@@ -197,7 +197,10 @@ def load_ML_data(Trainpath, only_VP=None):
     """def bulk_test_in_batches(Trainnormfeatures, Trainmoles, Trainlabels, batch_size=8192):
 
         # Precompute constant matrices as float32 tensors
-        MM_t = torch.tensor(MM[:-1, :-1], dtype=torch.float32)
+        MM_t = torch.tensor(
+            MM[:len(ml_indexer.Elkeys), :len(ml_indexer.Elkeys)],
+            dtype=torch.float32
+        )
         compToOx_t = torch.tensor(compToOx, dtype=torch.float32)
         oxToEl_full_t = torch.tensor(oxToEl, dtype=torch.float32)
 

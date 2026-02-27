@@ -92,6 +92,12 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
     resampling_cfg = config['resampling']
     feature_names_cfg = config.get('featureNames')
     free_outputs_cfg = config.get('freeOutputs')
+    if 'logfO2-QFM(System_main)' in feature_names_cfg:
+        OXYGEN = 'open'
+        print("fO2 Feature Passed: Open System Oxygen")
+    else:   
+        OXYGEN = 'closed'
+        print("No fO2 Feature Passed: Closed System Oxygen")
     
     balance_cfg = config['balancing']
     filter_cfg = config['deep_filter']
@@ -111,6 +117,11 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
     Mode = Mode or dataset_cfg['Mode']
     subset = subset if subset is not None else dataset_cfg['subset']
     use_external = use_external if use_external is not None else dataset_cfg['use_external']
+
+    if 'hefesto' in MELTSModel.lower():
+        MODEL = 'HeFESTo'
+    else:
+        MODEL = 'MELTS' 
     
     preprocessed = preprocessed if preprocessed is not None else preproc_cfg['preprocessed']
     
@@ -141,9 +152,15 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
 
     # Build source filenames
     internal_data_path = str(INTERNAL_DIR)
-    ValidName = f"{internal_data_path}/MELTS{MELTSModel}_Validset{Date}{Mode}"
-    TestName = f"{internal_data_path}/MELTS{MELTSModel}_Testset{Date}{Mode}"
-    TrainName = f"{internal_data_path}/MELTS{MELTSModel}_Trainset{Date}{Mode}"
+    if MODEL == 'MELTS': # Overwrite if HeFESTo is detected in MELTSModel, but only if not already set to HeFESTo
+        ValidName = f"{internal_data_path}/MELTS{MELTSModel}_Validset{Date}{Mode}"
+        TestName = f"{internal_data_path}/MELTS{MELTSModel}_Testset{Date}{Mode}"
+        TrainName = f"{internal_data_path}/MELTS{MELTSModel}_Trainset{Date}{Mode}"
+    else:
+        
+        ValidName = f"{internal_data_path}/{MELTSModel}_Validset{Date}{Mode}"
+        TestName = f"{internal_data_path}/{MELTSModel}_Testset{Date}{Mode}"
+        TrainName = f"{internal_data_path}/{MELTSModel}_Trainset{Date}{Mode}"
 
     # Create destination directories if they don't exist
     out_Dir = Path(internal_train_dir(MELTSModel))
@@ -191,7 +208,8 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
     try:
         # Process training data
         read_dir = str(external_base) if use_external else None
-        TrainMELTS = BigMetaTable(TrainName, read_dir=read_dir)
+
+        TrainMELTS = BigMetaTable(TrainName, read_dir=read_dir, Model=MODEL, OXYGEN=OXYGEN) # Assume closed system for training data, this is the most common and prevents extreme outliers in low-F samples that can destabilize training. Validation/test data will be filtered to match the training set's phase space, so this assumption shouldn't cause issues.
         header = TrainMELTS.header  # Capture header for indexer construction
         pre_filter = TrainMELTS.table.shape[0]
 
@@ -301,7 +319,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         #sanity_check_bundle(train_bundle)  # Verify training bundle integrity before proceeding
 
         # Process validation and test data
-        ValidMELTS = BigMetaTable(ValidName, read_dir=read_dir)
+        ValidMELTS = BigMetaTable(ValidName, read_dir=read_dir, Model=MODEL, OXYGEN=OXYGEN)
         assert ValidMELTS.header == header, "Validation dataset header does not match training dataset header!" #(This is assummed in later steps, but maybe doesn't need to be?)
 
         ValidMELTS.indexer = TrainIndexer  # Assign identical indexer for consistency with training dataset
@@ -354,7 +372,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
             #TestMELTS.save(name=f"{TestName}Filtered", save_csv=False)
             #ValidMELTS.save(name=f"{ValidName}Filtered", save_csv=False)
         else:
-            TestMELTS = BigMetaTable(TestName, read_dir=read_dir)
+            TestMELTS = BigMetaTable(TestName, read_dir=read_dir, Model=MODEL, OXYGEN=OXYGEN)
 
         TestMELTS.filename = TestName
         ValidMELTS.filename = ValidName

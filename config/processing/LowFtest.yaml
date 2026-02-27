@@ -5,13 +5,13 @@
 # DATASET SELECTION
 # ============================================================================
 dataset:
-  MELTSModel: 'p'          # MELTS model version: '102', '110', '120', 'p'
-  Date: 'Feb16NoCr'               # Date identifier for dataset naming
+  MELTSModel: '110'          # MELTS model version: '102', '110', '120', 'p'
+  Date: 'Feb13'               # Date identifier for dataset naming
   Mode: 'BatchCooling'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
-outname: 'pGeoDynamicsIsentropiclNoCr'                  # Base name for output folder (without extension). Auto-Generated if blank
+outname: '101OxyTest'                  # Base name for output folder (without extension). Auto-Generated if blank
 
 # ============================================================================
 # NON-CHEMICAL FEATURE AND LABEL CONFIGURATION (format: attribute(phase): e.g. 'Pressure(System_main)')

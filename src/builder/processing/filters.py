@@ -445,14 +445,85 @@ def bundle_insanity_filter(tarball_path, tolerance=1e-3, bulk_tol_frac=1e-3, bat
     
     tarball_path = Path(tarball_path)
     temp_dir = tempfile.mkdtemp()
+    temp_path = Path(temp_dir)
+    ml_indexer = None
+
+    def _save_array_preview_csv(npy_path, csv_path, max_rows=20_000, columns=None):
+        if not npy_path.exists():
+            return
+        arr = np.load(npy_path, mmap_mode='r')
+        if arr.ndim == 1:
+            arr = arr.reshape(-1, 1)
+        row_count = min(arr.shape[0], max_rows)
+        data = np.asarray(arr[:row_count])
+        if columns is None or len(columns) != data.shape[1]:
+            columns = [f"col_{i}" for i in range(data.shape[1])]
+        header = ",".join(columns)
+        np.savetxt(csv_path, data, delimiter=",", header=header, comments="")
+        if hasattr(arr, '_mmap') and arr._mmap is not None:
+            arr._mmap.close()
+        del arr
+
+    def _export_failure_csvs(max_rows=20_000):
+        base_name = tarball_path.name.replace('.tar.gz', '')
+        out_dir = tarball_path.parent / 'logs' / f"{base_name}_insanity_failure_csv"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        if ml_indexer is not None:
+            feature_cols = list(ml_indexer.featureNames) + list(ml_indexer.Elkeys)
+            label_cols = [
+                ml_indexer.label_names[i]
+                for i in ml_indexer.compositionally_variable_subset
+            ]
+            phase_cols = list(ml_indexer.all_phases)
+        else:
+            feature_cols = None
+            label_cols = None
+            phase_cols = None
+
+        _save_array_preview_csv(
+            temp_path / 'features.npy',
+            out_dir / 'features_first20000.csv',
+            max_rows=max_rows,
+            columns=feature_cols,
+        )
+        _save_array_preview_csv(
+            temp_path / 'labels.npy',
+            out_dir / 'labels_first20000.csv',
+            max_rows=max_rows,
+            columns=label_cols,
+        )
+        _save_array_preview_csv(
+            temp_path / 'molar_labels.npy',
+            out_dir / 'molar_labels_first20000.csv',
+            max_rows=max_rows,
+            columns=phase_cols,
+        )
+        _save_array_preview_csv(
+            temp_path / 'binary_labels.npy',
+            out_dir / 'binary_labels_first20000.csv',
+            max_rows=max_rows,
+            columns=phase_cols,
+        )
+        _save_array_preview_csv(
+            temp_path / 'mass_labels.npy',
+            out_dir / 'mass_labels_first20000.csv',
+            max_rows=max_rows,
+            columns=phase_cols,
+        )
+        _save_array_preview_csv(
+            temp_path / 'free_outputs.npy',
+            out_dir / 'free_outputs_first20000.csv',
+            max_rows=max_rows,
+            columns=getattr(ml_indexer, 'freeOutputs', None) if ml_indexer is not None else None,
+        )
+        print(f"[INSANITY FILTER] Exported failure CSV previews to {out_dir}")
     
     try:
         # Extract tarball
         print(f"\n[INSANITY FILTER] Extracting {tarball_path}...")
         with tarfile.open(tarball_path, 'r:gz') as tar:
             tar.extractall(path=temp_dir)
-        
-        temp_path = Path(temp_dir)
         
         # Load ml_indexer and arrays
         ml_indexer_path = temp_path / 'ml_indexer'
@@ -531,7 +602,7 @@ def bundle_insanity_filter(tarball_path, tolerance=1e-3, bulk_tol_frac=1e-3, bat
         bulk_el = (comp_moles @ ml_indexer.compToOxLoad) @ ml_indexer.OxToEl
         bulk_el = bulk_el / np.sum(bulk_el, axis=1, keepdims=True)
         
-        feature_offset = 3
+        feature_offset = len(ml_indexer.featureNames)
         expected_el = features[:, feature_offset:]
         rel_diff = np.abs(bulk_el - expected_el) / (expected_el + 1e-10)
         per_row_max = np.max(rel_diff, axis=1)
@@ -641,6 +712,14 @@ def bundle_insanity_filter(tarball_path, tolerance=1e-3, bulk_tol_frac=1e-3, bat
         gc.collect()
         
         print(f"[INSANITY FILTER] Complete. Deleted {num_to_delete} rows ({deletion_fraction:.4%})")
+
+    except Exception:
+        print("[INSANITY FILTER] Failure detected. Exporting first 20000 rows to CSV.")
+        try:
+            _export_failure_csvs(max_rows=20_000)
+        except Exception as export_error:
+            print(f"[INSANITY FILTER] Failed to export failure CSV previews: {export_error}")
+        raise
         
     finally:
         # Clean up temporary directory with retry on Windows

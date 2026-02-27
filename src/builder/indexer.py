@@ -43,6 +43,7 @@ ELEMENT_TO_OXIDE = {
     'Cr': 'Cr2O3',
     'Mn': 'MnO',
     'Ni': 'NiO',
+    'Fe3': 'Fe2O3' # Closed oxygen, added for completeness
 }
 
 # Reverse mapping: oxide to element
@@ -138,7 +139,9 @@ class DatasetIndexer:
             'mass (gm)', 'rho (gm/cc)', 'H (kJ)', 'S (J/K)', 'V (cc)',
             'liq mass (gm)', 'liq rho (gm/cc)', 'liq vis (log 10 poise)',
             'liq H (kJ)', 'liq S (J/K)', 'liq V (cc)'
-            }):
+            },
+        OXYGEN = None, #'closed',
+        MODEL = 'MELTS'): 
         #Elkeys: Optional[List[str]] = None):
         """
         Initialize indexer from column headers.
@@ -153,10 +156,8 @@ class DatasetIndexer:
             Mapping of phase -> components to exclude from ML indexing. Components are excluded only within their phase.
         STATE_VARIABLES : Set[str]
             Set of state variable names to exclude from chemical component indexing
-        Elkeys : Optional[List[str]]
-            List of element names. If None, uses default from constants.
-            Required elements (Si, Al, Fe, Ca, Mg) will be automatically added if missing.
-            WRkeys and Oxides are built automatically from Elkeys.
+        OXYGEN: Determines whether Fe2O3 is conserved ('closed') or if oxygen is buffered ('open')
+        MODEL: Determines if model is melts or other. HeFESTo doesn't use PxSp transformation matrices 
         """
         self.headers = headers
         self.database_headers = headers.copy()
@@ -171,7 +172,10 @@ class DatasetIndexer:
 
         self.STATE_VARIABLES = STATE_VARIABLES
         self.EXCLUDED_PHASES = {'System_main', 'Bulk_comp'}  # Default excluded phases
+        self.OXYGEN = OXYGEN
+        self.MODEL = MODEL
 
+        assert self.OXYGEN in ['closed', 'open'], "OXYGEN parameter must be 'closed' (constant Fe2O3) or 'open' (buffered)"
 
         self._parse_headers() # Build MELTS_indicies to index all of the MELTS table
 
@@ -184,7 +188,10 @@ class DatasetIndexer:
         # Exclude components whose oxides fall outside the active Oxides list
         projections_dir = Path(__file__).resolve().parent.parent / 'nMELTS' / 'config' / 'projections'
         comp_to_ox_path = projections_dir / 'compToOxV2.csv'
-        ox_to_el_path = projections_dir / 'OxToElV2.csv'
+        if self.OXYGEN == 'open':
+            ox_to_el_path = projections_dir / 'OxToElV2.csv'
+        elif self.OXYGEN == 'closed':
+            ox_to_el_path = projections_dir / 'OxToElV2_ferric.csv'
         self.components_with_extra_oxides: Dict[str, List[str]] = {}
         self.oxides_to_elements: Dict[str, List[str]] = {}
         self.compToOx_df = pd.read_csv(comp_to_ox_path, index_col=0)
@@ -252,6 +259,12 @@ class DatasetIndexer:
                 
                 # Map oxide to element
                 if oxide_name in OXIDE_TO_ELEMENT:
+                    if oxide_name == 'Fe2O3':
+                        if self.OXYGEN == 'open':
+                            print("Skipping Fe3 in Elkeys because oxygen is buffered (open system)")
+                            # In open oxygen case, we treat Fe as buffered and don't include Fe2O3 as an active oxide, so we skip adding Fe to Elkeys
+                            continue
+                        print("Adding Fe3 in Elkeys because oxygen is buffered (open system)")
                     elkeys_set.add(OXIDE_TO_ELEMENT[oxide_name])
         
         # Convert to sorted list for consistent, reproducible ordering
@@ -289,8 +302,7 @@ class DatasetIndexer:
         # Delegate building of ML-ready indexers to MLIndexer (constructed from components_in_phases)
     
         self.ml_indexer = MLIndexer(components_in_phases=self.components_in_phases,
-                                    Elkeys=self.Elkeys,
-                                    )
+                                    Elkeys=self.Elkeys, Model=self.MODEL)
 
         self.expose_ml_indexer_attributes()
 

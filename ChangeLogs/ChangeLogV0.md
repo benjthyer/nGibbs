@@ -1,5 +1,21 @@
 _____________________ Unreleased _______________________
 
+2026-02-27
+- Updated README latter sections for current inference and training capabilities.
+- Marked inference as nearly complete with default mass-balance behavior.
+- Documented optional 0/1/2/3-stage mass-balance fitting tradeoffs.
+- Added YAML training orchestration docs: defaults, global, episode overrides.
+- Added schematic NN_MELTS wrapper-style usage for table-based inference.
+- Updated README module-structure tree to reflect current src files/directories.
+
+2026-02-26
+- Replaced hardcoded [:-1] chemistry matrix cuts with [:len(Elkeys)].
+- Updated export stats and bulk reconstruction checks for Fe3+ exclusion.
+- Synced processing test and training diagnostic snippet to Elkeys slices.
+- Replaced hardcoded feature offsets with len(ml_indexer.featureNames).
+- Added insanity-filter failure CSV preview export (first 20k rows).
+- Sanitized NaNs in compToOxLoad/OxToEl to prevent molarlabels NaN propagation.
+
 2026-02-25
 - Added processing/export_only.py CLI to export one bundle from csv/txt input without any filtering logic. Useful for Ground Truthing phase diagrams and harders. 
 - Added method to NN_MELTS to reorder arbitrary labeled input tables with header-based feature reordering.

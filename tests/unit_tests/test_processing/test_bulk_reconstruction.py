@@ -32,14 +32,16 @@ def test_bulk_reconstruction(melts_obj, sample_size=10):
     
     # Extract indexer components
     indexer = melts_obj.indexer
+    ml_indexer = indexer.ml_indexer
     label_indices_comp = indexer.label_indices_comp
     label_indices = indexer.label_indices
     mass_phasedict = indexer.mass_phasedict
     mass_indices = indexer.mass_indices
-    compToOxLoad = indexer.ml_indexer.compToOxLoad
-    OxToEl = indexer.ml_indexer.OxToEl
+    compToOxLoad = ml_indexer.compToOxLoad
+    OxToEl = ml_indexer.OxToEl
     compositionally_variable_phases = indexer.compositionally_variable_phases
-    MM = indexer.ml_indexer.MM
+    MM = ml_indexer.MM
+    Elkeys = ml_indexer.Elkeys
     
     # Get data arrays (assuming they exist from resampling_to_datasets)
     features = melts_obj.features
@@ -48,7 +50,7 @@ def test_bulk_reconstruction(melts_obj, sample_size=10):
     binarylabels = melts_obj.binarylabels
     all_phases = indexer.all_phases
     
-    feature_offset = 3  # Assuming PTfO2 features
+    feature_offset = len(ml_indexer.featureNames)
     
     print("="*80)
     print("BULK RECONSTRUCTION TEST")
@@ -56,7 +58,10 @@ def test_bulk_reconstruction(melts_obj, sample_size=10):
     
     # Step 1: Calculate bulk composition from features (element moles -> oxides)
     print("\n[Step 1] Computing bulk_wt_ox from features...")
-    bulk_wt_ox = (features[:, feature_offset:] @ np.linalg.inv(OxToEl[:-1])) @ MM[:-1, :-1]
+    bulk_wt_ox = (
+        features[:, feature_offset:]
+        @ np.linalg.inv(OxToEl[:len(Elkeys)])
+    ) @ MM[:len(Elkeys), :len(Elkeys)]
     bulk_wt_ox = 100 * bulk_wt_ox / np.sum(bulk_wt_ox, axis=1).reshape(-1, 1)
     print(f"  Shape: {bulk_wt_ox.shape}")
     print(f"  Sum check (should be ~100): {bulk_wt_ox[0].sum():.4f}")
@@ -78,7 +83,11 @@ def test_bulk_reconstruction(melts_obj, sample_size=10):
     
     # Step 3: Convert GT_comps to oxides
     print("\n[Step 3] Converting GT_comps to GTReconBulk_oxides...")
-    GTReconBulk_oxides = (((GT_comps @ compToOxLoad) @ OxToEl) @ np.linalg.inv(OxToEl[:-1])) @ MM[:-1, :-1]
+    GTReconBulk_oxides = (
+        (((GT_comps @ compToOxLoad) @ OxToEl)
+         @ np.linalg.inv(OxToEl[:len(Elkeys)]))
+        @ MM[:len(Elkeys), :len(Elkeys)]
+    )
     GTReconBulk_oxides = GTReconBulk_oxides * 100 / np.sum(GTReconBulk_oxides, axis=1, keepdims=True)
     print(f"  Shape: {GTReconBulk_oxides.shape}")
     print(f"  Sum check (should be ~100): {GTReconBulk_oxides[0].sum():.4f}")

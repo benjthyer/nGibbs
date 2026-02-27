@@ -72,6 +72,7 @@ P : melts-liquid,0,0,0,0,0,0,0,0,0.5,0,0,0,0,0
 Mn : melts-liquid,0,0,0,0,0,0,0,0,0,1,0,0,0,0
 H : melts-liquid,0,0,0,0,0,0,0,0,0,0,0.5,0,0,0
 Cr : melts-liquid,0,0,0,0,0,0,0,0,0,0,0,0.5,0,0
+Fe3 : melts-liquid,0,0,0,0,0,0,0,0,0,0,0,0,0,0.5
 Ni : melts-liquid,0,0,0,0,0,0,0,0,0,0,0,0,1,0
 picro-chromite : spinel,0,0,0,0,1,0,0,0,0,0,0,1,0,0
 mg-wadsleyite : wadsleyite,1,0,0,0,2,0,0,0,0,0,0,0,0,0

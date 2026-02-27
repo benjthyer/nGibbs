@@ -36,7 +36,8 @@ class MLIndexer:
     def __init__(self,
                  components_in_phases: Optional[Dict[str, List[str]]] = None,
                  Elkeys: Optional[List[str]] = None,
-                 projections_dir: Optional[Path] = None):
+                 projections_dir: Optional[Path] = None,
+                 Model: str = 'MELTS'):
 
         # Store provided configuration
         self.components_in_phases = components_in_phases or {}
@@ -55,7 +56,7 @@ class MLIndexer:
         self.ncompsVaried: int = 0
         self.nphases: int = 0
         self.do_bulk: bool = True # Tells nMELTS object whether to reconstruct bulk calculations or not
-        
+        self.Model = Model
         # Feature normalizers (to be set by data loading pipeline)
         self.feature_normalizer: Optional[Any] = None  # Normalizer for input features
         self.output_normalizer: Optional[Any] = None   # Normalizer for free outputs (if applicable)
@@ -198,7 +199,8 @@ class MLIndexer:
         element_to_oxide = {
             'Si': 'SiO2', 'Ti': 'TiO2', 'Al': 'Al2O3', 'Fe': 'FeO',
             'Mg': 'MgO', 'Ca': 'CaO', 'Na': 'Na2O', 'K': 'K2O',
-            'P': 'P2O5', 'H': 'H2O', 'Cr': 'Cr2O3', 'Mn': 'MnO', 'Ni': 'NiO'
+            'P': 'P2O5', 'H': 'H2O', 'Cr': 'Cr2O3', 'Mn': 'MnO', 'Ni': 'NiO',
+            'Fe3' : 'Fe2O3' # Closed oxygen 
         }
 
         # Build WRkeys (oxides without Fe2O3) deterministically from Elkeys
@@ -222,15 +224,23 @@ class MLIndexer:
         compToOx_df = pd.read_csv(compToOx_path, index_col=0)
         
         # Load PxSp_Comp_Transform.csv (component transformation matrix)
-        PxSpTransform_path = self.projections_dir / 'PxSp_Comp_TransformV2.csv'
-        PxSpTransform_df = pd.read_csv(PxSpTransform_path, index_col=0)
+        if self.Model == 'MELTS':
+            PxSpTransform_path = self.projections_dir / 'PxSp_Comp_TransformV2.csv'
+            PxSpTransform_df = pd.read_csv(PxSpTransform_path, index_col=0)
+        
+
         
         # The assumptions that the components in rows of compToOx and PxSpTransform square matric are matching is baked into the construction of these projection matrices
         #assert compToOx_df.shape[0] == PxSpTransform_df.shape[0], f"Component count mismatch between compToOx rows:{compToOx_df.shape[0]} and PxSp_Comp_Transform matrices:{PxSpTransform_df.shape}."
         #assert compToOx_df.shape[0] == PxSpTransform_df.shape[1], f"Component count mismatch between compToOx rows:{compToOx_df.shape[0]} and PxSp_Comp_Transform matrices:{PxSpTransform_df.shape}."
 
         # Load OxToEl.csv (oxides to elements)
-        oxToEl_path = self.projections_dir / 'OxToElV2.csv'
+        print(f"ELKEYS: {self.Elkeys}")
+        if 'Fe3' in self.Elkeys:
+            oxToEl_path = self.projections_dir / 'OxToElV2_ferric.csv'
+            print("Loading OxToElV2_ferric.csv with Fe2O3 -> Fe3+ mapping for closed system oxygen")
+        else:
+            oxToEl_path = self.projections_dir / 'OxToElV2.csv'
         oxToEl_df = pd.read_csv(oxToEl_path, index_col=0)
 
         # Match CSV rows to our phase components
@@ -252,7 +262,13 @@ class MLIndexer:
         oxide_indices = np.array([compToOx_df.columns.get_loc(col) for col in self.Oxides])
 
         self.compToOxLoad = compToOxLoad_data[:, oxide_indices]
-        self.PxSpTransform = np.array(PxSpTransform_df.values)[np.ix_(row_idx, row_idx)].astype(np.float32)
+        if np.isnan(self.compToOxLoad).any():
+            nan_count = int(np.isnan(self.compToOxLoad).sum())
+            raise ValueError(f"Warning: compToOxLoad contains {nan_count} NaN values. ")
+        if self.Model == 'MELTS':
+            self.PxSpTransform = np.array(PxSpTransform_df.values)[np.ix_(row_idx, row_idx)].astype(np.float32)
+        else:
+            self.PxSpTransform = np.diag(np.ones(len(row_idx), dtype=np.float32)) # Identity if no transformation provided for non-MELTS models
 
         self.compToOx = np.linalg.inv(self.PxSpTransform) @ self.compToOxLoad
         
@@ -275,6 +291,9 @@ class MLIndexer:
         
         # Now select rows (oxides) and columns (elements)
         self.OxToEl = np.array(oxToEl_df.values)[np.ix_(ox_idx, el_idx)].astype(np.float32)
+        if np.isnan(self.OxToEl).any():
+            nan_count = int(np.isnan(self.OxToEl).sum())
+            raise ValueError(f"Warning: OxToEl contains {nan_count} NaN values. ")
         self.ElToOx = np.linalg.inv(self.OxToEl[:len(self.Elkeys)]) # Can map back to oxides, but only total iron. 
 
         # Build molar mass matrices

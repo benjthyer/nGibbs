@@ -8,6 +8,11 @@ dataset:
   use_external: false
 #outname: '110BalancingGeodynamicsOnly'
 
+featureNames: # Non-chemical features to include in the dataset
+  - 'Pressure(System_main)'
+  #- 'Temperature(System_main)'
+  - 'S(System_main)' # Isentropic 
+
 preprocessing:
   preprocessed: false
   filter_full_metadata: false
