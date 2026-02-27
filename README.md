@@ -1,6 +1,10 @@
 # nMELTS: Neural Network Emulator for MELTS Thermodynamic Modeling
 
-A machine learning emulator for MELTS thermodynamic modeling software. This project replaces computationally expensive MELTS simulations with fast neural network predictions while maintaining accuracy.
+A machine learning emulator for MELTS (and other) thermodynamic phasse equilibria models for silicate systems. This project replaces computationally expensive simulations with fast neural network predictions.
+
+NOTE: This Repository supports data generation, processing and training to produce new models. It is NOT intended at this time to be made public, and therefore needn't be strictly stable. 
+The public release will be limited to everything within ([src/nMELTS](src/nMELTS)). This portion is standalone and includes all model infrastructure and operations necesary to use
+nMELTS with pretrained models, allowing for tighter quality control and implementation simplicity.
 
 ## Table of Contents
 
@@ -22,7 +26,7 @@ A machine learning emulator for MELTS thermodynamic modeling software. This proj
 
 ## Overview
 
-**nMELTS** is a neural network emulator trained on MELTS thermodynamic simulations. Instead of running MELTS directly, nMELTS provides ~1000 times faster predictions of:
+**nMELTS** is a CUDA-powered neural network emulator trained on MELTS thermodynamic simulations. Instead of running MELTS directly, nMELTS (on CUDA) provides ~1000 times faster predictions of:
 
 - Phase assemblages at equilibrium 
 - Phase compositions in component space of reduced dimensionality.
@@ -69,37 +73,45 @@ A machine learning emulator for MELTS thermodynamic modeling software. This proj
   - File operations and directory management ([src/nMELTS/utils/file_utils.py](src/nMELTS/utils/file_utils.py))
   - String parsing utilities ([src/nMELTS/utils/string_utils.py](src/nMELTS/utils/string_utils.py))
 
-### 🟡 In Progress
-
 - **Model Infrastructure**
   - PyTorch Dataset and DataLoader integration ([src/builder/training/torchDataClass.py](src/builder/training/torchDataClass.py))
-  - Neural network architecture with mass balance enforcement ([src/nMELTS/engine/NN.py](src/nMELTS/engine/NN.py))
-  - Emulator inference wrapper ([src/nMELTS/engine/emulator.py](src/nMELTS/engine/emulator.py))
+  - Neural network architecture ([src/nMELTS/engine/NN.py](src/nMELTS/engine/NN.py))
+  - Emulator inference wrapper with mass balance enforcement ([src/nMELTS/engine/emulator.py](src/nMELTS/engine/emulator.py))
 
 - **Model Training**
   - Training loop implementation ([src/builder/training/tuners.py](src/builder/training/tuners.py))
   - Hyperparameter optimization ([src/builder/training/tuners.py](src/builder/training/tuners.py))
-  - Validation metrics and convergence checks
 
 - **Testing & Validation**
   - Unit tests for processing pipeline
-  - Integration tests for end-to-end workflows
-  - Straightforward validation against original MELTS predictions
+
+### 🟡 In Progress (req'd for release)
+- **Training Models**
+  - First targets: 
+    - Geodynamically relevant isentropic low melt fraction pMELTS emulator (w/wo Cr Models)
+    - "General" (any melt fraction) emulators for MELTS 1.0, MELTS 1.2, and pMELTS
+    - HeFESTo Models
+
+- **Inference API and Deployment Hardening**
+  - Inference support is nearly complete in `NN_MELTS` (table-based input handling, internal transformations, and chemistry reconstruction)
+  - User-side mass balance is enabled by default and will be configureable for 0/1/2/3-stage residual fitting to balance speed vs. fidelity
+  - Ongoing API polish for user-facing wrappers and additional refinement of spinel/pyroxene perturbation handling
+  - Deployment packaging and notebook tutorials
+
 
 ### 🔵 Planned
 
-- Error analysis and uncertainty quantification
-- GPU optimization for others' machines
-- Deployment as an installable module with .toml file
-- Detailed usage documentation and tutorials
+- Support for Apple's Neural Engine
 - Integration into PTT
+- Integration tests for end-to-end workflows
+- User-side automated testing of performance and quality of canned models against representative datasets. Execute upon installation/updates?
 
 ---
 
 ## Architecture
 
 ```
-Raw MELTS Data (.tbl files: data/Workspace)
+Raw MELTS (or HeFESTo / MAGEmin) Data (.tbl files: data/Workspace)
 
     ↓ Irreversibly Distilled and Compiled into
 
@@ -117,7 +129,10 @@ ML-Ready Dataset Bundle (tar.gz : data/MLready)
   ├─ binary_labels.npy     (present/absent phases)
   ├─ mass_labels.npy       (wt% phase masses)
   ├─ labels.npy            (intensive component fractions)
-  ├─ ml_indexer.pkl        (dataset/model specific indexers, labels, and transformation matrices)
+  ├─ ml_indexer/           (dataset/model indexer saved as state files)
+  │   ├─ indexer_metadata.json   (indexer metadata and feature/free-output names)
+  │   ├─ indexer_structure.json  (phase/component dictionaries and mappings)
+  │   └─ indexer_arrays.npz      (projection matrices and normalizer state arrays)
   ├─ free_outputs.npy      (OPTIONAL: non-chemical outputs not tied into mass conservation)
   ├─ stats.txt             (dataset statistics: composition range, phase abundances, liquid fraction)
   └─ processing.yaml       (config used for generation)
@@ -127,7 +142,20 @@ ML-Ready Dataset Bundle (tar.gz : data/MLready)
 │  (loadTrainData, torchDataClass, tuners)│
 └─────────────────────────────────────────┘
     ↓
-Trained Neural Network Model
+Trained Neural Network Model (tar)
+  └─ model_name.pt (zip package)
+    ├─ state_dict.pt           (PyTorch weights)
+    ├─ config.json             (model architecture)
+    ├─ metadata.json           (save-time metadata)
+    ├─ ml_indexer/              
+    │   ├─ indexer_metadata.json
+    │   ├─ indexer_structure.json
+    │   └─ indexer_arrays.npz
+    ├─ model.yaml              (optional: model config used during training)
+    ├─ training.yaml           (optional: training orchestration YAML)
+    ├─ data_processing.yaml    (optional: processing YAML for training data)
+    ├─ stats.txt               (optional: dataset stats)
+    └─ log.txt                 (optional: training/tuning log)
     ↓
 ┌─────────────────────────────────────────┐
 │  Emulator Inference                     │
@@ -257,17 +285,35 @@ process_for_ML(
 )
 ```
 
-**Status:** ✅ Nearly Fully implemented
-
-**To Be Expanded:**
-- Automatic tests for filters (other reductions' tests are completed)
-- Support for External Memory Management is untested in current version
-
 ---
 
 ### 3. Model Training
 
 Trains neural networks on ML-ready bundles.
+
+Training is controlled by YAML files that can execute a sequence of train/tune episodes.
+Configuration is merged in layered precedence:
+
+1) Per-episode overrides (e.g., `train1`, `tune1`, `train2`, ...) OVERRIDES
+2) Global values in the selected training YAML... OVERRIDES
+3) defaults yaml in code (no episodes in default, only globals)
+
+Per-episode overrides can update both optimization hyperparameters and model
+architecture. Architecture changes are supported between episodes via warm-start
+loading of compatible weights.
+
+
+**Model Architecture:** ([NN.py](src/nMELTS/engine/NN.py))
+- Multi-layer perceptron with customizable depth/width
+- Output heads for each phase (molar abundance, mass, composition)
+- Physical constraints enforced during inference (mass balance, bounds)
+
+**Training Orchestration:** ([main.py](src/builder/training/main.py))
+- Sequential train/tune episodes are discovered from YAML (`train1`, `tune1`, ...)
+- Later episodes can inherit tuned state from earlier episodes
+- Global and per-episode overrides are deep-merged with centralized type conversion
+- YAML can drive schedulers, regularization, architecture, and loop behavior without code edits
+
 
 **Pipeline Steps:**
 
@@ -282,28 +328,16 @@ Trains neural networks on ML-ready bundles.
    - Batching and shuffling
 
 3. **Train Model** ([tuners.py](src/builder/training/tuners.py))
-   - Forward pass with mass balance enforcement
+   - Forward pass with architecture and loss behavior controlled by YAML episode config
    - Backpropagation and gradient updates
-   - Track loss and validation metrics
+   - Penalize mass-balance mismatch during training objectives where configured
+
 
 4. **Evaluate** 
+   - 1/2/3 step Routine to relax system component abundances to enforce massconservation
    - Compare predictions to validation set
-   - Assess mass balance accuracy
    - Compute phase prediction accuracy
 
-**Model Architecture:** ([NN.py](src/nMELTS/engine/NN.py))
-- Multi-layer perceptron with customizable depth/width
-- Output heads for each phase (molar abundance, mass, composition)
-- Physical constraints enforced during inference (mass balance, bounds)
-
-**Status:** 🟡 In progress (architecture complete, training loop and hyperparameter tuning ongoing)
-
-**To Be Expanded:**
-- Complete training loop with logging and checkpointing
-- Hyperparameter optimization workflow (in progress with tuners.py)
-- Convergence analysis and early stopping (could use more inteligent ways to )
-- Loss function design and weighting strategies
-- Example training runs with results
 
 ---
 
@@ -311,34 +345,51 @@ Trains neural networks on ML-ready bundles.
 
 Run the trained emulator for fast phase predictions.
 
-**Basic Usage:**
+The current implementation is centered on `NN_MELTS` and supports
+table-based user inputs in wt% oxides, with internal reordering and
+transformations to model feature space.
+
+**Schematic High-Level Usage (wrapper-style)** 
 
 ```python
-from src.nMELTS.engine.emulator import Emulator
+from src.nMELTS.engine.emulator import NN_MELTS
 
-# Load trained model
-emulator = Emulator(model_path='path/to/trained_model.pt', indexer_path='path/to/indexer.pkl')
+def run_emulator_table(model_name, input_table, columns=None, fit_stages=1):
+    """
+    Schematic convenience wrapper for user-side workflows.
+    input_table: tabular rows with input conditions (P, T, fO2, H, S) and bulk oxide columns (wt%). Constant Fe2O3 can and often should be specified instead of fO2.
+    fit_stages: 0, 1, 2, or 3 mass-balance fitting stages.
+    """
+    if columns is None:
+      try: 
+        columns = np.array(input_table.columns.values)
+      except:
+        raise ValueError('If column headers not explicitly passed, the input_table must have be a pandas dataFrame with headers')
 
-# Predict phases at given P, T, fO2, bulk composition
-# (Input format to be documented)
-predictions = emulator.predict(
-    pressure=1.0,           # GPa
-    temperature=1200,       # °C
-    logfo2=0,              # relative to QFM buffer
-    bulk_composition=[...]  # element molar fractions
-)
+    emulator = NN_MELTS(load_model_from_zip(path_dict[model_name]))
+    required_inputs = np.array(emulator.featureNames + [OXIDES_FROM_ELEMENTS[el] for el in emulator.Elkeys])
+    assert np.all(np.isin(required_inputs, columns))
+    input_table = emulator.reorderMELTStable(input_table)
+    input_table = emulator.condition_oxide_table(input_table)
+    predictions = emulator.forward(input_table, fitStages=fit_stages) # many outputs, few desired.
+    predictions = emulator.condition_predictions(predictions) # Output format configurable?
+    return predictions
 
-# Results include:
-# - Phase assemblage (which phases present)
-# - Phase masses (wt%)
-# - Phase compositions (wt% oxides or molar fractions)
+# This wrapper is schematic documentation for planned user-facing API.
+# Current internals already support table ingestion and mass-balance workflows.
 ```
 
-**Status:** ✅ Infrastructure ready, 🟡 training needed for production use
+**Status:** 🟡 Nearly complete for inference, with ongoing user-facing API polish
+
+**Mass Balance Behavior:**
+- User-side mass-balance enforcement is default behavior in inference workflows
+- Stage depth is configurable (0/1/2/3) to trade runtime against correction strength
+- Remaining refinement targets include robust handling of spinel/pyroxene perturbations
 
 **To Be Expanded:**
 - Detailed API documentation
-- Input/output format specifications
+- Final convenience API signatures and naming
+- Input/output format specifications and examples
 - Example prediction workflows
 - Comparison with original MELTS predictions
 - Uncertainty quantification
@@ -349,30 +400,39 @@ predictions = emulator.predict(
 
 ```
 src/
-├── builder/                          # Data processing & model training. Models are made here, nothinig here is necesary for inference.
-│   ├── indexer.py                    # Dynamic dataset indexing from CSV headers
+├── builder/                          # Data processing, alphamelts tools, and model training, not necesary for inference with trained models, not publically distributed
+│   ├── alphamelts/                   # MELTS/alphaMELTS interfacing scripts
+│   ├── indexer.py                    # Dynamic dataset indexing from table headers
 │   ├── processing/                   # MELTS data processing pipeline
-│   │   ├── BigMetaTable.py           # Parse & manage large MELTS datasets
-│   │   ├── filters.py                # Data quality & balancing filters
-│   │   ├── MLexporter.py             # Feature/label generation & bundling
-│   │   ├── prepareML.py              # Main workflow orchestration
+│   │   ├── BigMetaTable.py           # Parse and manage large MELTS datasets
+│   │   ├── filters.py                # Data quality and balancing filters
+│   │   ├── MLexporter.py             # Feature/label generation and bundle export
+│   │   ├── export_only.py            # Direct csv/txt -> ML bundle export workflow
+│   │   ├── prepareML.py              # Main processing orchestration
 │   │   └── __init__.py
-│   ├── training/                     # PyTorch training infrastructure
-│   │   ├── loadTrainData.py          # Load ML bundles into DataLoaders
-│   │   ├── torchDataClass.py         # PyTorch Dataset wrappers
-│   │   ├── tuners.py                 # Training loops & optimization
+│   ├── training/                     # YAML-driven training and tuning infrastructure
+│   │   ├── main.py                   # CLI orchestration for sequential train/tune episodes
+│   │   ├── trainer.py                # Core training loops
+│   │   ├── tuners.py                 # Hyperparameter tuning loops
+│   │   ├── optimizer_factory.py      # Optimizer and scheduler construction
+│   │   ├── loadTrainData.py          # Load ML bundles into PyTorch DataLoaders
+│   │   ├── torchDataClass.py         # Dataset wrappers
+│   │   ├── logger.py                 # Training log utilities
+│   │   ├── validation/               # Validation and diagnostic utilities
 │   │   └── __init__.py
 │   └── __init__.py
 │
-└── nMELTS/                           # Core, deployable emulator package
+└── nMELTS/                           # Core, deployable emulator package. Installable (future) with pip
     ├── config/                       # Configuration & constants
     │   ├── constants.py              # Phase-component mappings, oxide lists
     │   ├── ml_indexer.py             # ML transformation matrices
-    │   ├── settings.py               # Path & directory configuration
+    │   ├── projections/              # Projection tables used by indexer/model transforms
+    │   ├── README_MLIndexer.md       # Detailed ml_indexer structure and usage notes
     │   └── __init__.py
     ├── engine/                       # Neural network & inference
     │   ├── NN.py                     # Neural network architecture
     │   ├── emulator.py               # High-level emulator interface
+    │   ├── TrainedModel/             # Stored trained models for local usage: potentially updated often
     │   └── __init__.py
     ├── utils/                        # Utility functions
     │   ├── math_utils.py             # Math operations (QFM, normalization, etc.)
