@@ -7,11 +7,10 @@ Transformation matrices are built dynamically based on the components in label_n
 
 import numpy as np
 import pandas as pd
-import molmass as ms
 from pathlib import Path
 from typing import List, Dict, Set, Tuple, Optional, Any
 import json
-from .constants import default_Elkeys, all_Elkeys
+from .constants import default_Elkeys, all_Elkeys, get_oxide_molar_mass
 from nMELTS.utils.math_utils import Normalizer
 
 # Make torch optional for alphamelts in WSL
@@ -297,9 +296,10 @@ class MLIndexer:
         self.ElToOx = np.linalg.inv(self.OxToEl[:len(self.Elkeys)]) # Can map back to oxides, but only total iron. 
 
         # Build molar mass matrices
-        self.MM = np.diag([ms.Formula(ox).mass for ox in self.Oxides]).astype(np.float32)
-        self.Minv = np.diag([1.0 / ms.Formula(ox).mass for ox in self.Oxides]).astype(np.float32)
-        self.Mtot = np.array([ms.Formula(ox).mass for ox in self.Oxides], dtype=np.float32).reshape(-1, 1)
+        molar_masses = [get_oxide_molar_mass(ox) for ox in self.Oxides]
+        self.MM = np.diag(molar_masses).astype(np.float32)
+        self.Minv = np.diag([1.0 / mass for mass in molar_masses]).astype(np.float32)
+        self.Mtot = np.array(molar_masses, dtype=np.float32).reshape(-1, 1)
         
     
     def _build_ml_mappings(self):

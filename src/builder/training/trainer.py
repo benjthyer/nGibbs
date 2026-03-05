@@ -109,13 +109,14 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     best_test_loss = np.inf
     train_losses, test_losses = [], []
     early_stopping_counter = 0
-
+    
     # --- Train for specified epochs ---
     for epoch in range(Epochs):
         start = time.time()
         model.train()
         running_train_loss = 0.0
         N = 0
+        
 
         for output in tqdm(train_loader, desc=f"Train Epoch {epoch+1}", leave=False):
             xb, yb = output[0], output[1] # We only need the phase saturation data here
@@ -126,7 +127,7 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
             optimizer.zero_grad()
             logits = model.forward_binaries(xb)
-            loss = criterion(logits, yb)*1E2 # Scale loss to be large wrt to Epsilon for optimizer stability.
+            loss = criterion(logits, yb)#*1E2 # Scale loss to be large wrt to Epsilon for optimizer stability.
             loss.backward()
             optimizer.step()
             wrappedScheduler.step_batch() # Step scheduler if it's batch-based (Does nothing if it's epoch-based)
@@ -150,7 +151,7 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                 xb, yb = output[0], output[1] # We only need the phase saturation data here
                 xb, yb = xb.to(device, non_blocking=True), yb.to(device, non_blocking=True)
                 logits = model.forward_binaries(xb)
-                loss = criterion(logits, yb)*1E2
+                loss = criterion(logits, yb)#*1E2
                 running_test_loss += loss.item() * xb.size(0)
                 N += xb.size(0)
                 if N >= max_N:
@@ -288,9 +289,8 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     criterion_mole = criterion
     criterion_bulk = criterion
 
-    N = 0
     early_stopping_counter = 0
-
+    
     # --- Train for specified epochs ---
     for epoch in range(Epochs):
         start = time.time()
@@ -300,6 +300,7 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         running_chem_loss = 0
         running_mole_loss = 0
         running_bulk_loss = 0
+        N=0
         for batch_idx, (x_batch, b_batch, y_batch, m_batch) in enumerate(tqdm(train_loader, desc="Training", leave=False)):
 
             optimizer.zero_grad()

@@ -11,12 +11,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from builder.alphamelts.engine import alphamelts_functions # The essential ensemble MELTS functions
 from nMELTS.utils.string_utils import  random_char
 from nMELTS.utils.math_utils import  grid_sample
+from nMELTS.config.constants import OXIDE_MOLAR_MASSES
 from builder.indexer import generate_column_headers, DatasetIndexer
 from config.settings import internal_data_dir, internal_scratch_dir
 
 import numpy as np
 import time
-import molmass as ms
 import shutil
 import pandas as pd
 from pathlib import Path
@@ -42,7 +42,7 @@ EnsembleLocation = str(internal_scratch_dir())
 
 os.makedirs(EnsembleLocation, exist_ok=True)
 
-ferric_to_ferrous = (2*ms.Formula('FeO').mass/ms.Formula('Fe2O3').mass)
+ferric_to_ferrous = (2 * OXIDE_MOLAR_MASSES['FeO'] / OXIDE_MOLAR_MASSES['Fe2O3'])
 
 #keys = ['Pressure', 'Temperature', 'fO2', 'SiO2', 'Al2O3', 'CaO', 'MgO', 'Na2O', 'K2O', 'Fe2O3', 'FeO', 'TiO2', 'MnO', 'Cr2O3', 'NiO', 'CoO', 'P2O5', 'H2O']
 #keys = ['Pressure', 'Temperature', 'fO2', 'SiO2','TiO2', 'Al2O3', 'FeO', 'MgO', 'CaO', 'Na2O', 'K2O', 'P2O5', 'MnO', 'H2O', 'Cr2O3', 'NiO']

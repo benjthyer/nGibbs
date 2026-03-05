@@ -7,9 +7,6 @@ CSV files are automatically loaded from the 'projections' and 'old_transforms'
 folders when this module is imported.
 """
 
-import numpy as np
-import pandas as pd
-import molmass as ms
 from typing import List, Dict, Set, Tuple
 from pathlib import Path
 from types import MappingProxyType
@@ -47,6 +44,34 @@ default_Oxides = default_WRkeys + ['Fe2O3']
 default_Elkeys = ['Si', 'Ti', 'Al', 'Fe', 'Mg', 'Ca', 'Na', 'K', 'P', 'H', 'Cr', 'Mn', 'Ni']
 all_Elkeys = default_Elkeys #+['Mn', 'Ni']
 all_Oxides = default_Oxides #+ ['MnO', 'NiO']
+
+# Centralized molar masses (g/mol) for oxide formulas used across nMELTS.
+OXIDE_MOLAR_MASSES: Dict[str, float] = {
+    'SiO2': 60.0843,
+    'TiO2': 79.866,
+    'Al2O3': 101.9613,
+    'FeO': 71.8440,
+    'Fe2O3': 159.688,
+    'MgO': 40.3044,
+    'CaO': 56.0774,
+    'Na2O': 61.9789,
+    'K2O': 94.196,
+    'P2O5': 141.9445,
+    'H2O': 18.01528,
+    'Cr2O3': 151.9904,
+    'MnO': 70.9374,
+    'NiO': 74.6928,
+    'CoO': 74.9326,
+}
+
+
+def get_oxide_molar_mass(oxide: str) -> float:
+    """Return oxide molar mass in g/mol, raising on unknown oxides."""
+    if oxide not in OXIDE_MOLAR_MASSES:
+        raise KeyError(
+            f"Oxide '{oxide}' is missing from OXIDE_MOLAR_MASSES in constants.py"
+        )
+    return float(OXIDE_MOLAR_MASSES[oxide])
 
 # This object is used to build the indexer and column headers for the MELTSdataset.
 COMPOSITIONAL_COMPONENTS_IN_PHASES: Dict[str, List[str]] = { # Will need to be expanded as more phases are supported. May need to be flexible to MELTS model
@@ -88,13 +113,171 @@ COMPOSITIONAL_COMPONENTS_IN_PHASES: Dict[str, List[str]] = { # Will need to be e
                      'liq V (cc)']
     }
 
+
+# HeFESTo compositional species by phase, using full species names from tables.
+COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO: Dict[str, List[str]] = {
+    'Bulk_comp':['SiO2', 'MgO', 'FeO', 'Fe2O3', 'CaO', 'Al2O3', 'Na2O', 'Cr2O3'],
+    'System_main': ['P(GPa)', 'T(K)', 'rho(g/cm^3)', 'mass (gm)', 'VS(km/s)', 'VP(km/s)',  'H(kJ/g)', 'cp(J/g/K)', 'S(J/g/K)', 'KS(GPa)', 'alpha(1e5_K^-1)'],
+    'Bulk_comp_elements':['Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O'],
+    'plagioclase': ['anorthite', 'albite'],
+    'spinel': ['spinel', 'hercynite', 'magnetite', 'picro-chromite'],
+    'olivine': ['forsterite', 'fayalite'],
+    'wadsleyite': ['mg-wadsleyite', 'fe-wadsleyite'],
+    'ringwoodite': ['mg-ringwoodite', 'fe-ringwoodite'],
+    'orthopyroxene': ['enstatite', 'ferrosilite', 'mg-tschermaks', 'ortho-diopside'],
+    'clinopyroxene': ['diopside', 'hedenbergite', 'clinoenstatite', 'ca-tschermaks', 'jadeite', 'acmite'],
+    'wollastonite': ['wollastonite'],
+    'pseudowollastonite': ['pseudowollastonite'],
+    'hp-clinopyroxene': ['hp-clinoenstatite', 'hp-clinoferrosilite'],
+    'ca-perovskite': ['ca-perovskite'],
+    'akimotoite': ['mg-akimotoite', 'fe-akimotoite', 'corundum', 'hematite', 'eskolaite'],
+    'garnet': ['pyrope', 'almandine', 'grossular', 'mg-majorite', 'na-majorite', 'andradite', 'knorringite'],
+    'quartz': ['quartz'],
+    'coesite': ['coesite'],
+    'stishovite': ['stishovite'],
+    'seifertite': ['seifertite'],
+    'bridgmanite': ['mg-bridgmanite', 'fe-bridgmanite', 'al-bridgmanite',
+                    'ferric-bridgmanite', 'ferric-bridgmanite-ls',
+                    'ferric-al-bridgmanite', 'cr-bridgmanite'],
+    'post-perovskite': ['mg-post-perovskite', 'fe-post-perovskite', 'al-post-perovskite',
+                        'ferric-post-perovskite', 'cr-post-perovskite'],
+    'ferropericlase': ['periclase', 'wustite', 'wustite-ls', 'alpha-naalo2', 'magnetite'],
+    'ca-ferrite': ['mg-ca-ferrite', 'fe-ca-ferrite', 'na-ca-ferrite',
+                   'high-pressure-magnetite', 'cr-ca-ferrite'],
+    'nal-phase': ['mg-nal-phase', 'fe-nal-phase', 'na-nal-phase'],
+    'kyanite': ['kyanite'],
+    'nepheline': ['nepheline'],
+    'alpha-iron': ['alpha-iron'], 
+    'gamma-iron': ['gamma-iron'],
+    'epsilon-iron': ['epsilon-iron'],
+    'alpha-pbo-type-sio2': ['alpha-pbo-type-sio2']
+}
+
+# Abbreviation mapping from table codes to short names.
+HEFESTO_ABBREVIATION_TO_SHORT_NAMES: Dict[str, str] = {
+    'plg': 'plagioclase', #
+    'sp': 'spinel', #
+    'ol': 'olivine',#
+    'wa': 'wadsleyite',#
+    'ri': 'ringwoodite',#
+    'opx': 'orthopyroxene',#
+    'cpx': 'clinopyroxene',#
+    'wo': 'wollastonite',#
+    'pwo': 'pseudowollastonite',#
+    #'hpcpx': 'hp-clinopyroxene',
+    'c2c': 'hp-clinopyroxene',#
+    'cpv': 'ca-perovskite',#
+    #'ak': 'akimotoite',
+    'il': 'akimotoite',#
+    'gt': 'garnet',#
+    'qtz': 'quartz',#
+    'coes': 'coesite',#
+    'st': 'stishovite',#
+    'apbo': 'alpha-pbo-type-sio2',#
+    'seif': 'seifertite',
+    #'bg': 'bridgmanite',
+    'pv': 'bridgmanite',#
+    'ppv': 'post-perovskite',#
+    'fp': 'ferropericlase',
+    'cf': 'ca-ferrite',#
+    'nal': 'nal-phase',#
+    'ky': 'kyanite',#
+    'neph': 'nepheline',#
+    'an': 'anorthite',
+    'ab': 'albite',
+    'hc': 'hercynite',
+    'smag': 'magnetite-spinel',
+    'picr': 'picro-chromite',
+    'fo': 'forsterite',
+    'fa': 'fayalite',
+    'mgwa': 'mg-wadsleyite',
+    'fewa': 'fe-wadsleyite',
+    'mgri': 'mg-ringwoodite',
+    'feri': 'fe-ringwoodite',
+    'en': 'enstatite',
+    'fs': 'ferrosilite',
+    'mgts': 'mg-tschermaks',
+    'odi': 'ortho-diopside',
+    'di': 'diopside',
+    'he': 'hedenbergite',
+    'hem': 'hematite',
+    'cen': 'clinoenstatite',
+    'cats': 'ca-tschermaks',
+    'jd': 'jadeite',
+    'acm': 'acmite',
+    'hpcen': 'hp-clinoenstatite',
+    'mgc2': 'hp-clinoenstatite',
+    'hpcfs': 'hp-clinoferrosilite',
+    'fec2': 'hp-clinoferrosilite',
+    'capv': 'ca-perovskite',
+    'mgak': 'mg-akimotoite',
+    'feak': 'fe-akimotoite',
+    'co': 'corundum',
+    'esk': 'eskolaite',
+    'py': 'pyrope',
+    'al': 'almandine',
+    'gr': 'grossular',
+    'mgmj': 'mg-majorite',
+    'namj': 'na-majorite',
+    'andr': 'andradite',
+    'knor': 'knorringite',
+    #'mgbg': 'mg-bridgmanite',
+    #'febg': 'fe-bridgmanite',
+    #'albg': 'al-bridgmanite',
+    #'hebg': 'ferric-bridgmanite',
+    #'hlbg': 'ferric-bridgmanite-ls',
+    #'fabg': 'ferric-al-bridgmanite',
+    #'crbg': 'cr-bridgmanite',
+    'mgpv': 'mg-bridgmanite',
+    'fepv': 'fe-bridgmanite',
+    'alpv': 'al-bridgmanite',
+    'hepv': 'ferric-bridgmanite',
+    'hlpv': 'ferric-bridgmanite-ls',
+    'fapv': 'ferric-al-bridgmanite',
+    'crpv': 'cr-bridgmanite',
+    'mppv': 'mg-post-perovskite',
+    'fppv': 'fe-post-perovskite',
+    'appv': 'al-post-perovskite',
+    'hppv': 'ferric-post-perovskite',
+    'cppv': 'cr-post-perovskite',
+    'pe': 'periclase',
+    'wu': 'wustite',
+    #'mw': 'wustite',#
+    'mw' : 'ferropericlase',#
+    'wuls': 'wustite-ls',
+    'anao': 'alpha-naalo2',
+    'mag': 'magnetite',
+    'mgcf': 'mg-ca-ferrite',
+    'fecf': 'fe-ca-ferrite',
+    'nacf': 'na-ca-ferrite',
+    'hmag': 'high-pressure-magnetite',
+    'crcf': 'cr-ca-ferrite',
+    'mnal': 'mg-nal-phase',
+    'fnal': 'fe-nal-phase',
+    'nnal': 'na-nal-phase',
+    'fea': 'alpha-iron',#
+    'feg': 'gamma-iron',#
+    'fee': 'epsilon-iron',#
+}
+
+
+
+
+
 COMPONENTS_IN_PHASES = COMPOSITIONAL_COMPONENTS_IN_PHASES.copy()
+COMPONENTS_IN_PHASES_HEFESTO = COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO.copy()
+
 
 state_vars_to_add = [
             'mass (gm)',
             'rho (gm/cc)',
             'H (kJ)',
             'S (J/K)',
+            'V (cc)'
+        ]
+
+state_vars_to_add_HeFESTo = [
+            'rho (gm/cc)',
             'V (cc)'
         ]
 
@@ -107,10 +290,24 @@ for phase in COMPONENTS_IN_PHASES.keys():
             else:
                 COMPONENTS_IN_PHASES[phase].append(state_var)
 
+for phase in COMPONENTS_IN_PHASES_HEFESTO.keys():
+    if phase not in ['System_main', 'Bulk_comp', 'Bulk_comp_elements']:
+        for state_var in state_vars_to_add_HeFESTo:
+            if state_var == 'mass (gm)':
+                COMPONENTS_IN_PHASES_HEFESTO[phase] = ['mass (gm)'] + COMPONENTS_IN_PHASES_HEFESTO[phase] # Add mass to the front, the rest to the back. 
+            else:
+                COMPONENTS_IN_PHASES_HEFESTO[phase].append(state_var)
+
+
 # Convert to immutable MappingProxyType to prevent accidental modifications
 # that could affect other DatasetIndexer / ml_indexer instances
 COMPOSITIONAL_COMPONENTS_IN_PHASES = MappingProxyType(COMPOSITIONAL_COMPONENTS_IN_PHASES)
 COMPONENTS_IN_PHASES = MappingProxyType(COMPONENTS_IN_PHASES)
+COMPONENTS_IN_PHASES_HEFESTO = MappingProxyType(COMPONENTS_IN_PHASES_HEFESTO)
+COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO = MappingProxyType(COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO)
+
+HEFESTO_ABBREVIATION_TO_SHORT_NAMES = MappingProxyType(HEFESTO_ABBREVIATION_TO_SHORT_NAMES)
+OXIDE_MOLAR_MASSES = MappingProxyType(OXIDE_MOLAR_MASSES)
 
 
 # Used for plotting wt% oxides in phases

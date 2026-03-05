@@ -25,7 +25,14 @@ if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
 # Import defaults from constants for melts-liquid label generation and oxide indexing
-from nMELTS.config.constants import COMPONENTS_IN_PHASES, COMPOSITIONAL_COMPONENTS_IN_PHASES, default_Elkeys, REQUIRED_ELEMENTS
+from nMELTS.config.constants import (
+    COMPONENTS_IN_PHASES,
+    COMPONENTS_IN_PHASES_HEFESTO,
+    COMPOSITIONAL_COMPONENTS_IN_PHASES,
+    COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO,
+    default_Elkeys,
+    REQUIRED_ELEMENTS,
+)
 from nMELTS.config.ml_indexer import MLIndexer
 
 # Element to oxide mapping dictionary
@@ -118,6 +125,48 @@ def generate_column_headers(phases: List[str], mode: str = 'None', zeroOxides: L
     return column_headers
 
 
+def generate_column_headers_hefesto(
+    phases: List[str]
+) -> List[str]:
+    """
+    Generate column headers for HeFESTo phases using the HeFESTo phase/species dictionary.
+
+    Parameters
+    ----------
+    phases : List[str]
+        List of full HeFESTo phase names (e.g., 'clinopyroxene').
+        Abbreviations are not accepted here and should be resolved by parser code.
+
+    Returns
+    -------
+    List[str]
+        Column headers in format 'component(phase)'.
+
+    Examples
+    --------
+    >>> headers = generate_column_headers_hefesto(['orthopyroxene', 'clinopyroxene'])
+    >>> headers[:4]
+    ['enstatite(orthopyroxene)', 'ferrosilite(orthopyroxene)',
+     'mg-tschermaks(orthopyroxene)', 'ortho-diopside(orthopyroxene)']
+    """
+    column_headers: List[str] = []
+
+    phases = ['System_main', 'Bulk_comp', 'Bulk_comp_elements'] + phases
+
+    for phase_name in phases:
+
+        if phase_name not in COMPONENTS_IN_PHASES_HEFESTO:
+            raise ValueError(
+                f"HeFESTo phase '{phase_name}' not found in COMPONENTS_IN_PHASES_HEFESTO. "
+                f"Available phases: {list(COMPONENTS_IN_PHASES_HEFESTO.keys())}"
+            )
+        
+        for component in COMPONENTS_IN_PHASES_HEFESTO[phase_name]:
+            column_headers.append(f"{component}({phase_name})")
+
+    return column_headers
+
+
 class DatasetIndexer:
     """
     Dynamic indexer that generates all mappings from dataset headers.
@@ -171,7 +220,7 @@ class DatasetIndexer:
         self.EXCLUDED_COMPONENTS_BY_PHASE = {}
 
         self.STATE_VARIABLES = STATE_VARIABLES
-        self.EXCLUDED_PHASES = {'System_main', 'Bulk_comp'}  # Default excluded phases
+        self.EXCLUDED_PHASES = {'System_main', 'Bulk_comp', 'Bulk_comp_elements'}  # Default excluded phases
         self.OXYGEN = OXYGEN
         self.MODEL = MODEL
 

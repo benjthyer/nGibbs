@@ -46,6 +46,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     return parser
 
+"""import time
+print('Sleeping for 3 hours..')
+time.sleep(3*3600)"""
 
 def _deep_update(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
     """Recursive Config updates!"""
@@ -273,7 +276,7 @@ def main() -> None:
     Episodes are executed in order, with state propagation between them:
     - Warm-start: Previous episode's best model initializes next episode
     - Config locking: Previous tune's best config carries to next tune
-    - Baseline propagation: Previous tune's best_loss passed to next tune
+    - Optional tune-loss inheritance via inherit_loss (default False)
     """
     parser = build_parser()
     args = parser.parse_args()
@@ -320,6 +323,10 @@ def main() -> None:
     if warm_start.lower() != 'none':
         best_model = NN.rebuild_MELTS_model(Path(__file__).parent / config['checkpoints']['load_dir'] / (warm_start + '.tar'), 
                                             epsilon=ml_indexer.molar_epsilon) # Override default epsilon with training data value so model initializes appropriately
+        # Warm-start config becomes the global baseline for subsequent episodes.
+        config = _deep_update(config, deepcopy(best_model.config))
+        config = apply_type_conversions(config, TYPE_CONVERSION_MAP)
+        print(f"Loaded warm-start config baseline from: {warm_start}")
     else:
         # Initialize model, pull relevant subset of configs to initialize model
         model_config = {}
@@ -348,9 +355,6 @@ def main() -> None:
             continue
         
         episode_cfg = _deep_update(deepcopy(config), episode_cfgI) # Inherit Globals, overprint episode configurration
-
-        if best_loss is None:
-            best_loss = episode_cfg.get('best_loss', None) # Initialize best_loss from config if not set by previous tune episode
 
         # Apply type conversions to episode config
         episode_cfg = apply_type_conversions(episode_cfg, TYPE_CONVERSION_MAP)
@@ -437,6 +441,22 @@ def main() -> None:
 
         if episode_type == 'tune':
             # ===== TUNING EPISODE =====
+
+            inherit_loss = bool(episode_cfg.get('inherit_loss', False))
+            episode_best_loss = episode_cfg.get('best_loss', None)
+
+            if episode_best_loss is not None:
+                tune_seed_loss = float(episode_best_loss)
+                print(f"Tune loss seed from episode best_loss: {tune_seed_loss:.4e}")
+            elif inherit_loss:
+                tune_seed_loss = best_loss
+                if tune_seed_loss is None:
+                    print("Tune loss seed requested from inheritance, but no prior best_loss; using fresh baseline")
+                else:
+                    print(f"Tune loss seed inherited from prior episode: {float(tune_seed_loss):.4e}")
+            else:
+                tune_seed_loss = None
+                print("Tune loss seed reset: using fresh baseline for this tune episode")
             
             # Apply type conversions to tune_params
             episode_cfg['tune_params'] = apply_type_conversions(episode_cfg['tune_params'], TYPE_CONVERSION_MAP)
@@ -460,7 +480,7 @@ def main() -> None:
                         early_stopping_patience=ESP,
                         max_N=max_N,
                         Param_Dict=episode_cfg['tune_params'],
-                        best_loss=best_loss  # Pass previous best_loss
+                        best_loss=tune_seed_loss
                     )
                     tuned_best_loss = _best_loss_from_tune_results(tune_results)
                     if tuned_best_loss is not None:
@@ -478,7 +498,7 @@ def main() -> None:
                         Param_Dict=episode_cfg['tune_params'],
                         binWeights=binWeights,
                         compWeights=compWeights,
-                        best_loss=best_loss, # Pass previous best_loss,
+                        best_loss=tune_seed_loss,
                         which_heads_to_freeze=which_heads_to_freeze,
                         chem_alpha=chem_alpha,
                         mole_alpha=mole_alpha,

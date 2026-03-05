@@ -308,7 +308,7 @@ def run_recovery_plots(
         oxides_hat = transcomponent_hat[:, comp_indices] @ comp_to_ox[indices]
         oxides_gt = validation_labels_trans[np.ix_(subset, comp_indices)] @ comp_to_ox[indices]
 
-        if phase == "melts-liquid":
+        if phase == "melts-liquid" and 'Fe3' not in ml_indexer.Elkeys:
             oxides_gt = emulator.Iron_Speciator(
                 torch.tensor(oxides_gt, device=device, dtype=torch.float32),
                 features_tensor,

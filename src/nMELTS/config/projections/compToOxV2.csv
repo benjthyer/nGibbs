@@ -129,6 +129,7 @@ fe-nal-phase : nal-phase,1,0,2.5,2,0,0,0.5,0,0,0,0,0,0,0
 na-nal-phase : nal-phase,3,0,1.5,0,0,0,1.5,0,0,0,0,0,0,0
 kyanite : kyanite,1,0,1,0,0,0,0,0,0,0,0,0,0,0
 nepheline : nepheline,1,0,0.5,0,0,0,0.5,0,0,0,0,0,0,0
-alpha-iron : iron,0,0,0,3,0,0,0,0,0,0,0,0,0,-1
-gamma-iron : iron,0,0,0,3,0,0,0,0,0,0,0,0,0,-1
-epsilon-iron : iron,0,0,0,3,0,0,0,0,0,0,0,0,0,-1
+alpha-iron : alpha-iron,0,0,0,3,0,0,0,0,0,0,0,0,0,-1
+gamma-iron : gamma-iron,0,0,0,3,0,0,0,0,0,0,0,0,0,-1
+epsilon-iron : epsilon-iron,0,0,0,3,0,0,0,0,0,0,0,0,0,-1
+alpha-pbo-type-sio2 : alpha-pbo-type-sio2,1,0,0,0,0,0,0,0,0,0,0,0,0,0

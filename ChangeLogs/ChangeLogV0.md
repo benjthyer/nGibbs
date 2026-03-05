@@ -1,26 +1,34 @@
 _____________________ Unreleased _______________________
 
-2026-02-27
-- Updated README latter sections for current inference and training capabilities.
-- Marked inference as nearly complete with default mass-balance behavior.
-- Documented optional 0/1/2/3-stage mass-balance fitting tradeoffs.
-- Added YAML training orchestration docs: defaults, global, episode overrides.
-- Added schematic NN_MELTS wrapper-style usage for table-based inference.
-- Updated README module-structure tree to reflect current src files/directories.
-- Added README trees for trained model package and ml_indexer state files.
+2026-03-03: Training with constant iron and arbitrary features!
+- Added scripts/merge_bigmetatables.py CLI for two-table BigMetaTable merges.
+- Added forward_HeFESTo() to build and run SimulationN ensembles with gnu parallel
+- HeFESTo input comps are uniformly spaced 3Fe/Fet between 0-0.1. (Too high?)
+- Wired script to run forward_HeFESTo() and import_HeFESTo_components().
+- HeFESTo is too slow on my personal machine: I estimate it will require ~60 cpu days to compute 4E6 assemblages. 
+- **Removed Molmass dependency with hard-coded oxide molar masses**
+- Training Changes: 
+    - Fixed bug where loss was not normalized correctly in trainers.py
+    - Fixed bug where tuners wouldn't properly test values
+    - Now best_loss is recalculated at the beginning of a new tuning episode by default
+    - Warm-start model config now overwrites global config baseline in training main. 
+- Merged Oxygen Dev back to main! 
+
+2026-02-27: HeFESTo!
+- Updated README
+- Added HeFESTo phase->species name mapping
+- Added generate_column_headers_hefesto() for HeFESTo phase header generation.
+- Made HeFESTo header generator full-name only; abbreviations handled in parser.
+- Added HeFESTo workspace parser for control/fort.56/.61/.68/.99 -> CSV.
 
 2026-02-26
-- Replaced hardcoded [:-1] chemistry matrix cuts with [:len(Elkeys)].
-- Updated export stats and bulk reconstruction checks for Fe3+ exclusion.
-- Synced processing test and training diagnostic snippet to Elkeys slices.
-- Replaced hardcoded feature offsets with len(ml_indexer.featureNames).
-- Added insanity-filter failure CSV preview export (first 20k rows).
-- Sanitized NaNs in compToOxLoad/OxToEl to prevent molarlabels NaN propagation.
+- Removed assumption that liquid is last phase (or there at all).
+- Beyond PTX: Replaced hardcoded feature offsets with len(ml_indexer.featureNames).
 
 2026-02-25
-- Removed test forcing compToOx to have same rows as PsSp transform.
-- This transform will not be applied to HeFESTo data.
-- Will need separate loading script for HeFESTo data.
+- Removed test forcing compToOx to have same rows as PsSp transform
+    - This transform will not be applied to HeFESTo data.
+**Will need separate loading script for HeFESTo data.**
 - Fixed tuning logic bug where WD/Noise parameters could be skipped in certain cases
 2026-02-23
 - Tested model molar_epsilon 1E-3. Not as effective as linear softmax it seems 

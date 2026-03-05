@@ -74,6 +74,12 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
         print(f" TUNING PARAMETER: {parameter}")
         print("#" * 80)
 
+        anchor_config = deepcopy(best_config)
+        anchor_weights = deepcopy(best_weights)
+        parameter_best_config = deepcopy(best_config)
+        parameter_best_weights = deepcopy(best_weights)
+        parameter_best_loss = best_loss
+
         # Ensure list type for categorical parameters
         if not isinstance(trials, list):
             try:
@@ -89,7 +95,7 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
             complexity_score = trials[:, 0] - 0.75 * trials[:, 1]
             trials = trials[np.argsort(complexity_score)]
             zero_idx = np.where(
-                np.all(trials == np.array([Model.encoderLayerUp, Model.encoderLayerDown]), axis=1)
+                np.all(trials == np.array([anchor_config['encoderLayerUp'], anchor_config['encoderLayerDown']]), axis=1)
             )[0][0]
 
             current_idx = zero_idx + 1
@@ -97,7 +103,7 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
             go_down = True
 
             while 0 <= current_idx < trials.shape[0]:
-                working_config = deepcopy(best_config)
+                working_config = deepcopy(anchor_config)
                 working_config['encoderLayerUp'] = trials[current_idx, 0]
                 working_config['encoderLayerDown'] = trials[current_idx, 1]
 
@@ -105,15 +111,19 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
                       f"encoderLayerDown={working_config['encoderLayerDown']}")
 
                 Model = NN.MidLevelNetwork(**working_config, ml_indexer=ml_indexer)
+                try:
+                    Model.load_state_dict(anchor_weights, strict=False)
+                except Exception:
+                    pass
                 trial_loss = train_Lower_MELTS(Model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
                                                Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience, max_N=max_N)
                 results.append({'model': deepcopy(Model.config), 'loss': trial_loss})
 
-                if trial_loss < best_loss:
-                    print(f"Improved! Loss {trial_loss:.4e} < {best_loss:.4e}")
-                    best_config = deepcopy(working_config)
-                    best_loss = trial_loss
-                    best_weights = deepcopy(Model.state_dict())
+                if trial_loss < parameter_best_loss:
+                    print(f"Improved! Loss {trial_loss:.4e} < {parameter_best_loss:.4e}")
+                    parameter_best_config = deepcopy(working_config)
+                    parameter_best_loss = trial_loss
+                    parameter_best_weights = deepcopy(Model.state_dict())
 
                     if go_up:
                         go_down = False
@@ -128,93 +138,115 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
                     print(f"No improvement — stopping search for {parameter}.")
                     break
 
-            Model = NN.MidLevelNetwork(**best_config, ml_indexer=ml_indexer)
-            Model.load_state_dict(best_weights)
+            Model = NN.MidLevelNetwork(**parameter_best_config, ml_indexer=ml_indexer)
+            Model.load_state_dict(parameter_best_weights)
 
         else: 
             # Include current parameter value if missing, handled for encoderlayer case above
-            current_val = best_config.get(parameter)
+            current_val = anchor_config.get(parameter)
             if current_val is not None and current_val not in trials:
                 trials.append(current_val)
 
         # --- Handle Simple Continuous Hyperparameters: Weight Decay, noise ---
         if parameter in ['lowWD', 'noise']:
-            best_weights_WD = deepcopy(best_weights)
             trials = sorted(set(trials))
-            zero_idx = trials.index(Model.config[parameter])
-            go_up = (zero_idx + 1) < len(trials)
-            go_down = (zero_idx - 1) >= 0
-            if go_up:
-                current_idx = zero_idx + 1
-            elif go_down:
-                current_idx = zero_idx - 1
-            else:
-                current_idx = -1
+            current_value = anchor_config[parameter]
+            if current_value not in trials:
+                trials.append(current_value)
+                trials = sorted(set(trials))
+
+            zero_idx = trials.index(current_value)
+            if (zero_idx + 1) >= len(trials) and (zero_idx - 1) < 0:
                 print(f"No alternate values to test for {parameter}.")
 
-            while 0 <= current_idx < len(trials):
-                working_config = deepcopy(best_config)
+            # Try larger values first.
+            for current_idx in range(zero_idx + 1, len(trials)):
+                working_config = deepcopy(anchor_config)
                 working_config[parameter] = trials[current_idx]
 
                 print(f"\nTesting {parameter}={working_config[parameter]:.1e}")
 
                 Model = NN.MidLevelNetwork(**working_config, ml_indexer=ml_indexer)
-                Model.load_state_dict(best_weights) # Since WD is not model structure, load in best weights)
-                trial_loss = train_Lower_MELTS(Model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
-                                               Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience, max_N=max_N)
+                Model.load_state_dict(anchor_weights, strict=False)
+                trial_loss = train_Lower_MELTS(
+                    Model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
+                    Epochs=Epochs, lr=lr, batch_size=batch_size,
+                    early_stopping_patience=early_stopping_patience, max_N=max_N
+                )
                 results.append({'model': deepcopy(Model.config), 'loss': trial_loss})
 
-                if trial_loss < best_loss:
-                    print(f"Improved! Loss {trial_loss:.4e} < {best_loss:.4e}")
-                    best_config = deepcopy(working_config)
-                    best_loss = trial_loss
-                    best_weights_WD = deepcopy(Model.state_dict()) # Save state dict without loading it for the next WD trial for fairness
-                    if go_up:
-                        go_down = False
-                        current_idx += 1
-                    else:
-                        current_idx -= 1
-                elif go_down and go_up:
-                    current_idx = zero_idx - 1
-                    go_up = False
+                if trial_loss < parameter_best_loss:
+                    print(f"Improved! Loss {trial_loss:.4e} < {parameter_best_loss:.4e}")
+                    parameter_best_config = deepcopy(working_config)
+                    parameter_best_loss = trial_loss
+                    parameter_best_weights = deepcopy(Model.state_dict())
                 else:
-                    print("No improvement — stopping search for this parameter.")
+                    print("No improvement upward — switching to lower values.")
                     break
 
-            Model = NN.MidLevelNetwork(**best_config, ml_indexer=ml_indexer)
-            best_weights = best_weights_WD
-            Model.load_state_dict(best_weights)
+            # Always attempt lower values after finishing/rejecting upward direction.
+            for current_idx in range(zero_idx - 1, -1, -1):
+                working_config = deepcopy(anchor_config)
+                working_config[parameter] = trials[current_idx]
+
+                print(f"\nTesting {parameter}={working_config[parameter]:.1e}")
+
+                Model = NN.MidLevelNetwork(**working_config, ml_indexer=ml_indexer)
+                Model.load_state_dict(anchor_weights, strict=False)
+                trial_loss = train_Lower_MELTS(
+                    Model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
+                    Epochs=Epochs, lr=lr, batch_size=batch_size,
+                    early_stopping_patience=early_stopping_patience, max_N=max_N
+                )
+                results.append({'model': deepcopy(Model.config), 'loss': trial_loss})
+
+                if trial_loss < parameter_best_loss:
+                    print(f"Improved! Loss {trial_loss:.4e} < {parameter_best_loss:.4e}")
+                    parameter_best_config = deepcopy(working_config)
+                    parameter_best_loss = trial_loss
+                    parameter_best_weights = deepcopy(Model.state_dict())
+                else:
+                    print("No improvement downward — stopping lower-value search.")
+                    break
+
+            Model = NN.MidLevelNetwork(**parameter_best_config, ml_indexer=ml_indexer)
+            Model.load_state_dict(parameter_best_weights)
             
 
         # --- Handle Unordered Categorical Parameters: Try every option with no early abort ---
         if parameter in ['activation_factory', 'low_regularization']:
-            starting_value = getattr(Model, parameter)
+            starting_value = anchor_config.get(parameter)
             print(f"Debugging: starting categorical parameter redundancy protection: {parameter} = {starting_value}")
             for trial in trials:
                 if trial == starting_value:
                     continue
 
-                working_config = deepcopy(best_config)
+                working_config = deepcopy(anchor_config)
                 working_config[parameter] = trial
 
                 print(f"\nTesting {parameter}='{trial}'")
 
                 Model = NN.MidLevelNetwork(**working_config, ml_indexer=ml_indexer)
+                Model.load_state_dict(anchor_weights, strict=False)
                 trial_loss = train_Lower_MELTS(Model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
                                                Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience, max_N=max_N)
                 results.append({'model': deepcopy(Model.config), 'loss': trial_loss})
 
-                if trial_loss < best_loss:
-                    print(f"Improved! Loss {trial_loss:.4e} < {best_loss:.4e}")
-                    best_config = deepcopy(working_config)
-                    best_loss = trial_loss
-                    best_weights = deepcopy(Model.state_dict())
+                if trial_loss < parameter_best_loss:
+                    print(f"Improved! Loss {trial_loss:.4e} < {parameter_best_loss:.4e}")
+                    parameter_best_config = deepcopy(working_config)
+                    parameter_best_loss = trial_loss
+                    parameter_best_weights = deepcopy(Model.state_dict())
 
                 else:
                     print(f"No improvement ({trial_loss:.4e})")
 
-            Model = NN.MidLevelNetwork(**best_config, ml_indexer=ml_indexer)
-            Model.load_state_dict(best_weights)
+            Model = NN.MidLevelNetwork(**parameter_best_config, ml_indexer=ml_indexer)
+            Model.load_state_dict(parameter_best_weights)
+
+        best_config = deepcopy(parameter_best_config)
+        best_weights = deepcopy(parameter_best_weights)
+        best_loss = parameter_best_loss
 
         # === Summary for this parameter ===
         print("\n" + "-" * 80)
@@ -300,6 +332,10 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
         print(f"Testing: {trials}")
         print("#" * 80)
 
+        anchor_path = TEMP_MODELS_DIR / 'Temp_Upper_Anchor.pt'
+        anchor_payload = torch.load(str(TEMP_MODELS_DIR / 'Temp_Upper_Tune.pt'))
+        torch.save(anchor_payload, str(anchor_path))
+
         # Ensure list type for categorical parameters
         if not isinstance(trials, list):
             try:
@@ -315,7 +351,7 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
             complexity_score = trials[:, 0] - 0.75 * trials[:, 1]
             trials = trials[np.argsort(complexity_score)]
             zero_idx = np.where(
-                np.all(trials == np.array([Model.middleLayerUp, Model.middleLayerDown]), axis=1)
+                np.all(trials == np.array([anchor_payload['config']['middleLayerUp'], anchor_payload['config']['middleLayerDown']]), axis=1)
             )[0][0]
 
             current_idx = zero_idx + 1
@@ -330,7 +366,7 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
                     'middleLayerDown': trials[current_idx, 1]
                 }
 
-                Model = rebuild_MELTS_model(str(TEMP_MODELS_DIR / 'Temp_Upper_Tune.pt'), substitutions=substitutions, low_only = True, ml_indexer=Model.ml_indexer) # Rebuild model with new middle layer config but load in best weights for lower layers for fair comparison since middle layer changes model structure but not low layer weights.
+                Model = rebuild_MELTS_model(str(anchor_path), substitutions=substitutions, low_only = True, ml_indexer=Model.ml_indexer) # Rebuild each trial from fixed anchor to avoid trial-order bias.
 
                 print(Model.config)
 
@@ -370,7 +406,7 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
 
         else: 
             # Include current parameter value if missing, handled for encoderlayer case above
-            current_val = Model.config.get(parameter)
+            current_val = anchor_payload['config'].get(parameter)
             if current_val is not None and current_val not in trials:
                 trials.append(current_val)
 
@@ -378,7 +414,7 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
         if parameter in ['highWD', 'lowWD', 'noise']:
             
             trials = sorted(set(trials))
-            zero_idx = trials.index(Model.config[parameter])
+            zero_idx = trials.index(anchor_payload['config'][parameter])
             go_up = (zero_idx + 1) < len(trials)
             go_down = (zero_idx - 1) >= 0
             if go_up:
@@ -395,8 +431,8 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
 
                 print(f"\nTesting {parameter}={substitutions[parameter]:.1e}")
 
-                Model = rebuild_MELTS_model(str(TEMP_MODELS_DIR / 'Temp_Upper_Tune.pt'), substitutions=substitutions, ml_indexer=Model.ml_indexer)
-                Model.load_state_dict(torch.load(str(TEMP_MODELS_DIR / 'Temp_Upper_Tune.pt'))['state_dict']) # Load best model so far for fair WD/noise comparison since they don't change model structure. Redundant?
+                Model = rebuild_MELTS_model(str(anchor_path), substitutions=substitutions, ml_indexer=Model.ml_indexer)
+                Model.load_state_dict(torch.load(str(anchor_path))['state_dict'])
                 trial_loss = train_Upper_MELTS(Model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
                                                Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience,
                                                binWeights=binWeights, compWeights=compWeights, max_N=max_N, which_heads_to_freeze=which_heads_to_freeze,
@@ -425,14 +461,14 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
 
         # --- Handle Unordered Categorical Parameters ---
         if parameter in ['activation_leak', 'low_regularization', 'high_regularization']: # Actually activation leak is a continuous parameter and should be treated as such.
-            starting_value = getattr(Model, parameter)
+            starting_value = anchor_payload['config'].get(parameter)
             print(f"Debugging: starting categorical parameter redundancy protection: {parameter} = {starting_value}")
             for trial in trials:
                 if trial == starting_value:
                     continue
 
                 substitutions = {parameter:trial}
-                Model = rebuild_MELTS_model(str(TEMP_MODELS_DIR / 'Temp_Upper_Tune.pt'), substitutions=substitutions, low_only=True, ml_indexer=Model.ml_indexer)
+                Model = rebuild_MELTS_model(str(anchor_path), substitutions=substitutions, low_only=True, ml_indexer=Model.ml_indexer)
 
                 print(f"\nTesting {parameter}='{trial}'")
 

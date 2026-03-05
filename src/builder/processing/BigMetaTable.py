@@ -78,7 +78,7 @@ def strip_filename_suffixes(filename, suffixes=None):
 
 class BigMetaTable:
     def __init__(self, filename, read_dir=None, memmap_mode='r+', rebuild_memmap=False,
-                 allow_differing_lengths=False, headers=None, Model='MELTS', OXYGEN=None):
+                 allow_differing_lengths=False, header=None, Model='MELTS', OXYGEN='closed'):
         
         self.filename = filename
         self.memmap_file = self.filename + '.npy'
@@ -162,8 +162,8 @@ class BigMetaTable:
                     reader = csv.reader(f)
                     self.header = next(reader)
             file_rows = self.table.shape[0]
-            if headers is not None:
-                self.header = headers
+            if header is not None:
+                self.header = header
                 if len(self.header) != self.table.shape[1]:
                     # Try to load header from a saved pickle file
                     if os.path.exists(self.csv_file):
@@ -1176,7 +1176,7 @@ class BigMetaTable:
             old_binary_filename = self.blurredbinaries.filename
             new_binary_path = f"{old_binary_filename.split('.')[0]}_resampledblurredbinaries.npy"
             new_binary_table = np.lib.format.open_memmap(
-                new_binary_path, mode='w+', dtype=self.blurredbinaries.dtype, shape=(new_total, len(mass_indices))
+                new_binary_path, mode='w+', dtype=self.blurredbinaries.dtype, shape=(new_total, self.blurredbinaries.shape[1])
             )
         
             new_binary_table[:old_rows] = self.blurredbinaries
@@ -1434,3 +1434,118 @@ class BigMetaTable:
                     mass_multipliers * 
                     total_liquid_moles
                 ) @ OxToEl                                          
+
+
+def merge_big_meta_tables(tables, new_filename, chunk_size=100_000, clear_old_tables = False):
+    """
+    Merges multiple BigMetaTable instances into a new memmapped BigMetaTable.
+    Edited 6/30/25 to initialize merged BigMetaTable using .__init__() for stability
+    MUST BE DONE AFTER ANALCIME IS ISOLATED BECAUSE THE NEW TABLE WILL INHERIT THE GLOBAL COLUMNS
+
+    Parameters:
+    - tables: list/tuple of BigMetaTable instances to merge.
+    - new_filename: base name for output .npy file (no extension needed).
+    - chunk_size: number of rows per chunk when copying (default: 100,000).
+
+    Returns:
+    - A new BigMetaTable instance with combined memmapped data.
+    """
+    
+    if not tables:
+        raise ValueError("No tables were provided for merging.")
+
+    if len(tables) == 2 and tables[0] is None: # SAFEGUARD FOR ITERATIVE USE
+        return tables[1]
+
+    tables = [t for t in tables if t is not None]
+    if not tables:
+        raise ValueError("All provided tables were None.")
+    
+    # Ensure consistent shape/dtype
+    col_count = tables[0].table.shape[1]
+    dtype = tables[0].table.dtype
+    
+    
+        
+    
+    for t in tables:
+        if t.table.shape[1] != col_count:
+            raise ValueError("Column count mismatch among tables.")
+        if t.table.dtype != dtype:
+            raise ValueError("Dtype mismatch among tables.")
+
+    # Compute total number of rows
+    total_rows = sum(t.table.shape[0] for t in tables)
+
+    # Create memmap file
+    mmap_path = f"{new_filename}.npy"
+    merged_array = np.lib.format.open_memmap(
+        mmap_path, mode='w+', dtype=dtype, shape=(total_rows, col_count)
+    )
+    
+    # Move BlurredBinaries
+    if np.all(np.array([t.blurredbinaries is not None for t in tables])):
+        move_blurred = True
+        print('MERGING BLURRED BOUNDARIES')
+
+        blurred_cols = tables[0].blurredbinaries.shape[1]
+        blurred_dtype = tables[0].blurredbinaries.dtype
+        for t in tables:
+            if t.blurredbinaries.shape[1] != blurred_cols:
+                raise ValueError("Blurredbinaries column mismatch among tables.")
+
+        merged_blurredbinaries = np.lib.format.open_memmap(
+        new_filename+'blurredbinaries.npy', mode='w+', dtype=blurred_dtype, shape=(total_rows, blurred_cols)
+        )
+    else:
+        move_blurred = False
+        print('Not merging blurred boundaries')
+        
+
+    # Copy in chunks
+    current_row = 0
+    new_meta = []
+
+    for t in tables:
+        table_rows = t.table.shape[0]
+        for start in range(0, table_rows, chunk_size):
+            end = min(start + chunk_size, table_rows)
+            merged_array[current_row:current_row + (end - start)] = t.table[start:end]
+            
+            if move_blurred:
+                merged_blurredbinaries[current_row:current_row + (end - start)] = t.blurredbinaries[start:end]
+            
+            current_row += (end - start)
+            
+        # merge metadata
+        new_meta.append(t.meta)
+    
+    # Save metadata
+    new_meta = np.concatenate(new_meta)
+    
+    assert merged_array.shape[0] == len(new_meta), 'Metadata length does not equal table rows!'
+            
+    # Flush memmap(s) to disk
+    merged_array.flush()
+    del merged_array
+    if move_blurred:
+        merged_blurredbinaries.flush()
+        del merged_blurredbinaries
+    if clear_old_tables:
+        for t in tables:
+            del t.table
+            if t.blurredbinaries is not None:
+                del t.blurredbinaries
+            del t
+            
+    gc.collect()
+    
+    # Write metadata 
+    with open(new_filename+'.txt', 'w') as f:
+        for line in new_meta:
+            f.write(line + '\n')
+
+    # Build new BigMetaTable
+    new_table = BigMetaTable(new_filename, header=tables[0].header)
+
+    return new_table

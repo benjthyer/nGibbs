@@ -572,18 +572,16 @@ class NN_MELTS:
         tuple or torch.Tensor
             Phase oxide wt% tables and/or phase mass fractions
         """
-        phaseComps = newComps.unsqueeze(-1) * compPhaseMap  # (B, C, P)
+        phaseComps = newComps.unsqueeze(-1) * compPhaseMap  # (B, VC, P)
 
         # Convert to oxides per phase (plug in iron speciator). Moles, then grams
         phaseOxMolar = torch.einsum("bcp,co->bpo", phaseComps, compToOx)
-        print(phaseOxMolar[:3, -1])
-        print(features[:3])
-        liqWithFerric = self.Iron_Speciator(
-            oxides=phaseOxMolar[:, -1].to(self.dev),
-            Normedfeatures=features.to(self.dev)
-        )
-        phaseOxMolar[:, -1] = liqWithFerric
-        print(phaseOxMolar[:3, -1])
+        if 'Fe3' not in self.Elkeys: # Only apply iron speciation if ferric iron is not already included in the model!
+            liqWithFerric = self.Iron_Speciator(
+                oxides=phaseOxMolar[:, self.ml_indexer.comp_phaseDict['melts-liquid']].to(self.dev),
+                Normedfeatures=features.to(self.dev)
+            )
+            phaseOxMolar[:, self.ml_indexer.comp_phaseDict['melts-liquid']] = liqWithFerric
 
         phaseOxMass = torch.einsum("bpo,oo->bpo", phaseOxMolar, MM)
 

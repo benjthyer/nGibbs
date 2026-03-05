@@ -10,6 +10,7 @@ from pathlib import Path
 import tarfile
 import tempfile
 import pickle
+from typing import List
 import numpy as np
 
 
@@ -495,4 +496,76 @@ def save_ml_bundle(bundle, output_path):
         # Clean up temporary directory
         shutil.rmtree(temp_dir)
 
+import pandas as pd
 
+def save_fixed_width_table(
+    table: pd.DataFrame | np.ndarray,
+    out_path: Path | str,
+    columns: list[str] | None = None,
+    width: int = 16,
+    precision: int = 5,
+) -> Path:
+    """
+    Save tabular data in fort.59-style fixed-width text format.
+
+    Parameters
+    ----------
+    table : pd.DataFrame | np.ndarray
+        Input data to serialize. Must be 2D.
+    out_path : Path | str
+        Output file path.
+    columns : Sequence[str] | None
+        Optional column names when `table` is a numpy array.
+        For DataFrames, defaults to existing DataFrame columns.
+    width : int
+        Fixed character width for each field.
+    precision : int
+        Decimal precision for numeric fields.
+
+    Returns
+    -------
+    Path
+        Path of the written file.
+    """
+    if width < 8:
+        raise ValueError('width must be >= 8')
+    if precision < 0:
+        raise ValueError('precision must be >= 0')
+
+    if isinstance(table, pd.DataFrame):
+        values = table.to_numpy()
+        col_names = [str(col) for col in table.columns]
+    else:
+        values = np.asarray(table)
+        if values.ndim != 2:
+            raise ValueError('numpy input must be a 2D array')
+        if columns is None:
+            col_names = None
+        else:
+            if len(columns) != values.shape[1]:
+                raise ValueError('Length of columns must match number of table columns')
+            col_names = columns
+
+    if values.ndim != 2:
+        raise ValueError('table must be 2D')
+
+    output_path = Path(out_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+
+    with output_path.open('w', encoding='utf-8', newline='\n') as handle:
+        if col_names is not None:
+            header_line = ''.join(f'{col:>{width}}' for col in col_names)
+            handle.write(header_line + '\n')
+        for row in values:
+            fields: List[str] = []
+            for value in row:
+                if pd.isna(value):
+                    fields.append(f'{float("nan"):>{width}.{precision}f}')
+                elif isinstance(value, (int, float, np.integer, np.floating)):
+                    fields.append(f'{float(value):>{width}.{precision}f}')
+                else:
+                    fields.append(f'{str(value):>{width}}')
+            handle.write(''.join(fields) + '\n')
+
+    return output_path

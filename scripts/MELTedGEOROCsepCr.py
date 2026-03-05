@@ -43,7 +43,7 @@ import time
 time.sleep(8000)"""
 
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-input_date = 'Feb16'
+input_date = 'Feb16UM'
 
 input_ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
 MELTSmodels = ['p']#, '102'] # MELTS models to run. To add: MAGEmin
@@ -51,8 +51,9 @@ FXes = ['Batch']#, 'FxCryst']
 Prange = None # Auto if None, for lithosphere/aesthenospere (p)
 
 total_to_run = int(300) # How many total simulations to run
-mafics_to_run = int(total_to_run * 0.8)
-full_to_run = int(total_to_run * 0.2)
+ultramafics_to_run = total_to_run#int(total_to_run * 0.5)
+mafics_to_run = 0#int(total_to_run * 0.4)
+full_to_run = 0#int(total_to_run * 0.1)
 
 startTs = [1600]#, 1800]
 delta = -4
@@ -90,7 +91,7 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
 
             # Generate headers and create indexer for this set of phases
             headers = generate_column_headers(allowed_phases, mode=MELTSModel, zeroOxides=ZeroOxides)
-            indexer = DatasetIndexer(headers)
+            indexer = DatasetIndexer(headers, OXYGEN='closed', MODEL='MELTS') # No use of ml_indexer here, but we need to specify the same OXYGEN and MODEL to sidestep errors, even though they are not used
 
             assert fractionate in ['Batch', 'FxCryst'], "fractionate argument must be one of ['Batch', 'FxCryst'], 'FxMelt' not yet implemented"
             assert calctype in ['Cooling', 'Compression'], "calctype argument must be one of ['Cooling', 'Compression'], isoentropic, isoenthalpic, isochroic not yet implemented"
@@ -153,11 +154,25 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
                     'startT': startT, 'max_liquid_fraction': max_liquid_fraction, 'zeroOxides': ZeroOxides, 
                     'Prange': Prange, 'delta': delta}
             
-            MELTER(output_file=Trainfilename, **args)
+            if full_to_run != 0:
+                MELTER(output_file=Trainfilename, **args)
 
-            # Run full GEOROC validation dataset
-            args['itercode'] = f'a{int(full_to_run//4)}'
-            MELTER(output_file=Validfilename, **args)
+                # Run full GEOROC validation dataset
+                args['itercode'] = f'a{int(full_to_run//4)}'
+                MELTER(output_file=Validfilename, **args)
+
+            if ultramafics_to_run != 0:
+                ultramafics = GEOROC[:,col_dict['MgO']+1]>=25 # MgO above 25
+            
+                args['GEOROC'] = GEOROC[ultramafics]
+                # Run ultramafic GEOROC training dataset
+                args['itercode'] = f'u{ultramafics_to_run}'
+
+                MELTER(output_file=Trainfilename, **args)
+
+                # Run ultramafic GEOROC validation dataset
+                args['itercode'] = f'u{int(ultramafics_to_run//4)}'
+                MELTER(output_file=Validfilename, **args)
 
             if mafics_to_run != 0:
                 mafics = GEOROC[:,col_dict['MgO']+1]>=5 # MgO above 5
@@ -171,6 +186,7 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
                 # Run mafic GEOROC validation dataset
                 args['itercode'] = f'm{int(mafics_to_run//4)}'
                 MELTER(output_file=Validfilename, **args)
+
 
 
             # Clean up progress files upon completion

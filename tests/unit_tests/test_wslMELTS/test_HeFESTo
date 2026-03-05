@@ -1,0 +1,323 @@
+"""
+HeFESTo table consistency checks.
+
+Validates two constraints on a HeFESTo-style MELTS table:
+1) Phase-component rows reconstruct Bulk_comp_elements within 1 part per 1000.
+2) Bulk_comp wt% oxides match Bulk_comp_elements-derived oxides.
+"""
+
+import argparse
+import re
+import sys
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+import numpy as np
+import pandas as pd
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+SRC_DIR = PROJECT_ROOT / 'src'
+
+if str(PROJECT_ROOT) not in sys.path:
+	sys.path.insert(0, str(PROJECT_ROOT))
+if str(SRC_DIR) not in sys.path:
+	sys.path.insert(0, str(SRC_DIR))
+
+
+from builder.indexer import DatasetIndexer
+from nMELTS.config.constants import get_oxide_molar_mass
+
+
+DEFAULT_TABLE = (
+	PROJECT_ROOT
+	/ 'data'
+	/ 'MELTStables'
+	/ 'HeFESTo'
+	/ 'HeFESTo_TrainsetMar2NTP.csv'
+)
+
+EPS = 1e-12
+
+
+def _build_indexer_from_table_headers(table_path: Path) -> DatasetIndexer:
+	headers = list(pd.read_csv(table_path, nrows=0).columns)
+	return DatasetIndexer(headers, OXYGEN='closed', MODEL='HeFESTo')
+
+
+def _component_column_indices(indexer: DatasetIndexer) -> List[int]:
+	col_indices: List[int] = [-1] * indexer.ml_indexer.ncomps
+	for phase, comp_indices in indexer.ml_indexer.label_indices.items():
+		phase_map = indexer.MELTS_indices.get(phase, {})
+		for comp_idx in comp_indices:
+			comp_name = indexer.ml_indexer.label_names[comp_idx]
+			col_indices[comp_idx] = int(phase_map.get(comp_name, -1))
+	return col_indices
+
+
+def _parse_formula_stoich(formula: str) -> Dict[str, int]:
+	tokens = re.findall(r'([A-Z][a-z]?)(\d*)', formula)
+	if not tokens:
+		raise ValueError(f'Unable to parse oxide formula: {formula}')
+
+	out: Dict[str, int] = {}
+	for symbol, count_text in tokens:
+		count = int(count_text) if count_text else 1
+		out[symbol] = out.get(symbol, 0) + count
+	return out
+
+
+def _build_oxide_to_elements_matrix(oxides: List[str], element_names: List[str]) -> np.ndarray:
+	mat = np.zeros((len(oxides), len(element_names)), dtype=float)
+	for i, oxide in enumerate(oxides):
+		stoich = _parse_formula_stoich(oxide)
+		for j, element in enumerate(element_names):
+			mat[i, j] = float(stoich.get(element, 0))
+	return mat
+
+
+def _bulk_elements_to_oxides_wt(elements: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+	n_si = elements['Si']
+	n_mg = elements['Mg']
+	n_fe = elements['Fe']
+	n_ca = elements['Ca']
+	n_al = elements['Al']
+	n_na = elements['Na']
+	n_cr = elements['Cr']
+	n_o = elements['O']
+
+	o_non_fe = 2.0 * n_si + n_mg + n_ca + 1.5 * n_al + 0.5 * n_na + 1.5 * n_cr
+	o_for_fe = n_o - o_non_fe
+
+	n_fe2o3 = np.maximum(0.0, o_for_fe - n_fe)
+	n_feo = np.maximum(0.0, n_fe - 2.0 * n_fe2o3)
+
+	overflow = (n_feo + 2.0 * n_fe2o3) > (n_fe + 1e-9)
+	n_fe2o3 = np.where(overflow, 0.0, n_fe2o3)
+	n_feo = np.where(overflow, n_fe, n_feo)
+
+	oxide_moles = {
+		'SiO2': n_si,
+		'MgO': n_mg,
+		'FeO': n_feo,
+		'Fe2O3': n_fe2o3,
+		'CaO': n_ca,
+		'Al2O3': n_al / 2.0,
+		'Na2O': n_na / 2.0,
+		'Cr2O3': n_cr / 2.0,
+	}
+
+	oxide_masses = {
+		ox: moles * get_oxide_molar_mass(ox)
+		for ox, moles in oxide_moles.items()
+	}
+	total_mass = np.zeros_like(n_si, dtype=float)
+	for masses in oxide_masses.values():
+		total_mass = total_mass + masses
+
+	if np.any(total_mass <= 0.0):
+		raise ValueError('Encountered non-positive total oxide mass in bulk conversion')
+
+	return {
+		ox: (100.0 * masses / total_mass)
+		for ox, masses in oxide_masses.items()
+	}
+
+
+def _max_relative_error(actual: np.ndarray, expected: np.ndarray) -> np.ndarray:
+	scale = np.maximum(np.abs(expected), EPS)
+	return np.abs(actual - expected) / scale
+
+
+def validate_hefesto_table(
+	table_path: Path,
+	tolerance: float = 1e-3,
+	chunksize: int = 20000,
+	diagnostic_csv: Path | None = None,
+) -> Tuple[int, int]:
+	if not table_path.exists():
+		raise FileNotFoundError(f'Table not found: {table_path}')
+
+	indexer = _build_indexer_from_table_headers(table_path)
+	comp_cols = _component_column_indices(indexer)
+
+	bulk_el_phase = indexer.MELTS_indices.get('Bulk_comp_elements', {})
+	required_elements = ['Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O']
+	missing_elements = [el for el in required_elements if el not in bulk_el_phase]
+	if missing_elements:
+		raise ValueError(f'Missing Bulk_comp_elements columns: {missing_elements}')
+
+	bulk_ox_phase = indexer.MELTS_indices.get('Bulk_comp', {})
+	required_oxides = ['SiO2', 'MgO', 'FeO', 'Fe2O3', 'CaO', 'Al2O3', 'Na2O', 'Cr2O3']
+	missing_oxides = [ox for ox in required_oxides if ox not in bulk_ox_phase]
+	if missing_oxides:
+		raise ValueError(f'Missing Bulk_comp oxide columns: {missing_oxides}')
+
+	oxides = list(indexer.ml_indexer.Oxides)
+	ox_to_el_full = _build_oxide_to_elements_matrix(oxides, required_elements)
+	comp_to_ox = np.asarray(indexer.ml_indexer.compToOxLoad, dtype=float)
+
+	fail_rows_comp_to_el = 0
+	fail_rows_ox_from_el = 0
+	checked_rows = 0
+	row_offset = 0
+	failure_records: List[Dict[str, float | str | int]] = []
+
+	for chunk in pd.read_csv(table_path, chunksize=chunksize):
+		arr = chunk.to_numpy(dtype=float)
+		nrows = arr.shape[0]
+
+		comp_moles = np.zeros((nrows, len(comp_cols)), dtype=float)
+		for comp_idx, col_idx in enumerate(comp_cols):
+			if col_idx >= 0:
+				comp_moles[:, comp_idx] = arr[:, col_idx]
+
+		recon_elements = (comp_moles @ comp_to_ox) @ ox_to_el_full
+
+		bulk_elements = np.column_stack([
+			arr[:, bulk_el_phase['Si']],
+			arr[:, bulk_el_phase['Mg']],
+			arr[:, bulk_el_phase['Fe']],
+			arr[:, bulk_el_phase['Ca']],
+			arr[:, bulk_el_phase['Al']],
+			arr[:, bulk_el_phase['Na']],
+			arr[:, bulk_el_phase['Cr']],
+			arr[:, bulk_el_phase['O']],
+		])
+
+		row_total_bulk_moles = np.sum(bulk_elements, axis=1, keepdims=True)
+		row_scale = np.maximum(row_total_bulk_moles, EPS)
+		comp_el_rel = np.abs(recon_elements - bulk_elements) / row_scale
+		comp_el_fail = np.any(comp_el_rel > tolerance, axis=1)
+		fail_rows_comp_to_el += int(np.sum(comp_el_fail))
+
+		if np.any(comp_el_fail):
+			local_fail_idx = np.where(comp_el_fail)[0]
+			for local_idx in local_fail_idx:
+				worst_el_idx = int(np.argmax(comp_el_rel[local_idx]))
+				failure_records.append({
+					'row_index': int(row_offset + local_idx),
+					'check': 'component_to_element',
+					'field': required_elements[worst_el_idx],
+					'max_fraction_error': float(comp_el_rel[local_idx, worst_el_idx]),
+					'reconstructed': float(recon_elements[local_idx, worst_el_idx]),
+					'expected': float(bulk_elements[local_idx, worst_el_idx]),
+				})
+
+		el_dict = {
+			'Si': bulk_elements[:, 0],
+			'Mg': bulk_elements[:, 1],
+			'Fe': bulk_elements[:, 2],
+			'Ca': bulk_elements[:, 3],
+			'Al': bulk_elements[:, 4],
+			'Na': bulk_elements[:, 5],
+			'Cr': bulk_elements[:, 6],
+			'O': bulk_elements[:, 7],
+		}
+		oxides_from_elements = _bulk_elements_to_oxides_wt(el_dict)
+
+		table_oxides = np.column_stack([
+			arr[:, bulk_ox_phase['SiO2']],
+			arr[:, bulk_ox_phase['MgO']],
+			arr[:, bulk_ox_phase['FeO']],
+			arr[:, bulk_ox_phase['Fe2O3']],
+			arr[:, bulk_ox_phase['CaO']],
+			arr[:, bulk_ox_phase['Al2O3']],
+			arr[:, bulk_ox_phase['Na2O']],
+			arr[:, bulk_ox_phase['Cr2O3']],
+		])
+		recon_oxides = np.column_stack([
+			oxides_from_elements['SiO2'],
+			oxides_from_elements['MgO'],
+			oxides_from_elements['FeO'],
+			oxides_from_elements['Fe2O3'],
+			oxides_from_elements['CaO'],
+			oxides_from_elements['Al2O3'],
+			oxides_from_elements['Na2O'],
+			oxides_from_elements['Cr2O3'],
+		])
+
+		ox_rel = _max_relative_error(table_oxides, recon_oxides)
+		ox_fail = np.any(ox_rel > tolerance, axis=1)
+		fail_rows_ox_from_el += int(np.sum(ox_fail))
+
+		if np.any(ox_fail):
+			local_fail_idx = np.where(ox_fail)[0]
+			for local_idx in local_fail_idx:
+				worst_ox_idx = int(np.argmax(ox_rel[local_idx]))
+				failure_records.append({
+					'row_index': int(row_offset + local_idx),
+					'check': 'oxide_from_element',
+					'field': required_oxides[worst_ox_idx],
+					'max_fraction_error': float(ox_rel[local_idx, worst_ox_idx]),
+					'reconstructed': float(recon_oxides[local_idx, worst_ox_idx]),
+					'expected': float(table_oxides[local_idx, worst_ox_idx]),
+				})
+
+		checked_rows += nrows
+		row_offset += nrows
+
+	if checked_rows == 0:
+		raise ValueError('No rows found in table')
+
+	print(f'Checked rows: {checked_rows}')
+	print(f'Component->Element failures: {fail_rows_comp_to_el}')
+	print(f'Bulk oxide<-element failures: {fail_rows_ox_from_el}')
+
+	if diagnostic_csv is not None and len(failure_records) > 0:
+		diagnostic_csv.parent.mkdir(parents=True, exist_ok=True)
+		pd.DataFrame(failure_records).to_csv(diagnostic_csv, index=False)
+		print(f'Diagnostic failures written to: {diagnostic_csv}')
+
+	assert fail_rows_comp_to_el == 0, (
+		'Component->element reconstruction failed for '
+		f'{fail_rows_comp_to_el}/{checked_rows} rows at tolerance {tolerance}'
+	)
+	assert fail_rows_ox_from_el == 0, (
+		'Bulk oxide reconstruction from elements failed for '
+		f'{fail_rows_ox_from_el}/{checked_rows} rows at tolerance {tolerance}'
+	)
+
+	return checked_rows, fail_rows_comp_to_el + fail_rows_ox_from_el
+
+
+def main() -> None:
+	parser = argparse.ArgumentParser(description='Validate HeFESTo table consistency')
+	parser.add_argument(
+		'--table',
+		type=str,
+		default=str(DEFAULT_TABLE),
+		help='Path to HeFESTo CSV table',
+	)
+	parser.add_argument(
+		'--tolerance',
+		type=float,
+		default=1e-3,
+		help='Relative tolerance (1e-3 = 1 part per thousand)',
+	)
+	parser.add_argument(
+		'--chunksize',
+		type=int,
+		default=20000,
+		help='Rows per chunk while scanning table',
+	)
+	parser.add_argument(
+		'--diagnostic-csv',
+		type=str,
+		default='',
+		help='Optional output CSV for failing-row diagnostics',
+	)
+	args = parser.parse_args()
+
+	diagnostic_csv = Path(args.diagnostic_csv) if args.diagnostic_csv else None
+
+	validate_hefesto_table(
+		table_path=Path(args.table),
+		tolerance=float(args.tolerance),
+		chunksize=int(args.chunksize),
+		diagnostic_csv=diagnostic_csv,
+	)
+
+
+if __name__ == '__main__':
+	main()

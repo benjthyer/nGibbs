@@ -24,6 +24,7 @@ device: cuda
 max_N: null
 max_N_tune: 1.0e6
 log_dir: src/builder/training/logs
+inherit_loss: False
 checkpoints: # All relative to training
   lower_path: temp_models/temp_binary_train.pt
   upper_path: temp_models/temp_upper_train.pt

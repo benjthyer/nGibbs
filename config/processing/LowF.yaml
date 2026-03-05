@@ -6,24 +6,25 @@
 # ============================================================================
 dataset:
   MELTSModel: 'p'          # MELTS model version: '102', '110', '120', 'p'
-  Date: 'Feb16NoCr'               # Date identifier for dataset naming
-  Mode: 'BatchCooling'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
+  Date: 'Feb16Cr'               # Date identifier for dataset naming
+  Mode: 'BatchCooling__merged'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
-outname: 'pGeoDynamicsIsentropiclNoCr'                  # Base name for output folder (without extension). Auto-Generated if blank
+outname: 'pGeoDynamicsIsothemalCr'                  # Base name for output folder (without extension). Auto-Generated if blank
 
 # ============================================================================
 # NON-CHEMICAL FEATURE AND LABEL CONFIGURATION (format: attribute(phase): e.g. 'Pressure(System_main)')
 # ============================================================================
 featureNames: # Non-chemical features to include in the dataset
   - 'Pressure(System_main)'
-  #- 'Temperature(System_main)'
-  - 'S(System_main)' # Isentropic 
+  - 'Temperature(System_main)'
+  #- 'S(System_main)' # Isentropic 
   
 
 freeOutputs: # Non-chemical labels to predict. These are used for training the saturation predictor and as auxiliary outputs for the encoder.
-  - 'Temperature(System_main)' 
+  #- 'Temperature(System_main)' 
+  - 'S(System_main)'
   - 'dVdP*10^6(System_main)' # COMPRESSIBILITY
   - 'dVdT*10^6(System_main)' # THERMAL EXPANSION
   - 'H(System_main)'
@@ -58,7 +59,7 @@ min_phase_proportion: 0.03    # Minimum phase proportion (0-1) for a sample to b
 
 
 upsampling:
-  enabled: true              # Enable rare phase upsampling
+  enabled: False              # Enable rare phase upsampling
   phases:
     nepheline:
       n_resamples: 10
@@ -132,7 +133,7 @@ plot:
 # BALANCING FUNCTION
 # ============================================================================
 balancing:                    # Selectively "culling" dataset to balance liquid fractions
-  function: balance_geodynamics              # Options: null = no balancing applied 
+  function: null #balance_geodynamics              # Options: null = no balancing applied 
                               # 'balance_lowF' = Weigh all liquid fractions ~equalLy. Removes subsolidus bias  
                               # 'balance_superliquidus' = Favor subliquidus over superliquidus for Frac. Xtal. 
                               # 'balance_geodynamics' = Keep only 10% liq fraction and less. Used for geodynamics
