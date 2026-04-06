@@ -500,7 +500,7 @@ import pandas as pd
 
 def save_fixed_width_table(
     table: pd.DataFrame | np.ndarray,
-    out_path: Path | str,
+    out_path: Path | str | None = None,
     columns: list[str] | None = None,
     width: int = 16,
     precision: int = 5,
@@ -549,8 +549,11 @@ def save_fixed_width_table(
     if values.ndim != 2:
         raise ValueError('table must be 2D')
 
-    output_path = Path(out_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_path is None:
+        output_path = Path.cwd() / 'ad.in' # default filename used by HeFESTo for convenience
+    else:
+        output_path = Path(out_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
 
     with output_path.open('w', encoding='utf-8', newline='\n') as handle:

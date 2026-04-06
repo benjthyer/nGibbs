@@ -13,6 +13,7 @@ from torch.optim import AdamW, Adam
 import time
 from tqdm import tqdm
 from torch import nn
+import torch.nn.functional as F
 import gc
 import sys
 from pathlib import Path
@@ -65,6 +66,7 @@ def _iter_adaptive_dropout_modules(model: nn.Module):
 
 def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = {},
                       batch_size = 1024, criterion = nn.BCEWithLogitsLoss(), lr = 1e-4, 
+                      binWeights = torch.ones(1),
                       Epochs = 30, device = 'cuda',
                       max_N = np.inf, early_stopping_patience = 5, DictFilePath = None,
                       config_yaml = None, training_yaml = None, processing_yaml = None, stats = None, log_path = None):
@@ -80,6 +82,10 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     print('####################')
 
     model = model.to(device)
+    binWeights = binWeights.to(device)
+    phase_names = getattr(getattr(model, 'ml_indexer', None), 'all_phases', None)
+    if phase_names is None:
+        phase_names = [f"phase_{i}" for i in range(binWeights.shape[1])]
 
     # freeze all but encoder and saturation head
     for p in model.parameters():
@@ -127,7 +133,8 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
             optimizer.zero_grad()
             logits = model.forward_binaries(xb)
-            loss = criterion(logits, yb)#*1E2 # Scale loss to be large wrt to Epsilon for optimizer stability.
+            loss_raw = F.binary_cross_entropy_with_logits(logits, yb, reduction='none')
+            loss = (loss_raw * binWeights).sum() / binWeights.expand_as(loss_raw).sum().clamp(min=1)
             loss.backward()
             optimizer.step()
             wrappedScheduler.step_batch() # Step scheduler if it's batch-based (Does nothing if it's epoch-based)
@@ -145,13 +152,24 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         model.eval()
         running_test_loss = 0.0
         N = 0
+        tp = torch.zeros(binWeights.shape[1], dtype=torch.float64, device=device)
+        fp = torch.zeros(binWeights.shape[1], dtype=torch.float64, device=device)
+        fn = torch.zeros(binWeights.shape[1], dtype=torch.float64, device=device)
 
         with torch.no_grad():
             for output in test_loader:
                 xb, yb = output[0], output[1] # We only need the phase saturation data here
                 xb, yb = xb.to(device, non_blocking=True), yb.to(device, non_blocking=True)
                 logits = model.forward_binaries(xb)
-                loss = criterion(logits, yb)#*1E2
+                loss_raw = F.binary_cross_entropy_with_logits(logits, yb, reduction='none')
+                loss = (loss_raw * binWeights).sum() / binWeights.expand_as(loss_raw).sum().clamp(min=1)
+
+                preds = torch.sigmoid(logits) > 0.5
+                truth = yb > 0.5
+                tp += (preds & truth).sum(dim=0).to(torch.float64)
+                fp += (preds & (~truth)).sum(dim=0).to(torch.float64)
+                fn += ((~preds) & truth).sum(dim=0).to(torch.float64)
+
                 running_test_loss += loss.item() * xb.size(0)
                 N += xb.size(0)
                 if N >= max_N:
@@ -160,6 +178,12 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
         avg_test_loss = running_test_loss / N
         test_losses.append(avg_test_loss)
+
+        precision = tp / (tp + fp).clamp(min=1.0)
+        recall = tp / (tp + fn).clamp(min=1.0)
+        print("[TEST] Phasewise precision/recall:")
+        for i, phase in enumerate(phase_names):
+            print(f"  {phase}: precision={precision[i].item():.3f}, recall={recall[i].item():.3f}")
 
         print(f"Epoch {epoch+1:02d}: Train {avg_train_loss:.5f} | Test {avg_test_loss:.5f} | time = {time.time()-start:.1f}s")
 
@@ -340,9 +364,9 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
             
             
             if bulk_alpha == 0: # Scale loss to be large wrt to Epsilon for optimizer stability. 
-                loss = 1E2*(sat_alpha*loss_sat + chem_alpha*chem_loss_masked + mole_alpha*mole_loss_masked) # Bulk can be numerically unstable...
+                loss = 1E4*(sat_alpha*loss_sat + chem_alpha*chem_loss_masked + mole_alpha*mole_loss_masked) # Bulk can be numerically unstable...
             else:
-                loss = 1E2*(sat_alpha*loss_sat + chem_alpha*chem_loss_masked + mole_alpha*mole_loss_masked + bulk_alpha*bulk_loss_masked)
+                loss = 1E4*(sat_alpha*loss_sat + chem_alpha*chem_loss_masked + mole_alpha*mole_loss_masked + bulk_alpha*bulk_loss_masked)
 
             #print(f"Sat loss: {loss_sat.item()}, Chem loss: {chem_loss_masked.item()}")
 
@@ -438,9 +462,9 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                 #loss = loss_sat + chem_alpha*chem_loss_masked
                 #loss = mole_alpha*mole_loss_masked + bulk_alpha*bulk_loss_masked
                 if bulk_alpha == 0:
-                    loss = 1E2*(sat_alpha*loss_sat + chem_alpha*chem_loss_masked + mole_alpha*mole_loss_masked) # Bulk can be numerically unstable...
+                    loss = 1E4*(sat_alpha*loss_sat + chem_alpha*chem_loss_masked + mole_alpha*mole_loss_masked) # Bulk can be numerically unstable...
                 else:
-                    loss = 1E2*(sat_alpha*loss_sat + chem_alpha*chem_loss_masked + mole_alpha*mole_loss_masked + bulk_alpha*bulk_loss_masked)
+                    loss = 1E4*(sat_alpha*loss_sat + chem_alpha*chem_loss_masked + mole_alpha*mole_loss_masked + bulk_alpha*bulk_loss_masked)
 
 
                 running_test_loss += loss.item() * batch_size_curr

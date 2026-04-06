@@ -1,4 +1,4 @@
-tarname: 'pGeoDynamicsIsentropicNoCr'       #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
+tarname: 'pGeoDynamicsIsothemalNoCr'       #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
 
 warm_start:  pGeoDynNoCrMole # 102CrMoleLinear
 
@@ -12,7 +12,7 @@ train3: # Increase number for another layer of training
     type: CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
     args:
       T_max: 7 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
-  DictFilePath: pGeoDynNoCrMole
+  DictFilePath: pGeoDynPTNoCrMole
   loss_config:
     binary:
       weight: 0
@@ -38,7 +38,7 @@ train4: # Increase number for another layer of training
     type: CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
     args:
       T_max: 7 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
-  DictFilePath: pGeoDynNoCrNoBulk
+  DictFilePath: pGeoDynPTNoCrNoBulk
   loss_config:
     binary:
       weight: 2

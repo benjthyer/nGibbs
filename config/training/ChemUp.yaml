@@ -1,6 +1,6 @@
-tarname: 'pGeoDynamicsIsentropicNoCr'       #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
+tarname: 'pGeoDynamicsIsothemalNoCr'       #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
     
-warm_start:  pGeoDynPSNoCrBinaries # 102CrMoleLinear
+warm_start:  pGeoDynPTNoCrBinaryHighLR # 102CrMoleLinear
 
 encoderLayerUp: 1
 encoderLayerDown: 0
@@ -9,48 +9,22 @@ middleLayerDown: 0
 low_regularization: batchnormdropout0.6
 high_regularization: batchnormdropout0.3
 activation_leak: 0.05
-lowWD: 1E-3
-highWD: 1E-4
-noise: 0.05 # 2%
+lowWD: 0.01
+highWD: 0.0001
+noise: 0 # 2%
 description: ""
-
-tune3:
-  #best_loss: 7.45870
-  strategy: upper # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
-  batch_size: 1024 
-  epochs: 15
-  learning_rate: 1E-4
-  early_stopping_patience: 2
-  max_N: 5E5
-  tune_params: # These go in the specified order
-    #low_regularization: [dropout0.3, batchnormdropout0.3, batchnorm]
-    middleLayer: [[1,0], [1,1], [2,2], [3,2], [2,0], [2,1]]
-    highWD: [0, 1e-4, 1e-3, 1e-2]
-    noise: [0, 0.1, 0.05, 0.01]
-
-tune4:
-  #best_loss: 7.45870
-  strategy: upper # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
-  batch_size: 1024 
-  epochs: 15
-  learning_rate: 1E-4
-  early_stopping_patience: 2
-  max_N: 5E5
-  tune_params: # These go in the specified order
-    #low_regularization: [dropout0.3, batchnormdropout0.3, batchnorm]
-    middleLayer: [[1,0], [1,1], [2,2], [3,2], [2,0], [2,1]]
   
 train2: # Increase number for another layer of training
   strategy: upper # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
   batch_size: 1024 
   epochs: 700
   learning_rate: 1E-3
-  early_stopping_patience: 25
+  early_stopping_patience: 15
   scheduler:
     type: CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
     args:
       T_max: 7 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
-  DictFilePath: pGeoDynNoCrChemtuned
+  DictFilePath: pGeoDynPTNoCrChem2
   loss_config:
     binary:
       weight: 0
@@ -64,18 +38,20 @@ train2: # Increase number for another layer of training
       type: symmetric_rel_l2
       weight: 0
   which_heads_to_freeze: ['encoder', 'sat_head', 'mole_head']
+  compweights:
+    melts-liquid: 2
     
 train3: # Increase number for another layer of training
   strategy: upper # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
   batch_size: 1024 
   epochs: 50
-  learning_rate: 5E-4
+  learning_rate: 1E-3
   early_stopping_patience: 15
   scheduler:
     type: CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
     args:
       T_max: 7 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
-  DictFilePath: pGeoDynNoCrMoletuned
+  DictFilePath: pGeoDynPTNoCrMole2
   loss_config:
     binary:
       weight: 0
@@ -89,19 +65,21 @@ train3: # Increase number for another layer of training
       type: symmetric_rel_l2
       weight: 0
   which_heads_to_freeze: ['encoder', 'sat_head', 'middleBrain']
+  binweights:
+    melts-liquid: 2
 
 
 train4: # Increase number for another layer of training
   strategy: upper # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
   batch_size: 1024 
   epochs: 50
-  learning_rate: 5E-4
+  learning_rate: 1E-3
   early_stopping_patience: 15
   scheduler:
     type: CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
     args:
       T_max: 7 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
-  DictFilePath: pGeoDynNoCrNoBulk
+  DictFilePath: pGeoDynPTNoCrNoBulk
   loss_config:
     binary:
       weight: 2
@@ -115,6 +93,13 @@ train4: # Increase number for another layer of training
       type: symmetric_rel_l2
       weight: 0
   which_heads_to_freeze: ['encoder'] # ['encoder', 'sat_head', 'middleBrain', 'chem_heads'] #['encoder', 'sat_head', 'middleBrain', 'chem_heads']
+  compweights:
+    melts-liquid: 2
+  binweights:
+    melts-liquid: 3
+    k-feldspar: 3
+    plagioclase: 2
+    spinel: 2
 
 tune5: # No dropout for models with bulk loss (breaks it for some reason), so let's investigate other regularization options
   strategy: upper # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
@@ -167,8 +152,10 @@ train5: # Increase number for another layer of training
       type: symmetric_rel_l2
       weight: 100
   which_heads_to_freeze: ['encoder', 'sat_head'] #['encoder', 'sat_head', 'middleBrain', 'chem_heads']
+  compweights:
+    melts-liquid: 2
 
-train6: # Increase number for another layer of training
+train7: # Increase number for another layer of training
   strategy: finetune # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
   batch_size: 1024 
   lowWD: 0 # No WD for frozen layers
@@ -180,7 +167,7 @@ train6: # Increase number for another layer of training
     args:
       T_max: 7 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
   max_N: null # none, 0 and inf all mean 'no limit'
-  DictFilePath: pGeoDynNoCrFull
+  DictFilePath: pGeoDynPTNoCrFull
   loss_config:
     binary:
       weight: 4
@@ -194,3 +181,10 @@ train6: # Increase number for another layer of training
       type: symmetric_rel_l2
       weight: 100
   which_heads_to_freeze: [] # ['encoder', 'sat_head'] #['encoder', 'sat_head', 'middleBrain', 'chem_heads']
+  binweights:
+    melts-liquid: 3
+    k-feldspar: 3
+    plagioclase: 2
+    spinel: 2
+  compweights:
+    melts-liquid: 2

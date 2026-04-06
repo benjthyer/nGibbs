@@ -27,6 +27,7 @@ Value Brevity — when describing changes, be concise and high level. Limit each
 Aggregate changes by date following the format YYYY-MM-DD
 Let there be a ChangeLog for each major version of the codebase.
 }
+{The python environment used in this repository is loaded with `conda activate torch-env`}
 {If the motivation, goals, or mechanism to accomplish some requested code is unclear, please ask for clarification!}
 {Never look in or do anything within any folder labeled "legacy" without explicit instructions to do so. This code is old and will be deleted soon. It is kept for human reference only.}
 {Never use emojis or unusual characters in print statements: they can cause errors when writing to and parsing log files.

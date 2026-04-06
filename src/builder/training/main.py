@@ -159,15 +159,40 @@ def _loss_fn_from_type(type_name: Optional[str]):
     raise ValueError(f"Unknown loss type: {type_name}")
 
 
-def _build_phase_weights(ml_indexer, weight_dict: Optional[Dict[str, float]]):
-    binWeights = torch.ones(ml_indexer.nphases, dtype=torch.float32).reshape(1, -1)
-    compWeights = torch.ones(ml_indexer.ncompsVaried, dtype=torch.float32).reshape(1, -1)
-    if weight_dict:
-        for phase, weight in weight_dict.items():
+def _build_phase_weights(ml_indexer, episode_cfg: Dict[str, Any]):
+    """
+    Build broadcastable phase and component loss weights.
+
+    Expected episode-level schema:
+      binweights:
+        phase_name: weight
+      compweights:
+        phase_name: weight
+
+    All unspecified phases/components default to 1. Legacy `weight_dict` is used
+    as a fallback for both maps when explicit keys are not provided.
+    """
+    binWeights = torch.ones((1, ml_indexer.nphases), dtype=torch.float32)
+    compWeights = torch.ones((1, ml_indexer.ncompsVaried), dtype=torch.float32)
+
+    legacy_weights = episode_cfg.get('weight_dict') if isinstance(episode_cfg, dict) else None
+    bin_cfg = episode_cfg.get('binweights', legacy_weights) if isinstance(episode_cfg, dict) else None
+    comp_cfg = episode_cfg.get('compweights', legacy_weights) if isinstance(episode_cfg, dict) else None
+
+    if isinstance(bin_cfg, dict):
+        for phase, weight in bin_cfg.items():
             if phase in ml_indexer.mass_phasedict:
-                binWeights[:, ml_indexer.mass_phasedict[phase]] = weight
-            if phase in ml_indexer.compositionally_variable_phases:
-                compWeights[:, ml_indexer.comp_phasedict[phase]] = weight
+                binWeights[:, ml_indexer.mass_phasedict[phase]] = float(weight)
+
+    if isinstance(comp_cfg, dict):
+        for phase, weight in comp_cfg.items():
+            if hasattr(ml_indexer, 'label_indices_comp') and phase in ml_indexer.label_indices_comp:
+                comp_indices = ml_indexer.label_indices_comp[phase]
+                if len(comp_indices) > 0:
+                    compWeights[:, comp_indices] = float(weight)
+            elif phase in ml_indexer.compositionally_variable_phases and phase in ml_indexer.comp_phasedict:
+                compWeights[:, ml_indexer.comp_phasedict[phase]] = float(weight)
+
     return binWeights, compWeights
 
 
@@ -415,7 +440,7 @@ def main() -> None:
         eps = float(episode_cfg.get("eps", 1E-8))
         amsgrad = bool(episode_cfg.get("amsgrad", True))
 
-        binWeights, compWeights = _build_phase_weights(ml_indexer, episode_cfg['weight_dict'])
+        binWeights, compWeights = _build_phase_weights(ml_indexer, episode_cfg)
         which_heads_to_freeze = episode_cfg.get('which_heads_to_freeze', None)
         if which_heads_to_freeze is None: # what portion of model is frozen can be manually overridden, or is inferred from the strategy.
             if strategy == 'upper':
@@ -556,6 +581,7 @@ def main() -> None:
                         lr=lr,
                         Epochs=Epochs,
                         batch_size=batch_size,
+                        binWeights=binWeights,
                         early_stopping_patience=ESP,
                         max_N=max_N,
                         device=device,

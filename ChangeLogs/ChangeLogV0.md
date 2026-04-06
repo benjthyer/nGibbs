@@ -1,4 +1,43 @@
 _____________________ Unreleased _______________________
+2026-04-05: Added HeFESTo adiabat tree CLI.
+- Added scripts/prepare_hefesto_tree_fulladiabat.py.
+- Wraps prepare_HeFESTo_tree_fulladiabat() with argparse.
+
+2026-04-05: Completed HeFESTo adiabat tree writer.
+- Copied the control template into each SimulationN directory.
+- Mutated run codes and oxide moles before writing control.
+- Wrote ad.in into each simulation directory with the requested path.
+
+2026-04-05: Added adiabat temperature regression utility.
+- Added scripts/fit_adiabat_temperature_regression.py CLI tool.
+- Fits T = b0 + bP*P + bP2*P^2 + bS*S + bS2*S^2 from CSV.
+- Prints fitted coefficients and in-sample R^2 value.
+
+Commit: ae372a9738d9b58959e4318ae953644dec9456c5
+2026-04-04: Added single-run HeFESTo simulation launcher.
+- Added forward_HeFESTo_single() for one SimulationN run.
+- Added CLI switch wrapper for paths and simulation id input.
+- Copies full template directory into SimulationN before run.
+
+2026-03-11: Improved recovery plot binary metrics readability.
+- Phase binary metrics now write as fixed-width aligned columns in text.
+- Added table header divider for easier visual scanning of precision/recall.
+
+2026-03-05: Added oxide-space coverage validation script.
+- Added scripts/check_phase_oxide_coverage.py CLI tool.
+- Loads model + ML bundle and predicts phase assemblages.
+- Tests if predicted assemblages span required bulk oxide support.
+- Reports zero-valued bulk oxide statistics by oxide and row counts.
+- Training now supports separate episode binweights and compweights maps.
+- main.py builds [1,P] binary and [1,VC] component weights from config.
+- Lower trainer now applies phase-weighted BCE loss each epoch.
+- Lower trainer now prints phasewise test precision and recall by epoch.
+
+2026-03-04: HeFESTo control template and run code flexibility.
+- forward_HeFESTo now accepts 1D run_code applied to all simulations.
+- forward_HeFESTo now accepts 2D run_code with one row per simulation.
+- Added control_template arg; default is shallowHeFESTo in batch dir.
+- Each simulation still writes template copy as file named control.
 
 2026-03-03: Training with constant iron and arbitrary features!
 - Added scripts/merge_bigmetatables.py CLI for two-table BigMetaTable merges.

@@ -118,16 +118,7 @@ def _safe_value(row: pd.Series, col: str) -> float:
     return float(value)
 
 
-def _build_oxide_wt_from_row(row: pd.Series) -> Dict[str, float]:
-    oxide_cols = {
-        'SiO2': _find_first_column(row.to_frame().T, ['SiO2']),
-        'MgO': _find_first_column(row.to_frame().T, ['MgO']),
-        'FeO': _find_first_column(row.to_frame().T, ['FeO']),
-        'CaO': _find_first_column(row.to_frame().T, ['CaO']),
-        'Al2O3': _find_first_column(row.to_frame().T, ['Al2O3']),
-        'Na2O': _find_first_column(row.to_frame().T, ['Na2O']),
-        'Cr2O3': _find_first_column(row.to_frame().T, ['Cr2O3']),
-    }
+
 
     
             
@@ -150,72 +141,7 @@ def _build_oxide_wt_from_row(row: pd.Series) -> Dict[str, float]:
     return wt
 
 
-def _speciate_iron_and_normalize(oxide_wt: Dict[str, float], fe3_fet: float) -> Dict[str, float]:
-    fe_total_moles = float(oxide_wt['Fe_total_moles'])
-    fe3_fet = float(np.clip(fe3_fet, 0.0, 0.1))
 
-    fe3_moles = fe_total_moles * fe3_fet
-    fe2_moles = fe_total_moles - fe3_moles
-    fe2o3_moles = fe3_moles / 2.0
-    feo_moles = fe2_moles
-
-    eps = 0.001 # Force small non-zero values for minor oxides
-
-    oxide_masses = {
-        'SiO2': oxide_wt['SiO2'],
-        'MgO': oxide_wt['MgO'],
-        'FeO': feo_moles * OXIDE_MOLAR_MASSES['FeO'],
-        'Fe2O3': fe2o3_moles * OXIDE_MOLAR_MASSES['Fe2O3'],
-        'CaO': oxide_wt['CaO'] + eps,
-        'Al2O3': oxide_wt['Al2O3'] + eps,
-        'Na2O': oxide_wt['Na2O'] + eps,
-        'Cr2O3': oxide_wt['Cr2O3'] + eps #* np.random.uniform(0.01, 0.5)
-    }
-
-    total_mass = float(sum(oxide_masses.values()))
-    if total_mass <= 0:
-        raise ValueError('Non-positive oxide mass after Fe speciation')
-
-    return {oxide: 100.0 * mass / total_mass for oxide, mass in oxide_masses.items()}
-
-
-def _oxide_wt_to_element_moles(oxide_wt_norm: Dict[str, float]) -> Dict[str, float]:
-    n_sio2 = oxide_wt_norm['SiO2'] / OXIDE_MOLAR_MASSES['SiO2']
-    n_mgo = oxide_wt_norm['MgO'] / OXIDE_MOLAR_MASSES['MgO']
-    n_feo = oxide_wt_norm['FeO'] / OXIDE_MOLAR_MASSES['FeO']
-    n_fe2o3 = oxide_wt_norm['Fe2O3'] / OXIDE_MOLAR_MASSES['Fe2O3']
-    n_cao = oxide_wt_norm['CaO'] / OXIDE_MOLAR_MASSES['CaO']
-    n_al2o3 = oxide_wt_norm['Al2O3'] / OXIDE_MOLAR_MASSES['Al2O3']
-    n_na2o = oxide_wt_norm['Na2O'] / OXIDE_MOLAR_MASSES['Na2O']
-    n_cr2o3 = oxide_wt_norm['Cr2O3'] / OXIDE_MOLAR_MASSES['Cr2O3']
-
-    return {
-        'Si': n_sio2,
-        'Mg': n_mgo,
-        'Fe': n_feo + 2.0 * n_fe2o3,
-        'Ca': n_cao,
-        'Al': 2.0 * n_al2o3,
-        'Na': 2.0 * n_na2o,
-        'Cr': 2.0 * n_cr2o3,
-        'O': (
-            2.0 * n_sio2 + n_mgo + n_feo + 3.0 * n_fe2o3 + n_cao +
-            3.0 * n_al2o3 + n_na2o + 3.0 * n_cr2o3
-        ),
-    }
-
-
-def _normalize_total_moles(element_moles: Dict[str, float], target_total_moles: float) -> Dict[str, float]:
-    total_moles = float(sum(element_moles.values()))
-    if total_moles <= 0.0:
-        raise ValueError('Cannot normalize element moles with non-positive total')
-
-    scale = float(target_total_moles) / total_moles
-    return {key: value * scale for key, value in element_moles.items()}
-
-def get_S(T, Ca):
-    """Get Entropy as a function of mantle potential temperature and Molar Ca (24 molar basis!)"""
-    S = 0.732261764 - 0.0220453381 * Ca + 0.00147915640 * T - 0.0160980560 * Ca**2 - 2.16492530e-07 * T**2
-    return S
 
 def main() -> None:
     start_time = time.time()
@@ -225,21 +151,24 @@ def main() -> None:
 
     os.makedirs(ensemble_location, exist_ok=True)
 
-    date = 'Mar4'
+    date = 'Apr4_Adiabats'
     melts_model = 'HeFESTo'
-    #run_code = [P0, P0+139, 140, S, 0, 0, -2, 0, 0, 0, 0]
-    run_code = [0.1, 0.1, 0, 2500, 2500, 0, 0, 0, 0, 0, 0]
+   
+    #run_code = [0.1, 0.1, 0, 2500, 2500, 0, 0, 0, 0, 0, 0]
+    #run_code = [0,140,140,2.5330109805002023,0,0,-2,0,0,0,0]
 
-    total_to_run = int(1)
-    simcycle = int(4)
+    total_cycles = int(10) # How many iterations of cycle, not implemented yet
+    simcycle = int(4) # How many simulations to run per cycle
+    total_sims = total_cycles * simcycle
     random_seed = None
     target_total_moles = 24.0
+    Mps = 273 + 1200 + np.arange(total_sims)*(1650-1200)/total_sims
 
     nameCodes = [
-        'plg', 'sp', 'opx', 'cpx', 'c2c', 'wo', 'pwo', 'gt', 'cpv', 'ol',
-        'wa', 'ri', 'il', 'pv', 'ppv', 'cf', 'nal', 'mw', 'qtz', 'coes',
-        'st', 'apbo', 'ky', 'neph', 'fea', 'feg', 'fee'
-    ]
+            'plg', 'sp', 'opx', 'cpx', 'c2c', 'wo', 'pwo', 'gt', 'cpv', 'ol',
+            'wa', 'ri', 'il', 'pv', 'ppv', 'cf', 'nal', 'mw', 'qtz', 'coes',
+            'st', 'apbo', 'ky', 'neph', 'fea', 'feg', 'fee'
+        ]
     allowed_phases = [HEFESTO_ABBREVIATION_TO_SHORT_NAMES[code] for code in nameCodes]
     headers = generate_column_headers_hefesto(allowed_phases)
     indexer = DatasetIndexer(headers, OXYGEN='closed', MODEL='HeFESTo')
@@ -274,55 +203,66 @@ def main() -> None:
     #mafic_df.iloc[:,cro_col] = np.random.uniform(0.01, 0.5, size=len(mafic_df))
     if mafic_df.empty:
         raise ValueError('No mafic compositions found (MgO > 5 wt%)')
-
-    total_sims = total_to_run * simcycle
+    
     if len(mafic_df) < total_sims:
-        raise ValueError(
-            f'Not enough unique mafic rows for requested simulations: '
-            f'need {total_sims}, found {len(mafic_df)}'
-        )
-
+            raise ValueError(
+                f'Not enough unique mafic rows for requested simulations: '
+                f'need {total_sims}, found {len(mafic_df)}'
+            )
     subset = mafic_df.sample(n=total_sims, replace=False, random_state=random_seed)
-    fe3_fet_grid = np.linspace(0.0, 0.1, simcycle)
+    reduced_N = int(total_sims*(4/5))
+    fe3_fet_grid = np.append(np.linspace(0.0, 0.05, reduced_N), np.linspace(0.05, 0.10, int(total_sims - reduced_N)))
 
     element_keys = np.array(['Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O'])
-    element_rows: List[List[float]] = []
-    wts = []
-    for sim_idx, (_, row) in enumerate(subset.iterrows()):
-        ratio = float(fe3_fet_grid[sim_idx % simcycle])
-        base_oxide_wt = _build_oxide_wt_from_row(row)
-        speciated_wt = _speciate_iron_and_normalize(base_oxide_wt, ratio)
-        wt_debug = ', '.join(f'{key}={value:.4f}' for key, value in speciated_wt.items())
-        print(f'Sim {sim_idx} Fe3/FeT={ratio:.4f} -> {wt_debug}')
-        wts.append(wt_debug)
 
-        element_moles = _oxide_wt_to_element_moles(speciated_wt)
-        element_moles = _normalize_total_moles(element_moles, target_total_moles)
-        element_rows.append([element_moles[key] for key in element_keys])
+    for cycle in range(total_cycles):
+        
+        P0s = np.random.uniform(0, 1, size=simcycle)
+        #run_code = [[P0, P0+139, 138, 'S', 0, 0, -2, 0, 0, 0, 0] for P0 in P0s] # Placeholder S evaluated downstream
+        run_code = [[P0, P0+139, 138, 0, 0, 0, -1, 0, 0, 0, 0] for P0 in P0s] # ad.in files made downstream
+        #total_sims = total_to_run * simcycle 
+        
+        
+        element_rows: List[List[float]] = []
+        wts = []
 
-    input_array = np.asarray(element_rows, dtype=float)
-    print(f'Prepared {input_array.shape[0]} HeFESTo simulations')
+        for sim_idx, (_, row) in enumerate(subset.iloc[(simcycle*cycle):(simcycle*cycle)+simcycle].iterrows()):
+            ratio = float(fe3_fet_grid[(simcycle*cycle)+sim_idx])
+            base_oxide_wt = _build_oxide_wt_from_row(row)
+            speciated_wt = _speciate_iron_and_normalize(base_oxide_wt, ratio)
+            wt_debug = ', '.join(f'{key}={value:.4f}' for key, value in speciated_wt.items())
+            print(f'Sim {sim_idx} Fe3/FeT={ratio:.4f} -> {wt_debug}')
+            wts.append(wt_debug)
 
-    MELTER.forward_HeFESTo(
-        input_array=input_array,
-        keys=element_keys,
-        run_code=run_code,
-        EnsembleLocation=ensemble_location,
-    )
+            element_moles = _oxide_wt_to_element_moles(speciated_wt)
+            element_moles = _normalize_total_moles(element_moles, target_total_moles)
+            element_rows.append([element_moles[key] for key in element_keys])
+            #run_code[sim_idx][3] = get_S(T=Mps[(simcycle*cycle)+sim_idx], Ca=element_moles["Ca"]) # Potential temps between 1200 and 1650 C
+            MELTER.make_PT_path(P=np.linspace(run_code[sim_idx][0], run_code[sim_idx][1], run_code[sim_idx][2]+2), S=get_S(T=Mps[(simcycle*cycle)+sim_idx], Ca=element_moles["Ca"]), func=get_T, out_path=ensemble_location + '/' + f"Simulation{sim_idx}")
 
-    fault_ids = MELTER.import_HeFESTo_components(
-        workspace_dir=ensemble_location,
-        indexer=indexer,
-        dataname=out_csv,
-    )
-    print(f'HeFESTo parse complete. Fault IDs: {fault_ids}')
-    print(f'Compiled output written to: {out_csv}')
-    print(f'Wt debug info:')
-    for wt in wts:
-        print(wt)
+        input_array = np.asarray(element_rows, dtype=float)
+        print(f'Prepared {input_array.shape[0]} HeFESTo simulations')
 
-    elapsed_seconds = time.time() - start_time
-    print(f'main() execution time: {elapsed_seconds:.2f} seconds')
+        MELTER.forward_HeFESTo(
+            input_array=input_array,
+            keys=element_keys,
+            run_code=run_code,
+            EnsembleLocation=ensemble_location,
+        )
+
+        fault_ids = MELTER.import_HeFESTo_components(
+            workspace_dir=ensemble_location,
+            indexer=indexer,
+            dataname=out_csv,
+        )
+        print(f'HeFESTo parse complete. Fault IDs: {fault_ids}')
+        print(f'Compiled output written to: {out_csv}')
+        print(f'Wt debug info:')
+        for wt in wts:
+            print(wt)
+
+        elapsed_seconds = time.time() - start_time
+        print(f'main() execution time: {elapsed_seconds:.2f} seconds')
 
 if __name__ == '__main__':
     main()

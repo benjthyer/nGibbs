@@ -47,13 +47,21 @@ def _safe_div(numerator: float, denominator: float) -> float:
 def _write_phase_metrics(
     output_path: Path,
     phase_names: list[str],
-    real_pos: np.ndarray,
-    pred_pos: np.ndarray,
+    real_pos: dict[str, np.ndarray],
+    pred_pos: dict[str, np.ndarray],
 ) -> None:
     metrics_path = output_path / "phase_binary_metrics.txt"
-    header = "phase,precision,recall,gt_abundance_pct,pred_abundance_pct\n"
+    header = (
+        f"{'phase':<30}"
+        f"{'precision':>12}"
+        f"{'recall':>12}"
+        f"{'gt_abund_%':>14}"
+        f"{'pred_abund_%':>14}\n"
+    )
+    divider = f"{'-' * 30}{'-' * 12}{'-' * 12}{'-' * 14}{'-' * 14}\n"
     with metrics_path.open("w", encoding="utf-8") as handle:
         handle.write(header)
+        handle.write(divider)
         for phase in phase_names:
             phase_real = real_pos[phase]
             phase_pred = pred_pos[phase]
@@ -64,9 +72,14 @@ def _write_phase_metrics(
             recall = _safe_div(tp, tp + fn)
             gt_abundance = 100.0 * _safe_div(np.sum(phase_real), phase_real.size)
             pred_abundance = 100.0 * _safe_div(np.sum(phase_pred), phase_pred.size)
-            handle.write(
-                f"{phase},{precision:.6f},{recall:.6f},{gt_abundance:.3f},{pred_abundance:.3f}\n"
+            row = (
+                f"{phase:<30}"
+                f"{precision:>12.6f}"
+                f"{recall:>12.6f}"
+                f"{gt_abundance:>14.3f}"
+                f"{pred_abundance:>14.3f}\n"
             )
+            handle.write(row)
 
 
 def _resolve_bundle_path(bundle_path: str) -> Path:
@@ -84,8 +97,26 @@ def _check_indexer_compat(bundle_indexer, model_indexer) -> None:
     if model_indexer is None:
         return
     mismatch = []
-    if len(bundle_indexer.all_phases) != len(model_indexer.all_phases):
-        mismatch.append("nphases")
+    if ~np.all(np.array(bundle_indexer.featureNames) == np.array(model_indexer.featureNames)):
+        print("Feature name mismatch!")
+        print(f"Bundle features: {bundle_indexer.featureNames}")
+        print(f"Model features: {model_indexer.featureNames}")
+        mismatch.append("featureNames")
+    if ~np.all(np.array(bundle_indexer.WRkeys) == np.array(model_indexer.WRkeys)):
+        print("WRkeys mismatch!")
+        print(f"Bundle WRkeys: {bundle_indexer.WRkeys}")
+        print(f"Model WRkeys: {model_indexer.WRkeys}")
+        mismatch.append("WRkeys")
+    if ~np.all(np.array(bundle_indexer.all_phases) == np.array(model_indexer.all_phases)):
+        print("Phase name mismatch!")
+        print(f"Bundle phases: {bundle_indexer.all_phases}")
+        print(f"Model phases: {model_indexer.all_phases}")
+        mismatch.append("all_phases")
+    if ~np.all(np.array(bundle_indexer.label_names) == np.array(model_indexer.label_names)):
+        print("Component name mismatch!")
+        print(f"Bundle component names: {bundle_indexer.label_names}")
+        print(f"Model component names: {model_indexer.label_names}")
+        mismatch.append("label_names")
     if bundle_indexer.ncompsVaried != model_indexer.ncompsVaried:
         mismatch.append("ncompsVaried")
     if bundle_indexer.ncomps != model_indexer.ncomps:
