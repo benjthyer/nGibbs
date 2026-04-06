@@ -499,13 +499,20 @@ def save_ml_bundle(bundle, output_path):
 import pandas as pd
 
 def save_fixed_width_table(
-    table: pd.DataFrame | np.ndarray,
+    table,
+    out_path = None,
+    columns= None,
+    width = 16,
+    precision = 5,
+) -> Path:
+
+    """
+        table: pd.DataFrame | np.ndarray,
     out_path: Path | str | None = None,
     columns: list[str] | None = None,
     width: int = 16,
     precision: int = 5,
-) -> Path:
-    """
+    ) -> Path:
     Save tabular data in fort.59-style fixed-width text format.
 
     Parameters
