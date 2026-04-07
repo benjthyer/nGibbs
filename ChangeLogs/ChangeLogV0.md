@@ -1,3 +1,8 @@
+2026-04-07: Added directory prune utility script.
+- Added scripts/prune_dirs_without_fort.py.
+- Dry run default prints entries slated for deletion.
+- Added --apply switch for actual recursive deletion.
+
 _____________________ Unreleased _______________________
 2026-04-05: Added HeFESTo adiabat tree CLI.
 - Added scripts/prepare_hefesto_tree_fulladiabat.py.
