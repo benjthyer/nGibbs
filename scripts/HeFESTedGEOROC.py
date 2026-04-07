@@ -19,7 +19,7 @@ if str(SRC_DIR) not in sys.path:
 from config.settings import internal_data_dir, internal_scratch_dir
 #from builder.alphamelts.engine import alphamelts_functions # The essential ensemble MELTS functions
 #from nMELTS.utils.string_utils import pull_number, random_char
-from builder.alphamelts.engine import HeFESTo_functions as MELTER
+from builder.HeFESTo import HeFESTo_functions as MELTER
 from builder.indexer import generate_column_headers_hefesto, DatasetIndexer
 import numpy as np
 import pandas as pd

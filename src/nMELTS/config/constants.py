@@ -110,7 +110,8 @@ COMPOSITIONAL_COMPONENTS_IN_PHASES: Dict[str, List[str]] = { # Will need to be e
                      'liq vis (log 10 poise)',
                      'liq H (kJ)',
                      'liq S (J/K)',
-                     'liq V (cc)']
+                     'liq V (cc)'],
+    'hornblende': ['pargasite', 'ferropargasite', 'magnesiohastingsite'],
     }
 
 

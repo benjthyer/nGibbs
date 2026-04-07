@@ -542,14 +542,14 @@ def prepare_HeFESTo_tree_fulladiabat(directory: Path, GEOROC_DIR: Path, control_
     wts: List[str] = []
 
     for sim_idx, (_, row) in enumerate(subset.iterrows()):
-        sim_dir = directory / f'Simulation{sim_idx}'
+        sim_dir = directory / f'Simulation{sim_idx+1}'
         sim_dir.mkdir(parents=True, exist_ok=True)
 
         ratio = float(fe3_fet_grid[sim_idx])
         base_oxide_wt = _build_oxide_wt_from_row(row)
         speciated_wt = _speciate_iron_and_normalize(base_oxide_wt, ratio)
         wt_debug = ', '.join(f'{key}={value:.4f}' for key, value in speciated_wt.items())
-        print(f'Sim {sim_idx} Fe3/FeT={ratio:.4f} -> {wt_debug}')
+        print(f'Sim {sim_idx+1} Fe3/FeT={ratio:.4f} -> {wt_debug}')
         wts.append(wt_debug)
 
         element_moles = _oxide_wt_to_element_moles(speciated_wt)

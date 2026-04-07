@@ -19,7 +19,7 @@ if str(repo_root) not in sys.path:
 if str(src_root) not in sys.path:
 	sys.path.insert(0, str(src_root))
 
-from src.builder.alphamelts.engine.HeFESTo_functions import (  # noqa: E402
+from builder.HeFESTo.HeFESTo_functions import (  # noqa: E402
 	prepare_HeFESTo_tree_fulladiabat,
 )
 

@@ -74,6 +74,9 @@ H : melts-liquid,0,0,0,0,0,0,0,0,0,0,0.5,0,0,0
 Cr : melts-liquid,0,0,0,0,0,0,0,0,0,0,0,0.5,0,0
 Fe3 : melts-liquid,0,0,0,0,0,0,0,0,0,0,0,0,0,0.5
 Ni : melts-liquid,0,0,0,0,0,0,0,0,0,0,0,0,1,0
+pargasite : hornblende,6,0,1.5,0,4,2,0.5,0,0,0,1,0,0,0
+ferropargasite : hornblende,6,0,1.5,4,0,2,0.5,0,0,0,1,0,0,0
+magnesiohastingsite : hornblende,6,0,1,0,4,2,0.5,0,0,0,1,0,0,0.5
 picro-chromite : spinel,0,0,0,0,1,0,0,0,0,0,0,1,0,0
 mg-wadsleyite : wadsleyite,1,0,0,0,2,0,0,0,0,0,0,0,0,0
 fe-wadsleyite : wadsleyite,1,0,0,2,0,0,0,0,0,0,0,0,0,0
