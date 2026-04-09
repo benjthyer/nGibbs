@@ -398,3 +398,160 @@ def alphaMELTScooling(output_file, MELTSModel, GEOROC, col_dict, indexer, iterco
         
         with open(progress_file, 'w') as f:
             f.write(progress_content)
+
+def alphaMELTSERph(output_file, GEOROC, col_dict, indexer, itercode='a1', simcycle=50, fxtal=False, 
+                      ExFailures=False, zeroOxides = ['MnO', 'NiO'], 
+                      settingsLocation = alphamelts_functions.settingsLocation, alphameltsLocation = alphamelts_functions.alphameltsLocation, 
+                      max_liquid_fraction=120):
+    """
+    Perform ensemble MELTS calculations controlled by settings and batch files with random compositions.
+    
+    Parameters
+    ----------
+    output_file : str
+        Base name for output files (without extension)
+    MELTSModel : str
+        MELTS model version ('102', '110', '120', 'p')
+    GEOROC : np.ndarray
+        Array of GEOROC compositions (first column is index, rest are oxides)
+    col_dict : dict
+        Dictionary mapping oxide names to column indices in compositions
+    indexer : DatasetIndexer
+        DatasetIndexer object for the dataset
+    itercode : str, default='a1'
+        Code for the total iteration (used for tracking progress. a for all melts, m for mafics)
+    simcycle : int, default=50
+        Number of simulations per iteration
+    fxtal : bool, default=False
+        Whether to enable fractional crystallization
+    zeroOxides : list, default=['MnO', 'NiO']
+        List of oxides to set to zero across all compositions 
+    startT : int, default=1925
+        Starting temperature in Celsius
+    max_liquid_fraction : int, default=100
+        Maximum allowed liquid fraction for the simulation. 100 Still subsamples superliquidus
+    end : int, default None
+        End temperature in Celsius
+    """
+
+    iterLetter = itercode[0]
+    iter = int(float(itercode[1:]))
+
+    MELTSModel = 'ph'
+    if iter <= 0 or iter != int(iter):
+        print('Must have integer positive nonzero for iteration "iter" argument. Substituting 1.')
+        iter = int(1)
+    
+    batch_file = MELTSModel + 'batch'
+    dataname = f'{output_file}.csv'
+    sim_metadata_name = f'{output_file}.txt'
+    progress_file = f'{output_file}_progress.txt'
+    
+    _validate_existing_files(dataname, sim_metadata_name, indexer)
+    
+    # Initialize or resume from progress file
+    start_iter = 0
+    existing_lines = []
+    if os.path.exists(progress_file):
+        try:
+            with open(progress_file, 'r') as f:
+                all_lines = f.read().strip().split('\n')
+            
+            if all_lines and all_lines[0]:  # Check if file has content
+                # Find and extract the line with current letter code if it exists
+                found_current_letter = False
+                for line in all_lines:
+                    if line.strip().startswith(iterLetter):
+                        parts = line.strip().split()
+                        if len(parts) >= 2:
+                            start_iter = int(parts[1].split('/')[0])
+                            print(f"Resuming {iterLetter} from iteration {start_iter}/{iter}")
+                            found_current_letter = True
+                        break
+                
+                # Preserve all lines except the one with current letter code (will be rewritten)
+                existing_lines = [line for line in all_lines if not line.strip().startswith(iterLetter)]
+        except Exception as e:
+            print(f"Warning: Could not read progress file {progress_file}: {e}. Starting fresh.")
+            existing_lines = []
+            start_iter = 0
+    
+    def PTF_initialize(conditions, length=simcycle):
+        """Initialize Pressure-Temperature-fO2 arrays for cooling runs."""
+        out_array = np.zeros((length, np.shape(conditions)[1] + 2))
+        conditions = conditions.copy() * np.random.uniform(0.9, 1.1, size=conditions.shape) # Add some random noise to compositions to expand the range of conditions sampled
+        out_array[:, 0] = 1400 + ((2000-1300)/length) * (np.arange(length))  # Temperature in K (starting high, decreasing)
+        ferric_to_ferrous = 0.8998084799181955 #wt ratio conserving Fe atoms
+        R = np.linspace(0,0.15,100) # Proportion of total FeO wt to Fe2O3
+        P = (np.exp(-20*R))#)+(0.5/7)) #Empiracally fit elsewhere, arbitrary
+        P = P/P.sum() 
+        R_chosen = np.random.choice(R, size=length, replace=True, p=P)
+        ferric = conditions[:,col_dict['FeO']]*R_chosen*(1/ferric_to_ferrous)
+        conditions[:,col_dict['FeO']] = conditions[:,col_dict['FeO']]*(1-R_chosen)
+        water_sampling = np.random.uniform(0, 0.1, size=int(length*0.5))  # Randomize H2O content up to 
+        water_sampling = np.append(water_sampling, np.random.uniform(0.1, 3, size=int(length*0.25)))  # Add some higher H2O values up to 5%
+        water_sampling = np.append(water_sampling, np.zeros(length-water_sampling.shape[0]))  # Add some higher anhydrous samples
+        conditions[:,col_dict['H2O']] = np.random.choice(water_sampling, size=length, replace=False) # weird shuffle workaround
+        total = (np.sum(conditions, axis = 1) + ferric).reshape(-1,1) # Renormalize to new wt%
+        #print(total.shape)
+        conditions = conditions*(100/total)
+        #print(conditions.shape)
+        #print(ferric.shape)
+        ferric = ferric*(100/total.flatten())
+        #print(ferric.shape)
+        #out_array[:, 2] = np.random.uniform(-5, 5, size=length)  # fO2 offset from FMQ
+        out_array[:, 1] = ferric
+        out_array[:, 2:] = conditions
+        return out_array
+    
+    keys = np.array(["Temperature", 'Fe2O3'] + list(col_dict.keys()))
+
+    for j in range(start_iter, iter):
+        # Select random compositions
+        choices = np.random.randint(np.shape(GEOROC)[0], size=simcycle, dtype=int)
+        compositions = GEOROC[choices, 1:].copy()
+        indices = GEOROC[choices, 0]
+        
+        # Process and normalize compositions
+        compositions = _process_compositions(compositions, col_dict, simcycle, MELTSModel, zeroOxides=zeroOxides)
+        
+        # Initialize PTX conditions
+        in_array = np.round(PTF_initialize(compositions, length=simcycle), 2)
+        
+        # Set batch names
+        batchname = np.full(simcycle, batch_file, dtype=object)
+        
+        # Run ensemble simulation
+        alphamelts_functions.forward_ensemble(
+            in_array, keys=keys, batchname=batchname,
+            only_phases=indexer.get_phase_list(),
+            end=None, fxtal=fxtal,
+            EnsembleLocation=EnsembleLocation, WSL=True,
+            compression=False, delta=None, settingsLocation=settingsLocation, alphameltsLocation=alphameltsLocation
+        )
+        
+        # Update batch names with metadata
+        for i, name in enumerate(batchname):
+            batchname[i] = f"{pull_number(str(indices[i]))}:{random_char(4)}:{name}"
+        
+        # Import results
+        failure_IDs = alphamelts_functions.import_MELTS_components(
+            EnsembleLocation=EnsembleLocation, batchname=batchname,
+            indexer=indexer, fO2Arr=in_array[:, 2], dataname=dataname,
+            max_liquid_fraction=max_liquid_fraction
+        )
+
+        if ExFailures:
+            alphamelts_functions.pick_exsolution_failure(EnsembleLocation, in_array, keys, batchname=batchname,
+                                dataname=dataname, faultIDs=failure_IDs)
+        
+        # Update progress file
+        current_iter = j + 1
+        progress_content = '\n'.join(existing_lines) if existing_lines else ''
+        if progress_content:
+            progress_content += f"\n{iterLetter} {current_iter}/{iter}"
+        else:
+            progress_content = f"{iterLetter} {current_iter}/{iter}"
+        
+        with open(progress_file, 'w') as f:
+            f.write(progress_content)

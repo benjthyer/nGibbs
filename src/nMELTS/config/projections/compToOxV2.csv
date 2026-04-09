@@ -29,6 +29,9 @@ sanidine : plagioclase,3,0,0.5,0,0,0,0,0.5,0,0,0,0,0,0
 albite : k-feldspar,3,0,0.5,0,0,0,0.5,0,0,0,0,0,0,0
 anorthite : k-feldspar,2,0,1,0,0,1,0,0,0,0,0,0,0,0
 sanidine : k-feldspar,3,0,0.5,0,0,0,0,0.5,0,0,0,0,0,0
+albite : feldspar,3,0,0.5,0,0,0,0.5,0,0,0,0,0,0,0
+anorthite : feldspar,2,0,1,0,0,1,0,0,0,0,0,0,0,0
+sanidine : feldspar,3,0,0.5,0,0,0,0,0.5,0,0,0,0,0,0
 almandine : garnet,3,0,1,3,0,0,0,0,0,0,0,0,0,0
 grossular : garnet,3,0,1,0,0,3,0,0,0,0,0,0,0,0
 pyrope : garnet,3,0,1,0,3,0,0,0,0,0,0,0,0,0

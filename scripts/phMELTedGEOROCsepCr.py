@@ -28,7 +28,9 @@ import shutil
     
 DATA_DIR = REPO_ROOT / 'data'
 
-alphaMELTSLocation = os.path.join(REPO_ROOT, 'src', 'builder', 'alphamelts', 'engine', 'alphamelts-app-2.3.1-linux', 'alphamelts_linux')
+alphaMELTSLocation = os.path.join(REPO_ROOT, 'src', 'builder', 'alphamelts', 'engine', 'linux_alphamelts_1-9', 'run_alphamelts.command')
+settings_location = os.path.join(REPO_ROOT, 'src', 'builder', 'alphamelts', 'batch', 'phMELTS_settings.txt')
+
 # Location to where to put the computed files.
 EnsembleLocation = str(internal_scratch_dir())
 
@@ -42,22 +44,20 @@ os.makedirs(EnsembleLocation, exist_ok=True)
 import time
 time.sleep(8000)"""
 
-calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-input_date = 'Mar11'
+calctype = 'Decompression' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
+input_date = 'Feb16UM'
 
 input_ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
-MELTSmodels = ['p'] # MELTS models to run. To add: MAGEmin
+MELTSmodels = ['ph']#, '102'] # MELTS models to run. To add: MAGEmin
 FXes = ['Batch']#, 'FxCryst']
 Prange = None # Auto if None, for lithosphere/aesthenospere (p)
 
-total_to_run = int(500) # How many total simulations to run
-mafics_to_run = int(total_to_run * 0.4)
-ultramafics_to_run = int(total_to_run * 0.5)
-full_to_run = int(total_to_run * 0.1) #NOTE: HACKED ALL TO BE > 4
+total_to_run = int(300) # How many total simulations to run
+ultramafics_to_run = total_to_run*(0.70) #int(total_to_run * 0.5)
+mafics_to_run = total_to_run*(0.20) #int(total_to_run * 0.4)
+full_to_run = total_to_run*(0.10) #int(total_to_run * 0.1)
 
-startTs = [1600] #, 1800]
-delta = -4
-input_liquid_fractions = [15] # Make above 100 to allow for superliquidus
+input_liquid_fractions = [15]#, 100] # Make above 100 to allow for superliquidus
 simcycle = 50 # How many simulations to run per iteration
 
 #storage_directory = f'/mnt/d/Workspace/{MELTSModel}Datasets/'
@@ -73,31 +73,23 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
         if Tag == 'NoCr':
             ZeroOxides.append('Cr2O3')
         date = input_date + Tag
-        startT = startTs[N]
         max_liquid_fraction = input_liquid_fractions[N]
         #total_to_run = total_to_run_input/(C+1) # Half the size of Cr dataset
 
         for fractionate in FXes:#, 'FxCryst']:
 
-            if MELTSModel == 'p':
-                allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclase','k-feldspar','garnet',
-                'rhm-oxide','biotite', 'hornblende', 'alloy-solid','alloy-liquid','quartz','tridymite','cristobalite','fluid','liquid']
-                for zeroOx in['MnO', 'NiO', 'P2O5']: #pMELTS must exclude these...
-                    if zeroOx not in ZeroOxides:
-                        ZeroOxides.append(zeroOx)
-            else:
-                allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclase','k-feldspar','garnet',
-                    'nepheline','leucite','biotite', 'hornblende', 'rhm-oxide','alloy-solid','alloy-liquid','apatite','whitlockite',
-                                  'quartz','tridymite','cristobalite', 'muscovite','fluid','liquid']
+            allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclase','feldspar','garnet',
+                'rhm-oxide','alloy-solid','alloy-liquid','quartz','tridymite','cristobalite','fluid','liquid']
+            for zeroOx in['MnO', 'NiO', 'P2O5']: #pMELTS must exclude these...
+                if zeroOx not in ZeroOxides:
+                    ZeroOxides.append(zeroOx)
+
 
             # Generate headers and create indexer for this set of phases
             headers = generate_column_headers(allowed_phases, mode=MELTSModel, zeroOxides=ZeroOxides)
-            indexer = DatasetIndexer(headers)
+            indexer = DatasetIndexer(headers, OXYGEN='closed', MODEL='MELTS') # No use of ml_indexer here, but we need to specify the same OXYGEN and MODEL to sidestep errors, even though they are not used
 
             assert fractionate in ['Batch', 'FxCryst'], "fractionate argument must be one of ['Batch', 'FxCryst'], 'FxMelt' not yet implemented"
-            assert calctype in ['Cooling', 'Compression'], "calctype argument must be one of ['Cooling', 'Compression'], isoentropic, isoenthalpic, isochroic not yet implemented"
-            assert MELTSModel in ['102', '110', '120', 'p'], "MELTSModel argument must be one of ['102', '110', '120', 'p'], MAGEmin not yet implemented"
-
 
             Out_Folder = Path(internal_data_dir(MELTSModel))
             
@@ -108,11 +100,7 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
             Train_progress_file = f'{Trainfilename}_progress.txt'
             Valid_progress_file = f'{Validfilename}_progress.txt'
 
-            #logic trees to direct dataset generation:
-            if calctype == 'Cooling':
-                MELTER = RM.alphaMELTScooling
-            elif calctype == 'Compression':
-                MELTER = RM.alphaMELTScompress
+            MELTER = RM.alphaMELTSERph # Simpler melter. Let settings file do the work. 
 
             # Clunky. Distributing the types of data to be run. This may be superceded by a more elegant solution soon.
             """if MELTSModel == 'p' and fractionate == 'Batch':
@@ -149,22 +137,34 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
             for i, k in enumerate(keys):
                 col_dict[k] = i
 
-            #mafics = GEOROC[:,col_dict['MgO']+1]>=4 # MgO above 4
-
             # Run full GEOROC training dataset
-            args = {'MELTSModel':MELTSModel, 'GEOROC':GEOROC, 'col_dict':col_dict, 'indexer':indexer, 
+            args = {'GEOROC':GEOROC, 'col_dict':col_dict, 'indexer':indexer, 
                     'itercode':f'a{full_to_run}', 'simcycle':simcycle, 'fxtal': (fractionate == 'FxCryst'), 
-                    'startT': startT, 'max_liquid_fraction': max_liquid_fraction, 'zeroOxides': ZeroOxides, 
-                    'Prange': Prange, 'delta': delta}
+                     'max_liquid_fraction': max_liquid_fraction, 'zeroOxides': ZeroOxides, 
+                     'settingsLocation': settings_location, 'alphameltsLocation': alphaMELTSLocation}
             
-            MELTER(output_file=Trainfilename, **args)
+            if full_to_run != 0:
+                MELTER(output_file=Trainfilename, **args)
 
-            # Run full GEOROC validation dataset
-            args['itercode'] = f'a{int(full_to_run//4)}'
-            MELTER(output_file=Validfilename, **args)
+                # Run full GEOROC validation dataset
+                args['itercode'] = f'a{int(full_to_run//4)}'
+                MELTER(output_file=Validfilename, **args)
+
+            if ultramafics_to_run != 0:
+                ultramafics = GEOROC[:,col_dict['MgO']+1]>=25 # MgO above 25
+            
+                args['GEOROC'] = GEOROC[ultramafics]
+                # Run ultramafic GEOROC training dataset
+                args['itercode'] = f'u{ultramafics_to_run}'
+
+                MELTER(output_file=Trainfilename, **args)
+
+                # Run ultramafic GEOROC validation dataset
+                args['itercode'] = f'u{int(ultramafics_to_run//4)}'
+                MELTER(output_file=Validfilename, **args)
 
             if mafics_to_run != 0:
-                mafics = GEOROC[:,col_dict['MgO']+1]>=5# 20 # MgO above 5
+                mafics = GEOROC[:,col_dict['MgO']+1]>=5 # MgO above 5
             
                 args['GEOROC'] = GEOROC[mafics]
                 # Run mafic GEOROC training dataset
@@ -176,18 +176,6 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
                 args['itercode'] = f'm{int(mafics_to_run//4)}'
                 MELTER(output_file=Validfilename, **args)
 
-            if ultramafics_to_run != 0:
-                mafics = GEOROC[:,col_dict['MgO']+1]>=20# 20 # MgO above 5
-            
-                args['GEOROC'] = GEOROC[mafics]
-                # Run mafic GEOROC training dataset
-                args['itercode'] = f'u{ultramafics_to_run}'
-
-                MELTER(output_file=Trainfilename, **args)
-
-                # Run mafic GEOROC validation dataset
-                args['itercode'] = f'u{int(mafics_to_run//4)}'
-                MELTER(output_file=Validfilename, **args)
 
 
             # Clean up progress files upon completion

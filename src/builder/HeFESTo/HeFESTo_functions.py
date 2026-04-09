@@ -293,109 +293,6 @@ def _copy_template_tree(template_dir: str, destination_dir: str) -> None:
         else:
             shutil.copy2(src, dst)
 
-
-def forward_HeFESTo_single(
-    hefesto_executable: str,
-    simulation_id: int,
-    workspace_dir: str,
-) -> str:
-    """
-    Create and execute one HeFESTo simulation from a template directory.
-
-    Parameters
-    ----------
-    hefesto_executable : str
-        Absolute path to the HeFESTo executable.
-    template_dir : str
-        Absolute path to directory containing template files to copy.
-    simulation_id : int
-        Integer N used to create SimulationN.
-    workspace_dir : str
-        Absolute path where SimulationN will be created.
-
-    Returns
-    -------
-    str
-        Absolute path to the created SimulationN directory.
-    """
-    hefesto_executable = _validate_absolute_path(
-        hefesto_executable,
-        'hefesto_executable',
-    )
-    template_dir = _validate_absolute_path(template_dir, 'template_dir')
-    workspace_dir = _validate_absolute_path(workspace_dir, 'workspace_dir')
-
-    if not os.path.isfile(hefesto_executable):
-        raise FileNotFoundError(
-            f'HeFESTo executable path is not a file: {hefesto_executable}'
-        )
-
-    if not os.path.isdir(template_dir):
-        raise FileNotFoundError(f'Template directory not found: {template_dir}')
-
-    if not isinstance(simulation_id, int):
-        raise TypeError('simulation_id must be an integer')
-    if simulation_id < 0:
-        raise ValueError('simulation_id must be >= 0')
-
-    os.makedirs(workspace_dir, exist_ok=True)
-    sim_dir = os.path.join(workspace_dir, f'Simulation{simulation_id}')
-
-    #if os.path.exists(sim_dir):
-        #shutil.rmtree(sim_dir)
-    os.makedirs(sim_dir, exist_ok=False) # Don't overwrite existing simulation directory
-
-    _copy_template_tree(template_dir, sim_dir)
-
-    subprocess.run([hefesto_executable], cwd=sim_dir, check=True)
-    return sim_dir
-
-
-def forward_HeFESTo_single_from_cli(cli_args: Optional[List[str]] = None) -> str:
-    """
-    Run one HeFESTo simulation using command line switch arguments.
-
-    Switches
-    --------
-    --hefesto-path : absolute path to HeFESTo executable
-    --template-dir : absolute path to template directory
-    --simulation-id : integer simulation id
-    --workspace-dir : absolute path where SimulationN is created
-    """
-    parser = argparse.ArgumentParser(
-        prog='forward_HeFESTo_single',
-        description='Run a single HeFESTo simulation in SimulationN',
-    )
-    parser.add_argument(
-        '--hefesto-path',
-        required=True,
-        help='Absolute path to HeFESTo executable',
-    )
-    parser.add_argument(
-        '--template-dir',
-        required=True,
-        help='Absolute path to template directory',
-    )
-    parser.add_argument(
-        '--simulation-id',
-        required=True,
-        type=int,
-        help='Integer simulation id used for SimulationN',
-    )
-    parser.add_argument(
-        '--workspace-dir',
-        required=True,
-        help='Absolute path where SimulationN will be created',
-    )
-
-    args = parser.parse_args(cli_args)
-    return forward_HeFESTo_single(
-        hefesto_executable=args.hefesto_path,
-        template_dir=args.template_dir,
-        simulation_id=args.simulation_id,
-        workspace_dir=args.workspace_dir,
-    )
-
 def _build_oxide_wt_from_row(row: pd.Series) -> Dict[str, float]:
     oxide_cols = {
         'SiO2': 'SiO2',
@@ -811,7 +708,12 @@ def _ensure_existing_csv_headers_match(dataname: str, expected_headers: List[str
         )
 
 
-def import_HeFESTo_components(workspace_dir, indexer, dataname='DefaultHeFESTostorage.csv'):
+def import_HeFESTo_components(
+    workspace_dir,
+    indexer,
+    dataname: str = 'DefaultHeFESTostorage.csv',
+    phase_change_dataname: Optional[str] = None,
+):
     """
     Parse HeFESTo SimulationN directories into one CSV table.
 
@@ -829,7 +731,11 @@ def import_HeFESTo_components(workspace_dir, indexer, dataname='DefaultHeFESTost
     indexer : DatasetIndexer
         DatasetIndexer with MELTS_indices/database_headers defining output schema.
     dataname : str, default='DefaultHeFESTostorage.csv'
-        Output CSV path.
+        Output CSV path for all parsed rows.
+    phase_change_dataname : str or None, default=None
+        Optional output CSV path for rows that bound fort.99 component
+        zero/non-zero transitions. A boundary includes the transition row
+        and its immediately previous row, using tolerance 1e-6.
 
     Returns
     -------
@@ -840,9 +746,13 @@ def import_HeFESTo_components(workspace_dir, indexer, dataname='DefaultHeFESTost
     reverse_component_phase_map = _build_reverse_component_phase_map()
     sim_dirs = _list_simulation_dirs(workspace_dir)
     _ensure_existing_csv_headers_match(dataname, indexer.database_headers)
+    if phase_change_dataname is not None:
+        _ensure_existing_csv_headers_match(phase_change_dataname, indexer.database_headers)
 
     if not os.path.exists(dataname):
         pd.DataFrame(columns=indexer.database_headers).to_csv(dataname, index=False)
+    if phase_change_dataname is not None and not os.path.exists(phase_change_dataname):
+        pd.DataFrame(columns=indexer.database_headers).to_csv(phase_change_dataname, index=False)
 
     for sim_id, sim_dir in sim_dirs:
         control_path = os.path.join(sim_dir, 'control')
@@ -922,6 +832,8 @@ def import_HeFESTo_components(workspace_dir, indexer, dataname='DefaultHeFESTost
                 raise ValueError('fort.99 has insufficient columns to parse components')
 
             component_cols = list(comp_df.columns)[3:-2]
+            phase_change_boundary_rows: set = set()
+            transition_tol = 1e-6
             for comp_abbr in component_cols:
                 comp_abbr_str = str(comp_abbr).strip()
                 component_name = _resolve_component_name_from_abbr(comp_abbr_str)
@@ -934,9 +846,26 @@ def import_HeFESTo_components(workspace_dir, indexer, dataname='DefaultHeFESTost
                 if phase_name is None:
                     continue
                 values = pd.to_numeric(comp_df[comp_abbr], errors='coerce').fillna(0.0).to_numpy(dtype=float)
+
+                if phase_change_dataname is not None and values.shape[0] > 1:
+                    is_present = np.abs(values) > transition_tol
+                    transition_rows = np.where(is_present[1:] != is_present[:-1])[0] + 1
+                    for row_idx in transition_rows:
+                        phase_change_boundary_rows.add(int(row_idx))
+                        if row_idx > 0:
+                            phase_change_boundary_rows.add(int(row_idx - 1))
+
                 _safe_assign(out, indexer, phase_name, component_name, values)
 
             _write_block_to_csv(dataname, indexer.database_headers, out)
+
+            if phase_change_dataname is not None and len(phase_change_boundary_rows) > 0:
+                selected_rows = sorted(phase_change_boundary_rows)
+                _write_block_to_csv(
+                    phase_change_dataname,
+                    indexer.database_headers,
+                    out[selected_rows, :],
+                )
 
         except Exception as exc:
             print(f'Simulation{sim_id} FAILED at {sim_dir}: {type(exc).__name__}: {exc}')

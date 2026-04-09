@@ -84,7 +84,7 @@ COMPOSITIONAL_COMPONENTS_IN_PHASES: Dict[str, List[str]] = { # Will need to be e
     'plagioclase': ['albite', 'anorthite', 'sanidine'],
     'alkali-feldspar': ['albite', 'anorthite', 'sanidine'],
     'k-feldspar': ['albite', 'anorthite', 'sanidine'],
-    'alkali-feldspar': ['albite', 'anorthite', 'sanidine'],
+    'feldspar': ['albite', 'anorthite', 'sanidine'],
     'garnet': ['almandine', 'grossular', 'pyrope'],
     'nepheline': ['na-nepheline', 'k-nepheline', 'vc-nepheline', 'ca-nepheline'],
     'leucite': ['leucite', 'analcime', 'na-leucite'],

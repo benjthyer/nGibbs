@@ -32,8 +32,11 @@ from nMELTS.utils.string_utils import pull_number
 
 # You Need GNU parallel to run this! https://build.opensuse.org/package/show/home:tange/parallel
 
+#default file locations. These will need to be changed to use other alphamelts versions! 
 EnsembleLocation = None # let this error if not set
-alphaMELTSLocation = os.path.join(Path(__file__).parent.absolute(), 'alphamelts-app-2.3.1-linux')
+alphaMELTSdir = os.path.join(Path(__file__).parent.absolute(), 'alphamelts-app-2.3.1-linux')
+alphameltsLocation = os.path.join(alphaMELTSdir, 'run_alphamelts.command')
+settingsLocation = os.path.join(Path(__file__).parent.parent.absolute(), 'batch', 'settings.txt')
 
 ### Zach Gainsforth Functions ### https://github.com/ZGainsforth/alphaMELTSEnsemble?tab=readme-ov-file
 def GetalphaMELTSSectionAsTxt(data, start):
@@ -127,7 +130,8 @@ def _clean_workspace(EnsembleLocation):
 
 
 def forward_ensemble(input_array, keys, batchname, only_phases=None, end=0, EnsembleLocation=EnsembleLocation,
-                     fxtal=False, initializer='run-alphamelts.command', WSL=True, compression=False, delta=-3):
+                     fxtal=False, alphameltsLocation=os.path.join(alphaMELTSdir, 'run-alphamelts.command'), settingsLocation=settingsLocation, 
+                     WSL=True, compression=False, delta=None):
     """
     Performs ensemble MELTS calculation starting with numpy arrays corresponding to column labels: 'keys'.
     
@@ -198,12 +202,12 @@ def forward_ensemble(input_array, keys, batchname, only_phases=None, end=0, Ense
         for FileName in [batchname[i]]:
             shutil.copy(os.path.join(Path(__file__).parent.parent.absolute(), 'batch', FileName),
                        os.path.join(ComputeDir, FileName))
-            shutil.copy(os.path.join(Path(__file__).parent.parent.absolute(), 'batch', 'settings.txt'),
+            shutil.copy(settingsLocation,
                        os.path.join(ComputeDir, 'settings.txt')) #Extend min Temp limit (for pMELTS especially)
 
 
-        RunAll += 'cd "' + ComputeDir + '" && "'
-        RunAll += os.path.join(alphaMELTSLocation, initializer) + f'" -m input.melts -f settings.txt -b {batchname[i]}\n'
+        RunAll += 'cd "' + ComputeDir + '" && "' 
+        RunAll += alphameltsLocation + f'" -m input.melts -f settings.txt -b {batchname[i]}\n'
 
     # Run the script
     if WSL:
@@ -301,8 +305,8 @@ def import_MELTS_components(EnsembleLocation, batchname, indexer, fO2Arr=None,
                                                              'Phase_mass_tbl.txt', 'Phase_main_tbl.txt',
                                                              'Liquid_comp_tbl.txt']: #'Bulk_comp_tbl.txt'
                     phasename = tablename.split('tbl')[0][:-1]
-                    if phasename in ['orthoamphibole', 'clinoamphibole', 'hornblende']:
-                        phasename = 'amphibole'
+                    #if phasename in ['orthoamphibole', 'clinoamphibole', 'hornblende']:
+                    #    phasename = 'amphibole'
 
                     if phasename == 'alkali-feldspar': #Handle alter-egos
                         phasename = 'k-feldspar'

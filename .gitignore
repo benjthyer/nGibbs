@@ -4,8 +4,11 @@
 # empty files
 emptyfile.txt
 
-#alphamelts installation
-src/alphamelts/engine/alphamelts-app-2.3.1-linux/alphamelts2/ # Users will not need this. 
+#alphamelts installations
+src/alphamelts/engine/alphamelts-app-2.3.1-linux/alphamelts2/ # Users will not need this.
+src/alphamelts/engine/linux_alphamelts_1_9/
+/linux_alphamelts_1_9/
+/src/builder/alphamelts/engine/linux_alphamelts_1_9/
 
 # Notes to Self
 DonnieMeetMinutes.md

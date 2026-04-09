@@ -1,22 +1,28 @@
-2026-04-07: Added directory prune utility script.
-- Added scripts/prune_dirs_without_fort.py.
-- Dry run default prints entries slated for deletion.
-- Added --apply switch for actual recursive deletion.
-
 _____________________ Unreleased _______________________
-2026-04-05: Added HeFESTo adiabat tree CLI.
-- Added scripts/prepare_hefesto_tree_fulladiabat.py.
-- Wraps prepare_HeFESTo_tree_fulladiabat() with argparse.
+
+2026-04-09: Fixed .gitignore for builder alphamelts linux engine directory.
+- Ignored src/builder/alphamelts/engine/linux_alphamelts_1_9/.
+
+2026-04-09: Added phase-boundary extractor in import_HeFESTo function to subsample interesting regions near phase changes
+- import_HeFESTo_components() now accepts phase_change_dataname.
+- Writes full rows to a 2nd CSV when phase mass toggles zero/non-zero.
+- Boundary export includes each transition row and prior row.
+Cluster ready import-HeFESTo:
+- Deletes control-only Simulation dirs (did not run); and removes fort.29 and qout which are memory intensive. 
+
+2026-04-07: Got alphamelts 1.9 working, prep for phMELTS. (Decided to deprioritize until after thesis)
+- Added plain "feldspar" entry into projection matrices to support 1.9
+- realized that I need a generalizable thermodynamic orchestration pipeline that builds directories, 
+moves/generates settings/imports, then runs general function. Can greatly simplify existing pipeline.
 
 2026-04-05: Completed HeFESTo adiabat tree writer.
-- Copied the control template into each SimulationN directory.
-- Mutated run codes and oxide moles before writing control.
+- Edit copied control file
 - Wrote ad.in into each simulation directory with the requested path.
 
-2026-04-05: Added adiabat temperature regression utility.
+2026-04-05: Generated Adiabat sims to direct roughly adiabatic HeFESTo sims on cluster.
+- getting noisy PT from rough adiabat from reference calculations
 - Added scripts/fit_adiabat_temperature_regression.py CLI tool.
-- Fits T = b0 + bP*P + bP2*P^2 + bS*S + bS2*S^2 from CSV.
-- Prints fitted coefficients and in-sample R^2 value.
+
 
 Commit: ae372a9738d9b58959e4318ae953644dec9456c5
 2026-04-04: Added single-run HeFESTo simulation launcher.
@@ -24,15 +30,13 @@ Commit: ae372a9738d9b58959e4318ae953644dec9456c5
 - Added CLI switch wrapper for paths and simulation id input.
 - Copies full template directory into SimulationN before run.
 
-2026-03-11: Improved recovery plot binary metrics readability.
-- Phase binary metrics now write as fixed-width aligned columns in text.
-- Added table header divider for easier visual scanning of precision/recall.
+2026-03-11: Improved recoveryplot.py binary metrics readability.
 
 2026-03-05: Added oxide-space coverage validation script.
+Pursuing issue where the predicted phase assemblage is insufficient to form a basis that covers the composition. 
+Should force saturation of highest scoring phase that contains
 - Added scripts/check_phase_oxide_coverage.py CLI tool.
-- Loads model + ML bundle and predicts phase assemblages.
-- Tests if predicted assemblages span required bulk oxide support.
-- Reports zero-valued bulk oxide statistics by oxide and row counts.
+Phase weighting now supported through YAML!
 - Training now supports separate episode binweights and compweights maps.
 - main.py builds [1,P] binary and [1,VC] component weights from config.
 - Lower trainer now applies phase-weighted BCE loss each epoch.
@@ -42,7 +46,6 @@ Commit: ae372a9738d9b58959e4318ae953644dec9456c5
 - forward_HeFESTo now accepts 1D run_code applied to all simulations.
 - forward_HeFESTo now accepts 2D run_code with one row per simulation.
 - Added control_template arg; default is shallowHeFESTo in batch dir.
-- Each simulation still writes template copy as file named control.
 
 2026-03-03: Training with constant iron and arbitrary features!
 - Added scripts/merge_bigmetatables.py CLI for two-table BigMetaTable merges.

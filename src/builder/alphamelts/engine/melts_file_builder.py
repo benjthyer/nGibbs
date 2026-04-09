@@ -120,7 +120,8 @@ def AddMELTSLine(MELTSStr, key, val, end=0, delta=-2):
             MELTSStr += f'Final Temperature: {end}\n'
         else:
             MELTSStr += f'Final Temperature: {700}\n'
-        MELTSStr += f'Increment Temperature: {delta}\n'
+        if delta is not None:
+            MELTSStr += f'Increment Temperature: {delta}\n'
     elif 'O' in key:
         MELTSStr += f'Initial Composition: {key} {val}\n'
     else:
@@ -192,13 +193,13 @@ def makeMELTSStr(conditions, keys, end=True, fxtal=False, compression=False, del
     keys : np.ndarray or list
         Array of parameter names corresponding to conditions
     end : bool or float, default=True
-        End value for temperature or True to use default
+        End value for temperature or True to use default. 
     fxtal : bool, default=False
         Whether to enable fractional crystallization mode
     compression : bool, default=False
         Whether this is a compression run
     delta : float, default=-3
-        Temperature increment
+        Temperature increment. None for unspecified
         
     Returns:
     --------
