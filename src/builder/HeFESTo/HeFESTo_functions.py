@@ -467,6 +467,11 @@ def prepare_HeFESTo_tree_fulladiabat(directory: Path, GEOROC_DIR: Path, control_
         raise FileNotFoundError(f'Control template not found: {control_path}')
     directory.mkdir(parents=True, exist_ok=True)
 
+    batch_dir = _next_available_batch_dir(directory, 1)
+    batch_dir.mkdir(parents=True, exist_ok=False)
+    simulations_in_batch = 0
+    batch_number = int(batch_dir.name.removeprefix('Batch'))
+
     # Example: Generate ad.in files for a range of mantle potential temperatures and calcium contents
     Mps = 273 + 1200 + np.random.uniform(0, 1, N) * (1650 - 1200)  #  mantle potential temperatures
     target_total_moles = 24.0
@@ -487,8 +492,15 @@ def prepare_HeFESTo_tree_fulladiabat(directory: Path, GEOROC_DIR: Path, control_
     wts: List[str] = []
 
     for sim_idx, (_, row) in enumerate(subset.iterrows()):
-        sim_dir = directory / f'Simulation{sim_idx+1}'
+        if simulations_in_batch >= 1000:
+            batch_number += 1
+            batch_dir = _next_available_batch_dir(directory, batch_number)
+            batch_dir.mkdir(parents=True, exist_ok=False)
+            simulations_in_batch = 0
+
+        sim_dir = batch_dir / f'Simulation{simulations_in_batch + 1}'
         sim_dir.mkdir(parents=True, exist_ok=True)
+        simulations_in_batch += 1
 
         ratio = float(fe3_fet_grid[sim_idx])
         base_oxide_wt = _build_oxide_wt_from_row(row)
@@ -575,6 +587,35 @@ def prepare_HeFESTo_tree_from_phase_changes(directory: Path, phase_path: Path, C
         reference_row = window_df.iloc[0]
         comparison_row = window_df.iloc[1]
 
+        p_values = pd.to_numeric(window_df['P(GPa)(System_main)'], errors='coerce')
+        t_values = pd.to_numeric(window_df['T(K)(System_main)'], errors='coerce')
+        if p_values.isna().any() or t_values.isna().any():
+            raise ValueError(
+                f'Non-numeric P or T in phase boundary rows for Simulation{sim_idx + 1}'
+            )
+
+        p_min = float(p_values.min())
+        p_max = float(p_values.max())
+        t_min = float(t_values.min())
+        t_max = float(t_values.max())
+
+        p_steps = 0 if np.isclose(p_min, p_max) else 5
+        t_steps = 0 if np.isclose(t_min, t_max) else 5
+
+        run_code = [
+            p_min,
+            p_max,
+            p_steps,
+            t_min,
+            t_max,
+            t_steps,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ]
+
         if simulations_in_batch >= 1000:
             batch_number += 1
             batch_dir = _next_available_batch_dir(directory, batch_number)
@@ -596,18 +637,10 @@ def prepare_HeFESTo_tree_from_phase_changes(directory: Path, phase_path: Path, C
         with open(control_path, 'r', encoding='utf-8', errors='ignore') as handle:
             control_lines = [line.rstrip('\n') for line in handle]
 
-        oxides_start = None
-        for line_idx, line in enumerate(control_lines):
-            if line.strip().lower() == 'oxides':
-                oxides_start = line_idx + 1
-                break
-        if oxides_start is None:
-            raise ValueError(f"No 'oxides' block found in {control_template_path}")
-
-        element_values: Dict[str, str] = {}
+        element_values: Dict[str, float] = {}
         for column in bulk_element_cols:
             element_name = _normalize_element_label(column.split('(', 1)[0])
-            element_values[element_name] = str(reference_row[column]).strip()
+            element_values[element_name] = float(reference_row[column])
 
             reference_value = str(reference_row[column]).strip()
             comparison_value = str(comparison_row[column]).strip()
@@ -624,22 +657,11 @@ def prepare_HeFESTo_tree_from_phase_changes(directory: Path, phase_path: Path, C
                         f'Simulation{sim_idx + 1}: {reference_value} != {comparison_value}'
                     ) from exc
 
-        for line_idx in range(oxides_start, len(control_lines)):
-            stripped = control_lines[line_idx].strip()
-            if not stripped or ',' in stripped or stripped.lower().startswith('phase '):
-                break
-
-            parts = stripped.split()
-            if len(parts) < 3:
-                break
-
-            element_name = _normalize_element_label(parts[0])
-            if element_name not in element_values:
-                continue
-
-            value_text = element_values[element_name]
-            third_col = parts[3] if len(parts) >= 4 else '0'
-            control_lines[line_idx] = f'{parts[0]:>2} {value_text:>12} {value_text:>11} {third_col}'
+        control_lines = _build_control_lines(
+            template_lines=control_lines,
+            element_values=element_values,
+            run_code=run_code,
+        )
 
         with open(control_path, 'w', encoding='utf-8') as handle:
             handle.write('\n'.join(control_lines) + '\n')
@@ -1061,6 +1083,6 @@ def make_PT_path(S, P, func, out_path = None):
     """
     AdIn = np.zeros((len(P), 3)) # Middle column unused
     AdIn[:, 0] = P
-    AdIn[:, 2] = func(S=S, P=P)*np.random.uniform(0.95, 1.05, size=len(P)) # Add small random noise to T to avoid HeFESTo interpolation issues with perfectly linear PT paths.
+    AdIn[:, 2] = func(S=S, P=P)+np.random.normal(0,5,size=len(P)) # Add small random noise to T to for better learning
     save_fixed_width_table(AdIn, out_path=out_path)
 

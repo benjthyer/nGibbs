@@ -2,6 +2,9 @@ _____________________ Unreleased _______________________
 
 2026-04-10: Made HeFESTo importer recursive. 
 - Also high level python orchestration of SLURM calls for subdirectories (to limit sizes of jobs to 1000)
+- Phase-change tree now writes control run code from pairwise min/max P,T.
+- Full-adiabat tree now stages simulations in Batch#### dirs (1000 each).
+- Phase-change run code now drops interpolation steps to 0 for flat P/T spans.
 
 2026-04-09: Made phase-boundary HeFESTo tree builder.
 - Limited to 1000 staged simulations per directory, then moves to a new directory.

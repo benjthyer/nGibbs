@@ -43,7 +43,7 @@ export LD_LIBRARY_PATH=$HOME/HeFESTo/lib64:$LD_LIBRARY_PATH
 export LIBRARY_PATH=$HOME/HeFESTo/lib64:$LIBRARY_PATH
 
 # Navigate to this simulation's directory
-ACTIVE_DIR={sim_dir.name}/Simulation${{SLURM_ARRAY_TASK_ID}}
+ACTIVE_DIR=Simulation${{SLURM_ARRAY_TASK_ID}}
 cd $ACTIVE_DIR
 
 $HOME/HeFESTo/HeFESToRepository/main
