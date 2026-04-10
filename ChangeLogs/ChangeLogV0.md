@@ -1,5 +1,11 @@
 _____________________ Unreleased _______________________
 
+2026-04-10: Made HeFESTo importer recursive. 
+- Also high level python orchestration of SLURM calls for subdirectories (to limit sizes of jobs to 1000)
+
+2026-04-09: Made phase-boundary HeFESTo tree builder.
+- Limited to 1000 staged simulations per directory, then moves to a new directory.
+
 2026-04-09: Fixed .gitignore for builder alphamelts linux engine directory.
 - Ignored src/builder/alphamelts/engine/linux_alphamelts_1_9/.
 

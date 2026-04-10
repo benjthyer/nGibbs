@@ -56,6 +56,9 @@ COMPONENT_ABBREVIATION_OVERRIDES: Dict[str, str] = {
 }
 
 
+_SIMULATION_DIR_PATTERN = re.compile(r'^Simulation(\d+)$', re.IGNORECASE)
+
+
 EnsembleLocation = None
 
 
@@ -142,6 +145,51 @@ def _resolve_control_template_path(control_template: str) -> str:
         raise FileNotFoundError(f'Control template is not a file: {resolved}')
 
     return resolved
+
+
+def _resolve_phase_change_control_template_path(control_dir: Path) -> Path:
+    control_dir = Path(control_dir)
+
+    if control_dir.is_file():
+        return control_dir
+
+    if not control_dir.exists():
+        raise FileNotFoundError(f'Control template directory not found: {control_dir}')
+
+    preferred_names = ('shallowHeFESTo', 'deepHeFESTo')
+    for template_name in preferred_names:
+        candidate = control_dir / template_name
+        if candidate.is_file():
+            return candidate
+
+    template_files = sorted(item for item in control_dir.iterdir() if item.is_file())
+    if len(template_files) == 0:
+        raise FileNotFoundError(
+            f'No control template files found in: {control_dir}'
+        )
+
+    return template_files[0]
+
+
+def _contains_simulation_dirs(root_dir: Path) -> bool:
+    root_dir = Path(root_dir)
+    if not root_dir.exists():
+        return False
+
+    for current_root, dirnames, _ in os.walk(root_dir):
+        for dirname in dirnames:
+            if _SIMULATION_DIR_PATTERN.match(dirname):
+                return True
+
+    return False
+
+
+def _next_available_batch_dir(root_dir: Path, batch_number: int) -> Path:
+    candidate = root_dir / f'Batch{batch_number:04d}'
+    while candidate.exists():
+        batch_number += 1
+        candidate = root_dir / f'Batch{batch_number:04d}'
+    return candidate
 
 
 def _normalize_run_code_rows(run_code, n_simulations: int) -> List[List]:
@@ -469,6 +517,136 @@ def prepare_HeFESTo_tree_fulladiabat(directory: Path, GEOROC_DIR: Path, control_
             func=get_T,
             out_path=sim_dir / 'ad.in',
         )
+
+def prepare_HeFESTo_tree_from_phase_changes(directory: Path, phase_path: Path, CONTROL_DIR: Path) -> None:
+    """
+    Prepare a directory tree from a phase-boundary CSV.
+
+    The CSV is expected to contain pairs of rows that bound a phase change.
+    Each pair is copied into its own SimulationN directory, the bulk element
+    abundances are written verbatim into a HeFESTo control file, and the paired
+    rows are preserved in a per-simulation CSV for downstream reuse.
+    """
+
+    directory = Path(directory)
+    phase_path = Path(phase_path)
+   
+
+    if not phase_path.exists():
+        raise FileNotFoundError(f'Phase boundary file not found: {phase_path}')
+    if not phase_path.is_file():
+        raise FileNotFoundError(f'Phase boundary file is not a file: {phase_path}')
+
+    if _contains_simulation_dirs(directory):
+        raise FileExistsError(
+            f'Target directory already contains Simulation<number> subdirectories: {directory}'
+        )
+
+    phase_df = pd.read_csv(phase_path, dtype=str)
+    if phase_df.empty:
+        raise ValueError('Phase boundary file is empty')
+    if len(phase_df) % 2 != 0:
+        raise ValueError(
+            'Phase boundary file should contain an even number of rows, '
+            'with each pair bounding one phase change'
+        )
+
+    bulk_element_cols = [
+        column for column in phase_df.columns
+        if str(column).endswith('(Bulk_comp_elements)')
+    ]
+    if len(bulk_element_cols) == 0:
+        raise ValueError(
+            'Phase boundary file does not contain Bulk_comp_elements columns'
+        )
+
+    if 'P(GPa)(System_main)' not in phase_df.columns or 'T(K)(System_main)' not in phase_df.columns:
+        raise ValueError("Phase boundary file must contain 'P(GPa)(System_main)' and 'T(K)(System_main)' columns")
+
+    directory.mkdir(parents=True, exist_ok=True)
+
+    batch_dir = _next_available_batch_dir(directory, 1)
+    batch_dir.mkdir(parents=True, exist_ok=False)
+    simulations_in_batch = 0
+    batch_number = int(batch_dir.name.removeprefix('Batch'))
+
+    for sim_idx in range(len(phase_df) // 2):
+        window_df = phase_df.iloc[sim_idx * 2:(sim_idx + 1) * 2].reset_index(drop=True)
+        reference_row = window_df.iloc[0]
+        comparison_row = window_df.iloc[1]
+
+        if simulations_in_batch >= 1000:
+            batch_number += 1
+            batch_dir = _next_available_batch_dir(directory, batch_number)
+            batch_dir.mkdir(parents=True, exist_ok=False)
+            simulations_in_batch = 0
+
+        sim_dir = batch_dir / f'Simulation{simulations_in_batch + 1}'
+        sim_dir.mkdir(parents=True, exist_ok=True)
+        simulations_in_batch += 1
+        # Define Appropriate Template
+        if float(window_df['P(GPa)(System_main)'].min()) < 23:
+                control_template_path = CONTROL_DIR / 'shallowHeFESTo'
+        else:
+                control_template_path = CONTROL_DIR / 'deepHeFESTo'
+
+        control_path = sim_dir / 'control'
+        shutil.copy2(control_template_path, control_path)
+
+        with open(control_path, 'r', encoding='utf-8', errors='ignore') as handle:
+            control_lines = [line.rstrip('\n') for line in handle]
+
+        oxides_start = None
+        for line_idx, line in enumerate(control_lines):
+            if line.strip().lower() == 'oxides':
+                oxides_start = line_idx + 1
+                break
+        if oxides_start is None:
+            raise ValueError(f"No 'oxides' block found in {control_template_path}")
+
+        element_values: Dict[str, str] = {}
+        for column in bulk_element_cols:
+            element_name = _normalize_element_label(column.split('(', 1)[0])
+            element_values[element_name] = str(reference_row[column]).strip()
+
+            reference_value = str(reference_row[column]).strip()
+            comparison_value = str(comparison_row[column]).strip()
+            if reference_value != comparison_value:
+                try:
+                    if not np.isclose(float(reference_value), float(comparison_value)):
+                        raise ValueError(
+                            f'Bulk element mismatch for {element_name} in '
+                            f'Simulation{sim_idx + 1}: {reference_value} != {comparison_value}'
+                        )
+                except ValueError as exc:
+                    raise ValueError(
+                        f'Bulk element mismatch for {element_name} in '
+                        f'Simulation{sim_idx + 1}: {reference_value} != {comparison_value}'
+                    ) from exc
+
+        for line_idx in range(oxides_start, len(control_lines)):
+            stripped = control_lines[line_idx].strip()
+            if not stripped or ',' in stripped or stripped.lower().startswith('phase '):
+                break
+
+            parts = stripped.split()
+            if len(parts) < 3:
+                break
+
+            element_name = _normalize_element_label(parts[0])
+            if element_name not in element_values:
+                continue
+
+            value_text = element_values[element_name]
+            third_col = parts[3] if len(parts) >= 4 else '0'
+            control_lines[line_idx] = f'{parts[0]:>2} {value_text:>12} {value_text:>11} {third_col}'
+
+        with open(control_path, 'w', encoding='utf-8') as handle:
+            handle.write('\n'.join(control_lines) + '\n')
+
+        boundary_copy_path = sim_dir / phase_path.name
+        window_df.to_csv(boundary_copy_path, index=False)
+
 
 
 def _safe_read_ws_table(path: str, skiprows: int = 0) -> pd.DataFrame:
@@ -832,7 +1010,7 @@ def import_HeFESTo_components(
                 raise ValueError('fort.99 has insufficient columns to parse components')
 
             component_cols = list(comp_df.columns)[3:-2]
-            phase_change_boundary_rows: set = set()
+            phase_change_boundary_rows = []
             transition_tol = 1e-6
             for comp_abbr in component_cols:
                 comp_abbr_str = str(comp_abbr).strip()
@@ -851,20 +1029,20 @@ def import_HeFESTo_components(
                     is_present = np.abs(values) > transition_tol
                     transition_rows = np.where(is_present[1:] != is_present[:-1])[0] + 1
                     for row_idx in transition_rows:
-                        phase_change_boundary_rows.add(int(row_idx))
-                        if row_idx > 0:
-                            phase_change_boundary_rows.add(int(row_idx - 1))
+                        phase_change_boundary_rows.append(int(row_idx))
+                        if row_idx <= 0:# Should always be >= 1 
+                            raise ValueError(f'Unexpected row index for phase change boundary: {row_idx}. Check transition detection logic.')    
+                        phase_change_boundary_rows.append(int(row_idx - 1))
 
                 _safe_assign(out, indexer, phase_name, component_name, values)
 
             _write_block_to_csv(dataname, indexer.database_headers, out)
 
             if phase_change_dataname is not None and len(phase_change_boundary_rows) > 0:
-                selected_rows = sorted(phase_change_boundary_rows)
                 _write_block_to_csv(
                     phase_change_dataname,
                     indexer.database_headers,
-                    out[selected_rows, :],
+                    out[phase_change_boundary_rows, :],
                 )
 
         except Exception as exc:

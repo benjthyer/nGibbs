@@ -1,14 +1,15 @@
 """
-Import HeFESTo workspaces from immediate child directories of a root path.
+Import HeFESTo workspaces from a root path.
 
-For each child workspace directory (one level deep only):
+The script recursively searches for the lowest-level workspace directories
+that directly contain SimulationN folders.
+
+For each discovered workspace directory:
 1) Cleanup simulation subdirectories:
-   - If a simulation directory contains only 'control' or 'control' + 'ad.in',
-     delete that simulation directory.
-   - Otherwise, delete files named 'fort.29' and 'qout' when present.
+     - If a simulation directory contains only 'control' or 'control' + 'ad.in',
+         delete that simulation directory.
+     - Otherwise, delete files named 'fort.29' and 'qout' when present.
 2) Run import_HeFESTo_components() on that workspace.
-
-This script is intentionally non-recursive for simplicity: only one level needed. 
 """
 
 from __future__ import annotations
@@ -85,12 +86,28 @@ def _contains_simulation_dirs(path: Path) -> bool:
     return False
 
 
+def _find_workspace_dirs(root: Path) -> list[Path]:
+    workspace_dirs: list[Path] = []
+
+    def visit(current_dir: Path) -> None:
+        if _contains_simulation_dirs(current_dir):
+            workspace_dirs.append(current_dir)
+            return
+
+        for entry in sorted(current_dir.iterdir()):
+            if entry.is_dir():
+                visit(entry)
+
+    visit(root)
+    return workspace_dirs
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            'Run import_HeFESTo_components() for each immediate child directory '
-            'under a root directory, with optional phase-change export and '
-            'pre-import simulation directory cleanup.'
+            'Recursively find HeFESTo workspaces under a root directory and '
+            'run import_HeFESTo_components() for each workspace, with optional '
+            'phase-change export and pre-import simulation directory cleanup.'
         )
     )
     parser.add_argument(
@@ -128,16 +145,10 @@ def main() -> int:
         print(f'Error: root path is not a directory: {root}', file=sys.stderr)
         return 2
 
-    child_dirs = sorted([path for path in root.iterdir() if path.is_dir()])
-    if len(child_dirs) == 0:
-        print(f'No child directories found under: {root}')
+    workspace_dirs = _find_workspace_dirs(root)
+    if len(workspace_dirs) == 0:
+        print(f'No HeFESTo workspaces found under: {root}')
         return 0
-
-    if _contains_simulation_dirs(root):
-        workspace_dirs = [root]
-        print('Detected SimulationN directories directly under --root; using root as workspace.')
-    else:
-        workspace_dirs = child_dirs
 
     indexer = _build_hefesto_indexer()
 
