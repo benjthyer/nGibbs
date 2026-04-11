@@ -600,7 +600,8 @@ def prepare_HeFESTo_tree_from_phase_changes(directory: Path, phase_path: Path, C
         t_max = float(t_values.max())
 
         p_steps = 0 if np.isclose(p_min, p_max) else 5
-        t_steps = 0 if np.isclose(t_min, t_max) else 5
+        t_steps = 0 if np.isclose(t_min, t_max) else 1
+        t_steps += (t_max-t_min)//25
 
         run_code = [
             p_min,
@@ -667,7 +668,7 @@ def prepare_HeFESTo_tree_from_phase_changes(directory: Path, phase_path: Path, C
             handle.write('\n'.join(control_lines) + '\n')
 
         boundary_copy_path = sim_dir / phase_path.name
-        window_df.to_csv(boundary_copy_path, index=False)
+        #window_df.to_csv(boundary_copy_path, index=False)
 
 
 
@@ -1032,7 +1033,6 @@ def import_HeFESTo_components(
                 raise ValueError('fort.99 has insufficient columns to parse components')
 
             component_cols = list(comp_df.columns)[3:-2]
-            phase_change_boundary_rows = []
             transition_tol = 1e-6
             for comp_abbr in component_cols:
                 comp_abbr_str = str(comp_abbr).strip()
@@ -1047,16 +1047,49 @@ def import_HeFESTo_components(
                     continue
                 values = pd.to_numeric(comp_df[comp_abbr], errors='coerce').fillna(0.0).to_numpy(dtype=float)
 
-                if phase_change_dataname is not None and values.shape[0] > 1:
-                    is_present = np.abs(values) > transition_tol
-                    transition_rows = np.where(is_present[1:] != is_present[:-1])[0] + 1
-                    for row_idx in transition_rows:
-                        phase_change_boundary_rows.append(int(row_idx))
-                        if row_idx <= 0:# Should always be >= 1 
-                            raise ValueError(f'Unexpected row index for phase change boundary: {row_idx}. Check transition detection logic.')    
-                        phase_change_boundary_rows.append(int(row_idx - 1))
-
                 _safe_assign(out, indexer, phase_name, component_name, values)
+
+            phase_change_boundary_rows: List[int] = []
+            if phase_change_dataname is not None and nrows > 1:
+                if not hasattr(indexer, 'phaseToCompMap'):
+                    raise ValueError('Indexer must expose phaseToCompMap for phase-change export')
+                if not hasattr(indexer, 'label_indices') or not hasattr(indexer, 'label_names'):
+                    raise ValueError('Indexer must expose label indices/names for phase-change export')
+
+                component_count = len(indexer.label_names)
+                p_to_c = np.asarray(indexer.phaseToCompMap, dtype=float)
+                if p_to_c.ndim != 2:
+                    raise ValueError('Indexer phaseToCompMap must be a 2D array')
+                if p_to_c.shape[1] != component_count:
+                    raise ValueError(
+                        'Indexer phaseToCompMap/component label dimension mismatch: '
+                        f'{p_to_c.shape[1]} != {component_count}'
+                    )
+
+                # Build C-space component molar array from populated out, then project C -> P.
+                component_moles = np.zeros((nrows, component_count), dtype=float)
+                for phase_name, c_indices in indexer.label_indices.items():
+                    phase_map = indexer.MELTS_indices.get(phase_name, None)
+                    if phase_map is None:
+                        continue
+                    for c_idx in np.atleast_1d(c_indices):
+                        c_idx_int = int(c_idx)
+                        component_label = str(indexer.label_names[c_idx_int])
+                        out_col_idx = phase_map.get(component_label, None)
+                        if out_col_idx is None:
+                            continue
+                        component_moles[:, c_idx_int] = out[:, out_col_idx]
+
+                phase_moles = component_moles @ p_to_c.T
+                transition_rows = []
+                for phase_idx in range(phase_moles.shape[1]):
+                    is_present = np.abs(phase_moles[:, phase_idx]) > transition_tol
+                    transition_rows += (np.where(is_present[1:] != is_present[:-1])[0] + 1).tolist()
+                for row_idx in sorted(set(transition_rows)):
+                    phase_change_boundary_rows.append(int(row_idx - 1))
+                    phase_change_boundary_rows.append(int(row_idx))
+
+
 
             _write_block_to_csv(dataname, indexer.database_headers, out)
 
