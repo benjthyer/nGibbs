@@ -22,7 +22,7 @@ def count_simulations(sim_dir: Path) -> int:
     return len(valid_sims)
 
 
-def create_slurm_script(sim_dir: Path, n_simulations: int) -> Path:
+def create_slurm_script(sim_dir: Path, n_simulations: int, time_limit: int) -> Path:
     """Create a SLURM script for this specific SIM_DIR."""
     slurm_script = sim_dir / "run_hefesto_array.slurm"
     
@@ -32,7 +32,7 @@ def create_slurm_script(sim_dir: Path, n_simulations: int) -> Path:
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=4G
-#SBATCH --time=00:10:00
+#SBATCH --time=00:{time_limit:02d}:00
 #SBATCH --output=logs/hefesto_%A_%a.out
 #SBATCH --error=logs/hefesto_%A_%a.err
 
@@ -93,7 +93,7 @@ def submit_jobs(base_dir: Path, dry_run: bool = False):
         print(f"Processing {sim_dir.name} ({n_sims} simulations)...")
         
         # Create SLURM script
-        slurm_script = create_slurm_script(sim_dir, n_sims)
+        slurm_script = create_slurm_script(sim_dir, n_sims, args.minutes)
         print(f"  Created: {slurm_script}")
         
         # Submit job
@@ -138,6 +138,12 @@ if __name__ == "__main__":
         type=Path,
         default=Path.cwd(),
         help="Base directory containing SIM_DIR folders (default: current directory)"
+    )
+    parser.add_argument(
+        "--minutes",
+        type=int,
+        default=10,
+        help="Time limit for each job in minutes (default: 10)"
     )
     parser.add_argument(
         "--dry-run",

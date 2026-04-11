@@ -549,10 +549,10 @@ def prepare_HeFESTo_tree_from_phase_changes(directory: Path, phase_path: Path, C
     if not phase_path.is_file():
         raise FileNotFoundError(f'Phase boundary file is not a file: {phase_path}')
 
-    if _contains_simulation_dirs(directory):
+    """if _contains_simulation_dirs(directory):
         raise FileExistsError(
             f'Target directory already contains Simulation<number> subdirectories: {directory}'
-        )
+        )"""
 
     phase_df = pd.read_csv(phase_path, dtype=str)
     if phase_df.empty:
