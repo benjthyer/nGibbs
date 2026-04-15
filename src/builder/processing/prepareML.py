@@ -233,15 +233,6 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         read_dir = str(external_base) if use_external else None
 
         TrainMELTS = BigMetaTable(TrainName, read_dir=read_dir, Model=MODEL, OXYGEN=OXYGEN) # Assume closed system for training data
-        
-        # Backward compatibility: rename highsanidine(plagioclase) to sanidine(plagioclase)
-        if 'highsanidine(plagioclase)' in TrainMELTS.header:
-            old_col_name = 'highsanidine(plagioclase)'
-            new_col_name = 'sanidine(plagioclase)'
-            col_idx = TrainMELTS.header.index(old_col_name)
-            TrainMELTS.header[col_idx] = new_col_name
-            print(f"[Backward Compatibility] Renamed column: '{old_col_name}' -> '{new_col_name}'")
-        
         header = TrainMELTS.header  # Capture header for indexer construction
         pre_filter = TrainMELTS.table.shape[0]
 

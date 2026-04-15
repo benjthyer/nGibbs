@@ -131,6 +131,13 @@ class BigMetaTable:
             with open(self.csv_file, newline='') as f:
                 reader = csv.reader(f)
                 self.header = next(reader)
+            
+            # Backward compatibility: rename highsanidine(plagioclase) to sanidine(plagioclase)
+            if 'highsanidine(plagioclase)' in self.header:
+                col_idx = self.header.index('highsanidine(plagioclase)')
+                self.header[col_idx] = 'sanidine(plagioclase)'
+                print("[Backward Compatibility] Renamed column: 'highsanidine(plagioclase)' -> 'sanidine(plagioclase)'")
+            
             with open(self.csv_file, newline='') as f:
                 file_rows = sum(1 for _ in f) - 1
                 self.file_rows = file_rows
@@ -176,6 +183,12 @@ class BigMetaTable:
                 _infer_headers(strip_filename_suffixes(self.csv_file))
             else:
                 raise ValueError(f"Headers are not provided and {self.csv_file} or {strip_filename_suffixes(self.csv_file)} does not exist to infer headers from.")
+            
+            # Backward compatibility: rename highsanidine(plagioclase) to sanidine(plagioclase)
+            if 'highsanidine(plagioclase)' in self.header:
+                col_idx = self.header.index('highsanidine(plagioclase)')
+                self.header[col_idx] = 'sanidine(plagioclase)'
+                print("[Backward Compatibility] Renamed column: 'highsanidine(plagioclase)' -> 'sanidine(plagioclase)'")
             
             self.file_rows = file_rows
            
