@@ -4,7 +4,7 @@
 # ============================================================================
 # DATASET SELECTION
 # ============================================================================
-dataset:
+dataset: #EXPECTED FILENAME: "nMELTS/data/MELTStables/{MELTSModel}/{'MELTS' if MELTSModel in ['102', '110', '120', 'p'] else ''}{MELTSModel}_<Train/Valid>set{Date}{Mode}"
   MELTSModel: '110'          # MELTS model version: '102', '110', '120', 'p'
   Date: 'Feb13'               # Date identifier for dataset naming
   Mode: 'BatchCooling'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
@@ -141,6 +141,7 @@ balancing:                    # Selectively "culling" dataset to balance liquid 
 # DEEP FILTERING - Oxide and Component Composition Bounds
 # ============================================================================
 deep_filter:
+  enabled: true           # Enable "deep" filtering, which targets .npy data products. Applies compositional bounds to filter out samples with unphysical compositions.
   # Oxide lower bounds: [phase, oxide, minimum_wt%]
   oxide_lower_bounds:
     - ['k-feldspar', 'K2O', 8]

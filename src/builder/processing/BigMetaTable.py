@@ -212,7 +212,7 @@ class BigMetaTable:
                     self.run_indices.append(id_parts[0] + id_parts[1])
                     self.MELTSversion.append(id_parts[2])
                 self.metadata.append(parts[1] if len(parts) > 1 else '')
-        print(f"[TIMER] Parsed {total_rows} of {i+1} Metadata to Lists: completed in {time.time() - t_start:.2f} seconds")
+        print(f"[TIMER] Parsed {total_rows} of Metadata to Lists: completed in {time.time() - t_start:.2f} seconds")
         
         if working_text:
             self.txt_file = self.filename + '.txt' # Now change name if we are using a 'working' version after reading text.
@@ -895,6 +895,7 @@ class BigMetaTable:
         phases_removed = []
 
         for phase, components in self.indexer.MELTS_indices.items():
+
             if phase in self.indexer.EXCLUDED_PHASES:
                 continue
 
@@ -902,6 +903,10 @@ class BigMetaTable:
                 mass_col = components.get('liq mass (gm)')
             else:
                 mass_col = components.get('mass (gm)')
+
+            if mass_col is None: # HeFESTo sims different
+                mass_col = components.get('total (moles)')
+                print(f"Phase '{phase}' missing 'mass (gm)', trying 'total (moles)' column: {mass_col}")
 
             if mass_col is None:
                 print(f"Skipping phase '{phase}': no mass column found.")
@@ -947,11 +952,17 @@ class BigMetaTable:
             print("No rows available; skipping ml_indexer phase filtering.")
             return
 
-        allowed_phases = set(self.indexer.ml_indexer.all_phases)
+        non_phase_keys = set(getattr(self.indexer, 'EXCLUDED_PHASES', set())) | {
+            'System_main', 'Bulk_comp', 'Bulk_comp_elements'
+        }
+        allowed_phases = set(self.indexer.ml_indexer.all_phases) | non_phase_keys
         delete_mask = np.zeros(total_rows, dtype=bool)
         phases_removed = []
 
         for phase, components in self.indexer.MELTS_indices.items():
+
+            if phase in non_phase_keys:
+                continue
 
             if phase in allowed_phases:
                 continue
@@ -1005,10 +1016,16 @@ class BigMetaTable:
             print("No rows available; skipping inconsistent phase data filtering.")
             return
 
+        non_phase_keys = set(getattr(self.indexer, 'EXCLUDED_PHASES', set())) | {
+            'System_main', 'Bulk_comp', 'Bulk_comp_elements'
+        }
         delete_mask = np.zeros(total_rows, dtype=bool)
         inconsistent_phases = {}
 
         for phase in self.indexer.ml_indexer.all_phases:
+            if phase in non_phase_keys:
+                continue
+
             if phase not in self.indexer.MELTS_indices:
                 continue
 
@@ -1019,6 +1036,9 @@ class BigMetaTable:
                 mass_col = components.get('liq mass (gm)')
             else:
                 mass_col = components.get('mass (gm)')
+
+            if mass_col is None:
+                mass_col = components.get('mass(gm)')
 
             if mass_col is None:
                 continue
@@ -1271,10 +1291,13 @@ class BigMetaTable:
         
     def retrieve_component_moles(self, multiplier_bounds=[1, 1]):
         """
-        Convert phase assemblages from mass (grams) to molar component form.
+        Convert phase assemblages to molar component form.
         
-        This method transforms the MELTS table data into absolute molar quantities for each
-        component in each phase. It handles three types of phases differently:
+        This method transforms the table data into absolute molar quantities for each
+        component in each phase. MELTS phases are reconstructed from masses, while
+        HeFESTo phases already store component moles directly.
+
+        It handles three types of phases differently:
         
         1. Solid phases with variable composition (e.g., olivine with Mg-Fe substitution)
         2. Solid phases with fixed composition (e.g., quartz)
@@ -1315,74 +1338,94 @@ class BigMetaTable:
         # ========== Process each phase ==========
         for phase in list(label_indices.keys()):
             # Generate random multipliers for resampling (1.0 for no resampling)
-            mass_multipliers = np.random.uniform(
+            phase_multipliers = np.random.uniform(
                 *multiplier_bounds, 
                 size=total_rows
             ).reshape(-1, 1)
             
-            # --- CASE 1: Solid phases (olivine, pyroxene, etc.) ---
             if phase != 'melts-liquid':
-                
-                # Get indices for this phase's components
-                phase_label_inds = label_indices[phase]
-                
-                if len(phase_label_inds) > 1:
-                    # Variable composition solid (e.g., olivine: Fo + Fa + Monticellite)
-                    # Components are stored as mole fractions that sum to 1
-                    
-                    # Get component names and their column indices in table
+                # --- CASE 0: HeFESTo solids phases (olivine, pyroxene, etc.) ---
+
+                if self.Model == 'HeFESTo':
+                    # HeFESTo solids are already stored as extensive component moles.
+                    # Keep them directly, but assert the phase-total column matches the
+                    # sum of component columns so schema mismatches fail loudly.
+                    phase_label_inds = label_indices[phase]
                     component_names = np.array(label_names)[phase_label_inds]
                     component_col_indices = np.array([
-                        component_indices[phase][comp_name] 
+                        component_indices[phase][comp_name]
                         for comp_name in component_names
                     ])
-                    
-                    # Extract component mole fractions from table (sum to 1 per row)
-                    component_fractions = self.table1[:, component_col_indices]
-                    
-                    # Calculate phase molar mass from composition
-                    # component_fractions -> oxides -> molar mass
-                    phase_molar_mass = (
-                        component_fractions @ compToOxLoad[phase_label_inds]
-                    ) @ Mtot
-                    
-                    # Get phase mass (grams) from table
-                    phase_mass_grams = self.table1[:, component_indices[phase]['mass (gm)']]
-                    phase_mass_col = np.atleast_2d(phase_mass_grams).T
-                    
-                    # Calculate total moles of phase: moles = mass / molar_mass
-                    # Handle division by zero with safe divide
-                    zero_mat = np.zeros_like(phase_molar_mass, dtype=float)
-                    total_phase_moles = np.divide(
-                        phase_mass_col,
-                        phase_molar_mass,
-                        out=zero_mat,
-                        where=phase_molar_mass != 0
-                    )
-                    
-                    # Moles of each component = component_fraction * total_moles * multiplier
-                    self.molar[:, phase_label_inds] = (
-                        component_fractions * 
-                        mass_multipliers * 
-                        total_phase_moles
-                    )
-                    
+
+                    component_moles = self.table1[:, component_col_indices]
+                   
+
+                    self.molar[:, phase_label_inds] = component_moles * phase_multipliers
+                
+                # --- CASE 1: MELTS solid phases (olivine, pyroxene, etc.) ---
                 else:
-                    # Invariant composition solid (e.g., quartz = 100% SiO2)
-                    # Only one component, so moles = mass / molar_mass
+                        
+
+                    # Get indices for this phase's components
+                    phase_label_inds = label_indices[phase]
                     
-                    phase_mass_grams = self.table1[:, component_indices[phase]['mass (gm)']]
-                    phase_mass_col = phase_mass_grams.reshape(-1, 1)
-                    
-                    # Get molar mass of this single component
-                    phase_molar_mass = compToOxLoad[phase_label_inds, :] @ Mtot
-                    
-                    # Calculate moles: mass / MM, with multiplier
-                    self.molar[:, phase_label_inds] = (
-                        (mass_multipliers * phase_mass_col / phase_molar_mass).T
-                    ).T
-            
-            # --- CASE 2: Liquid phase (special handling) ---
+                    if len(phase_label_inds) > 1:
+                        # Variable composition solid (e.g., olivine: Fo + Fa + Monticellite)
+                        # Components are stored as mole fractions that sum to 1
+                        
+                        # Get component names and their column indices in table
+                        component_names = np.array(label_names)[phase_label_inds]
+                        component_col_indices = np.array([
+                            component_indices[phase][comp_name] 
+                            for comp_name in component_names
+                        ])
+                        
+                        # Extract component mole fractions from table (sum to 1 per row)
+                        component_fractions = self.table1[:, component_col_indices]
+                        
+                        # Calculate phase molar mass from composition
+                        # component_fractions -> oxides -> molar mass
+                        phase_molar_mass = (
+                            component_fractions @ compToOxLoad[phase_label_inds]
+                        ) @ Mtot
+                        
+                        # Get phase mass (grams) from table
+                        phase_mass_grams = self.table1[:, component_indices[phase]['mass (gm)']]
+                        phase_mass_col = np.atleast_2d(phase_mass_grams).T
+                        
+                        # Calculate total moles of phase: moles = mass / molar_mass
+                        # Handle division by zero with safe divide
+                        zero_mat = np.zeros_like(phase_molar_mass, dtype=float)
+                        total_phase_moles = np.divide(
+                            phase_mass_col,
+                            phase_molar_mass,
+                            out=zero_mat,
+                            where=phase_molar_mass != 0
+                        )
+                        
+                        # Moles of each component = component_fraction * total_moles * multiplier
+                        self.molar[:, phase_label_inds] = (
+                            component_fractions * 
+                            phase_multipliers * 
+                            total_phase_moles
+                        )
+                        
+                    else:
+                        # Invariant composition solid (e.g., quartz = 100% SiO2)
+                        # Only one component, so moles = mass / molar_mass
+                        
+                        phase_mass_grams = self.table1[:, component_indices[phase]['mass (gm)']]
+                        phase_mass_col = phase_mass_grams.reshape(-1, 1)
+                        
+                        # Get molar mass of this single component
+                        phase_molar_mass = compToOxLoad[phase_label_inds, :] @ Mtot
+                        
+                        # Calculate moles: mass / MM, with multiplier
+                        self.molar[:, phase_label_inds] = (
+                            (phase_multipliers * phase_mass_col / phase_molar_mass).T
+                        ).T
+                
+            # --- CASE 2: Liquid phase in MELTS (special handling) ---
             else:
                 # Liquid is stored as wt% oxides in MELTS table
                 # Need to convert: wt% oxides -> mole oxides -> mole elements
@@ -1431,7 +1474,7 @@ class BigMetaTable:
                 # Multiply by total moles and multiplier to get absolute moles
                 self.molar[:, label_indices[phase]] = (
                     mole_fraction_oxides * 
-                    mass_multipliers * 
+                    phase_multipliers * 
                     total_liquid_moles
                 ) @ OxToEl                                          
 

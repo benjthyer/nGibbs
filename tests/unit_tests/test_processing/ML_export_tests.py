@@ -59,7 +59,7 @@ def export_bundle_arrays_to_csv(bundle, output_dir: Optional[Path] = None) -> No
     
     # Features: [Pressure, Temperature, logfO2-QFM] + Elkeys
     if bundle.features is not None:
-        feature_cols = ['Pressure', 'Temperature', 'logfO2-QFM'] + list(elkeys)
+        feature_cols = indexer.featureNames + elkeys
         features_df = pd.DataFrame(bundle.features, columns=feature_cols)
         features_path = output_dir / 'features.csv'
         features_df.to_csv(features_path, index=False)
@@ -135,6 +135,58 @@ def sanity_check_bundle(bundle_path: Path, tolerance=1e-3, bulk_tol_frac=1e-3) -
         suffix = "..." if idxs.size > limit else ""
         return f"[{', '.join(map(str, shown))}{suffix}]"
 
+    def _report_failed_phase_assemblages(fail_rows, context, min_pct=0.5):
+        """Print phase occurrence percentages for failing rows."""
+        fail_rows = np.asarray(fail_rows, dtype=int)
+        fail_rows = np.unique(fail_rows)
+        if fail_rows.size == 0:
+            return
+
+        fail_binary = binary_labels[fail_rows]
+        phase_presence = fail_binary > 0.5
+        phase_frac = np.mean(phase_presence, axis=0) * 100.0
+
+        print(f"\n[FAIL SUMMARY] {context}")
+        print(f"Rows analyzed: {fail_rows.size}")
+        print("Failed rows with phase present (%):")
+
+        printed_any = False
+        for phase_idx, phase_name in enumerate(indexer.all_phases):
+            pct = phase_frac[phase_idx]
+            if pct >= min_pct:
+                print(f"  {phase_name}: {pct:.1f}%")
+                printed_any = True
+
+        if not printed_any:
+            print("  No phases exceeded reporting threshold.")
+
+    def _report_failed_elements(fail_rows, observed, expected, element_names, context, tol=bulk_tol_frac, min_pct=0.5):
+        """Print element mismatch percentages for failing rows."""
+        fail_rows = np.asarray(fail_rows, dtype=int)
+        fail_rows = np.unique(fail_rows)
+        if fail_rows.size == 0:
+            return
+
+        observed = np.asarray(observed)
+        expected = np.asarray(expected)
+        rel_diff = np.abs(observed[fail_rows] - expected[fail_rows]) / (np.abs(expected[fail_rows]) + 1e-10)
+        fail_mask = rel_diff > tol
+        element_frac = np.mean(fail_mask, axis=0) * 100.0
+
+        print(f"\n[FAIL SUMMARY] {context}")
+        print(f"Rows analyzed: {fail_rows.size}")
+        print("Failed rows with element mismatch (%):")
+
+        printed_any = False
+        for elem_idx, elem_name in enumerate(element_names):
+            pct = element_frac[elem_idx]
+            if pct >= min_pct:
+                print(f"  {elem_name}: {pct:.1f}%")
+                printed_any = True
+
+        if not printed_any:
+            print("  No elements exceeded reporting threshold.")
+
     try:
         assert labels.shape[1] == indexer.ncompsVaried, (
             f"labels has {labels.shape[1]} columns, expected VC={indexer.ncompsVaried}"
@@ -193,10 +245,17 @@ def sanity_check_bundle(bundle_path: Path, tolerance=1e-3, bulk_tol_frac=1e-3) -
         present_fail = np.where(present_diff > tolerance)[0]
         absent_fail = np.where(absent_diff > tolerance)[0]
         if present_fail.size > 0:
-            _export_on_failure()
             worst_idx = present_fail[np.argmax(present_diff[present_fail])]
             worst_val = row_sums[present_mask][worst_idx]
             full_idx = np.where(present_mask)[0][present_fail]
+            _report_failed_phase_assemblages(
+                full_idx,
+                context=f"{phase}: present-row sum failures",
+            )
+            try:
+                _export_on_failure()
+            except Exception as e:
+                print(f"Failed to export debugging csvs on failure: {e}")
             raise AssertionError(
                 f"{phase}: label rows should sum to 1 when present. "
                 f"failures={present_fail.size}, worst_sum={worst_val:.6f}, "
@@ -204,10 +263,17 @@ def sanity_check_bundle(bundle_path: Path, tolerance=1e-3, bulk_tol_frac=1e-3) -
                 f"rows={_format_indices(full_idx)}"
             )
         if absent_fail.size > 0:
-            _export_on_failure()
             worst_idx = absent_fail[np.argmax(absent_diff[absent_fail])]
             worst_val = row_sums[absent_mask][worst_idx]
             full_idx = np.where(absent_mask)[0][absent_fail]
+            _report_failed_phase_assemblages(
+                full_idx,
+                context=f"{phase}: absent-row sum failures",
+            )
+            try:
+                _export_on_failure()
+            except Exception as e:
+                print(f"Failed to export debugging csvs on failure: {e}")
             raise AssertionError(
                 f"{phase}: label rows should sum to 0 when absent. "
                 f"failures={absent_fail.size}, worst_sum={worst_val:.6f}, "
@@ -219,10 +285,17 @@ def sanity_check_bundle(bundle_path: Path, tolerance=1e-3, bulk_tol_frac=1e-3) -
     phase_present_from_moles = molar_labels > 0
     phase_present_from_binary = binary_labels > 0.5
     if not np.array_equal(phase_present_from_moles, phase_present_from_binary):
-        _export_on_failure()
+        try:
+            _export_on_failure()
+        except Exception as e:
+            print(f"Failed to export debugging csvs on failure: {e}")
         mismatch = np.where(phase_present_from_moles != phase_present_from_binary)
         row_idxs = mismatch[0]
         col_idxs = mismatch[1]
+        _report_failed_phase_assemblages(
+            row_idxs,
+            context="phase moles vs binary label mismatches",
+        )
         paired = list(zip(row_idxs.tolist(), col_idxs.tolist()))
         paired = paired[:10]
         worst_count = row_idxs.size
@@ -239,7 +312,14 @@ def sanity_check_bundle(bundle_path: Path, tolerance=1e-3, bulk_tol_frac=1e-3) -
     binary_diff = np.abs(label_implied_binary - binary_target)
     binary_fail = np.where(binary_diff > tolerance)
     if binary_fail[0].size > 0:
-        _export_on_failure()
+        _report_failed_phase_assemblages(
+            binary_fail[0],
+            context="label/binary constraint mismatches",
+        )
+        try:
+            _export_on_failure()
+        except Exception as e:
+            print(f"Failed to export debugging csvs on failure: {e}")
         worst_idx = np.argmax(binary_diff[binary_fail])
         worst_row = binary_fail[0][worst_idx]
         worst_col = binary_fail[1][worst_idx]
@@ -268,9 +348,22 @@ def sanity_check_bundle(bundle_path: Path, tolerance=1e-3, bulk_tol_frac=1e-3) -
     feature_offset = len(indexer.featureNames)
     expected_el = features[:, feature_offset:]
     rel_diff = np.abs(bulk_el - expected_el) / (expected_el + 1e-10)
+    near_0 = expected_el < 1e-8
+    rel_diff[near_0] = np.abs(bulk_el[near_0] - expected_el[near_0]) # Tiny ferric iron causing problems
     per_row_max = np.max(rel_diff, axis=1)
     fail_rows = np.where(per_row_max > bulk_tol_frac)[0]
     if fail_rows.size > 0:
+        _report_failed_phase_assemblages(
+            fail_rows,
+            context="bulk element reconstruction mismatches",
+        )
+        _report_failed_elements(
+            fail_rows,
+            observed=bulk_el,
+            expected=expected_el,
+            element_names=indexer.Elkeys,
+            context="bulk element reconstruction mismatches",
+        )
         _export_on_failure()
         worst_row = int(fail_rows[np.argmax(per_row_max[fail_rows])])
         worst_val = per_row_max[worst_row]

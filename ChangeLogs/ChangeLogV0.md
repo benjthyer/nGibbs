@@ -1,5 +1,8 @@
 _____________________ Unreleased _______________________
 
+2026-04-14: Adapting and debugging processing pipeline for HeFESTo (and alphamelts 2.0)
+    -changed indexer.py,  BigMetaTable.py, filters.py, MLexporter.py, prepareML.py, constants.py and tests for indexer and MLexporter. 
+
 2026-04-11: Phase-boundary detection in HeFESTo import function debugged
 
 2026-04-10: Made HeFESTo importer and sbatch calls scalable with recursion and auto-generated slurm scripts for tiered-directory trees

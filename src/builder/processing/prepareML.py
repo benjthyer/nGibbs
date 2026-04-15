@@ -7,6 +7,7 @@ Processes MELTS simulation data for machine learning training, validation, and t
 from copy import deepcopy
 import os
 import gc
+import shutil
 from pathlib import Path
 import yaml
 
@@ -200,6 +201,28 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         else:
             return f"{Path(base_name).name}.tar.gz"
 
+    def ensure_bundle_in_train_dir(bundle_path):
+        """Ensure bundle exists in final MLready directory before filtering."""
+        bundle_path = Path(bundle_path)
+        target_path = train_dir / bundle_path.name
+
+        if bundle_path.exists() and bundle_path.parent != train_dir:
+            train_dir.mkdir(parents=True, exist_ok=True)
+            if target_path.exists():
+                target_path.unlink()
+            moved_path = shutil.move(str(bundle_path), str(target_path))
+            return Path(moved_path)
+
+        if target_path.exists():
+            return target_path
+
+        if bundle_path.exists():
+            return bundle_path
+
+        raise FileNotFoundError(
+            f"Bundle not found at expected locations: {bundle_path} or {target_path}"
+        )
+
     gc.collect()
     
     # Capture baseline files for cleanup on exit
@@ -209,7 +232,16 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         # Process training data
         read_dir = str(external_base) if use_external else None
 
-        TrainMELTS = BigMetaTable(TrainName, read_dir=read_dir, Model=MODEL, OXYGEN=OXYGEN) # Assume closed system for training data, this is the most common and prevents extreme outliers in low-F samples that can destabilize training. Validation/test data will be filtered to match the training set's phase space, so this assumption shouldn't cause issues.
+        TrainMELTS = BigMetaTable(TrainName, read_dir=read_dir, Model=MODEL, OXYGEN=OXYGEN) # Assume closed system for training data
+        
+        # Backward compatibility: rename highsanidine(plagioclase) to sanidine(plagioclase)
+        if 'highsanidine(plagioclase)' in TrainMELTS.header:
+            old_col_name = 'highsanidine(plagioclase)'
+            new_col_name = 'sanidine(plagioclase)'
+            col_idx = TrainMELTS.header.index(old_col_name)
+            TrainMELTS.header[col_idx] = new_col_name
+            print(f"[Backward Compatibility] Renamed column: '{old_col_name}' -> '{new_col_name}'")
+        
         header = TrainMELTS.header  # Capture header for indexer construction
         pre_filter = TrainMELTS.table.shape[0]
 
@@ -278,7 +310,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
                 TrainMELTS,
                 resampling_cfg['train_bounds'],
                 config_path=config_path,
-                bundle_name=get_bundle_name(TrainName, 'Train'),
+                bundle_name=train_bundle, #get_bundle_name(TrainName, 'Train'),
                 **resampling_kwargs,
             )
         else:
@@ -286,9 +318,11 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
                 TrainMELTS,
                 [[1, 1]],
                 config_path=config_path,
-                bundle_name=get_bundle_name(TrainName, 'Train'),
+                bundle_name=train_bundle,
                 **resampling_kwargs,
             )
+
+            train_bundle_path = ensure_bundle_in_train_dir(train_bundle_path)
 
         TrainIndexer = deepcopy(TrainMELTS.indexer)  # Capture indexer for consistency with validation/test dataset
 
@@ -305,18 +339,21 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
             os.rename(TrainName + 'Filtered.npy', TrainName + '_processed.npy')
             os.rename(TrainName + 'Filtered.txt', TrainName + '_processed.txt')"""
 
-        deep_filter(
-            str(train_bundle),
-            Oxide_Lower_Bounds=filter_cfg['oxide_lower_bounds'] or None,
-            Oxide_Upper_Bounds=filter_cfg['oxide_upper_bounds'] or None,
-            Component_Upper_Bounds=filter_cfg['component_upper_bounds'] or None,
-            Component_Lower_Bounds=filter_cfg.get('component_lower_bounds', []),
-            batch_size=filter_cfg['batch_size']
-        )
+        if filter_cfg['enabled']:
+            deep_filter(
+                str(train_bundle_path),
+                Oxide_Lower_Bounds=filter_cfg['oxide_lower_bounds'] or None,
+                Oxide_Upper_Bounds=filter_cfg['oxide_upper_bounds'] or None,
+                Component_Upper_Bounds=filter_cfg['component_upper_bounds'] or None,
+                Component_Lower_Bounds=filter_cfg.get('component_lower_bounds', []),
+                batch_size=filter_cfg['batch_size']
+            )
 
-        bundle_insanity_filter(train_bundle)
+        #sanity_check_bundle(train_bundle, bulk_tol_frac=5E-3)  # Verify training bundle integrity before proceeding
 
-        #sanity_check_bundle(train_bundle)  # Verify training bundle integrity before proceeding
+
+        bundle_insanity_filter(train_bundle_path, bulk_tol_frac=5E-3)
+
 
         # Process validation and test data
         ValidMELTS = BigMetaTable(ValidName, read_dir=read_dir, Model=MODEL, OXYGEN=OXYGEN)
@@ -377,20 +414,26 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         TestMELTS.filename = TestName
         ValidMELTS.filename = ValidName
 
+        test_bundle = train_dir / get_bundle_name(TestName, 'Test')
+        valid_bundle = train_dir / get_bundle_name(ValidName, 'Valid')
+
         test_bundle_path = resampling_to_datasets(
             TestMELTS,
             resampling_cfg['test_bounds'],
             config_path=config_path,
-            bundle_name=get_bundle_name(TestName, 'Test'),
+            bundle_name=test_bundle,
             **resampling_kwargs,
         )
         valid_bundle_path = resampling_to_datasets(
             ValidMELTS,
             resampling_cfg['test_bounds'],
             config_path=config_path,
-            bundle_name=get_bundle_name(ValidName, 'Valid'),
+            bundle_name=valid_bundle,
             **resampling_kwargs,
         )
+
+        test_bundle_path = ensure_bundle_in_train_dir(test_bundle_path)
+        valid_bundle_path = ensure_bundle_in_train_dir(valid_bundle_path)
 
         # Generate plots (saved to PLOT_DIR, not displayed due to 'Agg' backend)
         if plot_enabled:
@@ -404,27 +447,27 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         delete_files_with_keyword(str(INTERNAL_DIR), keyword='working', dry_run=False)
         delete_files_with_keyword(str(INTERNAL_DIR), keyword='temp', dry_run=False)
 
-        test_bundle = train_dir / get_bundle_name(TestName, 'Test')
-        deep_filter(
-            str(test_bundle),
-            Oxide_Lower_Bounds=filter_cfg['oxide_lower_bounds'] or None,
-            Oxide_Upper_Bounds=filter_cfg['oxide_upper_bounds'] or None,
-            Component_Upper_Bounds=filter_cfg['component_upper_bounds'] or None,
-            Component_Lower_Bounds=filter_cfg.get('component_lower_bounds', []),
-            batch_size=filter_cfg['batch_size']
-        )
-        valid_bundle = train_dir / get_bundle_name(ValidName, 'Valid')
-        deep_filter(
-            str(valid_bundle),
-            Oxide_Lower_Bounds=filter_cfg['oxide_lower_bounds'] or None,
-            Oxide_Upper_Bounds=filter_cfg['oxide_upper_bounds'] or None,
-            Component_Upper_Bounds=filter_cfg['component_upper_bounds'] or None,
-            Component_Lower_Bounds=filter_cfg.get('component_lower_bounds', []),
-            batch_size=filter_cfg['batch_size']
-        )
+        if filter_cfg['enabled']:
+            deep_filter(
+                str(test_bundle_path),
+                Oxide_Lower_Bounds=filter_cfg['oxide_lower_bounds'] or None,
+                Oxide_Upper_Bounds=filter_cfg['oxide_upper_bounds'] or None,
+                Component_Upper_Bounds=filter_cfg['component_upper_bounds'] or None,
+                Component_Lower_Bounds=filter_cfg.get('component_lower_bounds', []),
+                batch_size=filter_cfg['batch_size']
+            )
+        if filter_cfg['enabled']:
+            deep_filter(
+                str(valid_bundle_path),
+                Oxide_Lower_Bounds=filter_cfg['oxide_lower_bounds'] or None,
+                Oxide_Upper_Bounds=filter_cfg['oxide_upper_bounds'] or None,
+                Component_Upper_Bounds=filter_cfg['component_upper_bounds'] or None,
+                Component_Lower_Bounds=filter_cfg.get('component_lower_bounds', []),
+                batch_size=filter_cfg['batch_size']
+            )
 
-        bundle_insanity_filter(test_bundle)
-        bundle_insanity_filter(valid_bundle)
+        bundle_insanity_filter(test_bundle_path, bulk_tol_frac=5E-3)
+        bundle_insanity_filter(valid_bundle_path, bulk_tol_frac=5E-3)
         #sanity_check_bundle(test_bundle)  # Verify test bundle integrity before proceeding
         #sanity_check_bundle(valid_bundle)  # Verify validation bundle integrity before proceeding
 

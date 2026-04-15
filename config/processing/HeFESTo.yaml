@@ -5,33 +5,32 @@
 # DATASET SELECTION
 # ============================================================================
 dataset: #EXPECTED FILENAME: "nMELTS/data/MELTStables/{MELTSModel}/{'MELTS' if MELTSModel in ['102', '110', '120', 'p'] else ''}{MELTSModel}_<Train/Valid>set{Date}{Mode}"
-  MELTSModel: '110'          # MELTS model version: '102', '110', '120', 'p'. Affects which directory dataproducts are read from and written to
-  Date: 'Feb13'               # Date identifier for dataset naming
-  Mode: 'BatchCooling'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
+  MELTSModel: 'HeFESTo'          # MELTS model version: '102', '110', '120', 'p'. Affects which directory dataproducts are read from and written to
+  Date: '041026'               # Date identifier for dataset naming
+  Mode: '_low_noise_adiabats'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
-outname: '110test'                  # Base name for output folder (without extension). Auto-Generated if blank
-
+outname: ''                  # Base name for output folder (without extension). Auto-Generated if blank
 
 
 # ============================================================================
 # NON-CHEMICAL FEATURE AND LABEL CONFIGURATION (format: attribute(phase): e.g. 'Pressure(System_main)')
 # ============================================================================
 featureNames: # Non-chemical features to include in the dataset
-  - 'Pressure(System_main)'
-  - 'S(System_main)'
+  - 'P(GPa)(System_main)'
+  - 'S(J/g/K)(System_main)'
   #- 'S(System_main)' # Isentropic 
   
 
 freeOutputs: # Non-chemical labels to predict. These are used for training the saturation predictor and as auxiliary outputs for the encoder.
-  - 'Temperature(System_main)' 
-  #- 'T(K)(System_main)'
-  #- 'VS(km/s)(System_main)'
-  #- 'VP(km/s)(System_main)'
+  #- 'Temperature(System_main)' 
+  - 'T(K)(System_main)'
+  - 'VS(km/s)(System_main)'
+  - 'VP(km/s)(System_main)'
   #- 'dVdP*10^6(System_main)' # COMPRESSIBILITY
   #- 'dVdT*10^6(System_main)' # THERMAL EXPANSION
-  - 'H(System_main)'
+  #- 'H(System_main)'
   #- 'viscosity(System_main)' # 
   #- 'Cp(System_main)' #
   #- 'rhos(System_main)' # Solid Density g/cc
@@ -43,12 +42,12 @@ freeOutputs: # Non-chemical labels to predict. These are used for training the s
 # ============================================================================
 preprocessing:
   preprocessed: false        # Skip preprocessing if data already preprocessed
-  filter_full_metadata: true # Filter by persence of notes in metadata, corresponding to phases that are not recognized.
+  filter_full_metadata: false # Filter by persence of notes in metadata, corresponding to phases that are not recognized.
   filter_legal: false        # Deprecated 
-  separate_analcime: true    # Separate analcime phase during preprocessing 
+  separate_analcime: false    # Separate analcime phase during preprocessing 
   #(Generally do this, Analcime in MELTS has two distinct compositional fields)
 
-min_phase_proportion: 0.03    # Minimum phase proportion (0-1) for a sample to be included in training set. Applied after upsampling.
+min_phase_proportion: 0.01    # Minimum phase proportion (0-1) for a sample to be included in training set. Applied after upsampling.
 
 # ============================================================================
 # RARE PHASE UPSAMPLING
@@ -60,7 +59,7 @@ min_phase_proportion: 0.03    # Minimum phase proportion (0-1) for a sample to b
 
 
 upsampling:
-  enabled: true              # Enable rare phase upsampling
+  enabled: false            # Enable rare phase upsampling
   phases:
     nepheline:
       n_resamples: 10
@@ -128,7 +127,7 @@ resampling:
 # PLOTTING
 # ============================================================================
 plot:
-  enabled: True        # If false or missing, plots are not generated
+  enabled: False        # If false or missing, plots are not generated #ONLY SUPPORTED FOR MELTS FOR NOW, NOT HeFESTo
 
 # ============================================================================
 # BALANCING FUNCTION
@@ -143,28 +142,28 @@ balancing:                    # Selectively "culling" dataset to balance liquid 
 # DEEP FILTERING - Oxide and Component Composition Bounds
 # ============================================================================
 deep_filter:
-  enabled: true           # Enable "deep" filtering, which targets .npy data products. Applies compositional bounds to filter out samples with unphysical compositions.
+  enabled: false           # Enable "deep" filtering, which targets .npy data products. Applies compositional bounds to filter out samples with unphysical compositions.
   # Oxide lower bounds: [phase, oxide, minimum_wt%]
-  oxide_lower_bounds:
-    - ['k-feldspar', 'K2O', 6]
-    - ['clinopyroxene', 'CaO', 6]
-    - ['melts-liquid', 'SiO2', 30]
+#  oxide_lower_bounds:
+#    - ['k-feldspar', 'K2O', 6]
+#    - ['clinopyroxene', 'CaO', 6]
+#    - ['melts-liquid', 'SiO2', 30]
   
   # Oxide upper bounds: [phase, oxide, maximum_wt%]
-  oxide_upper_bounds:
-    - ['k-feldspar', 'CaO', 4] #1
+#  oxide_upper_bounds:
+#    - ['k-feldspar', 'CaO', 4] #1
     #- ['plagioclase', 'K2O', 12] #8
-    - ['clinopyroxene', 'TiO2', 9] # 6
-    - ['clinopyroxene', 'Al2O3', 12] #8
-    - ['orthopyroxene', 'TiO2', 5] #2
-    - ['orthopyroxene', 'Al2O3', 10] #8
-    - ['orthopyroxene', 'CaO', 6] #4
-    - ['melts-liquid', 'TiO2', 13]
-    - ['melts-liquid', 'P2O5', 10]
+#    - ['clinopyroxene', 'TiO2', 9] # 6
+#    - ['clinopyroxene', 'Al2O3', 12] #8
+#    - ['orthopyroxene', 'TiO2', 5] #2
+#    - ['orthopyroxene', 'Al2O3', 10] #8
+#    - ['orthopyroxene', 'CaO', 6] #4
+#    - ['melts-liquid', 'TiO2', 13]
+#    - ['melts-liquid', 'P2O5', 10]
   
   # Component upper bounds: [phase, component, maximum_wt%]
   # Example: [['plagioclase', 'sanidine', 0.1]]
-  component_upper_bounds: [['plagioclase', 'sanidine', 0.2]] # 0.1
+#  component_upper_bounds: [['plagioclase', 'sanidine', 0.2]] # 0.1
   
   # Processing batch size for "deep" filtering, which targets .npy data products. 
-  batch_size: 200000
+#  batch_size: 200000

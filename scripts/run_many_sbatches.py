@@ -144,7 +144,7 @@ def submit_jobs_with_queue_monitoring(
     # Prepare all SLURM scripts first
     pending_jobs = []
     for sim_dir, n_sims in sim_dirs:
-        slurm_script = create_slurm_script(sim_dir, n_sims, time_limit=time_limit)
+        slurm_script = create_slurm_script(sim_dir, n_sims, time_limit=args.time_limit)
         pending_jobs.append((sim_dir, slurm_script, n_sims))
         print(f"Prepared: {slurm_script}")
     

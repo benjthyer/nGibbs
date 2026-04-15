@@ -606,10 +606,10 @@ def prepare_HeFESTo_tree_from_phase_changes(directory: Path, phase_path: Path, C
         run_code = [
             p_min,
             p_max,
-            p_steps,
+            int(p_steps),
             t_min,
             t_max,
-            t_steps,
+            int(t_steps),
             0,
             0,
             0,
@@ -1049,6 +1049,29 @@ def import_HeFESTo_components(
 
                 _safe_assign(out, indexer, phase_name, component_name, values)
 
+            # Compute total phase moles from component-space abundances.
+            for phase_name, c_indices in getattr(indexer, 'label_indices', {}).items():
+                phase_map = indexer.MELTS_indices.get(phase_name, None)
+                if phase_map is None:
+                    continue
+
+                total_values = np.zeros(nrows, dtype=float)
+                for c_idx in np.atleast_1d(c_indices):
+                    c_idx_int = int(c_idx)
+                    if c_idx_int < 0 or c_idx_int >= len(indexer.label_names):
+                        continue
+                    component_label = str(indexer.label_names[c_idx_int])
+                    out_col_idx = phase_map.get(component_label, None)
+                    if out_col_idx is None:
+                        continue
+                    total_values += out[:, out_col_idx]
+
+                # Populate in-schema names when present.
+                _safe_assign(out, indexer, phase_name, 'total (moles)', total_values)
+                _safe_assign(out, indexer, phase_name, 'moles', total_values)
+                _safe_assign(out, indexer, phase_name, 'phase moles', total_values)
+                _safe_assign(out, indexer, phase_name, 'total moles', total_values)
+
             phase_change_boundary_rows: List[int] = []
             if phase_change_dataname is not None and nrows > 1:
                 if not hasattr(indexer, 'phaseToCompMap'):
@@ -1088,8 +1111,6 @@ def import_HeFESTo_components(
                 for row_idx in sorted(set(transition_rows)):
                     phase_change_boundary_rows.append(int(row_idx - 1))
                     phase_change_boundary_rows.append(int(row_idx))
-
-
 
             _write_block_to_csv(dataname, indexer.database_headers, out)
 

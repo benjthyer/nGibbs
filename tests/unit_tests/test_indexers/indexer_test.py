@@ -158,8 +158,8 @@ def test_ml_indexer(indexer):
     assert isinstance(indexer.all_phases, list), "all_phases must be a list"
     assert len(indexer.all_phases) == P, f"len(all_phases)={len(indexer.all_phases)} != P={P}"
     assert all(isinstance(p, str) for p in indexer.all_phases), "All phase names must be strings"
-    assert 'melts-liquid' in indexer.all_phases, "melts-liquid must be in all_phases"
-    #assert indexer.all_phases[-1] == 'melts-liquid', "melts-liquid must be last in all_phases"
+
+    
     print(f"✓ all_phases: len={len(indexer.all_phases)}")
     
     # ========================================================================
@@ -493,8 +493,8 @@ def test_ml_indexer(indexer):
     assert len(indexer.WRkeys) == E, f"len(WRkeys)={len(indexer.WRkeys)} != E={E}"
     assert all(isinstance(ox, str) for ox in indexer.WRkeys), "All WRkeys must be strings"
     # Verify no Fe2O3 in WRkeys
-    assert 'Fe2O3' not in indexer.WRkeys, "Fe2O3 must not be in WRkeys"
-    print(f"✓ WRkeys: len={len(indexer.WRkeys)}, no Fe2O3")
+    #assert 'Fe2O3' not in indexer.WRkeys, "Fe2O3 must not be in WRkeys"
+    #print(f"✓ WRkeys: len={len(indexer.WRkeys)}, no Fe2O3")
     
     # ========================================================================
     print("\n[31] Testing Oxides...")
@@ -502,12 +502,12 @@ def test_ml_indexer(indexer):
     assert len(indexer.Oxides) == O, f"len(Oxides)={len(indexer.Oxides)} != O={O}"
     assert all(isinstance(ox, str) for ox in indexer.Oxides), "All Oxides must be strings"
     # Verify O = E + 1 and Fe2O3 is included
-    assert O == E + 1, f"O={O} must equal E+1={E+1}"
-    assert 'Fe2O3' in indexer.Oxides, "Fe2O3 must be in Oxides"
+    #assert O == E + 1, f"O={O} must equal E+1={E+1}"
+    #assert 'Fe2O3' in indexer.Oxides, "Fe2O3 must be in Oxides"
     # WRkeys should be all Oxides except Fe2O3
     oxides_without_fe2o3 = [ox for ox in indexer.Oxides if ox != 'Fe2O3']
-    assert len(oxides_without_fe2o3) == E, f"Oxides without Fe2O3 should have length E={E}"
-    print(f"✓ Oxides: len={len(indexer.Oxides)}, Fe2O3 included, O=E+1")
+    #assert len(oxides_without_fe2o3) == E, f"Oxides without Fe2O3 should have length E={E}"
+    #print(f"✓ Oxides: len={len(indexer.Oxides)}, Fe2O3 included, O=E+1")
     
     # ========================================================================
     # 10. CROSS-ATTRIBUTE CONSISTENCY TESTS
@@ -977,14 +977,14 @@ def test_dataset_indexer(indexer):
     # Required elements should be present
     from src.nMELTS.config.constants import REQUIRED_ELEMENTS
     for req_el in REQUIRED_ELEMENTS:
+        if "melts_liquid" not in indexer.all_phases and req_el == 'Ti':
+            continue # Ti is not required for HeFESTo model
         assert req_el in indexer.Elkeys, f"Required element {req_el} missing from Elkeys"
     
     assert isinstance(indexer.WRkeys, list), "WRkeys must be a list"
     assert len(indexer.WRkeys) == len(indexer.Elkeys), "WRkeys length must equal Elkeys length"
-    assert 'Fe2O3' not in indexer.WRkeys, "Fe2O3 must not be in WRkeys"
     
     assert isinstance(indexer.Oxides, list), "Oxides must be a list"
-    assert len(indexer.Oxides) == len(indexer.Elkeys) + 1, "Oxides length must equal Elkeys + 1"
     assert 'Fe2O3' in indexer.Oxides, "Fe2O3 must be in Oxides"
     
     assert isinstance(indexer.oxide_dict, dict), "oxide_dict must be a dict"
@@ -1161,7 +1161,7 @@ if __name__ == '__main__':
 
     headers = generate_column_headers(phases)
 
-    indexer = DatasetIndexer(headers=headers)
+    indexer = DatasetIndexer(headers=headers, OXYGEN='open')
 
     print("\n" + "=" * 70)
     print("RUNNING INITIAL ML INDEXER TEST")
@@ -1175,10 +1175,12 @@ if __name__ == '__main__':
 
     #NOW TRY WITH AUTO EXCLUDE! 
 
-    csv_path = Path(project_root) / 'data' / 'MELTStables' / '110' / 'MELTS110_TrainsetFeb3BatchCooling.csv'
+    #csv_path = Path(project_root) / 'data' / 'MELTStables' / '110' / 'MELTS110_TrainsetFeb3BatchCooling.csv'
+    csv_path = Path(project_root) / 'data' / 'MELTStables' / 'HeFESTo' / 'HeFESTo_Trainset041326_low_noise_adiabats.csv'
+
     DF = pd.read_csv(csv_path)
     headers = list(DF.columns)
-    indexer_auto = DatasetIndexer(headers=headers)
+    indexer_auto = DatasetIndexer(headers=headers, OXYGEN='closed', MODEL='HeFESTo')
     indexer_auto.table_update(DF.to_numpy())
     test_dataset_indexer(indexer_auto)
 

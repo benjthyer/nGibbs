@@ -2,6 +2,7 @@ from tqdm import tqdm
 import numpy as np
 import gc
 import os
+import csv
 import tarfile
 import tempfile
 import shutil
@@ -34,7 +35,7 @@ from nMELTS.utils.math_utils import Normalizer
 
 
 
-def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=False, featureNames=None, freeOutputs=None, indexer=None, config_path=None, bundle_name=None):
+def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=False, featureNames=["Pressure(System_main)", "Temperature(System_main)"], freeOutputs=None, indexer=None, config_path=None, bundle_name=None):
 
     """Builds features and labels for training. Converts MELTS tables to .npy files fit for ML work.
     Self: BigMetaTable Instance.
@@ -46,6 +47,23 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     """
 
     sampleNo = len(resample_bounds)
+    debug_dump_enabled = os.getenv('NMELTS_DEBUG_DUMP_MOLAR', '').lower() in ('1', 'true', 'yes', 'on')
+    debug_dump_done = False
+
+    def _write_labeled_csv(path, data, row_labels=None, col_labels=None, row_label_name='row_id'):
+        with open(path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            if col_labels is not None:
+                if row_labels is not None:
+                    writer.writerow([row_label_name] + list(col_labels))
+                else:
+                    writer.writerow(list(col_labels))
+
+            if row_labels is not None:
+                for label, row in zip(row_labels, data):
+                    writer.writerow([label] + list(row))
+            else:
+                writer.writerows(data)
 
 
     def _parse_feature_entry(entry):
@@ -185,6 +203,8 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             shape=(num_rows*len(resample_bounds), feature_offset + len(Elkeys))
         )
     
+    
+    
     # Allocate free outputs memmap if requested
     if freeOutputs is not None and len(free_output_indices) > 0:
         self.freeOutputs = np.lib.format.open_memmap(
@@ -211,6 +231,52 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             
             # Get molar quantities
             self.retrieve_component_moles()
+
+            if debug_dump_enabled and not debug_dump_done:
+                debug_dir = Path(self.filename).parent / 'debug'
+                debug_dir.mkdir(parents=True, exist_ok=True)
+
+                comp_labels = list(getattr(indexer.ml_indexer, 'label_names', []))
+                if len(comp_labels) != self.molar.shape[1]:
+                    comp_labels = [f"comp_{j}" for j in range(self.molar.shape[1])]
+
+                oxide_labels = list(getattr(indexer.ml_indexer, 'Oxides', []))
+                if len(oxide_labels) != compToOxLoad.shape[1]:
+                    oxide_labels = [f"oxide_{j}" for j in range(compToOxLoad.shape[1])]
+
+                max_rows_str = os.getenv('NMELTS_DEBUG_DUMP_MOLAR_ROWS', '2000')
+                try:
+                    max_rows = max(1, int(max_rows_str))
+                except ValueError:
+                    max_rows = 2000
+
+                row_count = min(self.molar.shape[0], max_rows)
+                molar_preview = np.asarray(self.molar[:row_count])
+                molar_row_labels = [f"sample_{j}" for j in range(row_count)]
+
+                np.save(debug_dir / f"{Path(self.filename).name}_molar_preview.npy", molar_preview)
+                _write_labeled_csv(
+                    debug_dir / f"{Path(self.filename).name}_molar_preview.csv",
+                    molar_preview,
+                    row_labels=molar_row_labels,
+                    col_labels=comp_labels,
+                    row_label_name='sample',
+                )
+
+                _write_labeled_csv(
+                    debug_dir / f"{Path(self.filename).name}_compToOxLoad.csv",
+                    np.asarray(compToOxLoad),
+                    row_labels=comp_labels,
+                    col_labels=oxide_labels,
+                    row_label_name='component',
+                )
+
+                print(
+                    f"Saved debug molar/compToOxLoad previews to {debug_dir} "
+                    f"(rows={row_count})"
+                )
+                debug_dump_done = True
+                        
             Inmoles = (self.molar @ compToOxLoad) @ OxToEl
             InTot = np.sum(Inmoles, axis = 1).reshape(-1,1)
             
@@ -258,18 +324,23 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             # Explicitly collect to close lingering references
             gc.collect()
             
-            for phase, compdict in detail_label_indices.items(): # Move components into the right space. Already Normed to 1.
-                for component, ind in compdict.items():
-                    if phase != 'melts-liquid':
+            for phase, idx in label_indices.items(): # Move components into the right space. Using self.molar to support HeFESTo and MELTS with same code
+                if len(idx) == 1:
+                    continue # Skip pure phases
+              
+                if phase != 'melts-liquid':
+                    input_idx = label_indices_comp[phase]
+                    # --- Labels (phase components)
+                    sl = np.s_[i*num_rows:(i+1)*num_rows, input_idx]
+                    row_tot = np.sum(self.molar[:, idx], axis=1)
+                    nonzeros = row_tot != 0
+                    normed = np.zeros_like(self.molar[:, idx])
+                    normed[nonzeros] = self.molar[np.ix_(nonzeros, idx)] / row_tot[nonzeros].reshape(-1, 1)
+                    self.labels[sl] = normed
+                    self.labels.flush()
+                    del sl
                         
-                        # --- Labels (phase components)
-                        sl = np.s_[i*num_rows:(i+1)*num_rows, ind]
-                        self.labels[sl] = self.table[:, component_indices[phase][component]]
-                        self.labels.flush()
-                        del sl
-                        
-                    else:
-                        pass
+
                 if phase == 'melts-liquid':
                     liq_mol = self.molar[:,label_indices[phase]] # Non-normalized liquid element moles
                     liq_tot = np.sum(liq_mol, axis = 1)

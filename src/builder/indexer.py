@@ -116,6 +116,7 @@ def generate_column_headers(phases: List[str], mode: str = 'None', zeroOxides: L
                         column_headers.append(f"{component}({phase})")
                 else:
                     print(f"Excluding component '{component}' from phase '{phase}' for pMELTS mode.")
+
     
     if is_liquid: # I want the liquid at the end for clarity and continuity with previous editions
         for component in COMPONENTS_IN_PHASES['melts-liquid']:
@@ -164,6 +165,12 @@ def generate_column_headers_hefesto(
         for component in COMPONENTS_IN_PHASES_HEFESTO[phase_name]:
             column_headers.append(f"{component}({phase_name})")
 
+        # Keep phase-total moles as part of schema generation (not importer runtime logic).
+        if phase_name not in {'System_main', 'Bulk_comp', 'Bulk_comp_elements'}:
+            header_name = f"total (moles)({phase_name})"
+            if header_name not in column_headers:
+                column_headers.append(header_name)
+
     return column_headers
 
 
@@ -187,7 +194,7 @@ class DatasetIndexer:
         STATE_VARIABLES = {
             'mass (gm)', 'rho (gm/cc)', 'H (kJ)', 'S (J/K)', 'V (cc)',
             'liq mass (gm)', 'liq rho (gm/cc)', 'liq vis (log 10 poise)',
-            'liq H (kJ)', 'liq S (J/K)', 'liq V (cc)'
+            'liq H (kJ)', 'liq S (J/K)', 'liq V (cc)', 'total (moles)'
             },
         OXYGEN = None, #'closed',
         MODEL = 'MELTS'): 
@@ -473,7 +480,7 @@ class DatasetIndexer:
         for phase, components in self.MELTS_indices.items():
             if phase in phases_with_mass:
                 for component, idx in components.items():
-                    if 'mass' in component.lower():
+                    if 'mass' in component.lower() or 'moles' in component.lower():
                         mass_indices_list.append(idx)
         
         self.mass_indices = np.array(mass_indices_list, dtype=int)
@@ -499,16 +506,21 @@ class DatasetIndexer:
         Identify and exclude compositionally variable phases
         whose components are all excluded.
         """
+
         # Only act on compositionally-variable phases (len>1) and only when *all* components
         # are currently excluded. Pure phases (len==1) must remain, even if their lone
         # component is excluded elsewhere.
-        for phase, components in COMPOSITIONAL_COMPONENTS_IN_PHASES.items():
+        if self.MODEL == 'HeFESTo':
+            compositional_components_in_phases = COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO
+        else:
+            compositional_components_in_phases = COMPOSITIONAL_COMPONENTS_IN_PHASES
+        for phase, components in compositional_components_in_phases.items():
             if phase in self.EXCLUDED_PHASES:
                 continue
 
-            if len(components) <= 1:
-                # Keep pure phases; they need to stay even if their single component is excluded
-                continue
+            """if len(components) <= 1:
+                # Keep pure phases; they need to stay even if their single component is excluded WHY??
+                continue"""
 
             # If every component for this phase is excluded, mark the phase as excluded
             excluded_for_phase = self.EXCLUDED_COMPONENTS_BY_PHASE.get(phase, set())

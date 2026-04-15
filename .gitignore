@@ -4,6 +4,10 @@
 # empty files
 emptyfile.txt
 
+# Debugging Temps
+src/nMELTS/config/projections/compToOxV2_cationcharge.xlsx
+src/nMELTS/config/projections/PxSp_Comp_TransformV2_old.csv/
+
 #alphamelts installations
 src/alphamelts/engine/alphamelts-app-2.3.1-linux/alphamelts2/ # Users will not need this.
 src/alphamelts/engine/linux_alphamelts_1_9/

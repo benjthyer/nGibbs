@@ -605,6 +605,8 @@ def bundle_insanity_filter(tarball_path, tolerance=1e-3, bulk_tol_frac=1e-3, bat
         feature_offset = len(ml_indexer.featureNames)
         expected_el = features[:, feature_offset:]
         rel_diff = np.abs(bulk_el - expected_el) / (expected_el + 1e-10)
+        near0 = expected_el < 1e-6
+        rel_diff[near0] = np.abs(bulk_el[near0] - expected_el[near0])
         per_row_max = np.max(rel_diff, axis=1)
         bulk_fail = per_row_max > bulk_tol_frac
         delete_mask[bulk_fail] = True
@@ -713,8 +715,10 @@ def bundle_insanity_filter(tarball_path, tolerance=1e-3, bulk_tol_frac=1e-3, bat
         
         print(f"[INSANITY FILTER] Complete. Deleted {num_to_delete} rows ({deletion_fraction:.4%})")
 
-    except Exception:
-        print("[INSANITY FILTER] Failure detected. Exporting first 20000 rows to CSV.")
+    except Exception as e:
+        print(f"[INSANITY FILTER] Error: {e}")
+        print(f"[INSANITY FILTER] Exporting first 20000 rows to CSV.")
+    
         try:
             _export_failure_csvs(max_rows=20_000)
         except Exception as export_error:
@@ -784,6 +788,11 @@ def deep_filter(tarball_path, Component_Lower_Bounds=None, Component_Upper_Bound
             if src.exists():
                 dst = Path(f"{temp_filename_prefix}{npy_file}")
                 shutil.copy(src, dst)
+
+        # Preserve alignment for optional free outputs during filtering.
+        free_outputs_src = temp_path / 'free_outputs.npy'
+        if free_outputs_src.exists():
+            shutil.copy(free_outputs_src, Path(f"{temp_filename_prefix}free_outputs.npy"))
         
         # Apply filtering
         _deep_filter_npy(
@@ -815,6 +824,13 @@ def deep_filter(tarball_path, Component_Lower_Bounds=None, Component_Upper_Bound
                     if dst.exists():
                         os.remove(dst)
                     os.replace(filtered_src, dst)
+
+            filtered_free_outputs = Path(f"{temp_filename_prefix}free_outputs.npy")
+            if filtered_free_outputs.exists():
+                dst = temp_path / 'free_outputs.npy'
+                if dst.exists():
+                    os.remove(dst)
+                os.replace(filtered_free_outputs, dst)
 
             # Rename to stats_postfilter.txt
             postfilter_tmp = temp_path / 'filtered__stats.txt'

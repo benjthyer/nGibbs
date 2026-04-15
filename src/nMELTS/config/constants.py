@@ -265,8 +265,16 @@ HEFESTO_ABBREVIATION_TO_SHORT_NAMES: Dict[str, str] = {
 
 
 
-COMPONENTS_IN_PHASES = COMPOSITIONAL_COMPONENTS_IN_PHASES.copy()
-COMPONENTS_IN_PHASES_HEFESTO = COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO.copy()
+# Deep-copy dict-of-lists so appending state variables does not mutate
+# the compositional-only dictionaries.
+COMPONENTS_IN_PHASES = {
+    phase: list(components)
+    for phase, components in COMPOSITIONAL_COMPONENTS_IN_PHASES.items()
+}
+COMPONENTS_IN_PHASES_HEFESTO = {
+    phase: list(components)
+    for phase, components in COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO.items()
+}
 
 
 state_vars_to_add = [
@@ -278,6 +286,7 @@ state_vars_to_add = [
         ]
 
 state_vars_to_add_HeFESTo = [
+            'total (moles)',
             'rho (gm/cc)',
             'V (cc)'
         ]
