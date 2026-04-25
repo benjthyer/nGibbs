@@ -15,7 +15,8 @@ _SCHEDULERS = {
     "plateau": [torch.optim.lr_scheduler.ReduceLROnPlateau, 'epoch', True],
     "reducelronplateau": [torch.optim.lr_scheduler.ReduceLROnPlateau, 'epoch', True],
     "cosineannealinglr": [torch.optim.lr_scheduler.CosineAnnealingLR, 'epoch', False],
-    "cosineannealingwarmrestarts": [torch.optim.lr_scheduler.CosineAnnealingWarmRestarts, 'epoch', False]
+    "cosineannealingwarmrestarts": [torch.optim.lr_scheduler.CosineAnnealingWarmRestarts, 'epoch', False],
+    "onecyclelr": [torch.optim.lr_scheduler.OneCycleLR, 'batch', False],
 }
 
 class SchedulerWrapper:
@@ -39,7 +40,8 @@ class SchedulerWrapper:
     def step_batch(self):
         if self.step_on == "batch":
             self.scheduler.step()
-            print(f"Stepping scheduler on batch. Current LR: {self.scheduler.get_last_lr()}")
+            if torch.rand(1).item() < 0.005:
+                print(f"Stepping scheduler on batch. Current LR: {self.scheduler.get_last_lr()}")
         else:
             pass # No action needed if stepping on epoch or not at all
 
@@ -94,6 +96,12 @@ def _coerce_numeric_types(kwargs: Dict[str, Any]) -> Dict[str, Any]:
             # Already correct type or non-string type
             coerced[key] = value
     return coerced
+
+
+def normalize_scheduler_name(name: Optional[str]) -> Optional[str]:
+    if not name:
+        return None
+    return name.strip().lower()
 
 # Gather layers to exclude from weight decay (biases and norm layers)
 norm_classes = (
@@ -184,7 +192,7 @@ def create_scheduler(optimizer: torch.optim.Optimizer, scheduler_name: str, **kw
     if not scheduler_name:
         return None
     
-    name = scheduler_name.lower()
+    name = normalize_scheduler_name(scheduler_name)
     if name not in _SCHEDULERS:
         raise ValueError(f"Unknown scheduler: {name}. Available: {list(_SCHEDULERS.keys())}")
     

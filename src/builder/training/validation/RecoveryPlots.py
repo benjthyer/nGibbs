@@ -159,12 +159,45 @@ def run_recovery_plots(
     mm = ml_indexer.MM
     px_sp_transform = ml_indexer.PxSpTransform
     comp_subset = ml_indexer.compositional_component_subset
+    px_sp_sub = px_sp_transform[np.ix_(comp_subset, comp_subset)]
 
     validation_features = bundle.features
     validation_binaries = bundle.binary_labels
-    validation_masses = bundle.mass_labels
     validation_moles = bundle.molar_labels
     validation_labels = bundle.labels
+    # make_phase_tables uses transformed component basis for pyroxenes/spinel;
+    # transform VC labels to that same basis before constructing extensive C-space.
+    validation_labels_model = validation_labels @ px_sp_sub
+
+    device = "cuda" if use_cuda and torch.cuda.is_available() else "cpu"
+    validation_labels_tensor = torch.tensor(
+        validation_labels_model, device=device, dtype=torch.float32
+    )
+    validation_moles_tensor = torch.tensor(
+        validation_moles, device=device, dtype=torch.float32
+    )
+    validation_features_tensor = torch.tensor(
+        validation_features, device=device, dtype=torch.float32
+    )
+    if normalize_features:
+        validation_features_tensor = emulator.norm_features.norm(validation_features_tensor)
+
+    with torch.no_grad():
+        validation_newcomps_tensor = emulator.getExtensiveComps(
+            intensiveLabels=validation_labels_tensor,
+            molarLabels=validation_moles_tensor,
+        )
+        validation_masses_tensor = emulator.make_phase_tables(
+            validation_newcomps_tensor,
+            emulator.compToOx,
+            emulator.MM,
+            emulator.phaseToCompMap.T,
+            validation_features_tensor,
+            out=None,
+        )
+    validation_masses = validation_masses_tensor.detach().cpu().numpy()
+    
+    #validation_masses = bundle.mass_labels
 
     liquid_idx = mass_phasedict.get("melts-liquid", None)
     if min_liquid_mass > 0 and liquid_idx is not None:
@@ -217,7 +250,6 @@ def run_recovery_plots(
     comp_tens = comp_tens.detach().cpu().numpy()
     mass_tens = mass_tens.detach().cpu().numpy()
 
-    px_sp_sub = px_sp_transform[np.ix_(comp_subset, comp_subset)]
     component_hat = transcomponent_hat @ np.linalg.inv(px_sp_sub)
     validation_labels_trans = validation_labels @ px_sp_sub
 
@@ -447,6 +479,14 @@ def run_recovery_plots(
             plt.figure()
             plt.title(f"{phase} {comp_name}")
             plt.scatter(
+                validation_labels[subset[plotable & ~correct_phases], ind],
+                component_hat[plotable & ~correct_phases, ind],
+                color="red",
+                s=0.3 * (datalen / size_scale),
+                alpha=0.2,
+                label=f"Assemblage Miss ({100 - prop_correct_plotable:.2f}%)",
+            )
+            plt.scatter(
                 validation_labels[subset[plotable & correct_phases], ind],
                 component_hat[plotable & correct_phases, ind],
                 color="blue",
@@ -454,6 +494,7 @@ def run_recovery_plots(
                 alpha=0.2,
                 label=f"Complete Assemblage Recovered ({prop_correct_plotable:.2f}%)",
             )
+            
             plt.xlabel(f"True molar {comp_name}, FN = {round(100 * fn, 2)}%")
             plt.ylabel(f"Predicted molar {comp_name}, FP = {round(100 * fp, 2)}%")
             xlim = plt.xlim()
@@ -463,7 +504,7 @@ def run_recovery_plots(
             plt.savefig(path, dpi=256)
             plt.close()
 
-            if phase in {"orthopyroxene", "clinopyroxene", "spinel"}:
+            if (phase in {"orthopyroxene", "clinopyroxene", "spinel"}) and ('melts-liquid' in label_indices):
                 name = f"{phase}_g{k - 1}_component"
                 path = output_path / f"{_sanitize_name(name)}.png"
                 plt.figure()

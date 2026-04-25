@@ -1,5 +1,86 @@
 _____________________ Unreleased _______________________
 
+2026-04-24: Added FCNN free-output validation plotting script.
+- Added ValidateFreeOutputsFCNN.py in validation for three run modes.
+- Modes: FCNN1 features-only, FCNN2 with GT extras, FCNN2 with emulator.
+- Each parity plot now includes mean absolute residual in output units.
+
+2026-04-24: Enhanced free-output trainer with progress tracking and early
+stopping.
+- Added tqdm progress bars for epochs and batch iterations during training.
+- Added best-checkpoint saving when validation loss improves during training.
+- Added --patience argument (default 10) for early stopping after N epochs
+  with no validation improvement.
+- Best checkpoint automatically loaded before final evaluation on all splits.
+
+2026-04-24: Train episodes now force-load latest episode-best model.
+- train* always reloads the last saved best checkpoint before fitting.
+- tune* saves now become the guaranteed warm start for following train*.
+
+2026-04-24: Added free-output FCNN model and training CLI.
+- Added FixedGeometryFCNNRegressor class in NN.py.
+- Added scripts/train_free_outputs_fcnn.py for two free-output regressors.
+- New CLI supports output label filtering via --limit-outputs.
+
+2026-04-24: Upgraded free-output FCNN to variable geometry.
+- Renamed to VariableGeometryFCNNRegressor in NN.py.
+- Added hidden layer sizing from CLI via --hidden-dims.
+- Added adaptive dropout schedule from 0.0 based on overfitting.
+- Moved CLI to src/builder/training/train_free_outputs_fcnn.py.
+
+2026-04-24: Refactored free-output trainer normalization workflow.
+- CLI now takes one --bundle-stem and resolves Train/Test/Valid bundles.
+- Feature normalizer is created from training features when missing.
+- Output normalizer is fit from training free outputs and shared.
+- Test/Valid use training normalizers; bundle arrays are never modified.
+
+2026-04-24: Persisted free-output normalizers in model checkpoints.
+- Stored input and output min/range arrays with each trained checkpoint.
+- Added Nx2 min-range pair matrices for reconstruction of normalizers.
+- Enforced identity normalization beyond featureNames dimensions.
+- Extended-input checkpoint stores identity min/range for appended dims.
+
+2026-04-23: Added Python physub arithmetic and benchmark parity test.
+- Added EOS_arithmetic Python module for HeFESTo parameter parsing.
+- Added pure-Python phase and bulk property arithmetic translation.
+- Added BENCHMARK test using fort.42 and fort.99 against fort.58.
+
+2026-04-23: Changed binary phase weighting to GT-positive-only behavior.
+- Lower-model BCE binweights now apply only when GT phase is present.
+- GT-absent binary terms remain unweighted in train and eval loss.
+
+2026-04-23: Fixed HeFESTo mass-label path for NumPy memmap arrays.
+- Replaced torch unsqueeze/keepdim ops with NumPy newaxis/keepdims.
+
+2026-04-21: Upper tuning now uses fixed episode anchor weights.
+- Trials always reload anchor encoder/sat/middle weights when compatible.
+- Middle-layer trials reload anchor encoder/sat only (no middleBrain carry).
+- Tuning trials no longer inherit training memory from prior trial runs.
+
+2026-04-20: Added phase saturation forcing to satisfy mass balance with input composition
+- Changed TransCompToOxBool construction in ml_indexer to only equate Fe2O3 and FeO oxides when Fe3+ not present in Elkeys (for buffered, open oxygen models)
+- RecoveryPlots calculate phase masses (since early HeFESTo bundles had phase moles instead of phase masses)
+- Now calc phase mass in weight percent for HeFESTo during bundle processing
+- Added BigMetaTable failsafe to separate_analcime() for destination collisions.
+- Added separate_k_feldspar() moving Or-rich plagioclase to k-feldspar.
+
+
+2026-04-18: Debugged Superliquidus chemistry assignment meshgrid indexing
+
+2026-04-17: Added explicit oxide exclusion in BigMetaTable/indexer.
+- Added DatasetIndexer.exclude_oxides(oxides_to_exclude).
+- Added optional excluded_oxides passthrough in table_update().
+- Added BigMetaTable.exclude_oxides() helper and index refresh.
+- Added preprocessing.excluded_oxides wiring in processing YAML + prepareML.
+
+2026-04-17: Added bulk oxide bounds filter in deep filtering.
+- Added bulk_oxide_bounds config support in processing YAML templates.
+- Wired prepareML deep_filter calls to pass bulk_oxide_bounds dict.
+- Filter accepts oxide:[min,max] and drops out-of-range assemblages.
+
+2026-04-15: Unified ML-ready bundle naming across data splits
+- Bundles now share one base name with _Train, _Test, or _Valid suffix.
+
 2026-04-14: Adapting and debugging processing pipeline for HeFESTo (and alphamelts 2.0)
     -changed indexer.py,  BigMetaTable.py, filters.py, MLexporter.py, prepareML.py, constants.py and tests for indexer and MLexporter. 
 

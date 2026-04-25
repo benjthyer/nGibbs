@@ -27,6 +27,23 @@ def pull_number(string_val):
     return float(match.group()) if match else np.nan
 
 
+def pull_number_range(string_val):
+    """
+    Extract a dropout initial/max pair from a string.
+
+    If one numeric token is present, it is treated as the maximum dropout and
+    the initial dropout defaults to 0.0 for backward compatibility.
+    If two or more numeric tokens are present, the first token is treated as
+    the initial dropout and the last token is treated as the maximum dropout.
+    """
+    numbers = [float(match) for match in _number_pattern.findall(string_val)]
+    if not numbers:
+        return np.nan, np.nan
+    if len(numbers) == 1:
+        return 0.0, numbers[0]
+    return numbers[0], numbers[-1]
+
+
 def pull_letter(string_val, symbols=False):
     """
     Extract letters (and optionally symbols) from a string.

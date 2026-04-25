@@ -950,6 +950,16 @@ class BigMetaTable:
             self.delete(indices_to_delete)
         else:
             print("No phases below threshold; no rows deleted.")
+
+    def exclude_oxides(self, oxides, tolerance=1e-10):
+        """
+        Explicitly exclude oxides from the indexer and refresh mappings.
+
+        Intended to be called shortly after BigMetaTable instantiation.
+        """
+        removed = self.indexer.exclude_oxides(oxides)
+        self.indexer.table_update(self.table, tolerance=tolerance)
+        return removed
     
     def filter_phases_not_in_ml_indexer(self):
         """
@@ -1273,33 +1283,196 @@ class BigMetaTable:
     def separate_analcime(self):
         
         """Used to move leucite data to analcime columns when leucite component < 0.4 (indicating Na/H2O rich analcime)"""
+
+        if 'leucite' not in self.indexer.MELTS_indices:
+            raise KeyError("Cannot separate analcime: 'leucite' phase not found in indexer.")
+        if 'analcime' not in self.indexer.MELTS_indices:
+            raise KeyError("Cannot separate analcime: 'analcime' phase not found in indexer.")
+
+        leucite_cols = self.indexer.MELTS_indices['leucite']
+        analcime_cols = self.indexer.MELTS_indices['analcime']
+
+        if 'mass (gm)' not in leucite_cols or 'leucite' not in leucite_cols:
+            raise KeyError(
+                "Cannot separate analcime: 'leucite' phase is missing "
+                "'mass (gm)' or 'leucite' component columns."
+            )
+
+        analcime_mass_key = None
+        for mass_key in ('mass (gm)', 'mass(gm)', 'total (moles)'):
+            if mass_key in analcime_cols:
+                analcime_mass_key = mass_key
+                break
+        if analcime_mass_key is None:
+            raise KeyError(
+                "Cannot separate analcime: destination phase 'analcime' has no "
+                "mass column among ['mass (gm)', 'mass(gm)', 'total (moles)']."
+            )
         
         # Find rows where leucite phase has mass > 0 and leucite component < 0.4 (indicating analcime)
-        analcime_pres = np.where((self.table[:,self.indexer.MELTS_indices['leucite']['mass (gm)']]>0) & (self.table[:,self.indexer.MELTS_indices['leucite']['leucite']]<0.4))[0]
-        print(f"Total Length:{np.shape(self.table)[0]}, Leucites: {np.sum(self.table[:,self.indexer.MELTS_indices['leucite']['mass (gm)']]>0)}, of which {len(analcime_pres)} are analcime")
+        analcime_pres = np.where(
+            (self.table[:, leucite_cols['mass (gm)']] > 0)
+            & (self.table[:, leucite_cols['leucite']] < 0.4)
+        )[0]
+        print(
+            f"Total Length:{np.shape(self.table)[0]}, Leucites: "
+            f"{np.sum(self.table[:, leucite_cols['mass (gm)']] > 0)}, "
+            f"of which {len(analcime_pres)} are analcime"
+        )
         
         if len(analcime_pres) == 0:
             print("No analcime assemblages found to separate.")
             return
+
+        # Failsafe: do not overwrite rows where analcime is already present.
+        analcime_already_present = self.table[:, analcime_cols[analcime_mass_key]] > 0
+        conflict_rows = analcime_pres[analcime_already_present[analcime_pres]]
+        move_rows = analcime_pres[~analcime_already_present[analcime_pres]]
         
         # Map leucite columns to analcime columns
         oldIDX = []
         newIDX = []
-        for key, idx in self.indexer.MELTS_indices['leucite'].items():
-            #if key in self.indexer.MELTS_indices['analcime']:
+        for key, idx in leucite_cols.items():
+            if key not in analcime_cols:
+                continue
             oldIDX.append(idx)
-            newIDX.append(self.indexer.MELTS_indices['analcime'][key])
+            newIDX.append(analcime_cols[key])
+
+        if len(oldIDX) == 0:
+            raise ValueError(
+                "Cannot separate analcime: no shared columns between leucite "
+                "and analcime phases."
+            )
             
         oldIDX = np.array(oldIDX)
         newIDX = np.array(newIDX)
 
         # Move data from leucite columns to analcime columns
-        self.table[np.ix_(analcime_pres,newIDX)] = self.table[np.ix_(analcime_pres,oldIDX)]
-        # Clear the leucite columns for these rows
-        self.table[np.ix_(analcime_pres,oldIDX)] = 0
-        self.table.flush() # Write to disc
+        if len(move_rows) > 0:
+            self.table[np.ix_(move_rows, newIDX)] = self.table[np.ix_(move_rows, oldIDX)]
+            # Clear the leucite columns for moved rows
+            self.table[np.ix_(move_rows, oldIDX)] = 0
+            self.table.flush() # Write to disk
         
-        print(f"Moved {len(analcime_pres)} assemblages from leucite to analcime columns")
+        print(f"Moved {len(move_rows)} assemblages from leucite to analcime columns")
+
+        if len(conflict_rows) > 0:
+            print(
+                f"Failsafe triggered: {len(conflict_rows)} rows had both leucite "
+                "(analcime-like) and analcime present. Deleting those rows."
+            )
+            self.delete(np.unique(conflict_rows).astype(int))
+
+    def separate_k_feldspar(self):
+        """
+        Move plagioclase data to k-feldspar columns when orthoclase fraction > 0.5.
+
+        Failsafe: rows where k-feldspar is already present are not overwritten; they
+        are collected and deleted at the end via self.delete().
+        """
+
+        source_phase = 'plagioclase'
+        if source_phase not in self.indexer.MELTS_indices:
+            raise KeyError("Cannot separate k-feldspar: 'plagioclase' phase not found in indexer.")
+
+        destination_phase = None
+        for phase_name in ('k-feldspar', 'alkali-feldspar'):
+            if phase_name in self.indexer.MELTS_indices:
+                destination_phase = phase_name
+                break
+        if destination_phase is None:
+            raise KeyError(
+                "Cannot separate k-feldspar: destination phase not found. "
+                "Expected one of ['k-feldspar', 'alkali-feldspar']."
+            )
+
+        source_cols = self.indexer.MELTS_indices[source_phase]
+        destination_cols = self.indexer.MELTS_indices[destination_phase]
+
+        source_mass_key = None
+        for mass_key in ('mass (gm)', 'mass(gm)', 'total (moles)'):
+            if mass_key in source_cols:
+                source_mass_key = mass_key
+                break
+        if source_mass_key is None:
+            raise KeyError(
+                "Cannot separate k-feldspar: source plagioclase has no mass column "
+                "among ['mass (gm)', 'mass(gm)', 'total (moles)']."
+            )
+
+        destination_mass_key = None
+        for mass_key in ('mass (gm)', 'mass(gm)', 'total (moles)'):
+            if mass_key in destination_cols:
+                destination_mass_key = mass_key
+                break
+        if destination_mass_key is None:
+            raise KeyError(
+                "Cannot separate k-feldspar: destination has no mass column among "
+                "['mass (gm)', 'mass(gm)', 'total (moles)']."
+            )
+
+        if 'sanidine' not in source_cols:
+            raise KeyError(
+                "Cannot separate k-feldspar: 'sanidine' component is missing "
+                "from plagioclase columns."
+            )
+
+        kfeldspar_candidates = np.where(
+            (self.table[:, source_cols[source_mass_key]] > 0)
+            & (self.table[:, source_cols['sanidine']] > 0.5)
+        )[0]
+
+        print(
+            f"Total Length:{np.shape(self.table)[0]}, Plagioclase-bearing: "
+            f"{np.sum(self.table[:, source_cols[source_mass_key]] > 0)}, "
+            f"of which {len(kfeldspar_candidates)} are k-feldspar-like"
+        )
+
+        if len(kfeldspar_candidates) == 0:
+            print("No k-feldspar assemblages found to separate.")
+            return
+
+        # Failsafe: do not overwrite rows where destination phase is already present.
+        destination_already_present = self.table[:, destination_cols[destination_mass_key]] > 0
+        conflict_rows = kfeldspar_candidates[destination_already_present[kfeldspar_candidates]]
+        move_rows = kfeldspar_candidates[~destination_already_present[kfeldspar_candidates]]
+
+        # Map plagioclase columns to k-feldspar columns where keys are shared.
+        oldIDX = []
+        newIDX = []
+        for key, idx in source_cols.items():
+            if key not in destination_cols:
+                continue
+            oldIDX.append(idx)
+            newIDX.append(destination_cols[key])
+
+        if len(oldIDX) == 0:
+            raise ValueError(
+                f"Cannot separate k-feldspar: no shared columns between "
+                f"{source_phase} and {destination_phase}."
+            )
+
+        oldIDX = np.array(oldIDX)
+        newIDX = np.array(newIDX)
+
+        if len(move_rows) > 0:
+            self.table[np.ix_(move_rows, newIDX)] = self.table[np.ix_(move_rows, oldIDX)]
+            # Clear source phase columns for moved rows.
+            self.table[np.ix_(move_rows, oldIDX)] = 0
+            self.table.flush() # Write to disk
+
+        print(
+            f"Moved {len(move_rows)} assemblages from {source_phase} "
+            f"to {destination_phase} columns"
+        )
+
+        if len(conflict_rows) > 0:
+            print(
+                f"Failsafe triggered: {len(conflict_rows)} rows had both "
+                f"{source_phase} (k-feldspar-like) and {destination_phase} present. "
+                "Deleting those rows."
+            )
+            self.delete(np.unique(conflict_rows).astype(int))
 
         
     def retrieve_component_moles(self, multiplier_bounds=[1, 1]):

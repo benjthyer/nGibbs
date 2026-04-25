@@ -30,6 +30,34 @@ from builder.indexer import DatasetIndexer
 from nMELTS.config.ml_indexer import MLIndexer, load_ml_indexer_from_state
 
 
+def _normalize_bulk_oxide_bounds(bounds):
+    """Validate and normalize bulk oxide bounds mapping."""
+    if bounds is None:
+        return {}
+    if not isinstance(bounds, dict):
+        raise ValueError("Bulk_Oxide_Bounds must be a dict like {'SiO2': [min, max]}")
+
+    normalized = {}
+    for oxide, limits in bounds.items():
+        if not isinstance(oxide, str):
+            raise ValueError(f"Bulk oxide key must be a string, got {type(oxide)}")
+        if not isinstance(limits, (list, tuple)) or len(limits) != 2:
+            raise ValueError(
+                f"Bulk oxide bounds for {oxide} must be [min, max], got {limits}"
+            )
+
+        lower, upper = limits
+        lower = -np.inf if lower is None else float(lower)
+        upper = np.inf if upper is None else float(upper)
+
+        if lower > upper:
+            raise ValueError(f"Bulk oxide bounds invalid for {oxide}: min > max")
+
+        normalized[oxide] = (lower, upper)
+
+    return normalized
+
+
 def balance_lowF(MetaTable, indexer: Optional[DatasetIndexer] = None, sacred_phases=None, batch_size=200_000):
     """
     Balance dataset by removing excess entries in extreme melt fraction ranges.
@@ -742,9 +770,9 @@ def bundle_insanity_filter(tarball_path, tolerance=1e-3, bulk_tol_frac=1e-3, bat
                 print(f"[INSANITY FILTER] You may need to manually delete: {temp_dir}")
 
 
-def deep_filter(tarball_path, Component_Lower_Bounds=None, Component_Upper_Bounds=None, 
-                        Oxide_Lower_Bounds=None, Oxide_Upper_Bounds=None, Mass_Upper_Bounds=None, 
-                        batch_size=200_000):
+def deep_filter(tarball_path, Component_Lower_Bounds=None, Component_Upper_Bounds=None,
+                        Oxide_Lower_Bounds=None, Oxide_Upper_Bounds=None, Mass_Upper_Bounds=None,
+                        Bulk_Oxide_Bounds=None, batch_size=200_000):
     """Filter files within a tar.gz bundle."""
     from .MLexporter import generate_dataset_stats
     
@@ -802,6 +830,7 @@ def deep_filter(tarball_path, Component_Lower_Bounds=None, Component_Upper_Bound
             Oxide_Lower_Bounds=Oxide_Lower_Bounds,
             Oxide_Upper_Bounds=Oxide_Upper_Bounds,
             Mass_Upper_Bounds=Mass_Upper_Bounds,
+            Bulk_Oxide_Bounds=Bulk_Oxide_Bounds,
             batch_size=batch_size,
             ml_indexer=ml_indexer
         )
@@ -861,7 +890,9 @@ def deep_filter(tarball_path, Component_Lower_Bounds=None, Component_Upper_Bound
         shutil.rmtree(temp_dir)
 
 
-def _deep_filter_npy(filename, Component_Lower_Bounds=None, Component_Upper_Bounds=None, Oxide_Lower_Bounds=None, Oxide_Upper_Bounds=None, Mass_Upper_Bounds=None, batch_size=200_000, ml_indexer=None):
+def _deep_filter_npy(filename, Component_Lower_Bounds=None, Component_Upper_Bounds=None,
+                     Oxide_Lower_Bounds=None, Oxide_Upper_Bounds=None, Mass_Upper_Bounds=None,
+                     Bulk_Oxide_Bounds=None, batch_size=200_000, ml_indexer=None):
     """Filter an on-disk dataset using the provided ml_indexer for lookups."""
 
     if ml_indexer is None:
@@ -876,12 +907,34 @@ def _deep_filter_npy(filename, Component_Lower_Bounds=None, Component_Upper_Boun
 
     compToOxLoad = getattr(ml_indexer, "compToOxLoad", None)
     MM = getattr(ml_indexer, "MM", None)
+    phase_to_comp = getattr(ml_indexer, "phaseToCompMap", None)
+    varied_to_all = getattr(ml_indexer, "variedToAllComp", None)
+    var_idx = np.asarray(getattr(ml_indexer, "compositionally_variable_subset", []), dtype=int)
+
+    bulk_oxide_bounds = _normalize_bulk_oxide_bounds(Bulk_Oxide_Bounds)
 
     if (Oxide_Lower_Bounds or Oxide_Upper_Bounds) and (compToOxLoad is None or MM is None):
         raise ValueError("Oxide filtering requires compToOxLoad and MM from the ml_indexer")
 
+    if bulk_oxide_bounds and (
+        compToOxLoad is None or MM is None or phase_to_comp is None or varied_to_all is None
+    ):
+        raise ValueError(
+            "Bulk oxide filtering requires compToOxLoad, MM, phaseToCompMap, and variedToAllComp"
+        )
+
+    for oxide in bulk_oxide_bounds:
+        if oxide not in oxide_dict:
+            raise ValueError(
+                f"Bulk oxide filter requested unknown oxide '{oxide}'. "
+                f"Known oxides: {list(oxide_dict.keys())}"
+            )
+
     components = np.load(filename + 'labels.npy', mmap_mode='r')
     binary_labels = np.load(filename + 'binary_labels.npy', mmap_mode='r')
+    molar_labels = None
+    if bulk_oxide_bounds:
+        molar_labels = np.load(filename + 'molar_labels.npy', mmap_mode='r')
 
     delete_indices = np.array([], dtype=int)
 
@@ -955,6 +1008,30 @@ def _deep_filter_npy(filename, Component_Lower_Bounds=None, Component_Upper_Boun
                 print(f"Deleting {len(failing)} for {bound} Upper Bound {phase} {ox}")
                 delete_indices = np.append(delete_indices, batch_indices[failing])
 
+        # Whole-assemblage bulk oxide bounds
+        if bulk_oxide_bounds:
+            comp_moles_batch = molar_labels[start:end] @ phase_to_comp
+            labels_full = comp_batch @ varied_to_all
+            comp_frac = np.ones_like(labels_full)
+            comp_frac[:, var_idx] = labels_full[:, var_idx]
+            comp_moles_batch = comp_moles_batch * comp_frac
+
+            bulk_oxide_wt = comp_moles_batch @ compToOxLoad
+            bulk_oxide_wt = bulk_oxide_wt @ MM
+            bulk_oxide_wt = bulk_oxide_wt * (
+                100.0 / (np.sum(bulk_oxide_wt, axis=1, keepdims=True) + 1e-12)
+            )
+
+            for oxide, (lower, upper) in bulk_oxide_bounds.items():
+                oxide_vals = bulk_oxide_wt[:, oxide_dict[oxide]]
+                failing = np.where((oxide_vals < lower) | (oxide_vals > upper))[0]
+                print(
+                    f"Deleting {len(failing)} for bulk {oxide} outside [{lower}, {upper}]"
+                )
+                delete_indices = np.append(delete_indices, batch_indices[failing])
+
+            del comp_moles_batch, labels_full, comp_frac, bulk_oxide_wt
+
         if oxides_GT is not None:
             del oxides_GT
         del comp_batch, batch_indices
@@ -968,8 +1045,10 @@ def _deep_filter_npy(filename, Component_Lower_Bounds=None, Component_Upper_Boun
         components._mmap.close()
     if hasattr(binary_labels, '_mmap') and binary_labels._mmap is not None:
         binary_labels._mmap.close()
+    if molar_labels is not None and hasattr(molar_labels, '_mmap') and molar_labels._mmap is not None:
+        molar_labels._mmap.close()
     
-    del components, binary_labels
+    del components, binary_labels, molar_labels
     gc.collect()
     
     # Perform safe batch delete

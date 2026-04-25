@@ -6,25 +6,25 @@
 # ============================================================================
 dataset: #EXPECTED FILENAME: "nMELTS/data/MELTStables/{MELTSModel}/{'MELTS' if MELTSModel in ['102', '110', '120', 'p'] else ''}{MELTSModel}_<Train/Valid>set{Date}{Mode}"
   MELTSModel: 'p'          # MELTS model version: '102', '110', '120', 'p'
-  Date: 'Feb16Cr'               # Date identifier for dataset naming
-  Mode: 'BatchCooling__merged'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
+  Date: 'Mar11NoCr'               # Date identifier for dataset naming
+  Mode: 'BatchCooling'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
-outname: 'pGeoDynamicsIsothemalCr'                  # Base name for output folder (without extension). Auto-Generated if blank
+outname: 'pGeoDynamicsIsentropicNoCrApr20'                  # Base name for output folder (without extension). Auto-Generated if blank
 
 # ============================================================================
 # NON-CHEMICAL FEATURE AND LABEL CONFIGURATION (format: attribute(phase): e.g. 'Pressure(System_main)')
 # ============================================================================
 featureNames: # Non-chemical features to include in the dataset
   - 'Pressure(System_main)'
-  - 'Temperature(System_main)'
-  #- 'S(System_main)' # Isentropic 
+  #- 'Temperature(System_main)'
+  - 'S(System_main)' # Isentropic 
   
 
 freeOutputs: # Non-chemical labels to predict. These are used for training the saturation predictor and as auxiliary outputs for the encoder.
-  #- 'Temperature(System_main)' 
-  - 'S(System_main)'
+  - 'Temperature(System_main)' 
+  #- 'S(System_main)'
   - 'dVdP*10^6(System_main)' # COMPRESSIBILITY
   - 'dVdT*10^6(System_main)' # THERMAL EXPANSION
   - 'H(System_main)'
@@ -44,8 +44,9 @@ preprocessing:
   preprocessed: false        # Skip preprocessing if data already preprocessed
   filter_full_metadata: true # Filter by persence of notes in metadata, corresponding to phases that are not recognized.
   filter_legal: false        # Deprecated 
-  separate_analcime: False  # Separate analcime phase during preprocessing 
-  #(Generally do this, Analcime in MELTS has two distinct compositional fields)
+  separate_analcime: False  # Separate analcime phase during preprocessing (Generally do this, Analcime in MELTS has two distinct compositional fields)
+  separate_feldspar: True  # Separate k-feldspar and plagioclase during preprocessing (Generally do this, MELTS sometimes classifies K-rich feldspar as plagioclase)
+  excluded_oxides: ['H2O']        # Explicitly exclude oxides from indexer basis (e.g., ['H2O', 'NiO'])
 
 min_phase_proportion: 0.03    # Minimum phase proportion (0-1) for a sample to be included in training set. Applied after upsampling.
 
@@ -165,6 +166,14 @@ deep_filter:
   # Example: [['plagioclase', 'sanidine', 0.1]]
   component_upper_bounds: 
   #- [['plagioclase', 'sanidine', 0.3]] # 0.1
+
+  # Whole-assemblage bulk oxide bounds: oxide: [min_wt%, max_wt%]
+  # Example:
+  # bulk_oxide_bounds:
+  #   SiO2: [35, 80]
+  #   MgO: [0, 50]
+  bulk_oxide_bounds: {
+  }
   
   # Processing batch size for "deep" filtering, which targets .npy data products. 
   batch_size: 200000

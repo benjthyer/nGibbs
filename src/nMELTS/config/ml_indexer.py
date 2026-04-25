@@ -375,19 +375,15 @@ class MLIndexer:
         for col, row in enumerate(comp_mappings_list):
             self.comp_mappings[row, col] = 1.0
         
-        # Build boolTransCompToOx (if compToOx exists)
-        if self.compToOx is not None:
-            self.boolTransCompToOx = np.copy(self.compToOx)
-            # Add Fe2O3 column to FeO if Fe2O3 exists
-            if 'Fe2O3' in self.Oxides and 'FeO' in self.WRkeys:
-                feo_idx = self.WRkeys.index('FeO')
-                fe2o3_idx = self.Oxides.index('Fe2O3')
-                if feo_idx < self.boolTransCompToOx.shape[1] and fe2o3_idx < self.boolTransCompToOx.shape[1]:
-                    self.boolTransCompToOx[:, feo_idx] += self.boolTransCompToOx[:, fe2o3_idx]
-            # Convert to boolean (non-zero -> 1)
-            self.boolTransCompToOx = (self.boolTransCompToOx != 0).astype(int)
-        else:
-            self.boolTransCompToOx = None
+    # Build boolTransCompToOx 
+        self.boolTransCompToOx = np.copy(self.compToOx)
+        # Add Fe2O3 column to FeO if Oxygen is buffered
+        if 'Fe2O3' in self.Oxides and 'Fe3' not in self.Elkeys:
+            feo_idx = self.WRkeys.index('FeO')
+            fe2o3_idx = self.Oxides.index('Fe2O3')
+            self.boolTransCompToOx[:, feo_idx] += self.boolTransCompToOx[:, fe2o3_idx]
+        # Convert to boolean (non-zero -> 1)
+        self.boolTransCompToOx = (self.boolTransCompToOx != 0).astype(int)
 
     def _rebuild_vc_structures(self) -> None:
         """

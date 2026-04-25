@@ -11,7 +11,7 @@ dataset: #EXPECTED FILENAME: "nMELTS/data/MELTStables/{MELTSModel}/{'MELTS' if M
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
-outname: ''                  # Base name for output folder (without extension). Auto-Generated if blank
+outname: 'HeFESTo_041026_NPT_low_noise_adiabats'                  # Base name for output folder (without extension). Auto-Generated if blank
 
 
 # ============================================================================
@@ -19,12 +19,14 @@ outname: ''                  # Base name for output folder (without extension). 
 # ============================================================================
 featureNames: # Non-chemical features to include in the dataset
   - 'P(GPa)(System_main)'
-  - 'S(J/g/K)(System_main)'
+  - 'T(K)(System_main)'
+  #- 'S(J/g/K)(System_main)'
   #- 'S(System_main)' # Isentropic 
   
 
 freeOutputs: # Non-chemical labels to predict. These are used for training the saturation predictor and as auxiliary outputs for the encoder.
   #- 'Temperature(System_main)' 
+  - 'S(J/g/K)(System_main)'
   - 'T(K)(System_main)'
   - 'VS(km/s)(System_main)'
   - 'VP(km/s)(System_main)'
@@ -45,6 +47,8 @@ preprocessing:
   filter_full_metadata: false # Filter by persence of notes in metadata, corresponding to phases that are not recognized.
   filter_legal: false        # Deprecated 
   separate_analcime: false    # Separate analcime phase during preprocessing 
+  separate_feldspar: false    # Separate k-feldspar and plagioclase during preprocessing (Generally do this, MELTS sometimes classifies K-rich feldspar as plagioclase)
+  excluded_oxides: []         # Explicitly exclude oxides from indexer basis (e.g., ['H2O', 'NiO'])
   #(Generally do this, Analcime in MELTS has two distinct compositional fields)
 
 min_phase_proportion: 0.01    # Minimum phase proportion (0-1) for a sample to be included in training set. Applied after upsampling.
@@ -164,6 +168,12 @@ deep_filter:
   # Component upper bounds: [phase, component, maximum_wt%]
   # Example: [['plagioclase', 'sanidine', 0.1]]
 #  component_upper_bounds: [['plagioclase', 'sanidine', 0.2]] # 0.1
+  # Whole-assemblage bulk oxide bounds: oxide: [min_wt%, max_wt%] 
+  # Example: 
+  # bulk_oxide_bounds: 
+  #   SiO2: [35, 80] 
+  #   MgO: [0, 50] 
+  bulk_oxide_bounds: {} 
   
   # Processing batch size for "deep" filtering, which targets .npy data products. 
 #  batch_size: 200000

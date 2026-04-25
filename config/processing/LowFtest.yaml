@@ -44,6 +44,8 @@ preprocessing:
   filter_full_metadata: true # Filter by persence of notes in metadata, corresponding to phases that are not recognized.
   filter_legal: false        # Deprecated 
   separate_analcime: False  # Separate analcime phase during preprocessing 
+  separate_feldspar: True  # Separate k-feldspar and plagioclase during preprocessing (Generally do this, MELTS sometimes classifies K-rich feldspar as plagioclase)
+  excluded_oxides: []        # Explicitly exclude oxides from indexer basis (e.g., ['H2O', 'NiO'])
   #(Generally do this, Analcime in MELTS has two distinct compositional fields)
 
 min_phase_proportion: 0.03    # Minimum phase proportion (0-1) for a sample to be included in training set. Applied after upsampling.
@@ -164,6 +166,13 @@ deep_filter:
   # Example: [['plagioclase', 'sanidine', 0.1]]
   component_upper_bounds: 
   #- [['plagioclase', 'sanidine', 0.3]] # 0.1
+
+  # Whole-assemblage bulk oxide bounds: oxide: [min_wt%, max_wt%]
+  # Example:
+  # bulk_oxide_bounds:
+  #   SiO2: [35, 80]
+  #   MgO: [0, 50]
+  bulk_oxide_bounds: {}
   
   # Processing batch size for "deep" filtering, which targets .npy data products. 
   batch_size: 200000

@@ -103,6 +103,14 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
     balance_cfg = config['balancing']
     filter_cfg = config['deep_filter']
     min_phase_cfg = config['min_phase_proportion']
+    excluded_oxides_cfg = preproc_cfg.get('excluded_oxides', [])
+
+    if excluded_oxides_cfg is None:
+        excluded_oxides_cfg = []
+    if isinstance(excluded_oxides_cfg, str):
+        excluded_oxides_cfg = [excluded_oxides_cfg]
+    if not isinstance(excluded_oxides_cfg, list):
+        raise ValueError("preprocessing.excluded_oxides must be a list of oxide names")
 
     plot_cfg = config.get('plot', {})
     outname = config.get('outname', '').strip()
@@ -179,15 +187,16 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         TestName += '_processed'
         TrainName += '_processed'
 
+    # Build a shared output stem so all bundle names differ only by split suffix.
+    bundle_stem = outname or Path(TrainName).name.replace('_Trainset', '')
+
     # Helper function to generate bundle names based on outname config
-    def get_bundle_name(base_name, data_type):
+    def get_bundle_name(data_type):
         """
         Generate bundle filename.
         
         Parameters
         ----------
-        base_name : str
-            Base name (TrainName, TestName, or ValidName)
         data_type : str
             Type of data ('Train', 'Test', or 'Valid')
             
@@ -196,10 +205,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         str
             Bundle filename
         """
-        if outname:
-            return f"{outname}_{data_type}.tar.gz"
-        else:
-            return f"{Path(base_name).name}.tar.gz"
+        return f"{bundle_stem}_{data_type}.tar.gz"
 
     def ensure_bundle_in_train_dir(bundle_path):
         """Ensure bundle exists in final MLready directory before filtering."""
@@ -233,6 +239,9 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         read_dir = str(external_base) if use_external else None
 
         TrainMELTS = BigMetaTable(TrainName, read_dir=read_dir, Model=MODEL, OXYGEN=OXYGEN) # Assume closed system for training data
+        if excluded_oxides_cfg:
+            print(f"Applying configured oxide exclusions at table load: {excluded_oxides_cfg}")
+            TrainMELTS.exclude_oxides(excluded_oxides_cfg)
         header = TrainMELTS.header  # Capture header for indexer construction
         pre_filter = TrainMELTS.table.shape[0]
 
@@ -243,6 +252,8 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         if not preprocessed:
             if preproc_cfg['separate_analcime']:
                 TrainMELTS.separate_analcime()
+            if preproc_cfg['separate_feldspar']:
+                TrainMELTS.separate_k_feldspar()
             if preproc_cfg['filter_full_metadata']:
                 TrainMELTS.filter_full_metadata()
             #TrainMELTS.filter_legal() Deprecated. Filtering handled in deep_filtering step and metadata filtering
@@ -290,10 +301,13 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
 
             #TrainMELTS.save(name=f"{TrainName}Filtered", save_csv=False)
 
-        TrainMELTS.indexer.table_update(TrainMELTS.table) 
+        TrainMELTS.indexer.table_update(
+            TrainMELTS.table,
+            excluded_oxides=excluded_oxides_cfg
+        )
 
         TrainMELTS.filename = TrainName
-        train_bundle = train_dir / get_bundle_name(TrainName, 'Train')
+        train_bundle = train_dir / get_bundle_name('Train')
 
 
         if upsample:
@@ -337,6 +351,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
                 Oxide_Upper_Bounds=filter_cfg['oxide_upper_bounds'] or None,
                 Component_Upper_Bounds=filter_cfg['component_upper_bounds'] or None,
                 Component_Lower_Bounds=filter_cfg.get('component_lower_bounds', []),
+                Bulk_Oxide_Bounds=filter_cfg.get('bulk_oxide_bounds') or None,
                 batch_size=filter_cfg['batch_size']
             )
 
@@ -364,6 +379,8 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         if not preprocessed:
             if preproc_cfg['separate_analcime']:
                 ValidMELTS.separate_analcime()
+            if preproc_cfg['separate_feldspar']:
+                ValidMELTS.separate_k_feldspar()
             if preproc_cfg['filter_full_metadata']:
                 ValidMELTS.filter_full_metadata()
             ValidMELTS.filter_phases_not_in_ml_indexer() # Propagate prohibitively rare phase removal from training set to validation/test data
@@ -405,8 +422,8 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         TestMELTS.filename = TestName
         ValidMELTS.filename = ValidName
 
-        test_bundle = train_dir / get_bundle_name(TestName, 'Test')
-        valid_bundle = train_dir / get_bundle_name(ValidName, 'Valid')
+        test_bundle = train_dir / get_bundle_name('Test')
+        valid_bundle = train_dir / get_bundle_name('Valid')
 
         test_bundle_path = resampling_to_datasets(
             TestMELTS,
@@ -445,6 +462,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
                 Oxide_Upper_Bounds=filter_cfg['oxide_upper_bounds'] or None,
                 Component_Upper_Bounds=filter_cfg['component_upper_bounds'] or None,
                 Component_Lower_Bounds=filter_cfg.get('component_lower_bounds', []),
+                Bulk_Oxide_Bounds=filter_cfg.get('bulk_oxide_bounds') or None,
                 batch_size=filter_cfg['batch_size']
             )
         if filter_cfg['enabled']:
@@ -454,6 +472,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
                 Oxide_Upper_Bounds=filter_cfg['oxide_upper_bounds'] or None,
                 Component_Upper_Bounds=filter_cfg['component_upper_bounds'] or None,
                 Component_Lower_Bounds=filter_cfg.get('component_lower_bounds', []),
+                Bulk_Oxide_Bounds=filter_cfg.get('bulk_oxide_bounds') or None,
                 batch_size=filter_cfg['batch_size']
             )
 

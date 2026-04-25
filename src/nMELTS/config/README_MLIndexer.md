@@ -129,7 +129,7 @@ Total number of phases (P).
 #### `compToOxLoad` : np.ndarray
 **Dimension**: (C, O)  
 **Type**: `float32`  
-Raw projection matrix from components to oxides, loaded and filtered from CSV.
+Raw projection matrix from components to oxides, loaded and filtered from CSV. For non-MELTS: Identical to compToOx
 - Maps each component to its oxide composition
 - Includes Fe2O3 column
 - *Test*:
@@ -139,7 +139,7 @@ Raw projection matrix from components to oxides, loaded and filtered from CSV.
 #### `PxSpTransform` : np.ndarray
 **Dimension**: (C, C)  
 **Type**: `float32`  
-Component transformation matrix for Px-Sp all-positive remappings.
+Component transformation matrix for Px-Sp all-positive remappings. For non-MELTS: the identifty matrix. 
 - Square matrix transforming component space
 - Projects components into an all-positive space for ease of use with softmax activation function to predict chemistry. 
 - Saved to `projections_dir/PxSp_Comp_Transform_gathered.csv` during initialization
@@ -152,7 +152,7 @@ Component transformation matrix for Px-Sp all-positive remappings.
 #### `compToOx` : np.ndarray
 **Dimension**: (C, O)  
 **Type**: `float32`  
-Final component-to-oxide projection matrix.
+Final component-to-oxide projection matrix, including transformed, positive, nonzero spinel and pyroxene components
 - Computed as: `inv(PxSpTransform) @ compToOxLoad`
 - Maps component compositions to oxide weight fractions
 - *Test*:
@@ -165,7 +165,7 @@ Final component-to-oxide projection matrix.
 **Type**: `int` (0 or 1)  
 Boolean mask indicating which oxides each component contributes to.
 - Derived from `compToOx` by converting non-zero values to 1
-- Fe2O3 is folded into FeO column for whole-rock compatibility
+- Fe2O3 is folded into FeO column for whole-rock compatibility (This might be problematic?)
 - Used for masking and sparsity analysis
 - *Test*:
     - dims
@@ -240,6 +240,7 @@ Binary matrix mapping phases to their components.
     - dims
     - columwise sum is all ones
     - dtype
+
 
 #### `variedToAllComp` : np.ndarray
 **Dimension**: (VC, C)  

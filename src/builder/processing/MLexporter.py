@@ -35,7 +35,8 @@ from nMELTS.utils.math_utils import Normalizer
 
 
 
-def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=False, featureNames=["Pressure(System_main)", "Temperature(System_main)"], freeOutputs=None, indexer=None, config_path=None, bundle_name=None):
+def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=False, featureNames=["Pressure(System_main)", "Temperature(System_main)"],
+                            freeOutputs=None, indexer=None, config_path=None, bundle_name=None):
 
     """Builds features and labels for training. Converts MELTS tables to .npy files fit for ML work.
     Self: BigMetaTable Instance.
@@ -288,7 +289,26 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
 
             # --- Mass labels
             sl = np.s_[i*num_rows:(i+1)*num_rows]
-            self.masslabels[sl] = self.table1[:, mass_indices]
+            if self.Model == 'HeFESTo':
+                phaseComps = self.molar[:, :, np.newaxis] * phaseToCompMap.T  # (B, C, P)
+
+                # Convert to oxides per phase (plug in iron speciator). Moles, then grams
+                phaseOxMolar = np.einsum("bcp,co->bpo", phaseComps, compToOxLoad)
+                
+
+                phaseOxMass = np.einsum("bpo,oo->bpo", phaseOxMolar, MM)
+                
+                # Compute total phase masses
+                phaseMass = np.sum(phaseOxMass, axis=-1)  # (B, P)
+
+                # Normalize systemwide to 100%
+                systemTotal = phaseMass.sum(axis=-1, keepdims=True)  # (B, 1)
+                phaseMassNorm = 100.0 * phaseMass / (systemTotal)
+                self.masslabels[sl] = phaseMassNorm
+
+            else: # For MELTS, we can just use the mass columns directly (already wt%)
+                self.masslabels[sl] = self.table1[:, mass_indices]
+
             self.masslabels.flush()
             del sl
             

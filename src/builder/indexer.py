@@ -778,7 +778,82 @@ class DatasetIndexer:
         
         return oxides_to_remove
 
-    def table_update(self, data_matrix: np.ndarray, tolerance: float = 1e-10):
+    def exclude_oxides(self, oxides_to_exclude: List[str]):
+        """
+        Exclude a user-provided list of oxides from the active oxide basis.
+
+        Parameters
+        ----------
+        oxides_to_exclude : List[str]
+            Oxide names to exclude (for example ['MnO', 'NiO']).
+
+        Returns
+        -------
+        List[str]
+            Oxides that were actively removed from self.Oxides.
+        """
+        if oxides_to_exclude is None:
+            return []
+
+        if isinstance(oxides_to_exclude, str):
+            oxides_to_exclude = [oxides_to_exclude]
+
+        if not isinstance(oxides_to_exclude, (list, tuple, set)):
+            raise TypeError("oxides_to_exclude must be a list/tuple/set of oxide names")
+
+        normalized_oxides = []
+        for oxide in oxides_to_exclude:
+            if not isinstance(oxide, str):
+                raise TypeError(f"Oxide names must be strings, got {type(oxide)}")
+            oxide_name = oxide.replace('wt% ', '').strip()
+            if oxide_name:
+                normalized_oxides.append(oxide_name)
+
+        if not normalized_oxides:
+            print("No explicit oxides requested for exclusion.")
+            return []
+
+        # Keep only oxides that currently exist in the active basis.
+        active_removals = [ox for ox in normalized_oxides if ox in self.Oxides]
+        missing_oxides = [ox for ox in normalized_oxides if ox not in self.Oxides]
+
+        if missing_oxides:
+            print(f"Requested oxides not in current Oxides list: {missing_oxides}")
+
+        if not active_removals:
+            print("No requested oxides matched current Oxides list.")
+            return []
+
+        elements_to_remove = []
+        for el, ox in ELEMENT_TO_OXIDE.items():
+            if ox in active_removals and el in self.Elkeys:
+                elements_to_remove.append(el)
+
+        required_hits = [el for el in elements_to_remove if el in REQUIRED_ELEMENTS]
+        if required_hits:
+            raise ValueError(
+                f"Cannot exclude required element oxides. Required element hits: {required_hits}"
+            )
+
+        self.Oxides = [ox for ox in self.Oxides if ox not in active_removals]
+        self.WRkeys = [ox for ox in self.Oxides if ox != 'Fe2O3']
+        self.Elkeys = [el for el in self.Elkeys if el not in elements_to_remove]
+        self.oxide_dict = {ox: i for i, ox in enumerate(self.Oxides)}
+
+        print(f"Explicitly excluded oxides: {active_removals}")
+        print(f"Updated Oxides: {self.Oxides}")
+
+        # Re-check component legality under the reduced oxide basis.
+        self._look_for_illegal_oxides()
+        self._look_for_dead_phases()
+        self._repopulate_indexer()
+
+        return active_removals
+
+    def table_update(self, data_matrix: np.ndarray, tolerance: float = 1e-10,
+                     excluded_oxides: Optional[List[str]] = None):
+        if excluded_oxides:
+            self.exclude_oxides(excluded_oxides)
         self.exclude_zero_sum_components(data_matrix, tolerance)
         self.exclude_zero_sum_oxides(data_matrix, tolerance)
 

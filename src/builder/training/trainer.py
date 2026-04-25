@@ -22,7 +22,7 @@ src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
-from nMELTS.utils.string_utils import pull_number
+from nMELTS.utils.string_utils import pull_number_range
 from builder.training.optimizer_factory import create_optimizer, create_scheduler, SchedulerWrapper
 import nMELTS.engine.NN as NN
 
@@ -61,12 +61,28 @@ def _iter_adaptive_dropout_modules(model: nn.Module):
             yield module
 
 
+def _set_adaptive_dropout_rate(model: nn.Module, dropout_rate: float) -> None:
+    for module in _iter_adaptive_dropout_modules(model):
+        module.p = dropout_rate
+
+
+def _weighted_binary_loss_gt_positive_only(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    bin_weights: torch.Tensor,
+) -> torch.Tensor:
+    """Apply phase weights only where GT phase is present; GT-absent terms stay unweighted."""
+    loss_raw = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
+    effective_weights = targets * bin_weights + (1.0 - targets)
+    return (loss_raw * effective_weights).sum() / effective_weights.sum().clamp(min=1.0)
+
+
 
 
 
 def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = {},
                       batch_size = 1024, criterion = nn.BCEWithLogitsLoss(), lr = 1e-4, 
-                      binWeights = torch.ones(1),
+                      binWeights = None,
                       Epochs = 30, device = 'cuda',
                       max_N = np.inf, early_stopping_patience = 5, DictFilePath = None,
                       config_yaml = None, training_yaml = None, processing_yaml = None, stats = None, log_path = None):
@@ -82,6 +98,15 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     print('####################')
 
     model = model.to(device)
+    if binWeights is None:
+        nphases = getattr(getattr(model, 'ml_indexer', None), 'nphases', None)
+        if nphases is None:
+            raise ValueError("train_Lower_MELTS requires binWeights or a model with ml_indexer.nphases")
+        binWeights = torch.ones((1, nphases), dtype=torch.float32)
+    else:
+        binWeights = torch.as_tensor(binWeights, dtype=torch.float32)
+        if binWeights.ndim == 1:
+            binWeights = binWeights.unsqueeze(0)
     binWeights = binWeights.to(device)
     phase_names = getattr(getattr(model, 'ml_indexer', None), 'all_phases', None)
     if phase_names is None:
@@ -100,9 +125,9 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     wrappedScheduler = create_scheduler(optimizer, scheduler, **scheduler_kwargs) if scheduler else SchedulerWrapper()
 
     if 'dropout' in model.config['low_regularization'].lower(): # Only use adaptive dropout if we're not using bulk loss.
-        max_drop = pull_number(model.config['low_regularization'].lower())
-        print(f"dropout in {model.config['low_regularization']}: {pull_number(model.config['low_regularization'])} (upper limit)")
-        dropout_rate = 0  # Start at 0, adaptive dropout will adjust up to max_drop
+        dropout_rate, max_drop = pull_number_range(model.config['low_regularization'].lower())
+        print(f"dropout in {model.config['low_regularization']}: {dropout_rate} -> {max_drop}")
+        _set_adaptive_dropout_rate(model, dropout_rate)
     else:
         dropout_rate = 0
         max_drop = 0 # Max dropout rate for adaptive dropout
@@ -133,8 +158,7 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
             optimizer.zero_grad()
             logits = model.forward_binaries(xb)
-            loss_raw = F.binary_cross_entropy_with_logits(logits, yb, reduction='none')
-            loss = (loss_raw * binWeights).sum() / binWeights.expand_as(loss_raw).sum().clamp(min=1)
+            loss = _weighted_binary_loss_gt_positive_only(logits, yb, binWeights)
             loss.backward()
             optimizer.step()
             wrappedScheduler.step_batch() # Step scheduler if it's batch-based (Does nothing if it's epoch-based)
@@ -161,8 +185,7 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                 xb, yb = output[0], output[1] # We only need the phase saturation data here
                 xb, yb = xb.to(device, non_blocking=True), yb.to(device, non_blocking=True)
                 logits = model.forward_binaries(xb)
-                loss_raw = F.binary_cross_entropy_with_logits(logits, yb, reduction='none')
-                loss = (loss_raw * binWeights).sum() / binWeights.expand_as(loss_raw).sum().clamp(min=1)
+                loss = _weighted_binary_loss_gt_positive_only(logits, yb, binWeights)
 
                 preds = torch.sigmoid(logits) > 0.5
                 truth = yb > 0.5
@@ -286,14 +309,14 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
             
 
     if 'dropout' in model.config['high_regularization'].lower():
-        configured_max = pull_number(model.config['high_regularization'].lower())
-        print(f"dropout in {model.config['high_regularization']}: {configured_max} (upper limit)")
+        dropout_rate, configured_max = pull_number_range(model.config['high_regularization'].lower())
+        print(f"dropout in {model.config['high_regularization']}: {dropout_rate} -> {configured_max}")
         if bulk_alpha != 0: # Need to limit max dropout to avoid NaNs. 
             max_drop = 0
             print(f"  Bulk loss enabled, disabling dropout (max_drop=0)")
         else:
             max_drop = configured_max
-        dropout_rate = 0  # Start at 0, adaptive dropout will adjust up to max_drop
+        _set_adaptive_dropout_rate(model, dropout_rate)
     else:
         dropout_rate = 0
         max_drop = 0 # Max dropout rate for adaptive dropout

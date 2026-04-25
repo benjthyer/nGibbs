@@ -270,6 +270,33 @@ class NN_MELTS:
             return torch.cat([conditions, closedmoles], dim=1)
         else:
             return features
+        
+    def getExtensiveComps(self, intensiveLabels, molarLabels):
+        """
+        Convert intensive component labels to extensive system-scale component moles.
+        
+        Parameters
+        ----------
+        intensiveLabels : torch.Tensor
+            (B, VC) - Intensive component abundances (molar proportion of components within a phase)
+        molarLabels : torch.Tensor
+            (B, P) - Moles of each phase
+            
+        Returns
+        -------
+        newComps : Torch.Tensor (B, C) of extensive component moles for whole system
+        """
+        Cmoles = molarLabels @ self.phaseToCompMap # (B, C)
+        intensiveWeights = intensiveLabels @ self.variedToAllComp # (B, C)
+
+        # Only pure-phase components (not represented in VC) should have unit weights.
+        pure_comp_mask = self.variedToAllComp.sum(dim=0) == 0
+        intensiveWeights[:, pure_comp_mask] = 1.0
+
+        newComps = Cmoles * intensiveWeights # (B, C)
+        
+
+        return newComps
 
     def forwardMB(self, features, Normalize=True, WtPercent=True, comp_table_out='oxides'):
         """
@@ -282,7 +309,7 @@ class NN_MELTS:
         Normalize : bool, default=True
             Whether to normalize features
         WtPercent : bool, default=True
-            Whether input is in weight percent
+            Whether input is in weight percent, otherwise mole fraction. 
         comp_table_out : str, default='oxides'
             Output format: 'oxides', 'comps', 'components', or None
             
@@ -299,6 +326,8 @@ class NN_MELTS:
             likelihoods, chem_out, logMoles, reconBulk, componentMoles, phaseProportions, phaseMoles = self.model.forward(
                 norm_features, detailed=True
             )
+
+
             
             transcomponent_hat, massTens = self.polish_masses( # Tunable parameters. 
                 phaseMoles, reconBulk, componentMoles, phaseProportions,
@@ -572,11 +601,11 @@ class NN_MELTS:
         tuple or torch.Tensor
             Phase oxide wt% tables and/or phase mass fractions
         """
-        phaseComps = newComps.unsqueeze(-1) * compPhaseMap  # (B, VC, P)
+        phaseComps = newComps.unsqueeze(-1) * compPhaseMap  # (B, C, P)
 
         # Convert to oxides per phase (plug in iron speciator). Moles, then grams
         phaseOxMolar = torch.einsum("bcp,co->bpo", phaseComps, compToOx)
-        if 'Fe3' not in self.Elkeys: # Only apply iron speciation if ferric iron is not already included in the model!
+        if 'Fe3' not in self.Elkeys: # Only apply iron speciation if ferric iron is not already included in the model! HeFESTo always has Fe3+ as a component
             liqWithFerric = self.Iron_Speciator(
                 oxides=phaseOxMolar[:, self.ml_indexer.comp_phaseDict['melts-liquid']].to(self.dev),
                 Normedfeatures=features.to(self.dev)
@@ -745,8 +774,8 @@ class NN_MELTS:
             Phase moles from model
         reconBulk : torch.Tensor
             Reconstructed bulk from model
-        componentMoles : torch.Tensor
-            Component moles from model
+        componentMoles : torch.Tensor (B, C)
+            extensive component moles from model 
         phaseProportions : torch.Tensor
             Phase proportions from model
         features : torch.Tensor
@@ -801,7 +830,7 @@ class NN_MELTS:
         print('componentAtomMoles')
         print(componentAtomMoles)
         if torch.any(torch.isnan(componentAtomMoles)):
-            print(torch.where(torch.isnan(componentAtomMoles)))
+            print(f"NaN values found in componentAtomMoles at indices: {torch.where(torch.isnan(componentAtomMoles))}")
         wtDelComponentMoles = (torch.linalg.pinv(componentAtomMoles.transpose(1, 2)) @ residual.unsqueeze(-1)).squeeze(-1)
         DelComponentMoles = wtDelComponentMoles * componentMoles
         componentMoles = componentMoles + DelComponentMoles
@@ -818,6 +847,9 @@ class NN_MELTS:
                                          features=feats, eps=1e-12, out=comp_table_out)
 
     def find_liquidus(self, features, resolution=25):
+        if 'melts-liquid' not in self.ml_indexer.label_indices_comp:
+            print("Model does not include a liquid phase, returning 2000 C as default.")
+            return 2000
         """Returns lowest identified superliquidus temperature between 800 and 2000 C"""
         T_idx = self.ml_indexer.featureNames.index('Temperature')
         T_test = torch.tensor(np.linspace(800, 2000, int(1200/resolution) + 1), device=self.dev)
@@ -851,6 +883,11 @@ class NN_MELTS:
         torch.Tensor
             (N) - Liquidus temperatures for each composition
         """
+
+        if 'melts-liquid' not in self.ml_indexer.label_indices_comp:
+            print("Model does not include a liquid phase, returning 2000 C as default.")
+            return torch.full((features.shape[0],), 2000.0, device=self.dev)
+        
         if weightOxinput:
             features_batch = self.convertOxToMol(features)
         else:
@@ -901,6 +938,10 @@ class NN_MELTS:
         tuple
             (component_tensor, mass_tensor) - Component and mass evolution over T_path
         """
+        
+        if 'melts-liquid' not in self.ml_indexer.label_indices_comp:
+            raise ValueError("Model does not include a liquid phase, cannot perform fractional crystallization.")
+        
         with torch.no_grad():
             if WtPercent:
                 inp_tensor = self.convertOxToMol(features)

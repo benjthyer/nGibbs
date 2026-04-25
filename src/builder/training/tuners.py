@@ -3,7 +3,6 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from torch.optim import AdamW, Adam
-from nMELTS.utils.string_utils import pull_number
 import time
 from tqdm import tqdm
 from torch import nn
@@ -16,7 +15,6 @@ if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
 from builder.training.trainer import train_Lower_MELTS, train_Upper_MELTS
-from nMELTS.engine.NN import rebuild_MELTS_model
 from builder.training.optimizer_factory import create_optimizer, create_scheduler, SchedulerWrapper
 from copy import deepcopy
 
@@ -26,9 +24,24 @@ TEMP_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 # NO LR SCHEDULERS FOR TUNING.
 
+
+def _save_anchor_bundle(model, bundle_path):
+    model.save(str(bundle_path))
+
+
+def _load_trial_model(bundle_path, ml_indexer, substitutions=None, low_only=False, load_prefixes=None):
+    return NN.rebuild_MELTS_model(
+        str(bundle_path),
+        substitutions=substitutions,
+        low_only=low_only,
+        ml_indexer=ml_indexer,
+        load_prefixes=load_prefixes,
+    )
+
 # AI REVISED:
 def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=None, scheduler_kwargs = {},
-                     Param_Dict=None, Epochs=10, batch_size=1024, early_stopping_patience=5, max_N=np.inf, best_loss=None):
+                     Param_Dict=None, Epochs=10, batch_size=1024, early_stopping_patience=5, max_N=np.inf, best_loss=None,
+                     sweep=False):
     """
     Tune lower binary saturation model.
     Model argument is now required.
@@ -61,12 +74,12 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
     print(f" BASELINE TRAINING for {Model.config['description']}")
     print("=" * 80)
 
+    best_model = Model
+
     if best_loss is None:
-        best_loss = train_Lower_MELTS(Model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
+        best_loss = train_Lower_MELTS(best_model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
                                     Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience, max_N=max_N)
-    results = [{'model': deepcopy(Model.config), 'loss': best_loss}]
-    best_config = deepcopy(Model.config)
-    best_weights = deepcopy(Model.state_dict())
+    results = [{'model': deepcopy(best_model.config), 'loss': best_loss}]
 
     # === Begin tuning loop ===
     for parameter, trials in Param_Dict.items():
@@ -74,10 +87,11 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
         print(f" TUNING PARAMETER: {parameter}")
         print("#" * 80)
 
-        anchor_config = deepcopy(best_config)
-        anchor_weights = deepcopy(best_weights)
-        parameter_best_config = deepcopy(best_config)
-        parameter_best_weights = deepcopy(best_weights)
+        anchor_bundle = TEMP_MODELS_DIR / 'Temp_Lower_Anchor.pt'
+        _save_anchor_bundle(best_model, anchor_bundle)
+        anchor_config = deepcopy(best_model.config)
+        parameter_best_config = deepcopy(best_model.config)
+        parameter_best_model = best_model
         parameter_best_loss = best_loss
 
         # Ensure list type for categorical parameters
@@ -110,20 +124,27 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
                 print(f"\nTesting encoderLayerUp={working_config['encoderLayerUp']}, "
                       f"encoderLayerDown={working_config['encoderLayerDown']}")
 
-                Model = NN.MidLevelNetwork(**working_config, ml_indexer=ml_indexer)
-                try:
-                    Model.load_state_dict(anchor_weights, strict=False)
-                except Exception:
-                    pass
+                Model = _load_trial_model(
+                    anchor_bundle,
+                    ml_indexer,
+                    substitutions={
+                        'encoderLayerUp': working_config['encoderLayerUp'],
+                        'encoderLayerDown': working_config['encoderLayerDown'],
+                    },
+                    low_only=True,
+                    load_prefixes=['encoder.', 'sat_head.'],
+                )
                 trial_loss = train_Lower_MELTS(Model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
                                                Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience, max_N=max_N)
                 results.append({'model': deepcopy(Model.config), 'loss': trial_loss})
 
                 if trial_loss < parameter_best_loss:
                     print(f"Improved! Loss {trial_loss:.4e} < {parameter_best_loss:.4e}")
-                    parameter_best_config = deepcopy(working_config)
+                    parameter_best_config = deepcopy(Model.config)
                     parameter_best_loss = trial_loss
-                    parameter_best_weights = deepcopy(Model.state_dict())
+                    parameter_best_model = Model
+                    if sweep:
+                        _save_anchor_bundle(parameter_best_model, anchor_bundle)
 
                     if go_up:
                         go_down = False
@@ -138,8 +159,7 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
                     print(f"No improvement — stopping search for {parameter}.")
                     break
 
-            Model = NN.MidLevelNetwork(**parameter_best_config, ml_indexer=ml_indexer)
-            Model.load_state_dict(parameter_best_weights)
+            best_model = parameter_best_model
 
         else: 
             # Include current parameter value if missing, handled for encoderlayer case above
@@ -166,8 +186,13 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
 
                 print(f"\nTesting {parameter}={working_config[parameter]:.1e}")
 
-                Model = NN.MidLevelNetwork(**working_config, ml_indexer=ml_indexer)
-                Model.load_state_dict(anchor_weights, strict=False)
+                Model = _load_trial_model(
+                    anchor_bundle,
+                    ml_indexer,
+                    substitutions={parameter: working_config[parameter]},
+                    low_only=True,
+                    load_prefixes=['encoder.', 'sat_head.'],
+                )
                 trial_loss = train_Lower_MELTS(
                     Model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
                     Epochs=Epochs, lr=lr, batch_size=batch_size,
@@ -177,9 +202,11 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
 
                 if trial_loss < parameter_best_loss:
                     print(f"Improved! Loss {trial_loss:.4e} < {parameter_best_loss:.4e}")
-                    parameter_best_config = deepcopy(working_config)
+                    parameter_best_config = deepcopy(Model.config)
                     parameter_best_loss = trial_loss
-                    parameter_best_weights = deepcopy(Model.state_dict())
+                    parameter_best_model = Model
+                    if sweep:
+                        _save_anchor_bundle(parameter_best_model, anchor_bundle)
                 else:
                     print("No improvement upward — switching to lower values.")
                     break
@@ -191,8 +218,13 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
 
                 print(f"\nTesting {parameter}={working_config[parameter]:.1e}")
 
-                Model = NN.MidLevelNetwork(**working_config, ml_indexer=ml_indexer)
-                Model.load_state_dict(anchor_weights, strict=False)
+                Model = _load_trial_model(
+                    anchor_bundle,
+                    ml_indexer,
+                    substitutions={parameter: working_config[parameter]},
+                    low_only=True,
+                    load_prefixes=['encoder.', 'sat_head.'],
+                )
                 trial_loss = train_Lower_MELTS(
                     Model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
                     Epochs=Epochs, lr=lr, batch_size=batch_size,
@@ -202,15 +234,16 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
 
                 if trial_loss < parameter_best_loss:
                     print(f"Improved! Loss {trial_loss:.4e} < {parameter_best_loss:.4e}")
-                    parameter_best_config = deepcopy(working_config)
+                    parameter_best_config = deepcopy(Model.config)
                     parameter_best_loss = trial_loss
-                    parameter_best_weights = deepcopy(Model.state_dict())
+                    parameter_best_model = Model
+                    if sweep:
+                        _save_anchor_bundle(parameter_best_model, anchor_bundle)
                 else:
                     print("No improvement downward — stopping lower-value search.")
                     break
 
-            Model = NN.MidLevelNetwork(**parameter_best_config, ml_indexer=ml_indexer)
-            Model.load_state_dict(parameter_best_weights)
+            best_model = parameter_best_model
             
 
         # --- Handle Unordered Categorical Parameters: Try every option with no early abort ---
@@ -226,32 +259,36 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
 
                 print(f"\nTesting {parameter}='{trial}'")
 
-                Model = NN.MidLevelNetwork(**working_config, ml_indexer=ml_indexer)
-                Model.load_state_dict(anchor_weights, strict=False)
+                Model = _load_trial_model(
+                    anchor_bundle,
+                    ml_indexer,
+                    substitutions={parameter: trial},
+                    low_only=True,
+                    load_prefixes=['encoder.', 'sat_head.'],
+                )
                 trial_loss = train_Lower_MELTS(Model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
                                                Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience, max_N=max_N)
                 results.append({'model': deepcopy(Model.config), 'loss': trial_loss})
 
                 if trial_loss < parameter_best_loss:
                     print(f"Improved! Loss {trial_loss:.4e} < {parameter_best_loss:.4e}")
-                    parameter_best_config = deepcopy(working_config)
+                    parameter_best_config = deepcopy(Model.config)
                     parameter_best_loss = trial_loss
-                    parameter_best_weights = deepcopy(Model.state_dict())
+                    parameter_best_model = Model
+                    if sweep:
+                        _save_anchor_bundle(parameter_best_model, anchor_bundle)
 
                 else:
                     print(f"No improvement ({trial_loss:.4e})")
 
-            Model = NN.MidLevelNetwork(**parameter_best_config, ml_indexer=ml_indexer)
-            Model.load_state_dict(parameter_best_weights)
+            best_model = parameter_best_model
 
-        best_config = deepcopy(parameter_best_config)
-        best_weights = deepcopy(parameter_best_weights)
         best_loss = parameter_best_loss
 
         # === Summary for this parameter ===
         print("\n" + "-" * 80)
         print(f"Best {parameter} configuration so far:")
-        for k, v in best_config.items():
+        for k, v in parameter_best_config.items():
             print(f"  {k}: {v}")
         print(f"-> Current best loss: {best_loss:.4e}")
         print("-" * 80)
@@ -261,16 +298,14 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
     print(f"Best overall loss: {best_loss:.4e}")
     print("=" * 80)
 
-    Model.load_state_dict(best_weights) # Load best model's weights
-
-    return Model, results
+    return best_model, results
 
 
 
 
 def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=None, scheduler_kwargs = {}, Param_Dict=None,
                      Epochs=10, best_loss = None, batch_size=1024, early_stopping_patience=5, binWeights=None, compWeights=None, max_N=np.inf, which_heads_to_freeze = [],
-                    chem_alpha=1, mole_alpha=1, bulk_alpha=0, sat_alpha=0, amsgrad=False, eps = 1E-8):
+                    chem_alpha=1, mole_alpha=1, bulk_alpha=0, sat_alpha=0, amsgrad=False, eps = 1E-8, sweep=False):
     """
     Function to 
      lower binary saturation model. Initializes new model if none given.
@@ -316,6 +351,7 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
     print("\n" + "=" * 80)
     print(f" BASELINE TRAINING for {Model.config['description']}")
     print("=" * 80)
+
     if best_loss is None:
         best_loss = train_Upper_MELTS(Model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
                           Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience,
@@ -323,7 +359,7 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
                           chem_alpha=chem_alpha, mole_alpha=mole_alpha, bulk_alpha=bulk_alpha, sat_alpha=sat_alpha, amsgrad=amsgrad, eps = eps)
 
     results = [{'model': deepcopy(Model.config), 'loss': best_loss}]
-    torch.save({'state_dict': Model.state_dict(), 'config': Model.config}, str(TEMP_MODELS_DIR / 'Temp_Upper_Tune.pt'))
+    best_model = Model
 
     # === Begin tuning loop ===
     for parameter, trials in Param_Dict.items():
@@ -332,9 +368,13 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
         print(f"Testing: {trials}")
         print("#" * 80)
 
-        anchor_path = TEMP_MODELS_DIR / 'Temp_Upper_Anchor.pt'
-        anchor_payload = torch.load(str(TEMP_MODELS_DIR / 'Temp_Upper_Tune.pt'))
-        torch.save(anchor_payload, str(anchor_path))
+        anchor_bundle = TEMP_MODELS_DIR / "Temp_Upper_Anchor.pt"
+        _save_anchor_bundle(best_model, anchor_bundle)
+
+        active_config = deepcopy(best_model.config)
+        parameter_best_config = deepcopy(best_model.config)
+        parameter_best_model = best_model
+        parameter_best_loss = best_loss
 
         # Ensure list type for categorical parameters
         if not isinstance(trials, list):
@@ -345,48 +385,59 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
 
         # --- Handle middleBrain Layers (paired parameter) ---
         if parameter == 'middleLayer':
-            trials.append([Model.middleLayerUp, Model.middleLayerDown]) # ensure current state represented
+            trials.append([active_config['middleLayerUp'], active_config['middleLayerDown']]) # ensure current state represented
             trials = np.array(trials)
             trials = np.unique(trials, axis=0)
             complexity_score = trials[:, 0] - 0.75 * trials[:, 1]
             trials = trials[np.argsort(complexity_score)]
             zero_idx = np.where(
-                np.all(trials == np.array([anchor_payload['config']['middleLayerUp'], anchor_payload['config']['middleLayerDown']]), axis=1)
+                np.all(trials == np.array([active_config['middleLayerUp'], active_config['middleLayerDown']]), axis=1)
             )[0][0]
 
             current_idx = zero_idx + 1
             go_up = current_idx < trials.shape[0]
             go_down = True
 
+            if not go_up and go_down:
+                print(f"Going Down... old i: {current_idx}, new i: {zero_idx-1}")
+                current_idx = zero_idx - 1
+                go_up = False
+
             while 0 <= current_idx < trials.shape[0]:
-                
-                #working_config = deepcopy(best_config)
                 substitutions = {
                     'middleLayerUp': trials[current_idx, 0],
                     'middleLayerDown': trials[current_idx, 1]
                 }
 
-                Model = rebuild_MELTS_model(str(anchor_path), substitutions=substitutions, low_only = True, ml_indexer=Model.ml_indexer) # Rebuild each trial from fixed anchor to avoid trial-order bias.
+                trial_model = _load_trial_model(
+                    anchor_bundle,
+                    best_model.ml_indexer,
+                    substitutions=substitutions,
+                    low_only=True,
+                    load_prefixes=['encoder.', 'sat_head.'],
+                )
 
-                print(Model.config)
+                print(trial_model.config)
 
                 print(f"\nTesting middleLayerUp={substitutions['middleLayerUp']}, "
                       f"middleLayerDown={substitutions['middleLayerDown']}")
 
-                trial_loss = train_Upper_MELTS(Model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
+                trial_loss = train_Upper_MELTS(trial_model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
                                                Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience,
                                                binWeights=binWeights, compWeights=compWeights, max_N=max_N, which_heads_to_freeze=which_heads_to_freeze,
                                                chem_alpha=chem_alpha, mole_alpha=mole_alpha, bulk_alpha=bulk_alpha, sat_alpha=sat_alpha, amsgrad=amsgrad, eps = eps) # Set sat alpha to 1 for middle layer tuning to isolate middle layer effects without changing relative importance of chemistry vs mole vs bulk loss since they don't change model structure and we want fair comparison between middle layer configs.
-                results.append({'model': deepcopy(Model.config), 'loss': trial_loss})
+                results.append({'model': deepcopy(trial_model.config), 'loss': trial_loss})
 
-                if trial_loss < best_loss:
-                    print(f"Improved! Loss {trial_loss:.4e} < {best_loss:.4e}")
-                    torch.save({'state_dict': Model.state_dict(), 'config': Model.config}, str(TEMP_MODELS_DIR / 'Temp_Upper_Tune.pt'))
+                if trial_loss < parameter_best_loss:
+                    print(f"Improved! Loss {trial_loss:.4e} < {parameter_best_loss:.4e}")
+                    parameter_best_loss = trial_loss
+                    parameter_best_config = deepcopy(trial_model.config)
+                    parameter_best_model = trial_model
 
-                    best_loss = trial_loss
+                    if sweep:
+                        _save_anchor_bundle(parameter_best_model, anchor_bundle)
 
                     if go_up:
-                        go_down = False
                         current_idx += 1
                     else:
                         current_idx -= 1
@@ -398,15 +449,9 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
                     print(f"No improvement — stopping search for {parameter}.")
                     break
 
-            Model = rebuild_MELTS_model(str(TEMP_MODELS_DIR / 'Temp_Upper_Tune.pt'), ml_indexer=Model.ml_indexer) # Rebuild with upper layers too
-            #Model = rebuild_MELTS_model(str(TEMP_MODELS_DIR / 'Temp_Upper_Tune.pt'), low_only=True) # Rebuild with low layers only to preserve any changes from WD/noise tuning for fair comparison since they don't change model structure
-            #Model.load_state_dict(torch.load(str(TEMP_MODELS_DIR / 'Temp_Upper_Tune.pt'))['state_dict']) # Load best model so far for fair WD/noise comparison since they don't change model structure
-
-
-
         else: 
             # Include current parameter value if missing, handled for encoderlayer case above
-            current_val = anchor_payload['config'].get(parameter)
+            current_val = active_config.get(parameter)
             if current_val is not None and current_val not in trials:
                 trials.append(current_val)
 
@@ -414,7 +459,7 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
         if parameter in ['highWD', 'lowWD', 'noise']:
             
             trials = sorted(set(trials))
-            zero_idx = trials.index(anchor_payload['config'][parameter])
+            zero_idx = trials.index(active_config[parameter])
             go_up = (zero_idx + 1) < len(trials)
             go_down = (zero_idx - 1) >= 0
             if go_up:
@@ -426,23 +471,29 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
                 print(f"No alternate values to test for {parameter}.")
 
             while 0 <= current_idx < len(trials):
-                
                 substitutions = {parameter:trials[current_idx]}
 
                 print(f"\nTesting {parameter}={substitutions[parameter]:.1e}")
 
-                Model = rebuild_MELTS_model(str(anchor_path), substitutions=substitutions, ml_indexer=Model.ml_indexer)
-                Model.load_state_dict(torch.load(str(anchor_path))['state_dict'])
-                trial_loss = train_Upper_MELTS(Model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
+                trial_model = _load_trial_model(
+                    anchor_bundle,
+                    best_model.ml_indexer,
+                    substitutions=substitutions,
+                )
+                trial_loss = train_Upper_MELTS(trial_model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
                                                Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience,
                                                binWeights=binWeights, compWeights=compWeights, max_N=max_N, which_heads_to_freeze=which_heads_to_freeze,
                                                chem_alpha=chem_alpha, mole_alpha=mole_alpha, bulk_alpha=bulk_alpha, sat_alpha=sat_alpha, amsgrad=amsgrad, eps = eps)
-                results.append({'model': deepcopy(Model.config), 'loss': trial_loss})
+                results.append({'model': deepcopy(trial_model.config), 'loss': trial_loss})
 
-                if trial_loss < best_loss:
-                    print(f"Improved! Loss {trial_loss:.4e} < {best_loss:.4e}")
-                    torch.save({'state_dict': Model.state_dict(), 'config': Model.config}, str(TEMP_MODELS_DIR / 'Temp_Upper_Tune.pt'))
-                    best_loss = trial_loss
+                if trial_loss < parameter_best_loss:
+                    print(f"Improved! Loss {trial_loss:.4e} < {parameter_best_loss:.4e}")
+                    parameter_best_loss = trial_loss
+                    parameter_best_config = deepcopy(trial_model.config)
+                    parameter_best_model = trial_model
+
+                    if sweep:
+                        _save_anchor_bundle(parameter_best_model, anchor_bundle)
                     if go_up:
                         go_down = False
                         current_idx += 1
@@ -454,39 +505,44 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
                 else:
                     print("No improvement — stopping search for this parameter.")
                     break
-            Model = rebuild_MELTS_model(
-                str(TEMP_MODELS_DIR / 'Temp_Upper_Tune.pt'),
-                ml_indexer=Model.ml_indexer,
-            )
 
         # --- Handle Unordered Categorical Parameters ---
         if parameter in ['activation_leak', 'low_regularization', 'high_regularization']: # Actually activation leak is a continuous parameter and should be treated as such.
-            starting_value = anchor_payload['config'].get(parameter)
+            starting_value = active_config.get(parameter)
             print(f"Debugging: starting categorical parameter redundancy protection: {parameter} = {starting_value}")
             for trial in trials:
                 if trial == starting_value:
                     continue
 
                 substitutions = {parameter:trial}
-                Model = rebuild_MELTS_model(str(anchor_path), substitutions=substitutions, low_only=True, ml_indexer=Model.ml_indexer)
+                trial_model = _load_trial_model(
+                    anchor_bundle,
+                    best_model.ml_indexer,
+                    substitutions=substitutions,
+                )
 
                 print(f"\nTesting {parameter}='{trial}'")
 
-                trial_loss = train_Upper_MELTS(Model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs, 
+                trial_loss = train_Upper_MELTS(trial_model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs, 
                                                Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience,
                                                binWeights=binWeights, compWeights=compWeights, max_N=max_N, which_heads_to_freeze=which_heads_to_freeze,
                                                chem_alpha=chem_alpha, mole_alpha=mole_alpha, bulk_alpha=bulk_alpha, sat_alpha=sat_alpha, amsgrad=amsgrad, eps = eps) # Set sat alpha to 1 for regularization tuning to isolate regularization effects without changing relative importance of chemistry vs mole vs bulk loss since they don't change model structure and we want fair comparison between regularization configs.
-                results.append({'model': deepcopy(Model.config), 'loss': trial_loss})
+                results.append({'model': deepcopy(trial_model.config), 'loss': trial_loss})
 
-                if trial_loss < best_loss:
-                    print(f"Improved! Loss {trial_loss:.4e} < {best_loss:.4e}")
-                    torch.save({'state_dict': Model.state_dict(), 'config': Model.config}, str(TEMP_MODELS_DIR / 'Temp_Upper_Tune.pt')) 
-                    best_loss = trial_loss
+                if trial_loss < parameter_best_loss:
+                    print(f"Improved! Loss {trial_loss:.4e} < {parameter_best_loss:.4e}")
+                    parameter_best_loss = trial_loss
+                    parameter_best_config = deepcopy(trial_model.config)
+                    parameter_best_model = trial_model
+
+                    if sweep:
+                        _save_anchor_bundle(parameter_best_model, anchor_bundle)
                 
                 else:
                     print(f"No improvement ({trial_loss:.4e})")
 
-            Model = rebuild_MELTS_model(str(TEMP_MODELS_DIR / 'Temp_Upper_Tune.pt'), ml_indexer=Model.ml_indexer)
+        best_model = parameter_best_model
+        best_loss = parameter_best_loss
 
 
         # === Summary for this parameter ===
@@ -497,10 +553,10 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
     print("\n" + "=" * 80)
     print("TUNING COMPLETE")
     print(f"Best overall loss: {best_loss:.4e}")
-    print(f"Best config: {Model.config}")
+    print(f"Best config: {best_model.config}")
     print("=" * 80)
 
-    return Model, results
+    return best_model, results
 
 
 

@@ -28,6 +28,7 @@ from config import settings
 import nMELTS.engine.NN as NN
 
 from builder.training.loadTrainData import load_ML_data
+from builder.training.optimizer_factory import normalize_scheduler_name
 from builder.training.trainer import train_Lower_MELTS, train_Upper_MELTS, symmetric_rel_l1, symmetric_rel_l2
 from builder.training.tuners import tune_Lower_MELTS, tune_Upper_MELTS
 from builder.training.logger import setup_training_logger, redirect_output, restore_output
@@ -138,12 +139,6 @@ def _read_bundle_metadata(bundle_path: str) -> Tuple[Optional[str], Optional[str
         stats_text = _read_text_file(stats_path)
 
     return bundle_yaml, stats_text
-
-
-def _normalize_scheduler_name(name: Optional[str]) -> Optional[str]:
-    if not name:
-        return None
-    return name.strip().lower()
 
 
 def _loss_fn_from_type(type_name: Optional[str]):
@@ -369,6 +364,9 @@ def main() -> None:
 
     # State for sequential episodes
     best_loss = None
+    last_best_model_path: Optional[Path] = None
+    if warm_start.lower() != 'none':
+        last_best_model_path = Path(__file__).parent / config['checkpoints']['load_dir'] / (warm_start + '.tar')
 
     # Discover and execute episodes in order
     episodes = _discover_episodes(config)
@@ -468,6 +466,7 @@ def main() -> None:
             # ===== TUNING EPISODE =====
 
             inherit_loss = bool(episode_cfg.get('inherit_loss', False))
+            sweep = bool(episode_cfg.get('sweep', False))
             episode_best_loss = episode_cfg.get('best_loss', None)
 
             if episode_best_loss is not None:
@@ -505,7 +504,8 @@ def main() -> None:
                         early_stopping_patience=ESP,
                         max_N=max_N,
                         Param_Dict=episode_cfg['tune_params'],
-                        best_loss=tune_seed_loss
+                        best_loss=tune_seed_loss,
+                        sweep=sweep,
                     )
                     tuned_best_loss = _best_loss_from_tune_results(tune_results)
                     if tuned_best_loss is not None:
@@ -531,6 +531,7 @@ def main() -> None:
                         sat_alpha=sat_alpha,
                         eps=eps,
                         amsgrad=amsgrad,
+                        sweep=sweep,
                     )
                     tuned_best_loss = _best_loss_from_tune_results(tune_results)
                     if tuned_best_loss is not None:
@@ -553,6 +554,7 @@ def main() -> None:
                     log_text=log_text,
                 )
                 print(f"Saved tuned model to {dict_filepath}")
+                last_best_model_path = dict_filepath
                 
             finally:
                 restore_output(original_stdout)
@@ -560,8 +562,14 @@ def main() -> None:
 
         else:
             # ===== TRAINING EPISODE =====
+            # Always initialize training from latest episode-best checkpoint,
+            # including when the previous episode was tuning.
+            if last_best_model_path is not None and last_best_model_path.exists():
+                print(f"Loading latest episode-best checkpoint: {last_best_model_path}")
+                best_model = NN.rebuild_MELTS_model(str(last_best_model_path), epsilon=ml_indexer.molar_epsilon)
+
             scheduler_cfg = episode_cfg["scheduler"]
-            scheduler_name = _normalize_scheduler_name(scheduler_cfg["type"])
+            scheduler_name = normalize_scheduler_name(scheduler_cfg["type"])
             scheduler_kwargs = scheduler_cfg["args"]
 
             # Set up logging
@@ -628,6 +636,7 @@ def main() -> None:
                 # Reload and update best_model for next episode (warm-start)
                 best_model = NN.rebuild_MELTS_model(str(dict_filepath))
                 print(f"Saved trained model to {dict_filepath}")
+                last_best_model_path = dict_filepath
                 
             finally:
                 restore_output(original_stdout)

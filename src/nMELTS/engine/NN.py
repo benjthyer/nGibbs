@@ -16,7 +16,7 @@ from datetime import datetime
 
 
 # Import utility functions
-from nMELTS.utils.string_utils import pull_letter, pull_number, apply_type_conversions
+from nMELTS.utils.string_utils import pull_letter, pull_number_range, apply_type_conversions
 
 # Import constants and mappings from config (fallbacks)
 from nMELTS.config.constants import TYPE_CONVERSION_MAP
@@ -35,6 +35,63 @@ from nMELTS.config.constants import TYPE_CONVERSION_MAP
     boolTransCompToOx as DEFAULT_BOOL_TRANS_COMP_TO_OX,
     compositionally_variable_subset as DEFAULT_COMP_VAR_SUBSET,
 )"""
+
+
+class VariableGeometryFCNNRegressor(nn.Module):
+    """Small fully connected regressor with configurable hidden geometry."""
+
+    def __init__(self, input_dim, output_dim, hidden_dims=(256, 128, 64), activation_leak=0.05, dropout=0.0):
+        super().__init__()
+
+        assert int(input_dim) > 0, "input_dim must be > 0"
+        assert int(output_dim) > 0, "output_dim must be > 0"
+        assert float(dropout) >= 0.0 and float(dropout) < 1.0, "dropout must be in [0, 1)"
+        assert hidden_dims is not None and len(hidden_dims) > 0, "hidden_dims must contain at least one layer width"
+
+        self.input_dim = int(input_dim)
+        self.output_dim = int(output_dim)
+        self.hidden_dims = tuple(int(width) for width in hidden_dims)
+        assert min(self.hidden_dims) > 0, "All hidden_dims values must be > 0"
+        self.activation_leak = float(activation_leak)
+        self.dropout = float(dropout)
+
+        layers = []
+        self._dropout_layers = []
+        prev_dim = self.input_dim
+        for width in self.hidden_dims:
+            layers.append(nn.Linear(prev_dim, width))
+            if self.activation_leak > 0:
+                layers.append(nn.LeakyReLU(self.activation_leak))
+            else:
+                layers.append(nn.ReLU())
+            dropout_layer = nn.Dropout(self.dropout)
+            layers.append(dropout_layer)
+            self._dropout_layers.append(dropout_layer)
+            prev_dim = width
+
+        layers.append(nn.Linear(prev_dim, self.output_dim))
+        self.network = nn.Sequential(*layers)
+
+        self.config = {
+            "model_class": self.__class__.__name__,
+            "input_dim": self.input_dim,
+            "output_dim": self.output_dim,
+            "hidden_dims": list(self.hidden_dims),
+            "activation_leak": self.activation_leak,
+            "dropout": self.dropout,
+        }
+
+    def forward(self, x):
+        return self.network(x)
+
+    def set_dropout_rate(self, dropout_rate):
+        dropout_rate = float(dropout_rate)
+        assert 0.0 <= dropout_rate < 1.0, "dropout_rate must be in [0, 1)"
+        self.dropout = dropout_rate
+        self.config["dropout"] = dropout_rate
+        for layer in self._dropout_layers:
+            layer.p = dropout_rate
+
 
 
 class TunableModel(nn.Module):
@@ -91,7 +148,7 @@ class TunableModel(nn.Module):
             lowRegSequence.append(activation_factory())
 
             if 'dropout' in low_regname:
-                fraction = pull_number(low_regularization)
+                fraction, _ = pull_number_range(low_regularization)
                 assert fraction is not None and 0.0 <= fraction < 1.0, "dropout fraction must be between 0 and 1"
                 lowRegSequence.append(nn.Dropout(fraction))
 
@@ -108,7 +165,7 @@ class TunableModel(nn.Module):
             highRegSequence.append(activation_factory())
 
             if 'dropout' in high_regname:
-                fraction = pull_number(high_regularization)
+                fraction, _ = pull_number_range(high_regularization)
                 assert fraction is not None and 0.0 <= fraction < 1.0, "dropout fraction must be between 0 and 1"
                 highRegSequence.append(nn.Dropout(fraction))
 
@@ -857,14 +914,44 @@ class MidLevelNetwork(TunableModel):
         likelihoods = torch.sigmoid(logits)
         binary_pred = (likelihoods > 0.5).float()
 
-        # Identify superliquidus rows: only the last head > 0.5
-        superliquidus = (binary_pred.sum(dim=1) == 1) #& (binary_pred[:, -1] == 1) # ASSUMES MELTS IS THE ONLY SINGLE PHASE. I've never seen MELTS report anything monomineralic, though it is possible.
-        non_super = ~superliquidus
 
-        if binaries is None:
+        # For MELTS only Identify superliquidus rows: only one head > 0.5
+        if 'melts-liquid' in self.label_indices_comp:
+            superliquidus = (binary_pred.sum(dim=1) == 1) #& (binary_pred[:, -1] == 1) # ASSUMES MELTS IS THE ONLY SINGLE PHASE. I've never seen MELTS report anything monomineralic, though it is possible.
+        else: # HeFESTo / subsolidus only, no superliquidus condition
+            superliquidus = torch.zeros(binary_pred.size(0), dtype=torch.bool) # Zeros of len batch size
+        non_super = ~superliquidus
+        force_count = 0
+
+        if binaries is None: # For inference, force saturation of phases to explain bulk composition to stabilize linear algebra. 
+            force_phases = True
+            while force_phases: # Iterate until no more phases to force saturation for. Should be 1-3 iterations at most.
+                present_oxides = (binary_pred @ self.phaseToCompMap) @ self.compToEl 
+                unexplained_oxides = ((x[:, len(self.ml_indexer.featureNames):]==0).to(torch.float32) + present_oxides) == 0
+                if unexplained_oxides.any():
+                    force_count += 1
+                    assert force_count <= 10, "Phase forcing did not satisfy mass balance even after 10 iterations"
+                    unexplained_rows = torch.sum(unexplained_oxides, dim=1) > 0
+                    unexplained_columns = torch.sum(unexplained_oxides, dim=0) 
+                    for col_idx in torch.where(unexplained_columns)[0]:
+                        oxide_name = self.ml_indexer.Oxides[col_idx]
+                        print(f"Unexplained oxide: {oxide_name} in {unexplained_rows.sum()} samples of {unexplained_rows.size(0)}.")
+                    print(f"Unexplained oxides: {unexplained_oxides.sum()} across {unexplained_rows.sum()} samples. Forcing saturation of one additional phase for these samples.")
+                    phases_to_force = (unexplained_oxides.to(torch.float32) @ self.compToEl.T) @ self.phaseToCompMap.T > 0 # B x P
+                    force_idx = torch.argmax((likelihoods*phases_to_force)[unexplained_rows], dim=1)
+                    row_idx = torch.nonzero(unexplained_rows, as_tuple=False).to(torch.long)
+                    binary_pred[row_idx, force_idx] = 1.0
+                else: 
+                    force_phases = False
+
             binary_inp = binary_pred
+
         else:
             binary_inp = binaries
+
+
+
+
         features = x  # alias for clarity
 
         if self.middleBrain is not None: # If there is a middle encoder, use it. Otherwise prepare first encodings and phase saturation
@@ -881,19 +968,22 @@ class MidLevelNetwork(TunableModel):
             ]
             chem_out = torch.cat(chem_outputs, dim=1)
 
-            # Zero out superliquidus rows
-            chem_out[superliquidus] = 0.0
+            # For liquid models only: Treat trivial case where liquid is the bulk composition when it is the only phase
+            if 'melts-liquid' in self.label_indices_comp:
+                chem_out[superliquidus] = 0.0 # Zero out superliquidus rows
 
-            # Overwrite liquid component columns with feature composition
-            liq_idx = torch.tensor(self.label_indices_comp['melts-liquid'], device=chem_out.device)
-            #chem_out[superliquidus][:, liq_idx] = features[superliquidus, 3:]
-            chem_out[superliquidus, -len(liq_idx):] = features[superliquidus, len(self.ml_indexer.featureNames):]
+                # Overwrite liquid component columns with feature composition
+                liq_idx = torch.tensor(self.label_indices_comp['melts-liquid'], device=chem_out.device)
+                #chem_out[superliquidus][:, liq_idx] = features[superliquidus, 3:]
+                row_idx = torch.nonzero(superliquidus, as_tuple=False).squeeze(-1).to(torch.long)
+                rr_liq, cc_liq = torch.meshgrid(row_idx, liq_idx.to(torch.long), indexing='ij')
+                chem_out[rr_liq, cc_liq] = features[superliquidus, len(self.ml_indexer.featureNames):] # Assumes same element ordering in liquid and features
 
-            print(f"NANs in chem_out after superliquidus assignment: {torch.isnan(chem_out).sum()}")
+                print(f"NANs in chem_out after superliquidus assignment: {torch.isnan(chem_out).sum()}")
 
-            if not NN_only and non_super.any():
-                chem_out[non_super] = self.polish_negative_px(chem_out[non_super])
-                chem_out[non_super] = self.polish_negative_sp(chem_out[non_super])
+                if not NN_only and non_super.any() and 'melts-liquid' in self.label_indices: # Only do this for MELTS: Not HeFESTo, which lacks negative components. 
+                    chem_out[non_super] = self.polish_negative_px(chem_out[non_super])
+                    chem_out[non_super] = self.polish_negative_sp(chem_out[non_super])
 
         else:  # Training
             chem_outputs = [
@@ -902,9 +992,12 @@ class MidLevelNetwork(TunableModel):
             ]
             chem_out = torch.cat(chem_outputs, dim=1)
 
-            # Overwrite liquid component columns with feature composition
-            liq_idx = torch.tensor(self.label_indices_comp['melts-liquid'], device=chem_out.device)
-            chem_out[superliquidus][:, liq_idx] = features[superliquidus, len(self.ml_indexer.featureNames):] # Assumes same element ordering in liquid and features
+            if 'melts-liquid' in self.label_indices_comp:
+                # Overwrite liquid component columns with feature composition
+                liq_idx = torch.tensor(self.label_indices_comp['melts-liquid'], device=chem_out.device)
+                row_idx = torch.nonzero(superliquidus, as_tuple=False).squeeze(-1).to(torch.long)
+                rr_liq, cc_liq = torch.meshgrid(row_idx, liq_idx.to(torch.long), indexing='ij')
+                chem_out[rr_liq, cc_liq] = features[superliquidus, len(self.ml_indexer.featureNames):] # Assumes same element ordering in liquid and features
 
 
         # Compute phase properties
@@ -912,20 +1005,23 @@ class MidLevelNetwork(TunableModel):
             CoreOutput, binary_mask=binary_pred.detach(), intensiveComponents=chem_out, details_out=True
         )
 
-        # Assign direct values for superliquidus rows
-        liq_idx_phase = torch.tensor(self.label_indices['melts-liquid'], device=chem_out.device)
+        if 'melts-liquid' in self.label_indices_comp:  # Assign direct values for superliquidus rows
+            liq_idx_phase = torch.tensor(self.label_indices['melts-liquid'], device=chem_out.device)
 
-        reconBulk[superliquidus] = features[superliquidus, len(self.ml_indexer.featureNames):]
-        componentMoles[superliquidus][:, liq_idx_phase] = features[superliquidus, len(self.ml_indexer.featureNames):]
-        phaseProportions[superliquidus][:, liq_idx_phase] = features[superliquidus, len(self.ml_indexer.featureNames):]
-        reconBulk[superliquidus] = features[superliquidus, len(self.ml_indexer.featureNames):]
-        phaseMoles[superliquidus, self.ml_indexer.mass_phasedict['melts-liquid']] = 1.0
+            reconBulk[superliquidus] = features[superliquidus, len(self.ml_indexer.featureNames):]
+            componentMoles[superliquidus][:, liq_idx_phase] = features[superliquidus, len(self.ml_indexer.featureNames):]
+            phaseProportions[superliquidus][:, liq_idx_phase] = features[superliquidus, len(self.ml_indexer.featureNames):]
+            reconBulk[superliquidus] = features[superliquidus, len(self.ml_indexer.featureNames):]
+            phaseMoles[superliquidus, self.ml_indexer.mass_phasedict['melts-liquid']] = 1.0
+
         # Set logMoles such that phaseMoles = 1.0 when inverted: log10(1 + eps)
         if self.molar_epsilon:
             #print("Applying molar epsilon for superliquidus logMoles assignment: {}".format(self.molar_epsilon.item()))
             log_ten = torch.log(torch.tensor(10.0, device=logMoles.device, dtype=logMoles.dtype))
             target_logMoles = torch.log(1.0 + self.molar_epsilon) / log_ten
-            logMoles[superliquidus, self.ml_indexer.mass_phasedict['melts-liquid']] = target_logMoles
+
+            if 'melts-liquid' in self.label_indices_comp:
+                logMoles[superliquidus, self.ml_indexer.mass_phasedict['melts-liquid']] = target_logMoles
         else:
             logMoles = phaseMoles
 
@@ -940,7 +1036,7 @@ class MidLevelNetwork(TunableModel):
             return logits, chem_out*zero_mask, zero_mask, logMoles, reconBulk # Training, return zero mask for loss masking of intensive chemistries"""
 
 
-def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = None):
+def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = None, load_prefixes=None):
     """
     Load MidLevelNetwork from zip package created by MidLevelNetwork.save().
     
@@ -1004,16 +1100,9 @@ def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = 
         state_dict_path = temp_path / 'state_dict.pt'
         saved_state_dict = torch.load(state_dict_path, map_location='cpu')
         
-        if low_only:
-            # Only load lower model (encoder + sat_head)
-            model_dict = model.state_dict()
-            allowed_prefixes = ["encoder.", "sat_head."]
-            filtered_dict = {
-                k: v for k, v in saved_state_dict.items()
-                if any(k.startswith(p) for p in allowed_prefixes)
-            }
-            model_dict.update(filtered_dict)
-            model.load_state_dict(model_dict, strict=False)
+        if low_only or load_prefixes is not None:
+            effective_prefixes = load_prefixes if load_prefixes is not None else ["encoder.", "sat_head."]
+            _load_matching_state_dict(model, saved_state_dict, load_prefixes=effective_prefixes)
         else:
             # Load full model
             model.load_state_dict(saved_state_dict, strict=False)
@@ -1023,7 +1112,23 @@ def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = 
     return model
 
 
-def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only=False, ml_indexer=None, epsilon = None):
+def _load_matching_state_dict(model, saved_state_dict, load_prefixes=None):
+    model_dict = model.state_dict()
+    filtered_dict = {}
+    for key, value in saved_state_dict.items():
+        if load_prefixes is not None and not any(key.startswith(prefix) for prefix in load_prefixes):
+            continue
+        if key not in model_dict:
+            continue
+        if model_dict[key].shape != value.shape:
+            continue
+        filtered_dict[key] = value
+
+    model_dict.update(filtered_dict)
+    model.load_state_dict(model_dict, strict=False)
+
+
+def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only=False, ml_indexer=None, epsilon = None, load_prefixes=None):
     """
     Load MELTS NN model from checkpoint file.
     
@@ -1059,7 +1164,7 @@ def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only=False, ml_ind
     # Check extension first: explicit .zip files should use zip loading
     if DictFilePath.suffix == '.zip':
         print(f"Attempting to load model from .zip file: {DictFilePath}")
-        return load_model_from_zip(DictFilePath, substitutions=substitutions, low_only=low_only, epsilon=epsilon)
+        return load_model_from_zip(DictFilePath, substitutions=substitutions, low_only=low_only, epsilon=epsilon, load_prefixes=load_prefixes)
     
     print(f"Attempting to load model from .pt file: {DictFilePath}")
 
@@ -1084,15 +1189,9 @@ def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only=False, ml_ind
 
         model = MidLevelNetwork(**configuration)
         
-        if low_only:  # Only load lower model
-            model_dict = model.state_dict()
-            allowed_prefixes = ["encoder.", "sat_head."]
-            filtered_dict = {
-                k: v for k, v in ckpt['state_dict'].items()
-                if any(k.startswith(p) for p in allowed_prefixes)
-            }
-            model_dict.update(filtered_dict)
-            model.load_state_dict(model_dict, strict=False)
+        if low_only or load_prefixes is not None:  # Only load selected model components
+            effective_prefixes = load_prefixes if load_prefixes is not None else ["encoder.", "sat_head."]
+            _load_matching_state_dict(model, ckpt['state_dict'], load_prefixes=effective_prefixes)
         else:
             model.load_state_dict(ckpt['state_dict'], strict=False)
 
