@@ -227,16 +227,17 @@ def run_recovery_plots(
             emulator.model.forward(features_tensor, detailed=True)
         )
         nn_time = time.time()
-        (comp_tens, mass_tens), _, _ = emulator.polish_masses(
+        polish_out = emulator.polish_masses(
             phase_moles,
             recon_bulk,
             component_moles,
             phase_proportions,
             features=features_tensor,
-            optimize_masses=False,
-            output_componentMoles=True,
+            optimize_masses=True,
             protect_opx=False,
+            outputs=["phase_tables"],
         )
+        comp_tens, mass_tens = polish_out["phase_tables"]
         la_time = time.time()
 
     print(f"NN Time: {nn_time - start_time:.2f} sec")

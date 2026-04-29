@@ -1,13 +1,14 @@
 """
-Validate FCNN free-output models with three input modes.
+Validate a single free-output FCNN model with emulator-derived inputs.
 
-Runs three prediction modes on a validation bundle:
-1) FCNN1: normalized features only
-2) FCNN2 with GT extras: [normalized features, GT phase moles, GT labels]
-3) FCNN2 with emulator extras: [normalized features, emulator phase moles, emulator labels]
+Use `--geometry extensive` for inputs of the form:
+[normalized features, emulator-predicted component moles]
 
-For each mode and output label, saves a parity scatter plot that includes
-average absolute residual (MAE in output units).
+Use `--geometry intensive` for inputs of the form:
+[normalized features, emulator-predicted phase moles, emulator-predicted chem_out]
+
+The script plots parity for one checkpoint against the validation bundle and
+writes a compact MAE summary.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ SRC_PATH = REPO_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from nMELTS.engine.NN import VariableGeometryFCNNRegressor, rebuild_MELTS_model
+from nMELTS.engine.NN import VariableGeometryFCNNRegressor, rebuild_MELTS_model, _load_temperature_model
 from nMELTS.engine.emulator import NN_MELTS
 from nMELTS.utils.file_utils import load_ml_bundle
 
@@ -56,7 +57,7 @@ def _resolve_bundle_path(bundle_path: Path) -> Path:
     )
 
 
-def _get_target_min_range(payload: Dict) -> Tuple[np.ndarray, np.ndarray]:
+def _get_target_min_range(payload: Dict): # -> tuple[np.ndarray, np.ndarray]:
     if "target_min" in payload and "target_range" in payload:
         y_min = np.asarray(payload["target_min"], dtype=np.float32).reshape(-1)
         y_range = np.asarray(payload["target_range"], dtype=np.float32).reshape(-1)
@@ -71,7 +72,7 @@ def _get_target_min_range(payload: Dict) -> Tuple[np.ndarray, np.ndarray]:
     raise KeyError("Checkpoint missing target normalizer arrays")
 
 
-def _get_input_min_range(payload: Dict) -> Tuple[np.ndarray, np.ndarray]:
+def _get_input_min_range(payload: Dict): # -> tuple[np.ndarray, np.ndarray]:
     if "input_min" in payload and "input_range" in payload:
         x_min = np.asarray(payload["input_min"], dtype=np.float32).reshape(-1)
         x_range = np.asarray(payload["input_range"], dtype=np.float32).reshape(-1)
@@ -89,7 +90,7 @@ def _get_input_min_range(payload: Dict) -> Tuple[np.ndarray, np.ndarray]:
 def _load_fcnn_checkpoint(
     checkpoint_path: Path,
     device: torch.device,
-) -> Tuple[VariableGeometryFCNNRegressor, Dict, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+): # -> tuple[VariableGeometryFCNNRegressor, Dict, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     payload = torch.load(checkpoint_path, map_location=device)
 
     model_config = payload.get("model_config")
@@ -201,51 +202,67 @@ def _plot_mode(
 def _build_emulator_augmented_input(
     emulator: NN_MELTS,
     features_raw: np.ndarray,
+    geometry: str,
     use_cuda: bool,
     normalize_features_for_emulator: bool,
+    batch_size: int,
 ) -> np.ndarray:
-    device = "cuda" if use_cuda and torch.cuda.is_available() else "cpu"
-    features_tensor = torch.tensor(features_raw, device=device, dtype=torch.float32)
-    if normalize_features_for_emulator:
-        features_tensor = emulator.norm_features.norm(features_tensor)
+    device = torch.device("cuda" if use_cuda and torch.cuda.is_available() else "cpu")
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be > 0, got {batch_size}")
 
-    ml_indexer = emulator.model.ml_indexer
-    px_sp_transform = ml_indexer.PxSpTransform
-    comp_subset = ml_indexer.compositional_component_subset
-    px_sp_sub = px_sp_transform[np.ix_(comp_subset, comp_subset)]
+    if geometry == "extensive":
+        output_names = ["component_moles"]
+    elif geometry == "intensive":
+        output_names = ["phase_moles", "chem_out"]
+    else:
+        raise ValueError(f"Unsupported geometry: {geometry}")
 
-    #with torch.no_grad():
-    #    likelihoods, transcomponent_hat, log_moles, recon_bulk, component_moles, phase_proportions, phase_moles = (
-    #        emulator.model.forward(features_tensor, detailed=True)
-    #    )
+    batches: List[np.ndarray] = []
+    with torch.no_grad():
+        for start in range(0, features_raw.shape[0], batch_size):
+            stop = min(start + batch_size, features_raw.shape[0])
+            features_t = torch.tensor(features_raw[start:stop], dtype=torch.float32, device=device)
+            predicted = emulator.forwardMB(
+                features_t,
+                Normalize=normalize_features_for_emulator,
+                WtPercent=False,
+                outputs=output_names,
+            )
+            if geometry == "extensive":
+                extras = predicted["component_moles"].detach().cpu().numpy().astype(np.float32)
+            else:
+                phase_moles = predicted["phase_moles"].detach().cpu().numpy().astype(np.float32)
+                print(f"Emulator predicted phase moles range: {phase_moles.min():.3g} to {phase_moles.max():.3g}")
+                print(phase_moles[:5])
+                chem_out = predicted["chem_out"].detach().cpu().numpy().astype(np.float32)
+                print(f"Emulator predicted chem_out range: {chem_out.min():.3g} to {chem_out.max():.3g}")
+                print(chem_out[:5])
+                extras = np.concatenate([phase_moles, chem_out], axis=1).astype(np.float32)
+            batches.append(extras.clip(0,1))
 
-    del likelihoods, log_moles, recon_bulk, component_moles, phase_proportions
+    if not batches:
+        return np.zeros((0, 0), dtype=np.float32)
 
-    transcomponent_hat_np = transcomponent_hat.detach().cpu().numpy().astype(np.float32)
-    phase_moles_np = phase_moles.detach().cpu().numpy().astype(np.float32)
-    component_hat_np = transcomponent_hat_np @ np.linalg.inv(px_sp_sub).astype(np.float32)
-
-    return np.concatenate([features_raw.astype(np.float32), phase_moles_np, component_hat_np], axis=1)
+    return np.concatenate(batches, axis=0).astype(np.float32)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Validate free-output FCNN models with direct and augmented inputs."
+            "Validate one free-output FCNN checkpoint with emulator-derived inputs."
         )
     )
     parser.add_argument("--bundle", required=True, type=Path, help="Validation bundle path")
+    parser.add_argument("--model", required=True, type=Path, help="Path to FCNN checkpoint")
     parser.add_argument(
-        "--fcnn-features-model",
+        "--geometry",
         required=True,
-        type=Path,
-        help="Path to features-only FCNN checkpoint",
-    )
-    parser.add_argument(
-        "--fcnn-augmented-model",
-        required=True,
-        type=Path,
-        help="Path to augmented FCNN checkpoint",
+        choices=["extensive", "intensive"],
+        help=(
+            "Input geometry for the checkpoint: extensive uses component moles, "
+            "intensive uses phase moles plus chem_out"
+        ),
     )
     parser.add_argument(
         "--emulator-model",
@@ -254,6 +271,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to trained emulator checkpoint used to generate extra inputs",
     )
     parser.add_argument("--batch-size", type=int, default=4096, help="Prediction batch size")
+    parser.add_argument("--emulator-batch-size", type=int, default=2 ** 16, help="Batch size for emulator calls")
     parser.add_argument("--seed", type=int, default=1337, help="Random seed")
     parser.add_argument("--max-samples", type=int, default=2**16, help="Max samples to evaluate")
     parser.add_argument("--cuda", action="store_true", help="Use CUDA if available")
@@ -290,35 +308,19 @@ def main() -> None:
         )
 
     features = np.asarray(bundle.features, dtype=np.float32)
-    gt_moles = np.asarray(bundle.molar_labels, dtype=np.float32)
-    gt_labels = np.asarray(bundle.labels, dtype=np.float32)
 
-    n_total = features.shape[0]
-    if args.max_samples < n_total:
-        subset = np.random.default_rng(args.seed).choice(n_total, size=args.max_samples, replace=False)
+    free_outputs = np.asarray(bundle.free_outputs, dtype=np.float32)
+
+    if args.max_samples < features.shape[0]:
+        subset = np.random.default_rng(args.seed).choice(features.shape[0], size=args.max_samples, replace=False)
         features = features[subset]
-        gt_moles = gt_moles[subset]
-        gt_labels = gt_labels[subset]
-        free_outputs = np.asarray(bundle.free_outputs, dtype=np.float32)[subset]
-    else:
-        free_outputs = np.asarray(bundle.free_outputs, dtype=np.float32)
+        free_outputs = free_outputs[subset]
 
-    fcnn1, ckpt1, x1_min, x1_range, y1_min, y1_range = _load_fcnn_checkpoint(
-        args.fcnn_features_model,
-        device,
-    )
-    fcnn2, ckpt2, x2_min, x2_range, y2_min, y2_range = _load_fcnn_checkpoint(
-        args.fcnn_augmented_model,
-        device,
-    )
+    model, checkpoint, x_min, x_range, y_min, y_range = _load_fcnn_checkpoint(args.model, device)
 
-    selected_output_names = list(ckpt1.get("selected_output_names", []))
+    selected_output_names = list(checkpoint.get("selected_output_names", []))
     if not selected_output_names:
-        raise KeyError("FCNN1 checkpoint missing selected_output_names")
-
-    selected_output_names_2 = list(ckpt2.get("selected_output_names", []))
-    if selected_output_names_2 != selected_output_names:
-        raise ValueError("FCNN1 and FCNN2 selected_output_names do not match")
+        raise KeyError("Checkpoint missing selected_output_names")
 
     available_output_names = list(getattr(bundle.ml_indexer, "freeOutputs", []) or [])
     if not available_output_names:
@@ -326,77 +328,52 @@ def main() -> None:
 
     y_true = _select_outputs(free_outputs, available_output_names, selected_output_names)
 
-    x1_norm = _normalize_features(features, x1_min, x1_range)
-
-    x2_gt = np.concatenate([x1_norm, gt_moles, gt_labels], axis=1).astype(np.float32)
-    if x2_gt.shape[1] != x2_min.shape[0] or x2_gt.shape[1] != x2_range.shape[0]:
-        raise ValueError(
-            f"FCNN2 GT-augmented input dimension mismatch: x2={x2_gt.shape[1]}, "
-            f"checkpoint={x2_min.shape[0]}"
-        )
-
     emulator_model = rebuild_MELTS_model(str(args.emulator_model))
     emulator = NN_MELTS(emulator_model, cuda=bool(args.cuda))
-    x2_emulator_raw = _build_emulator_augmented_input(
+    emulator_extras = _build_emulator_augmented_input(
         emulator=emulator,
         features_raw=features,
+        geometry=args.geometry,
         use_cuda=bool(args.cuda),
         normalize_features_for_emulator=not args.no_normalize_emulator_features,
+        batch_size=args.emulator_batch_size,
     )
-    x2_emulator = np.concatenate([x1_norm, x2_emulator_raw[:, x1_norm.shape[1]:]], axis=1).astype(np.float32)
+    x_features = np.concatenate([features, emulator_extras], axis=1).astype(np.float32)
+    x_model = _normalize_features(x_features, x_min, x_range)
 
-    if x2_emulator.shape[1] != x2_gt.shape[1]:
+
+    if x_model.shape[1] != x_min.shape[0]:
         raise ValueError(
-            f"FCNN2 emulator-augmented input dimension mismatch: "
-            f"expected {x2_gt.shape[1]}, got {x2_emulator.shape[1]}"
+            f"Checkpoint input dimension mismatch for geometry '{args.geometry}': "
+            f"built {x_model.shape[1]} cols, checkpoint expects {x_min.shape[0]}"
         )
 
-    y1_pred_norm = _predict(fcnn1, x1_norm, device=device, batch_size=args.batch_size)
-    y2_gt_pred_norm = _predict(fcnn2, x2_gt, device=device, batch_size=args.batch_size)
-    y2_emu_pred_norm = _predict(fcnn2, x2_emulator, device=device, batch_size=args.batch_size)
-
-    y1_pred = _denormalize_targets(y1_pred_norm, y1_min, y1_range)
-    y2_gt_pred = _denormalize_targets(y2_gt_pred_norm, y2_min, y2_range)
-    y2_emu_pred = _denormalize_targets(y2_emu_pred_norm, y2_min, y2_range)
+    y_pred_norm = _predict(model, x_model, device=device, batch_size=args.batch_size)
+    y_pred = _denormalize_targets(y_pred_norm, y_min, y_range)
 
     if args.out_dir is None:
-        model_stem = _sanitize_name(args.fcnn_features_model.stem)
-        out_dir = Path(__file__).parent / "plots" / f"free_outputs_validation_{model_stem}"
+        model_stem = _sanitize_name(args.model.stem)
+        out_dir = Path(__file__).parent / "plots" / f"free_outputs_validation_{model_stem}_{args.geometry}"
     else:
         out_dir = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    mode_metrics: Dict[str, Dict[str, float]] = {}
-    mode_metrics["fcnn1_features_only"] = _plot_mode(
+    mode_metrics = _plot_mode(
         output_dir=out_dir,
-        mode_name="fcnn1_features_only",
+        mode_name=args.geometry,
         y_true=y_true,
-        y_pred=y1_pred,
-        output_names=selected_output_names,
-    )
-    mode_metrics["fcnn2_with_gt_extras"] = _plot_mode(
-        output_dir=out_dir,
-        mode_name="fcnn2_with_gt_extras",
-        y_true=y_true,
-        y_pred=y2_gt_pred,
-        output_names=selected_output_names,
-    )
-    mode_metrics["fcnn2_with_emulator_extras"] = _plot_mode(
-        output_dir=out_dir,
-        mode_name="fcnn2_with_emulator_extras",
-        y_true=y_true,
-        y_pred=y2_emu_pred,
+        y_pred=y_pred,
         output_names=selected_output_names,
     )
 
     summary = {
         "bundle": str(bundle_path),
-        "fcnn_features_model": str(args.fcnn_features_model),
-        "fcnn_augmented_model": str(args.fcnn_augmented_model),
+        "model": str(args.model),
+        "geometry": args.geometry,
         "emulator_model": str(args.emulator_model),
         "n_samples": int(y_true.shape[0]),
         "selected_output_names": selected_output_names,
-        "mae_by_mode_and_output": mode_metrics,
+        "mae_by_output": mode_metrics,
     }
 
     summary_path = out_dir / "free_outputs_validation_metrics.json"
@@ -404,6 +381,7 @@ def main() -> None:
         json.dump(summary, handle, indent=2)
 
     print("Validation complete.")
+    print(f"Geometry: {args.geometry}")
     print(f"Saved outputs to: {out_dir}")
     print(f"Saved metrics JSON: {summary_path}")
 

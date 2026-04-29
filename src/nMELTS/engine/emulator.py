@@ -258,9 +258,11 @@ class NN_MELTS:
         torch.Tensor
             Features with oxides converted to elemental moles
         """
+
+        conditions = features[:, :self.feature_offset]
+
         if convert:
             # Split features into non-chemical condition and composition
-            conditions = features[:, :self.feature_offset]
             oxides = features[:, self.feature_offset:]
             
             # Convert oxides to elements
@@ -269,8 +271,11 @@ class NN_MELTS:
             closedmoles = unclosed / unclosed.sum(dim=1, keepdim=True)
             return torch.cat([conditions, closedmoles], dim=1)
         else:
-            return features
-        
+            unclosed = features[:, self.feature_offset:]
+            closedmoles = unclosed / unclosed.sum(dim=1, keepdim=True)
+
+        return torch.cat([conditions, closedmoles], dim=1)
+
     def getExtensiveComps(self, intensiveLabels, molarLabels):
         """
         Convert intensive component labels to extensive system-scale component moles.
@@ -284,7 +289,7 @@ class NN_MELTS:
             
         Returns
         -------
-        newComps : Torch.Tensor (B, C) of extensive component moles for whole system
+        componentMoles : Torch.Tensor (B, C) of extensive component moles for whole system
         """
         Cmoles = molarLabels @ self.phaseToCompMap # (B, C)
         intensiveWeights = intensiveLabels @ self.variedToAllComp # (B, C)
@@ -293,12 +298,12 @@ class NN_MELTS:
         pure_comp_mask = self.variedToAllComp.sum(dim=0) == 0
         intensiveWeights[:, pure_comp_mask] = 1.0
 
-        newComps = Cmoles * intensiveWeights # (B, C)
+        componentMoles = Cmoles * intensiveWeights # (B, C)
         
 
-        return newComps
+        return componentMoles
 
-    def forwardMB(self, features, Normalize=True, WtPercent=True, comp_table_out='oxides'):
+    def forwardMB(self, features, Normalize=True, WtPercent=False, comp_table_out='oxides', outputs=None):
         """
         Forward pass through the model with mass balancing.
         
@@ -307,16 +312,25 @@ class NN_MELTS:
         features : torch.Tensor
             Input features
         Normalize : bool, default=True
-            Whether to normalize features
-        WtPercent : bool, default=True
+            Whether to normalize features. This is not referring to normalizing the composition but rather the entire feature vector. Compositions are enforced to be normalized
+        WtPercent : bool, default=False
             Whether input is in weight percent, otherwise mole fraction. 
-        comp_table_out : str, default='oxides'
+        comp_table_out DEPRECATED: str, default='oxides'
             Output format: 'oxides', 'comps', 'components', or None
             
+        outputs : sequence[str] or None, default=None
+            Optional selector list. Valid values:
+            - 'transcomponent_hat'
+            - 'chem_out'
+            - 'phase_tables'
+            - 'component_moles'
+            - 'wt_del_component_moles'
+
         Returns:
         --------
-        tuple
-            (transcomponent_hat, massTens) - transformed components and mass tensors
+        tuple or dict
+            Default returns (transcomponent_hat, phase_tables) for backward compatibility.
+            If outputs is provided, returns a dict containing only requested keys.
         """
         if Normalize:
             norm_features = self.norm_features.norm(self.convertOxToMol(features, convert=WtPercent))
@@ -329,12 +343,106 @@ class NN_MELTS:
 
 
             
-            transcomponent_hat, massTens = self.polish_masses( # Tunable parameters. 
-                phaseMoles, reconBulk, componentMoles, phaseProportions,
-                features=norm_features, optimize_masses=False, protect_opx=True,
-                comp_table_out=comp_table_out, output_componentMoles=False
+            requested_outputs = None
+            if outputs is not None:
+                requested_outputs = []
+                for key in outputs:
+                    if key not in ['transcomponent_hat', 'chem_out', 'phase_tables', 'component_moles', 'wt_del_component_moles', 'phase_moles']:
+                        raise KeyError(
+                            f"Unknown forwardMB output selector '{key}'. "
+                            "Valid selectors are: transcomponent_hat, chem_out, phase_tables, "
+                            "component_moles, wt_del_component_moles"
+                        )
+                    if key not in requested_outputs:
+                        requested_outputs.append(key)
+            else:
+                requested_outputs = ['phase_tables'] # Default output if no output specified
+
+            polish_result = self.polish_masses(
+                phaseMoles,
+                reconBulk,
+                componentMoles,
+                phaseProportions,
+                features=norm_features,
+                optimize_masses=False,
+                protect_opx=False,
+                comp_table_out=comp_table_out,
+                output_componentMoles=False,
+                outputs=requested_outputs
             )
-            return transcomponent_hat, massTens
+
+            if outputs is None:
+                transcomponent_hat, mass_tens = polish_result #compTable and massTable
+                return transcomponent_hat, mass_tens
+
+            return polish_result
+
+
+    def forwardNN(self, features, Normalize=True, WtPercent=False, outputs=None):
+        """
+        Forward pass through the model only, no mass balancing.
+        
+        Parameters:
+        -----------
+        features : torch.Tensor
+            Input features
+        Normalize : bool, default=True
+            Whether to normalize features
+        WtPercent : bool, default=True
+            Whether input is in weight percent, otherwise mole fraction. 
+        comp_table_out DEPRECATED: str, default='oxides'
+            Output format: 'oxides', 'comps', 'components', or None
+            
+        outputs : sequence[str] or None, default=None
+            Optional selector list. Valid values:
+            - 'transcomponent_hat'
+            - 'chem_out'
+            - 'phase_tables'
+            - 'component_moles'
+            - 'wt_del_component_moles'
+
+        Returns:
+        --------
+        tuple or dict
+            Default returns (transcomponent_hat, phase_tables) for backward compatibility.
+            If outputs is provided, returns a dict containing only requested keys.
+        """
+        if Normalize:
+            norm_features = self.norm_features.norm(self.convertOxToMol(features, convert=WtPercent))
+        else:
+            norm_features = self.convertOxToMol(features, convert=WtPercent)
+        with torch.no_grad():
+            likelihoods, chem_out, logMoles, reconBulk, componentMoles, phaseProportions, phaseMoles = self.model.forward(
+                norm_features, detailed=True
+            )
+
+
+            
+            requested_outputs = None
+            if outputs is not None:
+                requested_outputs = []
+                for key in outputs:
+                    if key not in ['chem_out', 'component_moles',  'phase_moles']:
+                        raise KeyError(
+                            f"Unknown forwardMB output selector '{key}'. "
+                            "Valid selectors are: transcomponent_hat, chem_out, phase_tables, "
+                            "component_moles, wt_del_component_moles"
+                        )
+                    if key not in requested_outputs:
+                        requested_outputs.append(key)
+            else:
+                raise ValueError("Outputs must be specified for forwardNN since it does not perform mass balancing. Valid outputs are: chem_out, component_moles, phase_moles")
+
+            outputs = {}
+            for key in requested_outputs:
+                if key == 'chem_out':
+                    outputs['chem_out'] = chem_out
+                elif key == 'component_moles':
+                    outputs['component_moles'] = componentMoles
+                elif key == 'phase_moles':
+                    outputs['phase_moles'] = logMoles
+
+            return outputs
 
     def Iron_Speciator(self, oxides, Normedfeatures=None, P=None, T=None, fO2=None):
         """
@@ -441,7 +549,7 @@ class NN_MELTS:
         if mask is None:
             mask = (A.abs().sum(dim=2, keepdim=True) > 0).float()
 
-        print(mask.size())
+        #print(mask.size())
         A = A * mask
         b = b * mask
 
@@ -469,9 +577,9 @@ class NN_MELTS:
         mask = (A.abs().sum(dim=2, keepdim=True) > 0).float()  # (E,1) or (B,E,1)
         A_masked = A * mask
         b_masked = b * mask.squeeze(-1)
-        print(A_masked)
-        print(b_masked)
-        print(mask)
+        #print(A_masked)
+        #print(b_masked)
+        #print(mask)
         pinvA = torch.linalg.pinv(A_masked, rcond=rcond)  # (P, E) or (B, P, E)
         return torch.einsum('bce,be->bc', pinvA, b_masked)
 
@@ -631,7 +739,7 @@ class NN_MELTS:
             # Returns intensive, chemically variable components
             phasesums = phaseComps.sum(dim=1, keepdim=True)  # (B, 1, P)
             phaseIntensive = phaseComps / (phasesums + 1E-12)  # (B, C, P)
-            print(phaseIntensive.size())
+            #print(phaseIntensive.size())
             systemComps = torch.einsum('bcp,pc->bc', phaseIntensive, compPhaseMap.T)  # (B, C)
             return systemComps, phaseMassNorm
 
@@ -691,15 +799,15 @@ class NN_MELTS:
             else:
                 phaseToComp[:, binary_ind, self.label_indices[phase]] = binaries[:, binary_ind].unsqueeze(-1)
 
-        print(self.compToOx.size())
-        print(self.compToOx.device)
+        #print(self.compToOx.size())
+        #   print(self.compToOx.device)
         
         # Calculate phaseToEl/Ox matrix
         phaseToOx = torch.einsum('bpc,co->bpo', phaseToComp, self.compToOx)  # (B, P, O)
         phaseToEl = torch.einsum('bpo,oe->bpe', phaseToOx, self.oxToEl)  # (B, P, E)
 
         A = phaseToEl.transpose(1, 2)
-        print(A)
+        #print(A)
         if pinv:
             molPhase0 = self.masked_pinv_no_cf(A, bulk)
         else:
@@ -764,7 +872,8 @@ class NN_MELTS:
 
 
     def polish_masses(self, phaseMoles, reconBulk, componentMoles, phaseProportions, features,
-                      optimize_masses=True, output_componentMoles=False, protect_opx=False, comp_table_out='oxides'):
+                      optimize_masses=True, output_componentMoles=False, protect_opx=False,
+                      comp_table_out='oxides', outputs=None):
         """
         Polish masses to fit bulk composition.
         
@@ -789,10 +898,19 @@ class NN_MELTS:
         comp_table_out : str, default='oxides'
             Output format
             
+        outputs : sequence[str] or None, default=None
+            Optional selector list. Valid values are:
+            - 'phase_tables'
+            - 'component_moles'
+            - 'wt_del_component_moles'
+            - 'phase_moles'
+            - 'chem_out'
+
         Returns:
         --------
-        tuple or torch.Tensor
-            Phase tables and optionally component moles
+        tuple, torch.Tensor, or dict
+            If outputs is None, preserves historical return behavior.
+            If outputs is provided, returns a dict with requested keys only.
         """
         phaseMoles = phaseMoles.to('cpu')
         reconBulk = reconBulk.to('cpu')
@@ -809,42 +927,81 @@ class NN_MELTS:
         if optimize_masses:
             phaseComponentMoles = componentMoles[:, None, :] * phaseToCompMap[None, :, :]  # (B, P, C)
             phaseAtomMoles = torch.einsum('bpc,ce->bpe', phaseComponentMoles, compToEl)  # (B, P, E)
-            print(phaseAtomMoles[:3])
-            wtDelPhaseMoles = (torch.linalg.pinv(phaseAtomMoles.transpose(1, 2)) @ residual.unsqueeze(-1)).squeeze(-1)
+            #print(phaseAtomMoles[:3])
+            wtDelPhaseMoles = ((torch.linalg.pinv(phaseAtomMoles.transpose(1, 2)) @ residual.unsqueeze(-1)).squeeze(-1)).clamp(-0.8, 0.8) # Do not allow phases to go negative
             DelPhaseMoles = wtDelPhaseMoles * phaseMoles
-            print('Before Phase Mass adjustments, phasemoles, then residual')
-            print(phaseMoles)
-            print(residual)
+            #print('Before Phase Mass adjustments, phasemoles, then residual')
+            #print(phaseMoles)
+            #print(residual)
             phaseMoles = phaseMoles + DelPhaseMoles
             componentMoles = phaseProportions * (phaseMoles @ phaseToCompMap)
             reconBulk = componentMoles @ compToEl
             residual = bulk - reconBulk
-            print('After Phase Mass adjustments, phasemoles, then residual')
-            print(phaseMoles)
-            print(residual)
+            #print('After Phase Mass adjustments, phasemoles, then residual')
+            #print(phaseMoles)
+            #print(residual)
 
         # Solve underconstrained problem
         componentAtomMoles = componentMoles.unsqueeze(-1) * compToEl  # (B, C, E)
         if protect_opx:
             componentAtomMoles[:, self.label_indices['orthopyroxene']] *= 0
-        print('componentAtomMoles')
-        print(componentAtomMoles)
+        #print('componentAtomMoles')
+        #print(componentAtomMoles)
         if torch.any(torch.isnan(componentAtomMoles)):
             print(f"NaN values found in componentAtomMoles at indices: {torch.where(torch.isnan(componentAtomMoles))}")
         wtDelComponentMoles = (torch.linalg.pinv(componentAtomMoles.transpose(1, 2)) @ residual.unsqueeze(-1)).squeeze(-1)
         DelComponentMoles = wtDelComponentMoles * componentMoles
         componentMoles = componentMoles + DelComponentMoles
 
-        if output_componentMoles:
-            return (
-                self.make_phase_tables(componentMoles, compToOx, MM, compPhaseMap=phaseToCompMap.T,
-                                      features=feats, eps=1e-12, out=comp_table_out),
+        requested_outputs = None
+        if outputs is not None:
+            requested_outputs = []
+            for key in outputs:
+                if key not in ['phase_tables', 'component_moles', 'wt_del_component_moles', 'phase_moles', 'chem_out']:
+                    # print(outputs)
+                    raise KeyError(
+                        f"Unknown polish_masses output selector '{key}'. "
+                        "Valid selectors are: phase_tables, component_moles, wt_del_component_moles, phase_moles, chem_out"
+                    )
+                if key not in requested_outputs:
+                    requested_outputs.append(key)
+
+        if outputs is None:
+            if output_componentMoles:
+                return (
+                    self.make_phase_tables(componentMoles, compToOx, MM, compPhaseMap=phaseToCompMap.T,
+                                          features=feats, eps=1e-12, out=comp_table_out),
+                    componentMoles,
+                    wtDelComponentMoles
+                )
+            else:
+                return self.make_phase_tables(componentMoles, compToOx, MM, compPhaseMap=phaseToCompMap.T,
+                                             features=feats, eps=1e-12, out=comp_table_out)
+
+        out = {}
+        if 'phase_tables' in requested_outputs:
+            out['phase_tables'] = self.make_phase_tables(
                 componentMoles,
-                wtDelComponentMoles
+                compToOx,
+                MM,
+                compPhaseMap=phaseToCompMap.T,
+                features=feats,
+                eps=1e-12,
+                out=comp_table_out,
             )
-        else:
-            return self.make_phase_tables(componentMoles, compToOx, MM, compPhaseMap=phaseToCompMap.T,
-                                         features=feats, eps=1e-12, out=comp_table_out)
+        if 'component_moles' in requested_outputs:
+            out['component_moles'] = componentMoles
+        if 'wt_del_component_moles' in requested_outputs:
+            out['wt_del_component_moles'] = wtDelComponentMoles
+        if ('phase_moles' in requested_outputs) or ('chem_out' in requested_outputs): # Recompute refined chem_out after mass adjustments
+            phaseComponentMoles = componentMoles[:, None, :] * phaseToCompMap[None, :, :]  # (B, P, C)
+            phaseMoles = phaseComponentMoles.sum(dim=2)  # (B, P)
+            if 'phase_moles' in requested_outputs:
+                out['phase_moles'] = phaseMoles
+            if 'chem_out' in requested_outputs:
+                chem_out = (phaseComponentMoles / (phaseMoles[:, :, None] + 1e-12)).sum(dim=1)[:, np.array(self.ml_indexer.compositionally_variable_subset).astype(int)]  # (B, VC)
+                out['chem_out'] = chem_out
+        return out
 
     def find_liquidus(self, features, resolution=25):
         if 'melts-liquid' not in self.ml_indexer.label_indices_comp:
@@ -983,11 +1140,19 @@ class NN_MELTS:
                 )
                 
                 if fit_residual:
-                    massTens, componentMoles2, _ = self.polish_masses(
-                        phaseMoles, reconBulk, componentMoles, phaseProportions,
-                        features=self.norm_features.norm(inp_batch), optimize_masses=False,
-                        protect_opx=True, comp_table_out='None', output_componentMoles=True
+                    polish_out = self.polish_masses(
+                        phaseMoles,
+                        reconBulk,
+                        componentMoles,
+                        phaseProportions,
+                        features=self.norm_features.norm(inp_batch),
+                        optimize_masses=False,
+                        protect_opx=True,
+                        comp_table_out='None',
+                        outputs=['phase_tables', 'component_moles'],
                     )
+                    massTens = polish_out['phase_tables']
+                    componentMoles2 = polish_out['component_moles']
                     component_tensor[idx_alive, :, i] = componentMoles2
                     mass_tensor[idx_alive, :, i] = massTens * prev_melt_frac[idx_alive, None]
                 else:
@@ -1007,3 +1172,41 @@ class NN_MELTS:
                 active_comps = new_liquid_el[is_alive].clone()
 
             return component_tensor, mass_tensor
+
+    ## Staging algorithm with batch size parameter
+    def _STAGE(func, input, batch_size = 2**16, **kwargs):
+        """
+        Staged execution of a function with batching.
+        
+        Parameters:
+        -----------
+        func : callable
+            Function to execute in stages. Should accept an arbitrary size inputs and return list of outputs.
+        input : torch.Tensor
+            Input data to be processed in stages.
+        batch_size : int, default=2**16
+            Number of samples to process in each batch
+        **kwargs :
+            Additional keyword arguments to pass to func
+
+        Returns:
+        function outputs in list
+        """
+
+        if input.size(0) <= batch_size: # Trial run without batching if input is small
+             return func(input, **kwargs)
+        
+        else:
+            additional_cycles = (input.size(0) // batch_size) 
+            outs = func(input[:batch_size], **kwargs) # first outputs
+            for batch in (np.arange(additional_cycles)+1):
+                stop = min((batch+1)*batch_size, input.size(0))
+                batch_outs = func(input[batch*batch_size:stop], **kwargs)
+                for i in range(len(outs)):
+                    outs[i] = torch.cat((outs[i], batch_outs[i]), dim=0)
+
+            return outs
+
+
+
+

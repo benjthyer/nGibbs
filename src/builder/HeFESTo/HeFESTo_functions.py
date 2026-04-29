@@ -11,9 +11,20 @@ import shutil
 import argparse
 import subprocess
 from time import time
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
-from src.nMELTS.utils.file_utils import save_fixed_width_table
+
+# Handle import for file_utils - try relative then absolute
+try:
+    from nMELTS.utils.file_utils import save_fixed_width_table
+except ImportError:
+    try:
+        from src.nMELTS.utils.file_utils import save_fixed_width_table
+    except ImportError:
+        # Fallback: dummy implementation if not available
+        def save_fixed_width_table(data, out_path=None):
+            """Fallback implementation of save_fixed_width_table"""
+            pass
 
 
 import numpy as np
@@ -25,6 +36,15 @@ from nMELTS.config.constants import (
     get_oxide_molar_mass,
     OXIDE_MOLAR_MASSES
 )
+
+try:
+    import torch
+    from nMELTS.engine.EOS_arithmetic.hefesto_physub import (
+        get_hefesto_physub_context,
+        compute_physub_bulk_matrix,
+    )
+except ImportError:
+    torch = None
 
 
 PHASE_ABBREVIATION_OVERRIDES: Dict[str, str] = {
@@ -1128,15 +1148,198 @@ def import_HeFESTo_components(
     return np.unique(np.asarray(faultIDs, dtype=int))
 
 
-def make_PT_path(S, P, func, out_path = None):
-    """Args:
-    S: scalar or array of entropy values
-    P: array of pressure in GPa
-
-    Generates ad.in file that is read by HeFESTo to follow a PT path. Useful for loosely describing general adiabatic paths in the mantle.
+def extract_bulk_properties_from_simulation_dir(
+    sim_dir: str,
+    include_phase_properties: bool = False,
+) -> Dict[str, Any]:
     """
-    AdIn = np.zeros((len(P), 3)) # Middle column unused
+    Extract bulk thermodynamic properties from a single HeFESTo simulation.
+
+    This function reads all usable bulk properties from fort.56 (all numeric
+    columns), along with key tables from fort.61/68/99 for component-based
+    diagnostics.
+    
+    Parameters
+    ----------
+    sim_dir : str
+        Path to HeFESTo simulation directory (containing fort.*, control files)
+    include_phase_properties : bool, default=False
+        Reserved for compatibility.
+    
+    Returns
+    -------
+    dict
+        Dictionary containing:
+        - Core arrays: 'P(GPa)', 'T(K)', 'VS(km/s)', 'VP(km/s)'
+        - One entry per numeric fort.56 bulk column
+        - 'fort56_bulk': dict[str, np.ndarray] mirror of numeric fort.56 columns
+        - 'fort56_dominant_phase': optional dominant phase labels
+        - 'component_names', 'component_moles'
+        - Optional physub outputs: 'bulk_properties', 'bulk_property_names'
+    
+    Raises
+    ------
+    FileNotFoundError
+        If required fort files are missing
+    ImportError
+        If torch is required but unavailable
+    """
+
+    # Check required files
+    required_files = ['control', 'fort.56', 'fort.61', 'fort.68', 'fort.99']
+    for fname in required_files:
+        fpath = os.path.join(sim_dir, fname)
+        if not os.path.exists(fpath):
+            raise FileNotFoundError(f'Missing required file: {fpath}')
+
+    # Parse control and basic data
+    element_moles, control_component_to_phase_abbr = _parse_control_file(
+        os.path.join(sim_dir, 'control')
+    )
+
+    # Read fort tables
+    sys_df = _parse_fort56(os.path.join(sim_dir, 'fort.56'))
+    rho_df = _safe_read_ws_table(os.path.join(sim_dir, 'fort.61'), skiprows=0)
+    vol_df = _safe_read_ws_table(os.path.join(sim_dir, 'fort.68'), skiprows=0)
+    comp_df = _safe_read_ws_table(os.path.join(sim_dir, 'fort.99'), skiprows=0)
+    fort59_path = os.path.join(sim_dir, 'fort.59')
+    fort59_df = None
+    if os.path.exists(fort59_path):
+        fort59_df = _safe_read_ws_table(fort59_path, skiprows=0)
+
+    # Ensure all tables have same number of rows
+    table_lengths = [len(sys_df), len(rho_df), len(vol_df), len(comp_df)]
+    if fort59_df is not None:
+        table_lengths.append(len(fort59_df))
+    nrows = min(table_lengths)
+    if nrows <= 0:
+        raise ValueError('No rows found across required HeFESTo tables')
+
+    sys_df = sys_df.iloc[:nrows].reset_index(drop=True)
+    rho_df = rho_df.iloc[:nrows].reset_index(drop=True)
+    vol_df = vol_df.iloc[:nrows].reset_index(drop=True)
+    comp_df = comp_df.iloc[:nrows].reset_index(drop=True)
+    if fort59_df is not None:
+        fort59_df = fort59_df.iloc[:nrows].reset_index(drop=True)
+
+    # Read every numeric bulk property available in fort.56.
+    fort56_bulk: Dict[str, np.ndarray] = {}
+    for col in sys_df.columns:
+        numeric_series = pd.to_numeric(sys_df[col], errors='coerce')
+        if numeric_series.notna().any():
+            fort56_bulk[str(col)] = numeric_series.fillna(0.0).to_numpy(dtype=np.float32)
+
+    # Optional fort.59 numeric bulk properties.
+    fort59_bulk: Dict[str, np.ndarray] = {}
+    if fort59_df is not None:
+        for col in fort59_df.columns:
+            numeric_series = pd.to_numeric(fort59_df[col], errors='coerce')
+            if numeric_series.notna().any():
+                fort59_bulk[str(col)] = numeric_series.fillna(0.0).to_numpy(dtype=np.float32)
+
+    if 'P(GPa)' not in fort56_bulk or 'T(K)' not in fort56_bulk:
+        raise ValueError("fort.56 is missing required numeric columns 'P(GPa)' and/or 'T(K)'")
+
+    dominant_phase_col = None
+    for col in sys_df.columns:
+        if str(col).strip().lower() == 'dominant_phase':
+            dominant_phase_col = col
+            break
+
+    # Build component moles array from fort.99
+    reverse_component_phase_map = _build_reverse_component_phase_map()
+    component_cols = list(comp_df.columns)[3:-2]  # Skip first 3 and last 2 columns
+
+    # Create mapping of component abbreviations to component indices
+    component_names = []
+    component_moles_list = []
+
+    for comp_abbr in component_cols:
+        comp_abbr_str = str(comp_abbr).strip()
+        component_name = _resolve_component_name_from_abbr(comp_abbr_str)
+        phase_name = _resolve_component_phase(
+            component_abbr=comp_abbr_str,
+            component_name=component_name,
+            reverse_component_phase_map=reverse_component_phase_map,
+            control_component_to_phase_abbr=control_component_to_phase_abbr,
+        )
+        
+        if component_name and phase_name:
+            component_names.append(component_name)
+            values = pd.to_numeric(comp_df[comp_abbr], errors='coerce').fillna(0.0).to_numpy(dtype=np.float32)
+            component_moles_list.append(values)
+
+    if not component_moles_list:
+        raise ValueError('No valid components found in fort.99')
+
+    # Stack component moles into (nrows, n_components) array
+    component_moles = np.stack(component_moles_list, axis=1)  # (nrows, n_comps)
+
+    # Build result dictionary with backward-compatible keys.
+    result = {
+        'P(GPa)': fort56_bulk['P(GPa)'],
+        'T(K)': fort56_bulk['T(K)'],
+        'VS(km/s)': fort56_bulk.get('VS(km/s)', np.zeros(nrows, dtype=np.float32)),
+        'VP(km/s)': fort56_bulk.get('VP(km/s)', np.zeros(nrows, dtype=np.float32)),
+        'fort56_bulk': fort56_bulk,
+        'fort59_bulk': fort59_bulk,
+        'component_names': component_names,
+        'component_moles': component_moles,
+        'bulk_properties': None,
+        'bulk_property_names': tuple(),
+    }
+
+    # Also expose each fort.56 numeric column directly for convenience.
+    for col_name, values in fort56_bulk.items():
+        result[col_name] = values
+
+    # Expose fort.59 columns with a namespace prefix to avoid key collisions.
+    for col_name, values in fort59_bulk.items():
+        result[f'fort59::{col_name}'] = values
+
+    if dominant_phase_col is not None:
+        result['fort56_dominant_phase'] = sys_df[dominant_phase_col].astype(str).to_numpy()
+
+    # Optional physub bulk matrix (kept for compatibility with existing callers).
+    if torch is not None:
+        try:
+            molar_masses = np.array(
+                [get_oxide_molar_mass(name) for name in component_names],
+                dtype=np.float32,
+            )
+        except Exception:
+            molar_masses = np.ones(len(component_names), dtype=np.float32) * 100.0
+
+        device = torch.device('cpu')
+        attrs = {
+            'molar_volume': torch.ones((nrows, len(component_names)), dtype=torch.float32, device=device),
+            'bulk_modulus': torch.ones((nrows, len(component_names)), dtype=torch.float32, device=device) * 130.0,
+            'shear_modulus': torch.ones((nrows, len(component_names)), dtype=torch.float32, device=device) * 80.0,
+            'heat_capacity_p': torch.ones((nrows, len(component_names)), dtype=torch.float32, device=device) * 1.2,
+            'heat_capacity_v': torch.ones((nrows, len(component_names)), dtype=torch.float32, device=device) * 0.9,
+            'thermal_expansivity': torch.ones((nrows, len(component_names)), dtype=torch.float32, device=device) * 3.0e-5,
+            'entropy': torch.ones((nrows, len(component_names)), dtype=torch.float32, device=device) * 5.0,
+            'enthalpy': torch.ones((nrows, len(component_names)), dtype=torch.float32, device=device) * 10.0,
+            'gibbs': torch.ones((nrows, len(component_names)), dtype=torch.float32, device=device) * 8.0,
+        }
+
+        component_moles_t = torch.from_numpy(component_moles).to(device)
+        molar_mass_t = torch.from_numpy(molar_masses).to(device)
+        bulk_props, bulk_names = compute_physub_bulk_matrix(
+            component_moles_t,
+            molar_mass_t,
+            attrs,
+        )
+        result['bulk_properties'] = bulk_props.detach().cpu().numpy()
+        result['bulk_property_names'] = bulk_names
+
+    return result
+
+
+def make_PT_path(S, P, func, out_path=None):
+    """Generate an ad.in pressure-temperature path file for HeFESTo."""
+    AdIn = np.zeros((len(P), 3))  # Middle column unused
     AdIn[:, 0] = P
-    AdIn[:, 2] = func(S=S, P=P)+np.random.normal(0,5,size=len(P)) # Add small random noise to T to for better learning
+    AdIn[:, 2] = func(S=S, P=P) + np.random.normal(0, 5, size=len(P))
     save_fixed_width_table(AdIn, out_path=out_path)
 

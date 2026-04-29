@@ -347,18 +347,30 @@ class Normalizer:
             self.dev = 'cpu'
 
     def denorm(self, x):
-        return x * self.ranger + self.miner
+        if isinstance(x, torch.Tensor):
+            miner = self.miner.to(device=x.device, dtype=x.dtype)
+            ranger = self.ranger.to(device=x.device, dtype=x.dtype)
+            return x * ranger + miner
+        if isinstance(x, np.ndarray):
+            miner = self.miner.detach().cpu().numpy().astype(x.dtype, copy=False)
+            ranger = self.ranger.detach().cpu().numpy().astype(x.dtype, copy=False)
+            return x * ranger + miner
+        raise TypeError("Input must be a NumPy array or a PyTorch tensor.")
     
     def norm(self, x):
         if isinstance(x, np.ndarray):
-            out = np.zeros_like(x, dtype=float)
-            mask = self.ranger != 0
-            out[:,mask] = (x[:,mask] - self.miner[mask]) / self.ranger[mask]
+            miner = self.miner.detach().cpu().numpy().astype(x.dtype, copy=False)
+            ranger = self.ranger.detach().cpu().numpy().astype(x.dtype, copy=False)
+            out = np.zeros_like(x, dtype=x.dtype)
+            mask = ranger != 0
+            out[:, mask] = (x[:, mask] - miner[mask]) / ranger[mask]
             return out
         elif isinstance(x, torch.Tensor):
-            out = torch.zeros_like(x, dtype=torch.float, device = self.dev)
-            mask = self.ranger != 0
-            out[:,mask] = (x[:,mask] - self.miner[mask]) / self.ranger[mask]
+            miner = self.miner.to(device=x.device, dtype=x.dtype)
+            ranger = self.ranger.to(device=x.device, dtype=x.dtype)
+            out = torch.zeros_like(x)
+            mask = ranger != 0
+            out[:, mask] = (x[:, mask] - miner[mask]) / ranger[mask]
             return out
         else:
             raise TypeError("Input must be a NumPy array or a PyTorch tensor.")

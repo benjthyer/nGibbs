@@ -2,8 +2,8 @@
 Train configurable FCNN regressors for free outputs in MLready bundles.
 
 Two models are trained:
-1) [features, emulator-predicted molar labels, emulator-predicted intensive labels] -> free outputs
-2) [features, GT molar labels, GT intensive labels] -> free outputs (GT path)
+1) [features, ground-truth extensive component moles] -> free outputs
+2) [features, emulator-predicted extensive component moles] -> free outputs
 
 Bundle convention:
 - test bundle: in-training validation (used each epoch)
@@ -19,7 +19,7 @@ import argparse
 import json
 import random
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 import sys
 
 import numpy as np
@@ -44,7 +44,7 @@ ADAPTIVE_DROPOUT_MAX = 0.50
 ADAPTIVE_DROPOUT_UP = 0.01
 ADAPTIVE_DROPOUT_DOWN = 0.005
 OVERFIT_RATIO = 1.02
-DEFAULT_EMULATOR_BATCH_SIZE = 2 ** 16
+DEFAULT_EMULATOR_BATCH_SIZE = 2**16
 
 
 def set_seed(seed: int) -> None:
@@ -201,44 +201,58 @@ def _build_extended_input_normalizer_arrays(
     return mins, ranges
 
 
+def _build_component_moles(
+    emulator: NN_MELTS,
+    labels: np.ndarray,
+    molar_labels: np.ndarray,
+    device: torch.device,
+    batch_size: int,
+) -> torch.Tensor:
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be > 0, got {batch_size}")
+    if labels.shape[0] != molar_labels.shape[0]:
+        raise ValueError(
+            "labels and molar_labels row counts must match for component mole tabulation"
+        )
 
-def _build_predicted_labels(
+    batches: List[torch.Tensor] = []
+    with torch.no_grad():
+        for start in range(0, labels.shape[0], batch_size):
+            stop = min(start + batch_size, labels.shape[0])
+            labels_t = torch.tensor(labels[start:stop], dtype=torch.float32, device=device)
+            molar_labels_t = torch.tensor(molar_labels[start:stop], dtype=torch.float32, device=device)
+            component_moles = emulator.getExtensiveComps(
+                intensiveLabels=labels_t,
+                molarLabels=molar_labels_t,
+            )
+            batches.append(component_moles.detach().cpu())
+
+    return torch.cat(batches, dim=0)
+
+
+def _build_predicted_component_moles(
     emulator: NN_MELTS,
     features_raw: np.ndarray,
     device: torch.device,
     batch_size: int,
-    moles = None,
-    labels = None
 ) -> torch.Tensor:
     if batch_size <= 0:
         raise ValueError(f"batch_size must be > 0, got {batch_size}")
 
-    PM_batches: List[torch.Tensor] = []
-    CO_batches: List[torch.Tensor] = []
+    batches: List[torch.Tensor] = []
     with torch.no_grad():
         for start in range(0, features_raw.shape[0], batch_size):
             stop = min(start + batch_size, features_raw.shape[0])
             features_t = torch.tensor(features_raw[start:stop], dtype=torch.float32, device=device)
-            predicted = emulator.forwardNN(
+            predicted = emulator.forwardMB(
                 features_t,
                 Normalize=True,
                 WtPercent=False,
-                outputs=["phase_moles", "chem_out"],
+                outputs=["component_moles"],
             )
-           
-            PM, CO = predicted["phase_moles"], predicted["chem_out"]
-            PM_batches.append(PM.detach().cpu().clamp(0,1))
-            CO_batches.append(CO.detach().cpu().clamp(0,1))
-            """if start == 0 and moles is not None and labels is not None:
-                import pandas as pd
-                pd.DataFrame(CO_batches[0].numpy(), columns= np.array(emulator.ml_indexer.label_names)[np.array(emulator.ml_indexer.compositionally_variable_subset).astype(int)]).to_csv("debug_emulator_postpolish.csv", index=False)
-                pd.DataFrame(moles[:stop], columns= np.array(emulator.ml_indexer.all_phases)).to_csv("debug_GTmoles.csv", index=False)
-                pd.DataFrame(labels[:stop], columns= np.array(emulator.ml_indexer.label_names)[np.array(emulator.ml_indexer.compositionally_variable_subset).astype(int)]).to_csv("debug_GTlabels.csv", index=False)
-                pd.DataFrame(PM, columns= np.array(emulator.ml_indexer.all_phases)).to_csv("debug_predmoles.csv", index=False)
-                #raise RuntimeError("Debug stop after first emulator batch to inspect outputs")"""
-    return torch.cat(PM_batches, dim=0), torch.cat(CO_batches, dim=0)
+            batches.append(predicted["component_moles"].detach().cpu())
 
-
+    return torch.cat(batches, dim=0)
 
 
 def _select_outputs(
@@ -306,7 +320,7 @@ def _train_model(
     device: torch.device,
     patience: int = 10,
     best_checkpoint_path: Optional[Path] = None,
-    checkpoint_saver: Optional[Callable[[VariableGeometryFCNNRegressor, Dict[str, List[float]]], None]] = None,
+    model_config_for_checkpoint: Optional[Dict] = None,
 ) -> Dict[str, any]:
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     criterion = torch.nn.MSELoss()
@@ -339,7 +353,7 @@ def _train_model(
             train_loss_sum += float(loss.item()) * batch_size
             train_count += batch_size
 
-        mean_train_loss = train_loss_sum / train_count
+        mean_train_loss = train_loss_sum / max(1, train_count)
         history["train_loss"].append(mean_train_loss)
 
         if valid_loader is not None:
@@ -355,7 +369,7 @@ def _train_model(
                     batch_size = xb.shape[0]
                     valid_loss_sum += float(loss.item()) * batch_size
                     valid_count += batch_size
-            mean_valid_loss = valid_loss_sum / valid_count
+            mean_valid_loss = valid_loss_sum / max(1, valid_count)
         else:
             mean_valid_loss = float("nan")
 
@@ -368,10 +382,7 @@ def _train_model(
                 epochs_without_improvement = 0
                 if best_checkpoint_path is not None:
                     best_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-                    if checkpoint_saver is not None:
-                        checkpoint_saver(model, history)
-                    else:
-                        torch.save(model.state_dict(), best_checkpoint_path)
+                    torch.save(model.state_dict(), best_checkpoint_path)
                     print(f"Epoch {epoch + 1}: improved to {mean_valid_loss:.6f}, saved best checkpoint")
             else:
                 epochs_without_improvement += 1
@@ -455,20 +466,11 @@ def _load_and_validate_bundle(bundle_path: Path, label: str):
     return bundle
 
 
-def _load_checkpoint_state_dict(checkpoint_path: Path, device: torch.device) -> Dict[str, torch.Tensor]:
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
-        return checkpoint["state_dict"]
-    if isinstance(checkpoint, dict):
-        return checkpoint
-    raise TypeError(f"Unsupported checkpoint format: {checkpoint_path}")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Train two configurable FCNN regressors for ML bundle free outputs: "
-            "(1) features+emulator-predicted moles+labels, (2) features+moles+labels (GT). "
+            "(1) features-only and (2) features+moles+labels. "
             "Uses test as in-training validation and valid as holdout. "
             "Loads all three bundles from one bundle stem."
         )
@@ -486,7 +488,7 @@ def main() -> None:
         "--emulator-model",
         required=True,
         type=Path,
-        help="Path to a trained emulator checkpoint used to generate predicted labels",
+        help="Path to a trained emulator checkpoint used to tabulate predicted component moles",
     )
     parser.add_argument(
         "--limit-outputs",
@@ -508,25 +510,25 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-6)
     parser.add_argument("--activation-leak", type=float, default=0.05)
-    parser.add_argument("--patience", type=int, default=30, help="Epochs without improvement before early stopping")
+    parser.add_argument("--patience", type=int, default=20, help="Epochs without improvement before early stopping")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"])
     parser.add_argument(
         "--skip-1",
         action="store_true",
-        help="Skip training model 1 ([features, molar labels] -> free outputs)",
+        help="Skip training model 2 ([features, predicted component moles] -> free outputs)",
+    )
+    parser.add_argument(
+        "--emulator-batch-size",
+        type=int,
+        default=DEFAULT_EMULATOR_BATCH_SIZE,
+        help="Batch size for emulator calls when tabulating component moles",
     )
     parser.add_argument(
         "--out-dir",
         type=Path,
         default=Path("src") / "builder" / "training" / "temp_models",
         help="Directory for model checkpoints and metrics",
-    )
-    parser.add_argument(
-        "--emulator-batch-size",
-        type=int,
-        default=DEFAULT_EMULATOR_BATCH_SIZE,
-        help="Batch size for emulator calls when generating predicted labels",
     )
 
     args = parser.parse_args()
@@ -543,12 +545,12 @@ def main() -> None:
     else:
         device = torch.device(args.device)
 
-    limit_outputs = _parse_limit_outputs(args.limit_outputs)
-
     emulator = NN_MELTS(
         rebuild_MELTS_model(args.emulator_model),
         cuda=(device.type == "cuda"),
     )
+
+    limit_outputs = _parse_limit_outputs(args.limit_outputs)
 
     bundle_paths = _build_bundle_paths(args.bundle_stem)
     train_bundle = _load_and_validate_bundle(bundle_paths["train"], "train")
@@ -579,55 +581,18 @@ def main() -> None:
     valid_bundle.ml_indexer.output_normalizer = output_normalizer
 
     y_train_norm = _apply_normalizer(y_train_denorm, output_normalizer)
-    print("Sample of normalized free output labels for train bundle:")
-    print(y_train_norm[:5])
 
     x1_train = _apply_normalizer(np.asarray(train_bundle.features, dtype=np.float32), feature_normalizer)
-    print("Sample of normalized features for train bundle:")
-    print(x1_train[:5])
-    # Use emulator to build predicted molar labels and predicted intensive labels (batched)
-    pred_molar_train, pred_intensive_train = _build_predicted_labels(
+    gt_component_moles_train = _build_component_moles(
         emulator=emulator,
-        features_raw=np.asarray(train_bundle.features, dtype=np.float32),
+        labels=np.asarray(train_bundle.labels, dtype=np.float32),
+        molar_labels=np.asarray(train_bundle.molar_labels, dtype=np.float32),
         device=device,
         batch_size=args.emulator_batch_size,
-        labels=np.asarray(train_bundle.labels, dtype=np.float32),
-        moles=np.asarray(train_bundle.molar_labels, dtype=np.float32)
-    )
-    pred_molar_train = pred_molar_train.cpu().numpy().astype(np.float32)
-    pred_intensive_train = pred_intensive_train.cpu().numpy().astype(np.float32)
+    ).detach().cpu().numpy().astype(np.float32)
 
-    x1_train = np.concatenate([
-        x1_train,
-        pred_molar_train,
-        pred_intensive_train,
-    ], axis=1).astype(np.float32)
-    
-    # Diagnostic: check scales of different components
-    print(f"\n[Model 1 Input Diagnostics - Train]")
-    print(f"  x1_train feature component (normalized): min={x1_train[:, :len(x1_min)].min():.6e}, max={x1_train[:, :len(x1_min)].max():.6e}, mean={x1_train[:, :len(x1_min)].mean():.6e}")
-    print(f"  Predicted molar component: min={pred_molar_train.min():.6e}, max={pred_molar_train.max():.6e}, mean={pred_molar_train.mean():.6e}")
-    print(f"  Predicted intensive component: min={pred_intensive_train.min():.6e}, max={pred_intensive_train.max():.6e}, mean={pred_intensive_train.mean():.6e}")
-    
-    x1_emul_min, x1_emul_range = _build_extended_input_normalizer_arrays(x1_min, x1_range, x1_train.shape[1])
-
-    # Build x2 as: features + molar_labels + intensive labels
-    x2_train = np.concatenate(
-        [
-            _apply_normalizer(np.asarray(train_bundle.features, dtype=np.float32), feature_normalizer),
-            np.asarray(train_bundle.molar_labels, dtype=np.float32),
-            np.asarray(train_bundle.labels, dtype=np.float32),
-        ],
-        axis=1,
-    ).astype(np.float32)
-    
-    # Diagnostic: check scales for model 2 (GT labels for reference)
-    print(f"\n[Model 2 Input Diagnostics - Train (GT labels)]")
-    print(f"  x2_train feature component (normalized): min={x2_train[:, :len(x1_min)].min():.6e}, max={x2_train[:, :len(x1_min)].max():.6e}")
-    print(f"  GT molar_labels component: min={train_bundle.molar_labels.min():.6e}, max={train_bundle.molar_labels.max():.6e}")
-    print(f"  GT labels component: min={train_bundle.labels.min():.6e}, max={train_bundle.labels.max():.6e}")
-    
-    x2_min, x2_range = _build_extended_input_normalizer_arrays(x1_min, x1_range, x2_train.shape[1])
+    x1_train = np.concatenate([x1_train, gt_component_moles_train], axis=1).astype(np.float32)
+    x1_min_ext, x1_range_ext = _build_extended_input_normalizer_arrays(x1_min, x1_range, x1_train.shape[1])
 
     y_test_denorm, _, _ = _select_outputs(
         test_bundle.free_outputs,
@@ -635,170 +600,153 @@ def main() -> None:
         selected_output_names,
     )
     y_test_norm = _apply_normalizer(y_test_denorm, output_normalizer)
-    print("Sample of normalized free output labels for test bundle:")
-    print(y_test_norm[:5])
 
     x1_test = _apply_normalizer(np.asarray(test_bundle.features, dtype=np.float32), feature_normalizer)
-    print("Sample of normalized features for test bundle:")
-    
-    print(x1_test[:5])
-    pred_molar_test, pred_intensive_test = _build_predicted_labels(
+    gt_component_moles_test = _build_component_moles(
         emulator=emulator,
-        features_raw=np.asarray(test_bundle.features, dtype=np.float32),
+        labels=np.asarray(test_bundle.labels, dtype=np.float32),
+        molar_labels=np.asarray(test_bundle.molar_labels, dtype=np.float32),
         device=device,
         batch_size=args.emulator_batch_size,
-        labels=np.asarray(test_bundle.labels, dtype=np.float32),
-        moles=np.asarray(test_bundle.molar_labels, dtype=np.float32)
-    )
-    pred_molar_test = pred_molar_test.cpu().numpy().astype(np.float32)
-    pred_intensive_test = pred_intensive_test.cpu().numpy().astype(np.float32)
+    ).detach().cpu().numpy().astype(np.float32)
 
-    x1_emul_test = np.concatenate([
-        x1_test,
-        pred_molar_test,
-        pred_intensive_test,
-    ], axis=1).astype(np.float32)
-    
-    # Diagnostic: check scales on validation split
-    print(f"\n[Model 1 Input Diagnostics - Test/Validation]")
-    print(f"  x1_test feature component (normalized): min={x1_emul_test[:, :len(x1_min)].min():.6e}, max={x1_emul_test[:, :len(x1_min)].max():.6e}, mean={x1_emul_test[:, :len(x1_min)].mean():.6e}")
-    print(f"  Predicted molar component: min={pred_molar_test.min():.6e}, max={pred_molar_test.max():.6e}, mean={pred_molar_test.mean():.6e}")
-    print(f"  Predicted intensive component: min={pred_intensive_test.min():.6e}, max={pred_intensive_test.max():.6e}, mean={pred_intensive_test.mean():.6e}")
-    print(f"  *** SCALE COMPARISON: Molar ratio (max/norm_max) = {pred_molar_test.max() / (x1_emul_test[:, :len(x1_min)].max() + 1e-10):.6e}")
-
-    x2_test = np.concatenate(
-        [
-            _apply_normalizer(np.asarray(test_bundle.features, dtype=np.float32), feature_normalizer),
-            np.asarray(test_bundle.molar_labels, dtype=np.float32),
-            np.asarray(test_bundle.labels, dtype=np.float32),
-        ],
-        axis=1,
-    ).astype(np.float32)
-
+    x1_test = np.concatenate([x1_test, gt_component_moles_test], axis=1).astype(np.float32)
     train_loader_x1 = _make_loader(x1_train, y_train_norm, batch_size=args.batch_size, shuffle=True)
-    valid_loader_x1 = _make_loader(x1_emul_test, y_test_norm, batch_size=args.batch_size, shuffle=False)
-    train_loader_x2 = _make_loader(x2_train, y_train_norm, batch_size=args.batch_size, shuffle=True)
-    valid_loader_x2 = _make_loader(x2_test, y_test_norm, batch_size=args.batch_size, shuffle=False)
-    metrics: Dict[str, Dict[str, Dict[str, float]]] = {
-        "features_pred_component_moles": {},
-        "features_moles_labels": {},
-    }
-    model_emulator = VariableGeometryFCNNRegressor(
+    valid_loader_x1 = _make_loader(x1_test, y_test_norm, batch_size=args.batch_size, shuffle=False)
+    model_features_only = VariableGeometryFCNNRegressor(
         input_dim=x1_train.shape[1],
         output_dim=y_train_norm.shape[1],
         hidden_dims=hidden_dims,
         activation_leak=args.activation_leak,
         dropout=0.0,
     )
-    best_model1_path = args.out_dir / f"best_features_predicted_{args.bundle_stem.name}.pt"
-    history_emulator = None
-    if not args.skip_1:
-        print("\nTraining model 1/2: [features, emulator-predicted molar labels + intensive labels] -> free outputs")
-        history_emulator = _train_model(
-            model=model_emulator,
-            train_loader=train_loader_x1,
-            valid_loader=valid_loader_x1,
-            epochs=args.epochs,
-            lr=args.lr,
-            weight_decay=args.weight_decay,
-            device=device,
-            patience=args.patience,
-            best_checkpoint_path=best_model1_path,
-            checkpoint_saver=lambda current_model, current_history: _save_checkpoint(
-                out_path=best_model1_path,
-                model=current_model,
-                selected_output_names=selected_output_names,
-                selected_output_indices=selected_output_indices,
-                x_min=x1_emul_min,
-                x_range=x1_emul_range,
-                y_min=y_min,
-                y_range=y_range,
-                input_kind="features_pred_component_moles",
-                metrics=metrics["features_pred_component_moles"],
-                history=current_history,
-            ),
-        )
-    else:
-        print("\nSkipping model 1/2 due to --skip-1")
-
-    model_gt = VariableGeometryFCNNRegressor(
-        input_dim=x2_train.shape[1],
-        output_dim=y_train_norm.shape[1],
-        hidden_dims=hidden_dims,
-        activation_leak=args.activation_leak,
-        dropout=0.0,
-    )
-
-    print("\nTraining model 2/2: [features, molar labels, intensive labels] -> free outputs")
-    best_model2_path = args.out_dir / f"best_features_moles_labels_{args.bundle_stem.name}.pt"
-    history_gt = _train_model(
-        model=model_gt,
-        train_loader=train_loader_x2,
-        valid_loader=valid_loader_x2,
+    print("\nTraining model 1/2: [features, GT component moles] -> free outputs")
+    best_model1_path = args.out_dir / f"best_features_gt_component_moles_{args.bundle_stem.name}.pt"
+    history_features = _train_model(
+        model=model_features_only,
+        train_loader=train_loader_x1,
+        valid_loader=valid_loader_x1,
         epochs=args.epochs,
         lr=args.lr,
         weight_decay=args.weight_decay,
         device=device,
         patience=args.patience,
-        best_checkpoint_path=best_model2_path,
-        checkpoint_saver=lambda current_model, current_history: _save_checkpoint(
-            out_path=best_model2_path,
-            model=current_model,
-            selected_output_names=selected_output_names,
-            selected_output_indices=selected_output_indices,
-            x_min=x2_min,
-            x_range=x2_range,
-            y_min=y_min,
-            y_range=y_range,
-            input_kind="features_moles_labels",
-            metrics=metrics["features_moles_labels"],
-            history=current_history,
-        ),
+        best_checkpoint_path=best_model1_path,
     )
+
+    model_augmented = None
+    history_augmented = None
+    best_model2_path = args.out_dir / f"best_features_pred_component_moles_{args.bundle_stem.name}.pt"
+    x2_train = None
+    x2_test = None
+    x2_min = None
+    x2_range = None
+
+    if not args.skip_1:
+        pred_component_moles_train = _build_predicted_component_moles(
+            emulator=emulator,
+            features_raw=np.asarray(train_bundle.features, dtype=np.float32),
+            device=device,
+            batch_size=args.emulator_batch_size,
+        ).detach().cpu().numpy().astype(np.float32)
+        x2_train = np.concatenate(
+            [
+                x1_train[:, : x1_train.shape[1] - gt_component_moles_train.shape[1]],
+                pred_component_moles_train,
+            ],
+            axis=1,
+        ).astype(np.float32)
+        x2_min, x2_range = _build_extended_input_normalizer_arrays(x1_min, x1_range, x2_train.shape[1])
+
+        pred_component_moles_test = _build_predicted_component_moles(
+            emulator=emulator,
+            features_raw=np.asarray(test_bundle.features, dtype=np.float32),
+            device=device,
+            batch_size=args.emulator_batch_size,
+        ).detach().cpu().numpy().astype(np.float32)
+        x2_test = np.concatenate(
+            [
+                _apply_normalizer(np.asarray(test_bundle.features, dtype=np.float32), feature_normalizer),
+                pred_component_moles_test,
+            ],
+            axis=1,
+        ).astype(np.float32)
+
+        train_loader_x2 = _make_loader(x2_train, y_train_norm, batch_size=args.batch_size, shuffle=True)
+        valid_loader_x2 = _make_loader(x2_test, y_test_norm, batch_size=args.batch_size, shuffle=False)
+
+        model_augmented = VariableGeometryFCNNRegressor(
+            input_dim=x2_train.shape[1],
+            output_dim=y_train_norm.shape[1],
+            hidden_dims=hidden_dims,
+            activation_leak=args.activation_leak,
+            dropout=0.0,
+        )
+
+        print("\nTraining model 2/2: [features, predicted component moles] -> free outputs")
+        history_augmented = _train_model(
+            model=model_augmented,
+            train_loader=train_loader_x2,
+            valid_loader=valid_loader_x2,
+            epochs=args.epochs,
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            device=device,
+            patience=args.patience,
+            best_checkpoint_path=best_model2_path,
+        )
+    else:
+        print("\nSkipping model 2/2 due to --skip-1")
+
+    metrics: Dict[str, Dict[str, Dict[str, float]]] = {
+        "features_gt_component_moles": {},
+        "features_pred_component_moles": {},
+    }
 
     # Load best checkpoints for evaluation if available.
     if best_model1_path.exists():
         print(f"\nLoading best checkpoint for model 1: {best_model1_path}")
-        model_emulator.load_state_dict(_load_checkpoint_state_dict(best_model1_path, device))
+        model_features_only.load_state_dict(torch.load(best_model1_path, map_location=device))
 
-    metrics["features_pred_component_moles"]["train"] = _evaluate_denorm(
-        model=model_emulator,
+    metrics["features_gt_component_moles"]["train"] = _evaluate_denorm(
+        model=model_features_only,
         x=x1_train,
         y_true_denorm=y_train_denorm,
         y_min=y_min,
         y_range=y_range,
         device=device,
     )
-    metrics["features_pred_component_moles"]["test"] = _evaluate_denorm(
-        model=model_emulator,
-        x=x1_emul_test,
+    metrics["features_gt_component_moles"]["test"] = _evaluate_denorm(
+        model=model_features_only,
+        x=x1_test,
         y_true_denorm=y_test_denorm,
         y_min=y_min,
         y_range=y_range,
         device=device,
     )
 
-    if best_model2_path.exists():
-        print(f"Loading best checkpoint for model 2: {best_model2_path}")
-        model_gt.load_state_dict(_load_checkpoint_state_dict(best_model2_path, device))
+    if model_augmented is not None and x2_train is not None and x2_test is not None:
+        if best_model2_path.exists():
+            print(f"Loading best checkpoint for model 2: {best_model2_path}")
+            model_augmented.load_state_dict(torch.load(best_model2_path, map_location=device))
 
-    metrics["features_moles_labels"]["train"] = _evaluate_denorm(
-        model=model_gt,
-        x=x2_train,
-        y_true_denorm=y_train_denorm,
-        y_min=y_min,
-        y_range=y_range,
-        device=device,
-    )
+        metrics["features_pred_component_moles"]["train"] = _evaluate_denorm(
+            model=model_augmented,
+            x=x2_train,
+            y_true_denorm=y_train_denorm,
+            y_min=y_min,
+            y_range=y_range,
+            device=device,
+        )
 
-    metrics["features_moles_labels"]["test"] = _evaluate_denorm(
-        model=model_gt,
-        x=x2_test,
-        y_true_denorm=y_test_denorm,
-        y_min=y_min,
-        y_range=y_range,
-        device=device,
-    )
+        metrics["features_pred_component_moles"]["test"] = _evaluate_denorm(
+            model=model_augmented,
+            x=x2_test,
+            y_true_denorm=y_test_denorm,
+            y_min=y_min,
+            y_range=y_range,
+            device=device,
+        )
 
     y_valid_denorm, _, _ = _select_outputs(
         valid_bundle.free_outputs,
@@ -806,86 +754,84 @@ def main() -> None:
         selected_output_names,
     )
     x1_valid = _apply_normalizer(np.asarray(valid_bundle.features, dtype=np.float32), feature_normalizer)
-    # Use emulator to build predicted valid inputs
-    pred_molar_valid, pred_intensive_valid = _build_predicted_labels(
+    gt_component_moles_valid = _build_component_moles(
         emulator=emulator,
-        features_raw=np.asarray(valid_bundle.features, dtype=np.float32),
+        labels=np.asarray(valid_bundle.labels, dtype=np.float32),
+        molar_labels=np.asarray(valid_bundle.molar_labels, dtype=np.float32),
         device=device,
         batch_size=args.emulator_batch_size,
-    )
-    pred_molar_valid = pred_molar_valid.cpu().numpy().astype(np.float32)
-    pred_intensive_valid = pred_intensive_valid.cpu().numpy().astype(np.float32)
+    ).detach().cpu().numpy().astype(np.float32)
 
-    x1_emul_valid = np.concatenate([
-        x1_valid,
-        pred_molar_valid,
-        pred_intensive_valid,
-    ], axis=1).astype(np.float32)
-
-    x2_valid = np.concatenate(
-        [
-            x1_valid,
-            np.asarray(valid_bundle.molar_labels, dtype=np.float32),
-            np.asarray(valid_bundle.labels, dtype=np.float32),
-        ],
-        axis=1,
-    ).astype(np.float32)
-
-    if model_emulator is not None:
-        metrics["features_pred_component_moles"]["valid"] = _evaluate_denorm(
-            model=model_emulator,
-            x=x1_emul_valid,
-            y_true_denorm=y_valid_denorm,
-            y_min=y_min,
-            y_range=y_range,
-            device=device,
-        )
-    metrics["features_moles_labels"]["valid"] = _evaluate_denorm(
-        model=model_gt,
-        x=x2_valid,
+    x1_valid = np.concatenate([x1_valid, gt_component_moles_valid], axis=1).astype(np.float32)
+    metrics["features_gt_component_moles"]["valid"] = _evaluate_denorm(
+        model=model_features_only,
+        x=x1_valid,
         y_true_denorm=y_valid_denorm,
         y_min=y_min,
         y_range=y_range,
         device=device,
     )
 
+    if model_augmented is not None:
+        pred_component_moles_valid = _build_predicted_component_moles(
+            emulator=emulator,
+            features_raw=np.asarray(valid_bundle.features, dtype=np.float32),
+            device=device,
+            batch_size=args.emulator_batch_size,
+        ).detach().cpu().numpy().astype(np.float32)
+        x2_valid = np.concatenate(
+            [
+                _apply_normalizer(np.asarray(valid_bundle.features, dtype=np.float32), feature_normalizer),
+                pred_component_moles_valid,
+            ],
+            axis=1,
+        ).astype(np.float32)
+        metrics["features_pred_component_moles"]["valid"] = _evaluate_denorm(
+            model=model_augmented,
+            x=x2_valid,
+            y_true_denorm=y_valid_denorm,
+            y_min=y_min,
+            y_range=y_range,
+            device=device,
+        )
+
     args.out_dir.mkdir(parents=True, exist_ok=True)
     bundle_basename = args.bundle_stem.name
     metrics_path = args.out_dir / f"free_outputs_training_metrics_{bundle_basename}.json"
 
-    model1_path: Path | str
-    if model_emulator is not None and history_emulator is not None:
-        model1_path = args.out_dir / f"free_outputs_features_pred_component_moles_{bundle_basename}.pt"
+    model1_path = args.out_dir / f"free_outputs_features_gt_component_moles_{bundle_basename}.pt"
+    _save_checkpoint(
+        out_path=model1_path,
+        model=model_features_only,
+        selected_output_names=selected_output_names,
+        selected_output_indices=selected_output_indices,
+        x_min=x1_min_ext,
+        x_range=x1_range_ext,
+        y_min=y_min,
+        y_range=y_range,
+        input_kind="features_gt_component_moles",
+        metrics=metrics["features_gt_component_moles"],
+        history=history_features,
+    )
+
+    model2_path: Path | str
+    if model_augmented is not None and x2_min is not None and x2_range is not None and history_augmented is not None:
+        model2_path = args.out_dir / f"free_outputs_features_pred_component_moles_{bundle_basename}.pt"
         _save_checkpoint(
-            out_path=model1_path,
-            model=model_emulator,
+            out_path=model2_path,
+            model=model_augmented,
             selected_output_names=selected_output_names,
             selected_output_indices=selected_output_indices,
-            x_min=x1_emul_min,
-            x_range=x1_emul_range,
+            x_min=x2_min,
+            x_range=x2_range,
             y_min=y_min,
             y_range=y_range,
             input_kind="features_pred_component_moles",
             metrics=metrics["features_pred_component_moles"],
-            history=history_emulator,
+            history=history_augmented,
         )
     else:
-        model1_path = "Not Trained!"
-
-    model2_path = args.out_dir / f"free_outputs_features_moles_labels_{bundle_basename}.pt"
-    _save_checkpoint(
-        out_path=model2_path,
-        model=model_gt,
-        selected_output_names=selected_output_names,
-        selected_output_indices=selected_output_indices,
-        x_min=x2_min,
-        x_range=x2_range,
-        y_min=y_min,
-        y_range=y_range,
-        input_kind="features_moles_labels",
-        metrics=metrics["features_moles_labels"],
-        history=history_gt,
-    )
+        model2_path = "Not Trained!"
 
     with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(
@@ -895,14 +841,14 @@ def main() -> None:
                 "hidden_dims": hidden_dims,
                 "bundle_paths": {k: str(v) for k, v in bundle_paths.items()},
                 "normalizers": {
-                    "features_pred_component_moles_input_min_range": _normalizer_pairs(x1_emul_min, x1_emul_range).tolist(),
-                    "features_moles_labels_input_min_range": _normalizer_pairs(x2_min, x2_range).tolist(),
+                    "features_gt_component_moles_input_min_range": _normalizer_pairs(x1_min_ext, x1_range_ext).tolist(),
+                    "features_pred_component_moles_input_min_range": _normalizer_pairs(x2_min, x2_range).tolist(),
                     "output_min_range": _normalizer_pairs(y_min, y_range).tolist(),
                 },
                 "metrics": metrics,
                 "model_paths": {
-                    "features_pred_component_moles": str(model1_path),
-                    "features_moles_labels": str(model2_path),
+                    "features_gt_component_moles": str(model1_path),
+                    "features_pred_component_moles": str(model2_path),
                 },
                 "emulator_model": str(args.emulator_model),
                 "emulator_batch_size": args.emulator_batch_size,

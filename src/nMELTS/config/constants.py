@@ -170,6 +170,8 @@ HEFESTO_ABBREVIATION_TO_SHORT_NAMES: Dict[str, str] = {
     'cpv': 'ca-perovskite',#
     #'ak': 'akimotoite',
     'il': 'akimotoite',#
+    'mgil': 'mg-akimotoite',#
+    'feil': 'fe-akimotoite',#
     'gt': 'garnet',#
     'qtz': 'quartz',#
     'coes': 'coesite',#

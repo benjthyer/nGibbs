@@ -93,6 +93,44 @@ class VariableGeometryFCNNRegressor(nn.Module):
             layer.p = dropout_rate
 
 
+def _get_input_min_range(payload):
+    if "input_min" in payload and "input_range" in payload:
+        return payload["input_min"], payload["input_range"]
+    if "input_min_range" in payload:
+        return payload["input_min_range"]
+    raise KeyError("Temperature checkpoint payload is missing input normalization data")
+
+
+def _get_target_min_range(payload):
+    if "target_min" in payload and "target_range" in payload:
+        return payload["target_min"], payload["target_range"]
+    if "target_min_range" in payload:
+        return payload["target_min_range"]
+    raise KeyError("Temperature checkpoint payload is missing target normalization data")
+
+def _load_temperature_model( # Loading function for get_T FCNN for isentropic models
+    checkpoint_path: Path,
+    device: torch.device,
+): # -> Tuple[VariableGeometryFCNNRegressor, Dict, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    payload = torch.load(checkpoint_path, map_location=device)
+    model_config = payload.get("model_config")
+    if not model_config:
+        raise KeyError(f"Missing model_config in temperature checkpoint: {checkpoint_path}")
+
+    model = VariableGeometryFCNNRegressor(
+        input_dim=int(model_config["input_dim"]),
+        output_dim=int(model_config["output_dim"]),
+        hidden_dims=list(model_config["hidden_dims"]),
+        activation_leak=float(model_config.get("activation_leak", 0.05)),
+        dropout=float(model_config.get("dropout", 0.0)),
+    )
+    model.load_state_dict(payload["state_dict"])
+    model.to(device)
+    model.eval()
+
+    x_min, x_range = _get_input_min_range(payload)
+    y_min, y_range = _get_target_min_range(payload)
+    return model, payload, x_min, x_range, y_min, y_range
 
 class TunableModel(nn.Module):
     def __init__(self,
@@ -619,9 +657,9 @@ class MidLevelNetwork(TunableModel):
         illegal = NegS > PosS
 
         if illegal.any():
-            print(PosS[illegal])
-            print(NegS[illegal])
-            print(torch.where(illegal))
+            #print(PosS[illegal])
+            #print(NegS[illegal])
+            #print(torch.where(illegal))
             denom = (
                 2 * intensiveComponents[illegal, opx_jadeite]
                 + 3 * intensiveComponents[illegal, opx_essenite]
@@ -631,7 +669,7 @@ class MidLevelNetwork(TunableModel):
 
             # Rows (batch indices) where constraint is violated
             row_idx = torch.nonzero(illegal, as_tuple=False).squeeze(-1).to(torch.int)
-            print(row_idx)
+            #print(row_idx)
             # Column indices (orthopyroxene subset)
             cols_pos = torch.tensor(
                 opx_pos_idxs, device=intensiveComponents.device, dtype=torch.int
@@ -643,8 +681,8 @@ class MidLevelNetwork(TunableModel):
             # Build broadcastable index grids
             rr_pos, cc_pos = torch.meshgrid(row_idx, cols_pos, indexing="ij")
             rr_neg, cc_neg = torch.meshgrid(row_idx, cols_neg, indexing="ij")
-            print(intensiveComponents[rr_pos, cc_pos])
-            print(intensiveComponents[rr_neg, cc_neg])
+            #print(intensiveComponents[rr_pos, cc_pos])
+            #print(intensiveComponents[rr_neg, cc_neg])
 
             # Scale updates
             intensiveComponents[rr_pos, cc_pos] = a[:, None] * intensiveComponents[rr_pos, cc_pos]
@@ -673,7 +711,7 @@ class MidLevelNetwork(TunableModel):
             # First form indexers
             # Rows (batch indices) where constraint is violated
             row_idx = torch.nonzero(illegal, as_tuple=False).squeeze(-1).to(torch.int)
-            print(row_idx)
+            #print(row_idx)
             # Column indices (spinel subset)
             cols_pos = torch.tensor(pos_idxs, device=intensiveComponents.device, dtype=torch.int)
             cols_neg = torch.tensor(sp_spinel, device=intensiveComponents.device, dtype=torch.int)
@@ -682,8 +720,8 @@ class MidLevelNetwork(TunableModel):
             rr_pos, cc_pos = torch.meshgrid(row_idx, cols_pos, indexing="ij")
             rr_neg, cc_neg = torch.meshgrid(row_idx, cols_neg, indexing="ij")
             A = torch.sum(intensiveComponents[rr_pos, cc_pos], dim=-1)
-            print(PosS[illegal])
-           # print(NegS[illegal.unsqueeze(-1)])
+            #print(PosS[illegal])
+            #print(NegS[illegal.unsqueeze(-1)])
             #print(torch.where(illegal))
             denom = (19*A) + PosS[illegal] 
             a = 19.0 / denom
@@ -826,8 +864,8 @@ class MidLevelNetwork(TunableModel):
                     ),
                     indexing="ij",
                 )
-                print('SPINEL COMPOSITIONS:')
-                print(intensiveComponents[rr_e, cc_e])
+                #print('SPINEL COMPOSITIONS:')
+                #print(intensiveComponents[rr_e, cc_e])
                 if trial == 2:
                     raise ValueError('Negative Spinel Solve failed! Singular Matrix?')
                 intensiveComponents = self.polish_negative_spFe(intensiveComponents)
@@ -930,7 +968,7 @@ class MidLevelNetwork(TunableModel):
                 unexplained_oxides = ((x[:, len(self.ml_indexer.featureNames):]==0).to(torch.float32) + present_oxides) == 0
                 if unexplained_oxides.any():
                     force_count += 1
-                    assert force_count <= 10, "Phase forcing did not satisfy mass balance even after 10 iterations"
+                    assert force_count <= 3, "Phase forcing did not satisfy mass balance even after 3 iterations"
                     unexplained_rows = torch.sum(unexplained_oxides, dim=1) > 0
                     unexplained_columns = torch.sum(unexplained_oxides, dim=0) 
                     for col_idx in torch.where(unexplained_columns)[0]:
