@@ -33,4 +33,8 @@ Let there be a ChangeLog for each major version of the codebase.
 {Never look in or do anything within any folder labeled "legacy" without explicit instructions to do so. This code is old and will be deleted soon. It is kept for human reference only.}
 {Never use emojis or unusual characters in print statements: they can cause errors when writing to and parsing log files.
 For instance, instead of '→', use '->'}
+{Avoid short helper functions. If a function can be written in 3 lines or less, write it inline.}
+{If something can be vectorized, vectorize it. This module is built for speed.}
+{When programming tests, always use the code from the repository directly. Never copy or redundantly reproduce code from the repository, as it does not truly represent the state of the tested codebase.}
+{Silent failures are bad. Never hide failures; errors should stop code execution. Never write something like `try: ... except: pass` }
 ```

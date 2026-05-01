@@ -13,11 +13,32 @@ import pandas as pd
 import torch
 from pathlib import Path
 from typing import Optional, Sequence, Tuple, Union, Dict, Any
+import burnman
+import sys
+import time
+import copy
+
+src_path = str(Path(__file__).parent.parent.parent)
+if src_path not in sys.path:
+    sys.path.insert(0, src_path)
+file_path = str(Path(__file__).parent)
+if file_path not in sys.path:
+    sys.path.insert(0, file_path)
+base_path = str(Path(__file__).parent.parent.parent.parent)
+if base_path not in sys.path:
+    sys.path.insert(0, base_path)
 
 from .NN import _load_temperature_model
 from .emulator import NN_MELTS
 from ..utils.math_utils import Normalizer
-from .EOS_arithmetic import get_hefesto_physub_context, compute_physub_bulk_matrix
+from .EOS_arithmetic import (
+    get_hefesto_physub_context,
+    compute_physub_bulk_matrix as _compute_physub_bulk_matrix,
+    compute_physub_properties as _compute_physub_properties,
+)
+
+
+
 
 aliases = {
     'T': 'T(K)(System_main)',
@@ -39,6 +60,18 @@ aliases = {
     'pressure': 'P(GPa)(System_main)',
     'pressure(GPa)': 'P(GPa)(System_main)',
 }
+
+burnman_phase_aliases = {
+    'spinel':'mg_fe_aluminous_spinel',
+    'hp-clinopyroxene':'c2c_pyroxene',
+    'ca-perovskite':'ca_perovskite',
+    'akimotoite':'ilmenite',
+    'post-perovskite':'post_perovskite',
+    'ca-ferrite':'cf',
+    'gamma-iron':'gamma_fcc_iron',
+    'epsilon-iron':'epsilon_hcp_iron',
+}
+    
 
 class InputParser:
     """
@@ -408,6 +441,12 @@ class HeFESToAPI:
         self.isothermal_emulator = self._load_emulator(
             isothermal_model_path, device
         )
+        # Build Burnman input translator
+        phase_names = self.isothermal_emulator.ml_indexer.all_phases
+        self.burnman_translator = {phase:phase for phase in phase_names} # Most identical, now map exceptions
+        
+        for hefesto_name, burnman_name in burnman_phase_aliases.items():
+            self.burnman_translator[hefesto_name] = burnman_name
         
         if verbose:
             print(f"  Loading isentropic emulator: {isentropic_model_path}")
@@ -430,6 +469,79 @@ class HeFESToAPI:
         
         if verbose:
             print("[INFO] HeFESToAdiabatAPI initialized successfully.")
+
+        self.burnman_minerals = {phase_name: getattr(burnman.minerals.SLB_2024, self.burnman_translator[phase_name])() for phase_name in self.isothermal_emulator.ml_indexer.all_phases}
+
+    def get_property_burnman_from_assemblage(
+        self,
+        intensive_moles: torch.Tensor,
+        phase_moles: torch.Tensor,
+        PT: torch.Tensor,
+        property_names = ['S', 'rho', 'v_p', 'v_s', 'molar_mass']):
+    
+        """
+        Compute properties for a given assemblage using Burnman.
+        
+        Parameters
+        ----------
+        intensive_moles : np.array
+            (N, C) tensor of intensive component moles from emulator output
+        phase_moles : np.array
+            (N, P) tensor of phase moles from emulator output
+        PT : np.array   
+            (N, 2) tensor of pressure and temperature values
+        property_names : sequence of str
+            List of properties recongnized by burnman to compute (e.g., ['bulk_modulus', 'density'])
+        
+        Returns
+        -------
+        numpy.ndarray
+            Array of shape (N, len(property_names)) with computed properties for each assemblage
+        """
+
+        time_start = time.time()
+
+        nrows = intensive_moles.shape[0]
+
+        assert nrows == phase_moles.shape[0], "Batch size of intensive_moles and phase_moles must match"
+
+        outmatrix = np.zeros((nrows, len(property_names)), dtype=np.float32)
+
+        for i in range(nrows):
+            nonzero_phase_idx = np.where(phase_moles[i] > 0)[0]
+            #print(f"idx: {nonzero_phase_idx}")
+            moles = phase_moles[i, nonzero_phase_idx]
+            total_moles = moles.sum()
+            phase_input = {}
+            for idx in nonzero_phase_idx:
+                phase_name = self.isothermal_emulator.ml_indexer.all_phases[idx]
+                #print(f"Processing {phase_moles_cpu[i, idx]} moles of phase: {phase_name}")
+                burnman_phase_name = self.burnman_translator[phase_name]
+                if burnman_phase_name is None:
+                    raise ValueError(f"Phase '{phase_name}' not recognized in Burnman translator")
+                try:
+                    phase_input[burnman_phase_name] = self.burnman_minerals[phase_name]
+                    #phase_input[burnman_phase_name].set_method('slb3')
+                except Exception as e:
+                    raise ValueError(f"Error loading Burnman phase '{burnman_phase_name}': {e}")
+                
+                if phase_name in self.isothermal_emulator.ml_indexer.compositionally_variable_phases:
+                    #print(f"{phase_name} is compositionally variable, setting composition from emulator output: {intensive_moles_cpu[i,self.isothermal_emulator.ml_indexer.label_indices_comp[phase_name]]}")
+                    phase_input[burnman_phase_name].set_composition(intensive_moles[i,self.isothermal_emulator.ml_indexer.label_indices_comp[phase_name]].tolist())
+
+            assemblage = burnman.Composite(phases=[phase_input[phase] for phase in phase_input.keys()], 
+                    fractions=(moles/total_moles).tolist(),
+                    fraction_type='molar',
+                    name='rock')
+            assemblage.set_state(PT[i,0].item()*1e9, PT[i,1].item()) # Convert GPa to Pa for Burnman
+            for j, prop in enumerate(property_names):
+                try:
+                    outmatrix[i, j] = getattr(assemblage, prop)
+                except Exception as e:
+                    raise ValueError(f"Error computing property '{prop}' for assemblage: {e}")
+            
+        print(f"Burnman property computation for {nrows} assemblages and properties {property_names} took {time.time() - time_start:.2f} seconds")
+        return outmatrix, property_names
     
     @staticmethod
     def _load_emulator(model_path: Union[str, Path], device: str) -> NN_MELTS:
@@ -653,7 +765,7 @@ class HeFESToAPI:
             print("  [4/4] Predicting temperatures (staged)...")
         
         temp_input_norm = self.temp_input_normalizer.norm(pred_component_moles)
-        
+
         with torch.no_grad():
             temp_output_norm = self._staged_forward(
                 self.temperature_model,
@@ -662,35 +774,21 @@ class HeFESToAPI:
             )
             if not isinstance(temp_output_norm, (list, tuple)):
                 temp_output_norm = [temp_output_norm]
-        
+
         temperatures_norm = temp_output_norm[0]
         temperatures_pred = self.temp_output_normalizer.denorm(temperatures_norm)
         temperatures_pred = temperatures_pred.squeeze(-1)
-        
+
         # Step 5: Reorganize output to (N_input, P) shape
         temperatures_grid = temperatures_pred.reshape(n_input, n_press)
         pressures_grid = torch.tensor(
             np.tile(pressures, (n_input, 1)), device=self.device, dtype=torch.float32
         )
-        
+
         if self.verbose:
             print(f"  Output shapes: {temperatures_grid.shape}")
-        
+
         return temperatures_grid, pressures_grid
-    
-    def _create_iso_design_matrix(
-        self,
-        base_features: torch.Tensor,
-        pressures: np.ndarray,
-        temp_idx: int,
-        pressure_idx: int,
-        potential_temperatures: Optional[np.ndarray] = None,
-    ) -> np.ndarray:
-        """Create design matrix for isentropic evaluation."""
-        base_feat_np = base_features.detach().cpu().numpy()
-        n_input = base_feat_np.shape[0]
-        n_feat = base_feat_np.shape[1]
-        n_press = len(pressures)
         
         # Create output design matrix
         design = np.zeros(
@@ -889,7 +987,7 @@ class HeFESToAPI:
             return_type='torch'
         )
         
-        return reordered.to(self.device)
+        return reordered.to(self.device), 'isentropic' if has_entropy else 'isothermal'
 
 
 
@@ -935,15 +1033,14 @@ class HeFESToAPI:
             Whatever the underlying emulator.forwardMB returns, assembled over
             batches if needed.
         """
-        features = self.parse_input(table, headers=headers, composition_space=composition_space)
+        features, modeltype = self.parse_input(table, headers=headers, composition_space=composition_space)
 
-        model_key = str(model).strip().lower()
-        if model_key in {'isothermal', 'iso'}:
+        if modeltype == 'isothermal':
             emulator = self.isothermal_emulator
-        elif model_key in {'isentropic', 'isentrope', 'adiabat', 'adiabatic'}:
+        elif modeltype == 'isentropic':
             emulator = self.isentropic_emulator
         else:
-            raise ValueError("model must be 'isothermal' or 'isentropic'")
+            raise ValueError(f"parser determined model is not recognized: {modeltype} must be 'isothermal' or 'isentropic'")
 
         return self._staged_forward(
             emulator.forwardMB,
@@ -997,15 +1094,14 @@ class HeFESToAPI:
             Whatever the underlying emulator.forwardMB returns, assembled over
             batches if needed.
         """
-        features = self.parse_input(table, headers=headers, composition_space=composition_space)
+        features, modeltype = self.parse_input(table, headers=headers, composition_space=composition_space)
 
-        model_key = str(model).strip().lower()
-        if model_key in {'isothermal', 'iso'}:
+        if modeltype == 'isothermal':
             emulator = self.isothermal_emulator
-        elif model_key in {'isentropic', 'isentrope', 'adiabat', 'adiabatic'}:
+        elif modeltype == 'isentropic':
             emulator = self.isentropic_emulator
         else:
-            raise ValueError("model must be 'isothermal' or 'isentropic'")
+            raise ValueError(f"parser determined model is not recognized: {modeltype} must be 'isothermal' or 'isentropic'")
 
         return self._staged_forward(
             emulator.forwardNN,
@@ -1016,6 +1112,193 @@ class HeFESToAPI:
             comp_table_out=comp_table_out,
             outputs=outputs,
         )
+
+    def get_physub_bulk_matrix(
+        self,
+        table: Union[pd.DataFrame, np.ndarray, torch.Tensor, Sequence],
+        headers: Optional[Sequence[str]] = None,
+        composition_space: Optional[str] = None, # What is this
+        temperature_k: Optional[float] = None,
+        batch_size: int = 2**16,
+        normalize_features: bool = True,
+        wt_percent: bool = False,
+        comp_table_out: str = 'oxides', # Why is this here
+        component_attributes: Optional[Dict[str, torch.Tensor]] = None, # What is this
+        selectors: Optional[Sequence[str]] = None, # w
+    ) -> Tuple[torch.Tensor, Tuple[str, ...]]:
+        """Compute a physub bulk-property matrix from table-style inputs."""
+        features, modeltype = self.parse_input(table, headers=headers, composition_space=composition_space)
+
+        if modeltype == 'isothermal':
+            emulator = self.isothermal_emulator
+        elif modeltype == 'isentropic':
+
+            emulator = self.isentropic_emulator
+        else:
+            raise ValueError(f"parser determined model is not recognized: {modeltype} must be 'isothermal' or 'isentropic'")
+
+        component_output = self._staged_forward(
+            emulator.forwardMB,
+            features,
+            batch_size,
+            Normalize=normalize_features,
+            WtPercent=wt_percent,
+            comp_table_out=comp_table_out,
+            outputs=['component_moles'],
+        )
+
+        if not isinstance(component_output, dict) or 'component_moles' not in component_output:
+            raise TypeError("forwardMB did not return component_moles as expected")
+
+        component_moles_model = component_output['component_moles'].detach().cpu()
+        component_names = list(emulator.ml_indexer.label_names)
+        aligned_component_moles = self.hefesto_context.align_component_tensor(
+            component_moles_model,
+            component_names=component_names,
+        )
+
+        # Extract pressure/temperature from features if available
+        feat_names = list(emulator.ml_indexer.featureNames)
+        pressure_idx = None
+        temp_idx = None
+        for i, n in enumerate(feat_names):
+            ln = str(n).lower()
+            if pressure_idx is None and ('p(gpa)' in ln or 'pressure' in ln or ln.startswith('p(')):
+                pressure_idx = i
+            if temp_idx is None and ('t(k)' in ln or 'temperature' in ln or ln.startswith('t(')):
+                temp_idx = i
+
+        features_cpu = features.detach().cpu()
+        pressures_gpa = None
+        if pressure_idx is not None:
+            pressures_gpa = features_cpu[:, pressure_idx].to(torch.float32)
+
+        # Determine per-row temperatures
+        if temperature_k is None:
+            if temp_idx is not None:
+                temperatures = features_cpu[:, temp_idx].to(torch.float32)
+            else:
+                temps_t = self.get_T(features, normalize_features=normalize_features)
+                temperatures = temps_t.detach().cpu().numpy().astype(float)
+        else:
+            temperatures = None
+
+        # Prepare mapping and phase membership
+        phase_to_comp = emulator.phaseToCompMap.detach().cpu()  # (P, C) in emulator ordering
+        phase_names = list(getattr(emulator.ml_indexer, 'all_phases', []))
+        comp_names_model = component_names
+
+        physub_mod = __import__('nMELTS.engine.EOS_arithmetic.hefesto_physub', fromlist=['PHYSUB_BULK_ATTRIBUTE_NAMES'])
+        names = tuple(getattr(physub_mod, 'PHYSUB_BULK_ATTRIBUTE_NAMES', tuple()))
+
+        rows = []
+        for r in range(aligned_component_moles.shape[0]):
+            # Use model-ordered component moles to get phase-wise distribution
+            comp_row_model = component_moles_model[r].float()
+            phase_comp = (phase_to_comp * comp_row_model.unsqueeze(0)).float()  # (P, C)
+
+            t_k = float(temperature_k) if temperature_k is not None else float(temperatures[r])
+            comp_attrs = self.hefesto_context.compute_component_attributes_at_temperature(
+                temperature_k=t_k, batch_size=1, device=torch.device('cpu')
+            )
+
+            # Build phase states
+            phase_states = []
+            for p_idx, phase_name in enumerate(phase_names):
+                species_states = []
+                # compute phase mass and volume
+                phase_mass = 0.0
+                phase_volume = 0.0
+                for c_idx in range(phase_comp.shape[1]):
+                    amt = float(phase_comp[p_idx, c_idx].item())
+                    if amt <= 0.0:
+                        continue
+                    comp_label = comp_names_model[c_idx]
+                    hef_idx = self.hefesto_context.component_index.get(comp_label)
+                    if hef_idx is None:
+                        continue
+                    molar_mass = float(self.hefesto_context.parameter_records[comp_label].value('formula_mass_g_mol'))
+                    molar_vol = float(comp_attrs['molar_volume'][0, hef_idx].item())
+                    phase_mass += amt * molar_mass
+                    phase_volume += amt * molar_vol
+
+                if phase_mass <= 0.0 or phase_volume <= 0.0:
+                    continue
+
+                phase_density = phase_mass / phase_volume
+
+                for c_idx in range(phase_comp.shape[1]):
+                    amt = float(phase_comp[p_idx, c_idx].item())
+                    if amt <= 0.0:
+                        continue
+                    comp_label = comp_names_model[c_idx]
+                    hef_idx = self.hefesto_context.component_index.get(comp_label)
+                    if hef_idx is None:
+                        continue
+
+                    molar_mass = float(self.hefesto_context.parameter_records[comp_label].value('formula_mass_g_mol'))
+                    molar_vol = float(comp_attrs['molar_volume'][0, hef_idx].item())
+                    bulk_mod = float(comp_attrs['bulk_modulus'][0, hef_idx].item())
+                    shear_mod = float(comp_attrs['shear_modulus'][0, hef_idx].item())
+                    cp_val = float(comp_attrs['heat_capacity_p'][0, hef_idx].item())
+                    cv_val = float(comp_attrs['heat_capacity_v'][0, hef_idx].item())
+                    alpha_val = float(comp_attrs['thermal_expansivity'][0, hef_idx].item())
+                    entropy_val = float(comp_attrs['entropy'][0, hef_idx].item())
+                    enthalpy_val = float(comp_attrs['enthalpy'][0, hef_idx].item())
+                    gibbs_val = float(comp_attrs['gibbs'][0, hef_idx].item())
+
+                    species_state = __import__('nMELTS.engine.EOS_arithmetic.hefesto_physub', fromlist=['HeFESToSpeciesState']).HeFESToSpeciesState(
+                        name=comp_label,
+                        phase_name=phase_name,
+                        amount=amt,
+                        molar_mass=molar_mass,
+                        molar_volume=molar_vol,
+                        density=phase_density,
+                        bulk_modulus_t=bulk_mod,
+                        bulk_modulus_s=bulk_mod,
+                        shear_modulus=shear_mod,
+                        heat_capacity_p=cp_val,
+                        heat_capacity_v=cv_val,
+                        thermal_expansivity=alpha_val,
+                        entropy=entropy_val,
+                        enthalpy=enthalpy_val,
+                        gibbs=gibbs_val,
+                    )
+                    species_states.append(species_state)
+
+                if species_states:
+                    PhaseState = __import__('nMELTS.engine.EOS_arithmetic.hefesto_physub', fromlist=['HeFESToPhaseState']).HeFESToPhaseState
+                    phase_states.append(PhaseState(name=phase_name, species=tuple(species_states)))
+
+            # compute bulk properties from phase assemblage
+            pressure_val = float(pressures_gpa[r]) if pressures_gpa is not None else 0.0
+            bulk_props = _compute_physub_properties(phase_states, pressure_gpa=pressure_val, temperature_k=t_k)
+
+            # build vector ordered by PHYSUB_BULK_ATTRIBUTE_NAMES
+            row_vals = []
+            for nm in names:
+                mapping = {
+                    'density': getattr(bulk_props, 'density', 0.0),
+                    'Vb': getattr(bulk_props, 'bulk_sound_velocity', 0.0),
+                    'Vs': getattr(bulk_props, 'shear_velocity', 0.0),
+                    'Vp': getattr(bulk_props, 'pressure_velocity', 0.0),
+                    'K_Hill': getattr(bulk_props, 'bulk_modulus_hill', 0.0),
+                    'G_Hill': getattr(bulk_props, 'shear_modulus_hill', 0.0),
+                    'cp': getattr(bulk_props, 'heat_capacity_p', 0.0),
+                    'Cv': getattr(bulk_props, 'heat_capacity_v', 0.0),
+                    'alpha': getattr(bulk_props, 'thermal_expansivity', 0.0),
+                    'gamma': getattr(bulk_props, 'gruneisen_parameter', 0.0),
+                    'entropy': getattr(bulk_props, 'entropy', 0.0),
+                    'enthalpy': getattr(bulk_props, 'enthalpy', 0.0),
+                    'gibbs': getattr(bulk_props, 'gibbs', 0.0),
+                }
+                row_vals.append(float(mapping.get(nm, 0.0)))
+
+            rows.append(row_vals)
+
+        import numpy as _np
+        bulk_matrix = torch.tensor(_np.vstack(rows), dtype=torch.float32)
+        return bulk_matrix, names
         
 
 
@@ -1027,27 +1310,25 @@ _models_dir = _this_file_dir / "TrainedModels" / "HeFESTo_Adiabats"
 adiabat_NPT_path = _models_dir / "HeFESTo_adiabats_NPT.tar"
 adiabat_NPS_path = _models_dir / "HeFESTo_adiabats_NPS.tar"
 adiabat_TfromS_path = _models_dir / "T_from_S_HeFESTo_adiabats.pt"
-
+print(f"[INFO] Looking for HeFESTo model at: {adiabat_NPT_path}")
 # Only instantiate emulators if model files exist
 HeFESToEmulatorCPU = None
 HeFESToEmulatorGPU = None
 
-try:
-    if adiabat_NPT_path.exists() and adiabat_NPS_path.exists() and adiabat_TfromS_path.exists():
-        HeFESToEmulatorCPU = HeFESToAPI(
+
+if adiabat_NPT_path.exists() and adiabat_NPS_path.exists() and adiabat_TfromS_path.exists():
+    HeFESToEmulatorCPU = HeFESToAPI(
+        isothermal_model_path=str(adiabat_NPT_path),
+        isentropic_model_path=str(adiabat_NPS_path),
+        temperature_model_path=str(adiabat_TfromS_path),
+        device='cpu'
+    )
+
+    if torch.cuda.is_available():
+        HeFESToEmulatorGPU = HeFESToAPI(
             isothermal_model_path=str(adiabat_NPT_path),
             isentropic_model_path=str(adiabat_NPS_path),
             temperature_model_path=str(adiabat_TfromS_path),
-            device='cpu'
+            device='cuda'
         )
-
-        if torch.cuda.is_available():
-            HeFESToEmulatorGPU = HeFESToAPI(
-                isothermal_model_path=str(adiabat_NPT_path),
-                isentropic_model_path=str(adiabat_NPS_path),
-                temperature_model_path=str(adiabat_TfromS_path),
-                device='cuda'
-            )
-except Exception as _e:
-    pass  # Model files not available at import time
 
