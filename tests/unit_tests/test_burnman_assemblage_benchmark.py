@@ -22,13 +22,16 @@ import sys
 src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
-file_path = str(Path(__file__).parent)
+"""file_path = str(Path(__file__).parent)
 if file_path not in sys.path:
     sys.path.insert(0, file_path)
 base_path = str(Path(__file__).parent.parent.parent.parent)
 if base_path not in sys.path:
-    sys.path.insert(0, base_path)
+    sys.path.insert(0, base_path)"""
 
+# Import API and HeFESTo functions
+
+from src.nMELTS.engine.API import HeFESToEmulatorGPU
 
 def load_hefesto_module():
     """Load HeFESTo_functions module."""
@@ -47,39 +50,73 @@ def load_hefesto_module():
 def compare_and_report(burnman_out, burnman_names, hef_result):
     """Compare Burnman outputs against HeFESTo ground truth with unit conversion."""
     fort56 = hef_result.get('fort56_bulk', {})
-    mapping = []  # list of tuples (label, burnman_col_index, gt_array, conversion_fn)
+    is_dict_output = isinstance(burnman_out, dict)
+    burnman_array = None
+    burnman_name_list = None
 
-    # S: burnman 'S' (J/kg/K) -> 'S(J/g/K)' (J/g/K = J/kg/K / 1000)
-    if 'S(J/g/K)' in fort56 and 'S' in burnman_names:
-        idx = burnman_names.index('S')
-        MM_idx = burnman_names.index('molar_mass') if 'molar_mass' in burnman_names else None
-        burnman_out[:,idx] /= burnman_out[:,MM_idx] # (J/mol/K) -> (J/kg/K)
-        mapping.append(('S(J/g/K)', idx, fort56['S(J/g/K)'], lambda x: x / 1000.0))
+    if is_dict_output:
+        for key, values in burnman_out.items():
+            arr = np.asarray(values)
+            if arr.ndim != 1:
+                raise ValueError(
+                    f"Expected 1D vector for burnman_out['{key}'], got shape {arr.shape}"
+                )
+    else:
+        burnman_array = np.asarray(burnman_out)
+        if burnman_array.ndim != 2:
+            raise ValueError(
+                f'Expected 2D burnman_out array, got shape {burnman_array.shape}'
+            )
+        if burnman_names is None:
+            raise ValueError('burnman_names is required when burnman_out is an array.')
+        burnman_name_list = list(burnman_names)
+
+    def has_property(name: str) -> bool:
+        if is_dict_output:
+            return name in burnman_out
+        return name in burnman_name_list
+
+    def get_property(name: str) -> np.ndarray:
+        if is_dict_output:
+            return np.asarray(burnman_out[name], dtype=float)
+        idx = burnman_name_list.index(name)
+        return np.asarray(burnman_array[:, idx], dtype=float)
+
+    mapping = []  # list of tuples (gt_label, burnman_prop_name, gt_array, converter_fn)
+
+    # S: burnman 'S' (J/mol/K) -> J/kg/K via molar_mass, then -> J/g/K
+    #if 'S(J/g/K)' in fort56 and has_property('entropy_by_mass'):
+
+    mapping.append(
+        ('S(J/g/K)', 'entropy_by_mass', fort56['S(J/g/K)'], lambda x: x / 1000.0)
+    )
 
     # rho: burnman 'rho' (kg/m3) -> 'rho(g/cm^3)' (g/cm3 = kg/m3 / 1000)
-    if 'rho(g/cm^3)' in fort56 and 'rho' in burnman_names:
-        idx = burnman_names.index('rho')
-        mapping.append(('rho(g/cm^3)', idx, fort56['rho(g/cm^3)'], lambda x: x / 1000.0))
+    #if 'rho(g/cm^3)' in fort56 and has_property('density'):
+    mapping.append(('rho(g/cm^3)', 'density', fort56['rho(g/cm^3)'], lambda x: x / 1000.0))
 
     # VP/VS: burnman 'v_p'/'v_s' (m/s) -> 'VP(km/s)'/'VS(km/s)' (km/s = m/s / 1000)
-    if 'VP(km/s)' in fort56 and 'v_p' in burnman_names:
-        idx = burnman_names.index('v_p')
-        mapping.append(('VP(km/s)', idx, fort56['VP(km/s)'], lambda x: x / 1000.0))
-    if 'VS(km/s)' in fort56 and 'v_s' in burnman_names:
-        idx = burnman_names.index('v_s')
-        mapping.append(('VS(km/s)', idx, fort56['VS(km/s)'], lambda x: x / 1000.0))
+    #if 'VP(km/s)' in fort56 and has_property('p_wave_velocity'):
+    mapping.append(('VP(km/s)', 'p_wave_velocity', fort56['VP(km/s)'], lambda x: x / 1000.0))
+    #if 'VS(km/s)' in fort56 and has_property('s_wave_velocity'):
+    mapping.append(('VS(km/s)', 's_wave_velocity', fort56['VS(km/s)'], lambda x: x / 1000.0))
+
+    #if 'KT(GPa)' in fort56 and has_property('isothermal_bulk_modulus_reuss'):
+    mapping.append(('KS(GPa)', 'isentropic_bulk_modulus_reuss', fort56['KS(GPa)'], lambda x : x / 1E9))
 
     if len(mapping) == 0:
         print('No overlapping properties found between Burnman outputs and HeFESTo fort.56 ground truth.')
         return
 
     report = []
-    for (gt_label, b_idx, gt_arr, conv) in mapping:
+    print(mapping)
+    for (gt_label, burnman_prop, gt_arr, conv) in mapping:
         gt = np.asarray(gt_arr, dtype=float)
-        pred_raw = burnman_out[:, b_idx]
+        pred_raw = get_property(burnman_prop)
         pred = conv(pred_raw)
         mask = np.isfinite(pred) & np.isfinite(gt)
         if not np.any(mask):
+            print(f'No valid data for {gt_label}!')
             continue
         diff = pred[mask] - gt[mask]
         mae = np.mean(np.abs(diff))
@@ -99,13 +136,7 @@ def main():
     p.add_argument('--sim-dir', required=True, help='Path to a HeFESTo Simulation directory (contains fort.99 etc)')
     args = p.parse_args()
 
-    # Import API and HeFESTo functions
-    try:
-        from src.nMELTS.engine.API import HeFESToEmulatorCPU
-        if HeFESToEmulatorCPU is None:
-            raise RuntimeError('HeFESToEmulatorCPU not available (models not found at import)')
-    except ImportError as exc:
-        raise RuntimeError(f'Failed to import HeFESToEmulatorCPU: {exc}')
+
 
     hef = load_hefesto_module()
 
@@ -115,28 +146,39 @@ def main():
         sys.exit(2)
 
     # Load ground truth
-    gt = hef.extract_bulk_properties_from_simulation_dir(str(sim_dir))
+    gt = hef.extract_bulk_properties_from_simulation_dir(str(sim_dir), repeat=10)
 
     # Get indexer from emulator
-    indexer = HeFESToEmulatorCPU.isentropic_emulator.ml_indexer
+    indexer = HeFESToEmulatorGPU.isentropic_emulator.ml_indexer
     comp_names = gt['component_names']
 
     # Load P, VC using the helper function
-    VC, P = hef.load_fort99_component_moles_and_labels(str(sim_dir), indexer)
-
+    #VC, P = hef.load_fort99_component_moles_and_labels(str(sim_dir), indexer)
+    componentMoles = hef.load_fort99_componentMoles(str(sim_dir), indexer)
+    componentMoles = np.repeat(componentMoles, 10, axis=0)
+    print(componentMoles.shape)
     # Build PT matrix from fort56
     fort56 = gt['fort56_bulk']
     P_gpa = fort56['P(GPa)']
     T_k = fort56['T(K)']
-    PT = np.stack([P_gpa, T_k], axis=1)
-
+    PT = np.stack([P_gpa*1E9, T_k], axis=1)
+    print(PT.shape)
 
     # Use the API method to compute Burnman properties
+    print('Computing Burnman properties via HeFESToAPI.get_property_burnman_vectorized_from_assemblage()...')
+    property_names = ['entropy_by_mass', 'density', 'p_wave_velocity', 's_wave_velocity', 'isentropic_bulk_modulus_reuss']
+
+    burnman_out, returnednames = HeFESToEmulatorGPU.get_property_burnman_vectorized_from_assemblage(
+       torch.tensor(componentMoles, dtype=torch.float64, device='cuda'), torch.tensor(PT, dtype=torch.float64, device='cuda'), 
+       property_names= property_names
+    )
+
+    """# Use the API method to compute Burnman properties
     print('Computing Burnman properties via HeFESToAPI.get_property_burnman_from_assemblage()...')
-    property_names = ['S', 'rho', 'v_p', 'v_s', 'molar_mass']
+    property_names = ['S', 'rho', 'v_p', 'v_s', 'molar_mass', 'K_T']
     burnman_out, returnednames = HeFESToEmulatorCPU.get_property_burnman_from_assemblage(
        VC, P, PT, property_names=property_names
-    )
+    )"""
 
     compare_and_report(burnman_out, returnednames, gt)
 

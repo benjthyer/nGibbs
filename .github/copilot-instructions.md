@@ -18,8 +18,8 @@ Outside files though are free to reference the contents of src/nMELTS.
 
 Always refer to [ml_indexer_readme.md](..\src\nMELTS\config\README_MLIndexer.md) for the most up-to-date documentation on how the contents of ml_indexer(), which is used all over the codebase.
 
-## Build and Test
-{For now, no automatic testing, although test suggestions are welcome}
+When the user speaks about "intensive components", they are speaking about phase-wise normalized component fractions in tensor of shape (B, VC). 
+When the user speaks about "extensive components", they are speaking about the total amounts of each component in the system in a tensor of shape (B, C)
 
 ## Project Conventions
 {Every time the agent codes, the changes should be documented in the ChangeLogs folder. 
