@@ -13,10 +13,11 @@ import pandas as pd
 import torch
 from pathlib import Path
 from typing import Optional, Sequence, Tuple, Union, Dict, Any
-import burnman
 import sys
 import time
 import copy
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 
 src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
@@ -28,16 +29,20 @@ base_path = str(Path(__file__).parent.parent.parent.parent)
 if base_path not in sys.path:
     sys.path.insert(0, base_path)
 
+from nMELTS.engine.EOS_arithmetic.vector_composite import VectorComposite
+import nMELTS.engine.EOS_arithmetic.solutionmodel as vsm
+import EOS_arithmetic.burnman as burnman
+
 from .NN import _load_temperature_model
 from .emulator import NN_MELTS
 from ..utils.math_utils import Normalizer
-from .EOS_arithmetic import (
+"""from .EOS_arithmetic import (
     get_hefesto_physub_context,
     compute_physub_bulk_matrix as _compute_physub_bulk_matrix,
     compute_physub_properties as _compute_physub_properties,
-)
-
-
+)"""
+from .EOS_arithmetic.param_state import PHYSUB_BULK_ATTRIBUTE_NAMES
+from .EOS_arithmetic.api import calculate_bulk_properties, _compute_bulk_properties_batch
 
 
 aliases = {
@@ -460,9 +465,9 @@ class HeFESToAPI:
         self._setup_temperature_model(temperature_model_path)
         
         # Load HeFESTo physub context
-        if verbose:
+        """if verbose:
             print("  Loading HeFESTo physub context...")
-        self.hefesto_context = get_hefesto_physub_context()
+        self.hefesto_context = get_hefesto_physub_context()"""
         
         # Setup parser
         self.parser = InputParser(self.isothermal_emulator)
@@ -471,13 +476,15 @@ class HeFESToAPI:
             print("[INFO] HeFESToAdiabatAPI initialized successfully.")
 
         self.burnman_minerals = {phase_name: getattr(burnman.minerals.SLB_2024, self.burnman_translator[phase_name])() for phase_name in self.isothermal_emulator.ml_indexer.all_phases}
+        #print(self.burnman_minerals)
 
     def get_property_burnman_from_assemblage(
         self,
         intensive_moles: torch.Tensor,
         phase_moles: torch.Tensor,
         PT: torch.Tensor,
-        property_names = ['S', 'rho', 'v_p', 'v_s', 'molar_mass']):
+        dtype = torch.float64,
+        property_names = ['S', 'rho', 'v_p', 'v_s', 'molar_mass', 'K_T', 'K_S']):
     
         """
         Compute properties for a given assemblage using Burnman.
@@ -507,42 +514,167 @@ class HeFESToAPI:
 
         outmatrix = np.zeros((nrows, len(property_names)), dtype=np.float32)
 
-        for i in range(nrows):
-            nonzero_phase_idx = np.where(phase_moles[i] > 0)[0]
-            #print(f"idx: {nonzero_phase_idx}")
-            moles = phase_moles[i, nonzero_phase_idx]
-            total_moles = moles.sum()
-            phase_input = {}
-            for idx in nonzero_phase_idx:
-                phase_name = self.isothermal_emulator.ml_indexer.all_phases[idx]
-                #print(f"Processing {phase_moles_cpu[i, idx]} moles of phase: {phase_name}")
-                burnman_phase_name = self.burnman_translator[phase_name]
-                if burnman_phase_name is None:
-                    raise ValueError(f"Phase '{phase_name}' not recognized in Burnman translator")
-                try:
-                    phase_input[burnman_phase_name] = self.burnman_minerals[phase_name]
-                    #phase_input[burnman_phase_name].set_method('slb3')
-                except Exception as e:
-                    raise ValueError(f"Error loading Burnman phase '{burnman_phase_name}': {e}")
-                
-                if phase_name in self.isothermal_emulator.ml_indexer.compositionally_variable_phases:
-                    #print(f"{phase_name} is compositionally variable, setting composition from emulator output: {intensive_moles_cpu[i,self.isothermal_emulator.ml_indexer.label_indices_comp[phase_name]]}")
-                    phase_input[burnman_phase_name].set_composition(intensive_moles[i,self.isothermal_emulator.ml_indexer.label_indices_comp[phase_name]].tolist())
+        def _compute_chunk(start_idx: int, end_idx: int):
+            """Compute a contiguous slice of assemblages in one worker thread."""
+            local_minerals = copy.deepcopy(self.burnman_minerals)
+            chunk_out = np.zeros((end_idx - start_idx, len(property_names)), dtype=np.float32)
 
-            assemblage = burnman.Composite(phases=[phase_input[phase] for phase in phase_input.keys()], 
-                    fractions=(moles/total_moles).tolist(),
+            for local_row, i in enumerate(range(start_idx, end_idx)):
+                nonzero_phase_idx = np.where(phase_moles[i] > 0)[0]
+                moles = phase_moles[i, nonzero_phase_idx]
+                total_moles = moles.sum()
+                phase_input = {}
+
+                for idx in nonzero_phase_idx:
+                    phase_name = self.isothermal_emulator.ml_indexer.all_phases[idx]
+                    burnman_phase_name = self.burnman_translator[phase_name]
+                    if burnman_phase_name is None:
+                        raise ValueError(f"Phase '{phase_name}' not recognized in Burnman translator")
+
+                    try:
+                        phase_input[burnman_phase_name] = local_minerals[phase_name]
+                    except Exception as e:
+                        raise ValueError(f"Error loading Burnman phase '{burnman_phase_name}': {e}")
+
+                    if phase_name in self.isothermal_emulator.ml_indexer.compositionally_variable_phases:
+                        phase_input[burnman_phase_name].set_composition(
+                            intensive_moles[i, self.isothermal_emulator.ml_indexer.label_indices_comp[phase_name]].tolist()
+                        )
+
+                assemblage = burnman.Composite(
+                    phases=[phase_input[phase] for phase in phase_input.keys()],
+                    fractions=(moles / total_moles).tolist(),
                     fraction_type='molar',
-                    name='rock')
-            assemblage.set_state(PT[i,0].item()*1e9, PT[i,1].item()) # Convert GPa to Pa for Burnman
-            for j, prop in enumerate(property_names):
+                    name='rock'
+                )
+                assemblage.set_state(PT[i, 0].item() * 1e9, PT[i, 1].item())
+
+                for j, prop in enumerate(property_names):
+                    try:
+                        chunk_out[local_row, j] = getattr(assemblage, prop).detach().cpu().numpy()
+                    except Exception as e:
+                        raise ValueError(f"Error computing property '{prop}' for assemblage {i}: {e}")
+
+            return start_idx, chunk_out
+
+        # Use thread pool to compute contiguous chunks in parallel.
+        n_threads = min(4, nrows)
+        chunk_size = (nrows + n_threads - 1) // n_threads
+        chunk_ranges = [
+            (start, min(start + chunk_size, nrows))
+            for start in range(0, nrows, chunk_size)
+        ]
+
+        with ThreadPoolExecutor(max_workers=n_threads) as executor:
+            futures = [executor.submit(_compute_chunk, start, end) for start, end in chunk_ranges]
+            for future in futures:
                 try:
-                    outmatrix[i, j] = getattr(assemblage, prop)
+                    start_idx, chunk_out = future.result()
+                    outmatrix[start_idx:start_idx + chunk_out.shape[0], :] = chunk_out
                 except Exception as e:
-                    raise ValueError(f"Error computing property '{prop}' for assemblage: {e}")
+                    raise RuntimeError(f"Error in thread worker: {e}")
             
         print(f"Burnman property computation for {nrows} assemblages and properties {property_names} took {time.time() - time_start:.2f} seconds")
         return outmatrix, property_names
     
+    
+    def get_property_burnman_vectorized_from_assemblage(
+        self,
+        componentMoles,
+        PT,
+        device='cuda',
+        property_names = ['S', 'rho', 'v_p', 'v_s', 'molar_mass', 'K_T', 'K_S']):
+    
+        """
+        Compute properties for a given assemblage using Burnman.
+        
+        Parameters
+        ----------
+        intensive_moles : np.array
+            (N, C) tensor of intensive component moles from emulator output
+        phase_moles : np.array
+            (N, P) tensor of phase moles from emulator output
+        PT : np.array   
+            (N, 2) tensor of pressure and temperature values
+        property_names : sequence of str
+            List of properties recongnized by burnman to compute (e.g., ['bulk_modulus', 'density'])
+        
+        Returns
+        -------
+        numpy.ndarray
+            Array of shape (N, len(property_names)) with computed properties for each assemblage
+        """
+
+        time_start = time.time()
+
+        self.VecEOS = VectorComposite(
+        #component_names=[self.burnman_translator[phase] for phase in self.isentropic_emulator.ml_indexer.label_names],
+        #phase_names=[self.burnman_translator[phase] for phase in self.isothermal_emulator.ml_indexer.all_phases],
+        phase_identity=self.isothermal_emulator.ml_indexer.phaseToCompMap.T,
+        component_abundances=componentMoles,
+        phase_models=self.burnman_minerals,
+        pressure=PT[:,0],
+        temperature=PT[:,1],
+        device=self.device,
+        dtype=torch.float64
+        )
+
+        #self.VecEOS.evaluate_backend_properties()
+
+        nrows = componentMoles.size()[0]
+
+        assert nrows == PT.size()[0], "Batch size of intensive_moles and phase_moles must match"
+
+        outmatrix = np.zeros((nrows, len(property_names)), dtype=np.float32)
+
+        for j, prop in enumerate(property_names):
+            try:
+                outmatrix[:, j] = getattr(self.VecEOS, prop).detach().cpu().numpy()
+            except Exception as e:
+                raise ValueError(f"Error computing property '{prop}': {e}")
+
+        print(f"Burnman property computation for {nrows} assemblages and properties {property_names} took {time.time() - time_start:.2f} seconds")
+        return outmatrix, property_names
+
+    def get_property_fortranslation_from_assemblage(
+        self,
+        componentMoles: torch.Tensor,
+        PT: torch.Tensor,
+        property_names = PHYSUB_BULK_ATTRIBUTE_NAMES):
+    
+        """
+        Compute properties for a given assemblage using Burnman.
+        
+        Parameters
+        ----------
+        intensive_moles : np.array
+            (N, C) tensor of intensive component moles from emulator output
+        phase_moles : np.array
+            (N, P) tensor of phase moles from emulator output
+        PT : np.array   
+            (N, 2) tensor of pressure and temperature values
+        property_names : sequence of str
+            List of properties recongnized by burnman to compute (e.g., ['bulk_modulus', 'density'])
+        
+        Returns
+        -------
+        numpy.ndarray
+            Array of shape (N, len(property_names)) with computed properties for each assemblage
+        """
+
+        time_start = time.time()
+
+
+        output = calculate_bulk_properties(nnew= np.array(componentMoles), P = PT[:,0], T = PT[:,1], ml_indexer=self.isothermal_emulator.ml_indexer, property_names=property_names)
+        #output, property_names = _compute_bulk_properties_batch(nnew= np.array(componentMoles), P = PT[:,0], T = PT[:,1], ml_indexer=self.isothermal_emulator.ml_indexer)#, property_names=property_names)
+
+        time_end = time.time()
+
+        print(f"Fortranslation property computation for {len(output)} assemblages and properties {property_names} took {time_end - time_start:.2f} seconds")
+        print(output)
+        return output
+
+
     @staticmethod
     def _load_emulator(model_path: Union[str, Path], device: str) -> NN_MELTS:
         """Load and wrap a checkpoint as NN_MELTS emulator."""

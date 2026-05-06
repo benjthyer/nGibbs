@@ -777,6 +777,58 @@ def load_fort99_component_moles_and_labels(sim_dir: str, indexer) -> Tuple[np.nd
     return VC, P
 
 
+def load_fort99_componentMoles(sim_dir: str, indexer) -> Tuple[np.ndarray, np.ndarray]:
+    """Load fort.99 components into an extensive component-moles array and
+    compute intensive (VC) and molar (P) phase labels using an ml_indexer.
+
+    Parameters
+    ----------
+    sim_dir : str
+        Directory containing a `fort.99` file.
+    indexer : object
+        ml_indexer providing `label_names` (component labels) and
+        `phaseToCompMap` (2D array-like with shape [n_phases, n_components]).
+
+    Returns
+    -------
+    VC : np.ndarray
+        Intensive phase labels with shape (n_rows, n_phases). Contains component proportions that sum to 1 across each phase
+    P : np.ndarray
+        Molar phase labels (phase moles) with shape (n_rows, n_phases).
+    """
+    sim_dir = Path(sim_dir)
+    fort99_path = sim_dir / 'fort.99'
+    if not fort99_path.exists() or not fort99_path.is_file():
+        raise FileNotFoundError(f'fort.99 not found in: {sim_dir}')
+
+    comp_df = _safe_read_ws_table(str(fort99_path), skiprows=0)
+    if comp_df.shape[1] < 6:
+        raise ValueError('fort.99 has insufficient columns to parse components')
+
+    nrows = len(comp_df)
+    component_count = len(getattr(indexer, 'label_names', []))
+    if component_count == 0:
+        raise ValueError('Indexer must expose non-empty `label_names`')
+
+    # Prepare an (nrows, n_components) array filled with zeros
+    component_moles = np.zeros((nrows, component_count), dtype=float)
+
+    # fort.99 component columns convention: skip first 3 and last 2 columns
+    component_cols = list(comp_df.columns)[3:-2]
+    for comp_abbr in component_cols:
+        comp_abbr_str = str(comp_abbr).strip()
+        comp_name = _resolve_component_name_from_abbr(comp_abbr_str)
+        try:
+            comp_idx = list(indexer.label_names).index(comp_name)
+        except ValueError:
+            # component not present in indexer; skip it
+            continue
+        values = pd.to_numeric(comp_df[comp_abbr], errors='coerce').fillna(0.0).to_numpy(dtype=float)
+        component_moles[:, comp_idx] = values
+    return component_moles
+
+
+
 def _extract_sim_id(sim_name: str) -> Optional[int]:
     match = re.search(r'simulation(\d+)$', sim_name.lower())
     if match is None:
@@ -1232,6 +1284,7 @@ def import_HeFESTo_components(
 def extract_bulk_properties_from_simulation_dir(
     sim_dir: str,
     include_phase_properties: bool = False,
+    repeat: int = 1
 ) -> Dict[str, Any]:
     """
     Extract bulk thermodynamic properties from a single HeFESTo simulation.
@@ -1366,8 +1419,8 @@ def extract_bulk_properties_from_simulation_dir(
         'fort59_bulk': fort59_bulk,
         'component_names': component_names,
         'component_moles': component_moles,
-        'bulk_properties': None,
-        'bulk_property_names': tuple(),
+        #'bulk_properties': None,
+        #'bulk_property_names': tuple(),
     }
 
     # Also expose each fort.56 numeric column directly for convenience.
@@ -1381,6 +1434,30 @@ def extract_bulk_properties_from_simulation_dir(
     if dominant_phase_col is not None:
         result['fort56_dominant_phase'] = sys_df[dominant_phase_col].astype(str).to_numpy()
 
+    if repeat > 1: # Repeat functionality to test scalability
+        for key, value in result.items():
+            if isinstance(value, np.ndarray):
+                result[key] = np.repeat(value, repeat, axis=0)
+            elif isinstance(value, pd.DataFrame):
+                result[key] = pd.concat([value] * repeat, ignore_index=True)
+            elif isinstance(value, pd.Series):
+                result[key] = pd.concat([value] * repeat, ignore_index=True)
+            elif isinstance(value, (list, tuple)):
+                result[key] = value * repeat
+            elif isinstance(value, dict):
+                for k, v in value.items():
+                    if isinstance(v, np.ndarray):
+                        result[key][k] = np.repeat(v, repeat, axis=0)
+                    elif isinstance(v, pd.DataFrame):
+                        result[key][k] = pd.concat([v] * repeat, ignore_index=True)
+                    elif isinstance(v, pd.Series):
+                        result[key][k] = pd.concat([v] * repeat, ignore_index=True)
+                    elif isinstance(v, (list, tuple)):
+                        result[key][k] = v * repeat
+                    elif isinstance(v, dict):
+                        result[key][k] = {kk: vv * repeat for kk, vv in v.items()}
+
+
     # Optional physub bulk matrix (kept for compatibility with existing callers).
     if torch is not None:
         try:
@@ -1392,7 +1469,7 @@ def extract_bulk_properties_from_simulation_dir(
             molar_masses = np.ones(len(component_names), dtype=np.float32) * 100.0
 
         device = torch.device('cpu')
-        attrs = {
+        """attrs = {
             'molar_volume': torch.ones((nrows, len(component_names)), dtype=torch.float32, device=device),
             'bulk_modulus': torch.ones((nrows, len(component_names)), dtype=torch.float32, device=device) * 130.0,
             'shear_modulus': torch.ones((nrows, len(component_names)), dtype=torch.float32, device=device) * 80.0,
@@ -1402,17 +1479,17 @@ def extract_bulk_properties_from_simulation_dir(
             'entropy': torch.ones((nrows, len(component_names)), dtype=torch.float32, device=device) * 5.0,
             'enthalpy': torch.ones((nrows, len(component_names)), dtype=torch.float32, device=device) * 10.0,
             'gibbs': torch.ones((nrows, len(component_names)), dtype=torch.float32, device=device) * 8.0,
-        }
+        }"""
 
-        component_moles_t = torch.from_numpy(component_moles).to(device)
-        molar_mass_t = torch.from_numpy(molar_masses).to(device)
-        bulk_props, bulk_names = compute_physub_bulk_matrix(
-            component_moles_t,
-            molar_mass_t,
-            attrs,
-        )
-        result['bulk_properties'] = bulk_props.detach().cpu().numpy()
-        result['bulk_property_names'] = bulk_names
+        #component_moles_t = torch.from_numpy(component_moles).to(device)
+        #molar_mass_t = torch.from_numpy(molar_masses).to(device)
+        #bulk_props, bulk_names = compute_physub_bulk_matrix(
+        #    component_moles_t,
+        #    molar_mass_t,
+        #    attrs,
+        #)
+        #result['bulk_properties'] = bulk_props.detach().cpu().numpy()
+        #result['bulk_property_names'] = bulk_names
 
     return result
 
