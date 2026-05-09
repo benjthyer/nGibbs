@@ -968,13 +968,17 @@ class MidLevelNetwork(TunableModel):
                 unexplained_oxides = ((x[:, len(self.ml_indexer.featureNames):]==0).to(torch.float32) + present_oxides) == 0
                 if unexplained_oxides.any():
                     force_count += 1
-                    assert force_count <= 3, "Phase forcing did not satisfy mass balance even after 3 iterations"
+                    #assert force_count <= 3, "Phase forcing did not satisfy mass balance even after 3 iterations"
+                    if force_count > 3:
+                        print("Phase forcing did not satisfy mass balance even after 3 iterations")
+                        break
                     unexplained_rows = torch.sum(unexplained_oxides, dim=1) > 0
                     unexplained_columns = torch.sum(unexplained_oxides, dim=0) 
-                    for col_idx in torch.where(unexplained_columns)[0]:
-                        oxide_name = self.ml_indexer.Oxides[col_idx]
-                        print(f"Unexplained oxide: {oxide_name} in {unexplained_rows.sum()} samples of {unexplained_rows.size(0)}.")
-                    print(f"Unexplained oxides: {unexplained_oxides.sum()} across {unexplained_rows.sum()} samples. Forcing saturation of one additional phase for these samples.")
+                    #print(f"Unexplained columns: {unexplained_columns}")
+                    #for col_idx in torch.where(unexplained_columns)[0]:
+                        #oxide_name = self.ml_indexer.Oxides[col_idx]
+                        #print(f"Unexplained oxide: {oxide_name} in {unexplained_rows.sum()} samples of {unexplained_rows.size(0)}.")
+                    #print(f"Unexplained oxides: {unexplained_oxides.sum()} across {unexplained_rows.sum()} samples. Forcing saturation of one additional phase for these samples.")
                     phases_to_force = (unexplained_oxides.to(torch.float32) @ self.compToEl.T) @ self.phaseToCompMap.T > 0 # B x P
                     force_idx = torch.argmax((likelihoods*phases_to_force)[unexplained_rows], dim=1)
                     row_idx = torch.nonzero(unexplained_rows, as_tuple=False).to(torch.long)

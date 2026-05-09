@@ -241,6 +241,34 @@ def grid_sample(params, table=np.array([])):
     else:
         return table
 
+def grid_sample_explicit(params, table=np.array([])):
+    """
+    Generates a numpy array grid sample recursively for arbitrary parameters.
+    Let params be a nested list, with each sublist of [min, max, len] passed to np.linspace.
+    Order of params determines column order in the output table.
+    
+    Args:
+        params: Nested list of [min, max, len] for each parameter
+        table: Accumulated table (used in recursion)
+        
+    Returns:
+        np.ndarray: Grid sample table
+    """
+    params = list(params)  # Copy to avoid side-effects
+    param = params.pop()
+    new_col = param # Only literal values used, more custom. 
+    
+    if not table.shape[0]:
+        table = new_col
+    else:
+        print(table)
+        table = np.append(np.repeat(new_col, table.shape[0], axis=0),
+                          np.tile(table, (new_col.shape[0], 1)), axis=1)
+    
+    if len(params):
+        return grid_sample_explicit(params, table)
+    else:
+        return table
 
 def squash_to_range(x, min_=0.1, max_=0.95):
     """

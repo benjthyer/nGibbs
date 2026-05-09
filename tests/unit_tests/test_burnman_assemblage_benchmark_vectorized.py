@@ -253,12 +253,12 @@ def main():
     comp_names = gt['component_names']
 
     # Load P, VC using the helper function
-    VC, P = hef.load_fort99_component_moles_and_labels(str(sim_dir), indexer)
-    #componentMoles = hef.load_fort99_componentMoles(str(sim_dir), indexer)
+    #VC, P = hef.load_fort99_component_moles_and_labels(str(sim_dir), indexer)
+    componentMoles = hef.load_fort99_componentMoles(str(sim_dir), indexer)
     #componentMoles = hef.load_fort99_(str(sim_dir), indexer)
 
-    #componentMoles = np.repeat(componentMoles, 1, axis=0)
-    #print(componentMoles.shape)
+    componentMoles = np.repeat(componentMoles, 1, axis=0)
+    print(componentMoles.shape)
     # Build PT matrix from fort56
     fort56 = gt['fort56_bulk']
     P_gpa = fort56['P(GPa)']
@@ -275,7 +275,10 @@ def main():
         'heat_capacity_p_by_mass', 'heat_capacity_v_by_mass',
     ]
 
-    burnman_out = HeFESToEmulatorCPU.get_property_burnman_from_assemblage(VC, P, PT, property_names=property_names)
+    burnman_out = HeFESToEmulatorGPU.get_property_burnman_vectorized_from_assemblage(
+       torch.tensor(componentMoles, dtype=torch.float64, device='cuda'), torch.tensor(PT, dtype=torch.float64, device='cuda'), 
+       property_names= property_names
+    )
 
     """# Use the API method to compute Burnman properties
     print('Computing Burnman properties via HeFESToAPI.get_property_burnman_from_assemblage()...')

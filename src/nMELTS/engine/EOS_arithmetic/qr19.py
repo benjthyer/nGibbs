@@ -12,6 +12,8 @@ from math import exp
 from pathlib import Path
 from typing import Tuple
 
+import numpy as np
+
 from .bserch import bserch
 from .heat import _neville
 
@@ -123,5 +125,127 @@ def qr19(depth: float, Ti: float) -> Tuple[float, float]:
     
     # Step 5: Assume Poisson solid (no bulk attenuation)
     qp = 9.0 / 4.0 * qs
-    
+
+    return qs, qp
+
+
+# ---------------------------------------------------------------------------
+# PREM depth-pressure table embedded from const.inc (ndepth = 57)
+# ---------------------------------------------------------------------------
+
+_PREM_DEPTH_KM = np.array([
+     0.00000,  3.00000,  3.00000, 15.00000, 15.00000, 24.40000,
+    24.40000, 40.00000, 60.00000, 80.00000, 80.00000,115.00000,
+   150.00000,185.00000,220.00000,220.00000,265.00000,310.00000,
+   355.00000,400.00000,400.00000,450.00000,500.00000,550.00000,
+   600.00000,600.00000,635.00000,670.00000,670.00000,721.00000,
+   771.00000,771.00000,871.00000,971.00000,1071.0000,1171.0000,
+  1271.0000,1371.0000,1471.0000,1571.0000,1671.0000,1771.0000,
+  1871.0000,1971.0000,2071.0000,2171.0000,2271.0000,2371.0000,
+  2471.0000,2571.0000,2671.0000,2741.0000,2741.0000,2771.0000,
+  2871.0000,2891.0000,2891.0000,
+])
+
+_PREM_PRESS_GPA = np.array([
+    0.00000,  0.02990,  0.03030,  0.33640,  0.33700,  0.60400,
+    0.60430,  1.12390,  1.78910,  2.45390,  2.45460,  3.61830,
+    4.78240,  5.94660,  7.11080,  7.11500,  8.64970, 10.20270,
+   11.77020, 13.35200, 13.35270, 15.22510, 17.13110, 19.07030,
+   21.04250, 21.04260, 22.43640, 23.83340, 23.83420, 26.07830,
+   28.29270, 28.29280, 32.76230, 37.28520, 41.86060, 46.48820,
+   51.16760, 55.89910, 60.68300, 65.52020, 70.41190, 75.35980,
+   80.36600, 85.43320, 90.56460, 95.76410,101.03630,106.38640,
+  111.82070,117.34650,122.97190,126.97410,126.97420,128.70670,
+  134.56190,135.75090,135.75100,
+])
+
+
+@lru_cache(maxsize=1)
+def _get_prem_interp() -> Tuple[np.ndarray, np.ndarray]:
+    """Deduplicated PREM (pressure_GPa, depth_km) arrays for interpolation.
+
+    Fortran depth.f skips rows where depth equals the previous depth value,
+    producing a strictly increasing depth axis.  We replicate that here and
+    return (pressure_GPa, depth_km) sorted by ascending pressure so that
+    np.interp can use pressure as the look-up axis.
+    """
+    p_out, d_out = [], []
+    prev_d = -999.0
+    for d, p in zip(_PREM_DEPTH_KM.tolist(), _PREM_PRESS_GPA.tolist()):
+        if d == prev_d:
+            continue
+        prev_d = d
+        p_out.append(p)
+        d_out.append(d)
+    return np.array(p_out), np.array(d_out)
+
+
+def depth_from_pressure(P) -> np.ndarray:
+    """Convert pressure (GPa) to depth (km) via PREM linear interpolation.
+
+    Replicates the behaviour of the Fortran ``depth(Pi)`` function in
+    ``depth.f``, which uses the PREM table from ``const.inc``.
+
+    Args:
+        P: Scalar or array-like pressure in GPa.
+
+    Returns:
+        Depth in km (same shape as *P*, clipped to >= 0).
+    """
+    p_prem, d_prem = _get_prem_interp()
+    depth = np.interp(np.asarray(P, dtype=float), p_prem, d_prem,
+                      left=0.0, right=float(d_prem[-1]))
+    return np.maximum(depth, 0.0)
+
+
+def qr19_vec(P, Ti) -> Tuple[np.ndarray, np.ndarray]:
+    """Vectorized quality-factor computation as a function of pressure.
+
+    Equivalent to calling :func:`qr19` element-wise but operates on NumPy
+    arrays without Python loops.
+
+    Args:
+        P:  Pressure in GPa — scalar or array-like.
+        Ti: Temperature in Kelvin — scalar or array-like, broadcastable with *P*.
+
+    Returns:
+        Tuple ``(Qs, Qp)`` of shear and compressional quality factors,
+        same shape as the broadcast of *P* and *Ti*.
+    """
+    P  = np.asarray(P,  dtype=float)
+    Ti = np.asarray(Ti, dtype=float)
+
+    depth = depth_from_pressure(P)
+
+    # Local Q model in ascending-depth order for np.interp
+    d_asc = np.array([   0.0,  81.5, 100.0, 160.0, 200.0, 250.0,
+                       310.0, 370.0, 422.0, 511.0, 647.0, 648.0, 2891.0])
+    q_asc = np.array([  17.1,  17.1, 153.5, 154.9, 145.3,  76.6,
+                        67.8,  65.2,  65.1,  66.2,  67.1,  32.1,   32.1])
+
+    qs00 = np.interp(depth, d_asc, q_asc)
+    qs00 = 10000.0 / qs00
+
+    # Reference adiabat temperature
+    tables = _load_adqref_tables()
+    dad = np.array(tables["dad"])
+    tad = np.array(tables["tad"])
+    tref = np.interp(depth, dad, tad)
+
+    # Lithospheric age correction (100 Ma Pacific average → term vanishes)
+    age = 100.0
+    qs = 1000.0 / (1000.0 / qs00 + 3.0 * (1.0 - age / 100.0))
+
+    # Temperature-dependent correction
+    Eact    = 424000.0
+    alpha   = 0.26
+    Rgas    = 8.314462618
+    qslarge = 9999.0
+
+    safe_Ti  = np.where(Ti > 0.0, Ti, 1.0)  # avoid 1/0; masked below
+    qs_corr  = qs * np.exp(alpha * Eact / Rgas * (1.0 / safe_Ti - 1.0 / tref))
+    qs = np.where(Ti > 0.0, qs_corr, qslarge)
+    qs = np.minimum(qs, qslarge)
+
+    qp = 9.0 / 4.0 * qs
     return qs, qp

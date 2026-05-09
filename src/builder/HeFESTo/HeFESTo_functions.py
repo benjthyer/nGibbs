@@ -751,7 +751,7 @@ def load_fort99_component_moles_and_labels(sim_dir: str, indexer) -> Tuple[np.nd
         try:
             comp_idx = list(indexer.label_names).index(comp_name)
         except ValueError:
-            # component not present in indexer; skip it
+            print(f"[WARNING] Component {comp_name} not found in indexer!")
             continue
         values = pd.to_numeric(comp_df[comp_abbr], errors='coerce').fillna(0.0).to_numpy(dtype=float)
         component_moles[:, comp_idx] = values
@@ -791,10 +791,9 @@ def load_fort99_componentMoles(sim_dir: str, indexer) -> Tuple[np.ndarray, np.nd
 
     Returns
     -------
-    VC : np.ndarray
-        Intensive phase labels with shape (n_rows, n_phases). Contains component proportions that sum to 1 across each phase
-    P : np.ndarray
-        Molar phase labels (phase moles) with shape (n_rows, n_phases).
+    componentMoles : np.ndarray
+        Extensive component moles with shape (n_rows, n_components) or (B, C). 
+
     """
     sim_dir = Path(sim_dir)
     fort99_path = sim_dir / 'fort.99'
@@ -818,12 +817,14 @@ def load_fort99_componentMoles(sim_dir: str, indexer) -> Tuple[np.ndarray, np.nd
     for comp_abbr in component_cols:
         comp_abbr_str = str(comp_abbr).strip()
         comp_name = _resolve_component_name_from_abbr(comp_abbr_str)
+        values = pd.to_numeric(comp_df[comp_abbr], errors='coerce').fillna(0.0).to_numpy(dtype=float)
         try:
             comp_idx = list(indexer.label_names).index(comp_name)
         except ValueError:
             # component not present in indexer; skip it
+            if values.any():
+                print(f"[WARNING] Component {comp_name} is present in fort.99 but not found in indexer!")
             continue
-        values = pd.to_numeric(comp_df[comp_abbr], errors='coerce').fillna(0.0).to_numpy(dtype=float)
         component_moles[:, comp_idx] = values
     return component_moles
 

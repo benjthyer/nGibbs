@@ -4,27 +4,29 @@
 # GPL v2 or later.
 
 
+import sys
 import numpy as np
-from sympy import Matrix, nsimplify
 import warnings
+from pathlib import Path
 
 try:
     import torch
 except ImportError:  # pragma: no cover - optional dependency
     torch = None
 
-from .material import Material, material_property, cached_property
-from .mineral import Mineral
-from .solution import Solution
-from . import averaging_schemes
-from ..constants import logish_eps, gas_constant
 
 
-from ..utils.reductions import independent_row_indices
-from ..utils.chemistry import sum_formulae, sort_element_list_to_IUPAC_order
-from ..utils.chemistry import reaction_matrix_as_strings
-from ..eos import debye, birch_murnaghan as bm
+file_path = str(Path(__file__).parent)
+if file_path not in sys.path:
+    sys.path.insert(0, file_path)
 
+
+from burnman.classes.mineral import Mineral
+from burnman.eos import birch_murnaghan as bm
+import burnman.classes.solutionmodel as vsm
+from burnman.classes.solution import Solution
+
+logish_eps = [np.finfo(float).eps]
 
 def check_pairs(phases, fractions):
     if len(fractions) < 1:
@@ -102,6 +104,37 @@ def _vector_grueneisen_parameter_slb(V_0, volume, gruen_0, q_0):
     nu_o_nu0_sq = 1.0 + a1_ii * f + 0.5 * a2_iikk * f * f
     return (1.0 / 6.0 / nu_o_nu0_sq) * (2.0 * f + 1.0) * (a1_ii + a2_iikk * f)
 
+def bulk_modulus_third_order(volume, params):
+    """
+    Bulk modulus for the third order Birch-Murnaghan equation of state
+    :cite:`Birch1947`.
+
+    :param volume: Volume of the material in the same units as
+        the reference volume.
+    :type volume: float
+
+    :param params: Parameter dictionary
+    :type params: dict
+
+    :return: Bulk modulus in the same units as the reference bulk modulus.
+    :rtype: float
+    """
+
+    x = params["V_0"] / volume
+    #print(f"bm3 volume: {volume}")
+    #print(f"bm3 V_0: {params['V_0']}")
+    f = 0.5 * (pow(x, 2.0 / 3.0) - 1.0)
+
+    K = pow(1.0 + 2.0 * f, 5.0 / 2.0) * (
+        params["K_0"]
+        + (3.0 * params["K_0"] * params["Kprime_0"] - 5 * params["K_0"]) * f
+        + 27.0
+        / 2.0
+        * (params["K_0"] * params["Kprime_0"] - 4.0 * params["K_0"])
+        * f
+        * f
+    )
+    return K
 
 def _vector_debye_fn_cheb(x):
     """
@@ -249,36 +282,103 @@ class VectorSLBBase:
             * (9.0 * params["K_0"] * f + 0.5 * 27.0 * params["K_0"] * (params["Kprime_0"] - 4.0) * f * f)
             + gr * (E_th - E_th_ref) / volume
         )
+    
 
-    def volume(self, pressure, temperature, params, max_iter=12, tol=1.0e-10):
+
+    def volume(self, pressure, temperature, params, max_iter=12, tol=1, verbose=False):
         """
         Batched Newton-Raphson solve for V(P, T) using dP/dV = -K_T/V.
+        
+        Args:
+            pressure: Target pressure [Pa], shape [B]
+            temperature: Temperature [K], shape [B]
+            params: Parameter dictionary with V_0, K_0, etc.
+            max_iter: Maximum iterations per sample
+            tol: Absolute residual tolerance [Pa]
+            verbose: Enable detailed diagnostics
+        
+        Returns:
+            V: Converged volumes, shape [B]
+            converged: Convergence mask, shape [B]
         """
         V = torch.full_like(pressure, params["V_0"])
         converged = torch.zeros_like(pressure, dtype=torch.bool)
+        
+        residual_history = []  # Track convergence per iteration
 
-        for _ in range(max_iter):
+        for iteration in range(max_iter):
             P_pred = self.pressure(temperature, V, params)
             residual = P_pred - pressure
-
+            #residual_history.append(residual.detach().clone())
+            
+            # Convergence check: absolute residual within tolerance
             with torch.no_grad():
-                converged_now = torch.abs(residual) <= tol * torch.clamp(torch.abs(pressure), min=1.0)
+                converged_now = torch.abs(residual) <= tol
                 converged = converged | converged_now
 
+            if verbose and iteration == 0:
+                print(f"\n[volume() diagnostics]")
+                print(f"  Initial V_0: {params['V_0']}, target P: {pressure[0]:.2e} Pa")
+            
+            if verbose:
+                n_conv = torch.sum(converged).item()
+                print(f"  Iter {iteration}: converged {n_conv}/{len(pressure)}, "
+                      f"max|residual|={torch.max(torch.abs(residual)).item():.2e} Pa")
+
             if torch.all(converged):
+                if verbose:
+                    print(f"  Converged in {iteration} iterations")
                 break
 
+            # Bulk modulus evaluated at CURRENT pressure (not zero!)
             K_T = self.isothermal_bulk_modulus_reuss(
-                torch.zeros_like(pressure), temperature, V, params
+                pressure, temperature, V, params
             )
-            dP_dV = -torch.clamp(K_T / torch.clamp(V, min=1.0e-16), min=-1.0e30, max=-1.0e-16)
+            if verbose:
+                print(f"  Iter {iteration}: K_T = {K_T} Pa")
+            
+            # Derivative: dP/dV = -K_T / V
+            # Both should be positive; result should be negative
+            V_safe = torch.clamp(V, min=1.0e-16)
+            K_T_safe = torch.clamp(K_T, min=1.0e-16)  # K_T must be positive
+            dP_dV = -K_T_safe / V_safe
+            
+            # Newton step
             delta_V = residual / dP_dV
+            large_step = torch.abs(delta_V) > 0.1 * V
+            #delta_V = torch.where(large_step, 0.1 * V, delta_V) # Cut off big steps?
 
-            V_new = V - delta_V
-            # Keep volumes in a physically plausible range around V0.
-            V = torch.clamp(V_new, min=0.4 * params["V_0"], max=1.6 * params["V_0"])
+            V_new = V - delta_V # Smaller steps to avoid negative K_T? 
+            
+            # Restrict volume excursions to avoid unphysical states
+            V_min = 0.4 * params["V_0"]
+            V_max = 1.6 * params["V_0"]
+            V_clamped = torch.clamp(V_new, min=V_min, max=V_max)
+            
+            if verbose:
+                # Check for pathological K_T or step sizes on first iteration
+                bad_kt = K_T < 0
+                if torch.any(bad_kt):
+                    print(f"  WARNING: {torch.sum(bad_kt)} samples have K_T < 0")
+                if torch.any(large_step):
+                    print(f"  WARNING: {torch.sum(large_step)} samples have |delta_V| > 10% V")
+            
+            V = V_clamped
 
-        return V, converged
+        n_unconverged = torch.sum(~converged).item()
+        if verbose:
+            if n_unconverged > 0:
+                print(f"  FAILED TO CONVERGE: {n_unconverged} samples after {max_iter} iterations")
+                #final_residuals = residual_history[-1]
+                #print(f"    Final max|residual|: {torch.max(torch.abs(final_residuals)).item():.2e} Pa")
+
+        if n_unconverged > 0:
+            V[~converged] = params["V_0"]
+            print(f"min pressure unconverged: {torch.min(pressure[~converged]).item():.2e} Pa")
+            print(f"max pressure unconverged: {torch.max(pressure[~converged]).item():.2e} Pa")
+            #raise ValueError("Failed to converge")
+
+        return V, torch.ones_like(converged, dtype=torch.bool) # Defaulting to V0, assuming EOS poorly calibrated outside of stability where we don't care anyway.
 
     def _volume_dependent_q(self, x, params):
         """
@@ -427,8 +527,8 @@ class VectorSLBBase:
         q = self._volume_dependent_q(x, params)
         
         # Bulk modulus from Birch-Murnaghan
-        K_bm = bm.bulk_modulus_third_order(volume, params)
-        
+        K_bm = bulk_modulus_third_order(volume, params)
+        #K_bm = bm.isothermal_bulk_modulus
         K = (
             K_bm
             + (gr + 1.0 - q) * (gr / volume) * (E_th - E_th_ref)
@@ -471,6 +571,7 @@ class VectorSLB3(VectorSLBBase):
     def __init__(self):
         super().__init__(order=3, conductive=False)
 
+vector_eos = VectorSLB3()
 
 class VectorComposite:
     """
@@ -490,8 +591,8 @@ class VectorComposite:
 
     def __init__(
         self,
-        component_names,
-        phase_names,
+        #component_names,
+        #phase_names,
         phase_identity,
         component_abundances,
         phase_models=None,
@@ -502,8 +603,8 @@ class VectorComposite:
     ):
         _require_torch()
 
-        self.component_names = list(component_names)
-        self.phase_names = list(phase_names)
+        #self.component_names = list(component_names)
+        #self.phase_names = list(phase_names)
         self.phase_identity = _as_tensor(phase_identity, device=device, dtype=dtype)
         self.component_abundances = _normalize_rows(
             _as_tensor(component_abundances, device=device, dtype=dtype)
@@ -535,13 +636,13 @@ class VectorComposite:
     def batch_size(self):
         return self.component_abundances.shape[0]
 
-    @property
+    """@property
     def n_components(self):
-        return len(self.component_names)
+        return len(self.component_names)"""
 
     @property
     def n_phases(self):
-        return len(self.phase_names)
+        return self.phase_identity.shape[1]
 
     @property
     def n_endmembers(self):
@@ -604,20 +705,33 @@ class VectorComposite:
         if len(phase_models) != self.n_phases:
             raise ValueError("phase_models must match the number of phase names")
 
-        self.phase_models = list(phase_models)
+        #self.phase_models = list(phase_models)
+        self.phase_models = dict(phase_models)
+
         self.endmembers_per_phase = []
         self.endmember_slices = []
 
+        
         start = 0
-        for phase in self.phase_models:
-            if isinstance(phase, Solution):
-                count = phase.n_endmembers
-            elif isinstance(phase, Mineral):
-                count = 1
+        for phase_name, model in self.phase_models.items():
+            print(model)
+            if getattr(model, "endmembers", None) is not None:
+                count = model.n_endmembers
+                """endmembers = model.endmembers
+                smName = model.solution_model.__class__.__name__
+                print(smName)
+               
+                self.phase_models[phase_name].solution_model = getattr(vsm, smName)(endmembers=endmembers) # overwrite solution models with vectorized code
+                """
             else:
+                print(f"Mineral phase: {phase_name}")
+                count = 1
+            """ else:
+                print(f'Unexpected phase type: {type(model)}: {model}')
+                print(model.__class__.__name__)
                 raise TypeError(
-                    "phase_models must contain only burnman.Mineral or burnman.Solution objects"
-                )
+                    'phase_models must contain only burnman.Mineral or burnman.Solution objects'
+                )"""
 
             self.endmembers_per_phase.append(count)
             self.endmember_slices.append(slice(start, start + count))
@@ -671,10 +785,17 @@ class VectorComposite:
             for name in endmember_property_names
         }
 
-        for phase_index, phase in enumerate(self.phase_models):
+        for phase_index, (phase_name, phase) in enumerate(self.phase_models.items()):
             # Check if this is a Mineral with SLB3 EOS; if so, use vectorized kernel
-            if isinstance(phase, Mineral) and hasattr(phase, "method"):
+            if phase.method == "SolutionMethod":
+                self._evaluate_solution_with_vector(phase, phase_index, batch_size, device, dtype)
+            else:
+                self._evaluate_phase_with_vector_slb3(
+                        phase, phase_index, batch_size, device, dtype, phase_property_names
+                    )
+            """if isinstance(phase, Mineral) and hasattr(phase, "method"): # Removed fallbacks 5/6/26
                 method_name = phase.method.__class__.__name__
+                print(f"Phase {phase_name} has method: {phase.method}, class {phase.method.__class__}, name {phase.method.__class__.__name__}")
                 if method_name == "SLB3":
                     # Use vectorized EOS for this phase
                     self._evaluate_phase_with_vector_slb3(
@@ -710,7 +831,7 @@ class VectorComposite:
                     self._evaluate_phase_scalar(
                         phase, phase_index, batch_size, device, dtype, 
                         phase_property_names, endmember_property_names
-                    )
+                    )"""
 
         return self.phase_properties, self.endmember_properties
 
@@ -721,7 +842,6 @@ class VectorComposite:
         Use VectorSLB3 EOS to compute all batch samples at once for a Mineral phase.
         """
         # Create vectorized EOS kernel
-        vector_eos = VectorSLB3()
         
         # Get phase parameters
         params = phase.params.copy()
@@ -942,9 +1062,11 @@ class VectorComposite:
         # Evaluate each endmember (vectorized across batch where supported)
         for j, mbr in enumerate(endmembers):
             em = mbr[0]
+            print(em)
+            print(mbr)
             # If the endmember uses SLB3 we can vector-evaluate using VectorSLB3
             if hasattr(em, "method") and em.method.__class__.__name__ == "SLB3":
-                vector_eos = VectorSLB3()
+
                 params = em.params.copy()
                 params_tensor = {
                     k: _as_tensor(v, device=device, dtype=dtype) if isinstance(v, (int, float)) else v
@@ -1033,9 +1155,10 @@ class VectorComposite:
         mask = sums > 0
         f = torch.zeros_like(comp_abund, device=device, dtype=dtype)
         if mask.any():
-            f[mask.squeeze(-1)] = comp_abund[mask.squeeze(-1)] / sums[mask]
+            f[mask.squeeze(-1)] = comp_abund[mask.squeeze(-1)] / sums[mask.squeeze(-1)]
 
         sm = phase.solution_model
+        #print(sm.__class__.__name__)
 
         # Prepare excess arrays
         excess_partial_gibbs = torch.zeros_like(gibbs, device=device, dtype=dtype)
@@ -1063,7 +1186,8 @@ class VectorComposite:
                     # aggregate scalar excesses from partials
                     excess_volume = (f * excess_partial_volumes).sum(-1)
                     excess_entropy = (f * excess_partial_entropies).sum(-1)
-                except Exception:
+                except Exception as e:
+                    raise RuntimeError(f"Batched solution-model excess calculation failed for phase '{getattr(phase, 'name', phase_index)}': {e}")
                     self._print_scalar_fallback_warning(
                         f"batched solution-model excess calculation failed for phase '{getattr(phase, 'name', phase_index)}'; falling back to per-sample"
                     )
@@ -1079,7 +1203,9 @@ class VectorComposite:
                             eg = sm.excess_gibbs_energy(p_i, t_i, f_i)
                             ev = sm.excess_volume(p_i, t_i, f_i)
                             ee = sm.excess_entropy(p_i, t_i, f_i)
-                        except Exception:
+                        except Exception as e:
+                            print(e)
+                            raise Exception("Solution model excess calculation failed")
                             self._print_scalar_fallback_warning(
                                 f"solution model excess calculation failed for sample {i} in phase '{getattr(phase, 'name', phase_index)}'"
                             )
@@ -1103,8 +1229,10 @@ class VectorComposite:
                         eg = sm.excess_gibbs_energy(p_i, t_i, f_i)
                         ev = sm.excess_volume(p_i, t_i, f_i)
                         ee = sm.excess_entropy(p_i, t_i, f_i)
-                    except Exception:
+                    except Exception as e:
                         # If model fails, warn and leave excesses zero for this sample
+                        print(e)
+                        raise Exception("Solution model excess calculation failed")
                         self._print_scalar_fallback_warning(
                             f"solution model excess calculation failed for sample {i} in phase '{getattr(phase, 'name', phase_index)}'"
                         )
@@ -1316,14 +1444,23 @@ class VectorComposite:
         if name not in self.component_properties:
             raise AttributeError(f"component property '{name}' has not been set")
         values = self.component_properties[name]
-        return torch.sum(self.component_abundances * values, dim=-1)
+        print(f"Reducing component property '{name}':")
+        #print(values)
+        #print(torch.sum(self.component_abundances * values, dim=-1))
+        return torch.nansum(self.component_abundances * values, dim=-1)
 
     def _reduce_phase_property(self, name):
         if name not in self.phase_properties:
             raise AttributeError(f"phase property '{name}' has not been set")
         values = self.phase_properties[name]
         weights = _normalize_rows(self.phase_abundances())
-        return torch.sum(weights * values, dim=-1)
+        print(f"Property '{name}':")
+        print(values.size())
+        print(values)
+        print(weights.size())
+        print(weights)
+        #print(torch.sum(weights * values, dim=-1))
+        return torch.nansum(weights * values, dim=-1)
 
     @property
     def molar_gibbs(self):
@@ -1336,6 +1473,12 @@ class VectorComposite:
         if "molar_entropy" in self.component_properties:
             return self._reduce_component_property("molar_entropy")
         return self._reduce_phase_property("molar_entropy")
+    
+    @property
+    def entropy_by_mass(self):
+        ME = self.molar_entropy
+        MM = self.molar_mass
+        return ME / MM
 
     @property
     def molar_enthalpy(self):
@@ -1378,18 +1521,34 @@ class VectorComposite:
         if "isothermal_bulk_modulus_reuss" in self.component_properties:
             return self._reduce_component_property("isothermal_bulk_modulus_reuss")
         return self._reduce_phase_property("isothermal_bulk_modulus_reuss")
-
+    
     @property
-    def isentropic_bulk_modulus_reuss(self):
-        if "isentropic_bulk_modulus_reuss" in self.component_properties:
-            return self._reduce_component_property("isentropic_bulk_modulus_reuss")
-        if "isentropic_bulk_modulus_reuss" in self.phase_properties:
-            return self._reduce_phase_property("isentropic_bulk_modulus_reuss")
+    def thermal_expansivity(self):
+        if "thermal_expansivity" in self.component_properties:
+            return self._reduce_component_property("thermal_expansivity")
+        return self._reduce_phase_property("thermal_expansivity")
 
-        self._print_scalar_fallback_warning(
-            "isentropic_bulk_modulus_reuss not available; using isothermal_bulk_modulus_reuss as approximation"
-        )
-        return self.isothermal_bulk_modulus_reuss
+    
+    @property    
+    def isentropic_bulk_modulus_reuss(self):
+        """
+        Returns adiabatic bulk modulus of the mineral [Pa]
+
+        Note: This function implicitly assumes that all of the
+        individual phases are, and remain, in thermal and
+        mechanical equilibrium. A corollary is that the
+        individual phases may not be isentropically compressed,
+        since heat exchange between phases may be required
+        to maintain the same temperature in all phases.
+
+        Aliased with self.K_S
+        """
+        K_T = self.isothermal_bulk_modulus_reuss
+        alpha = self.thermal_expansivity
+        C_p = self.molar_heat_capacity_p
+        V = self.molar_volume
+        T = self.temperature
+        return K_T / (1.0 - (alpha**2) * K_T * T * V / C_p)
 
     @property
     def density(self):
@@ -1407,12 +1566,13 @@ class VectorComposite:
             / self.density
         )
 
+
     @property
     def bulk_sound_velocity(self):
         return torch.sqrt(self.isentropic_bulk_modulus_reuss / self.density)
 
     @property
-    def shear_wave_velocity(self):
+    def s_wave_velocity(self):
         return torch.sqrt(self.shear_modulus / self.density)
 
     @property
