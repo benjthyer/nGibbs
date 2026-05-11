@@ -14,8 +14,8 @@ from typing import Tuple
 
 import numpy as np
 
-from .bserch import bserch
-from .heat import _neville
+#from .bserch import bserch
+#from .heat import _neville
 
 
 _ADQREF_INC_PATH = Path(__file__).resolve().parent / "HeFESToRepository" / "adqref.inc"
@@ -49,7 +49,7 @@ def _load_adqref_tables() -> dict[str, Tuple[float, ...]]:
     return {"dad": dad, "tad": tad}
 
 
-def qr19(depth: float, Ti: float) -> Tuple[float, float]:
+#def qr19(depth: float, Ti: float) -> Tuple[float, float]:
     """
     Compute seismic quality factors (Qs, Qp) at given depth and temperature.
     
@@ -71,7 +71,7 @@ def qr19(depth: float, Ti: float) -> Tuple[float, float]:
           attenuation in the upper mantle. JGR, 100(B7), 12375-12394.
         - Temperature-dependence added 31 July 2007.
     """
-    # Local Q model: depth layers and reference Q values
+    """# Local Q model: depth layers and reference Q values
     # Based on PREM with modifications
     d_vals = (2891.0, 648.0, 647.0, 511.0, 422.0, 370.0, 310.0, 250.0, 200.0, 160.0, 100.0, 81.5, 0.0)
     q_vals = (32.1, 32.1, 67.1, 66.2, 65.1, 65.2, 67.8, 76.6, 145.3, 154.9, 153.5, 17.1, 17.1)
@@ -128,7 +128,7 @@ def qr19(depth: float, Ti: float) -> Tuple[float, float]:
 
     return qs, qp
 
-
+"""
 # ---------------------------------------------------------------------------
 # PREM depth-pressure table embedded from const.inc (ndepth = 57)
 # ---------------------------------------------------------------------------

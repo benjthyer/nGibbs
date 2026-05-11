@@ -37,7 +37,8 @@ logish_eps = [np.finfo(float).eps]
 
 # When True, Bukowinski (1977) electronic contributions are added to SLB EOS
 # thermodynamic properties for phases that define bel_0 and gel parameters.
-INCLUDE_ELECTRONIC_CONTRIBUTIONS = False
+INCLUDE_ELECTRONIC_CONTRIBUTIONS = True
+INCLUDE_ANELASTIC_CONTRIBUTIONS = False
 
 def check_pairs(phases, fractions):
     if len(fractions) < 1:
@@ -874,6 +875,7 @@ class VectorComposite:
             "molar_internal_energy",
             "molar_heat_capacity_p",
             "isothermal_bulk_modulus_reuss",
+            "isentropic_bulk_modulus_reuss",
             "thermal_expansivity",
             "shear_modulus",
         )
@@ -1090,7 +1092,21 @@ class VectorComposite:
                     self.phase_properties["shear_modulus"][i, phase_index] = phase.shear_modulus
                 else:
                     self.phase_properties["shear_modulus"][i, phase_index] = 0.0
-        
+
+        # Per-phase K_S: compute before assemblage averaging so VRH of K_S is correct
+        try:
+            K_T_ph = self.phase_properties["isothermal_bulk_modulus_reuss"][:, phase_index]
+            alpha_ph = self.phase_properties["thermal_expansivity"][:, phase_index]
+            Cp_ph = self.phase_properties["molar_heat_capacity_p"][:, phase_index]
+            V_ph = _as_tensor(volumes, device=device, dtype=dtype)
+            denom = 1.0 - (alpha_ph ** 2) * K_T_ph * T * V_ph / Cp_ph.clamp(min=1e-30)
+            denom = denom.clamp(min=1e-10)
+            self.phase_properties["isentropic_bulk_modulus_reuss"][:, phase_index] = K_T_ph / denom
+        except Exception:
+            self._print_scalar_fallback_warning(
+                f"isentropic_bulk_modulus_reuss in phase '{getattr(phase, 'name', phase_index)}'"
+            )
+
         # Handle endmember properties
         endmember_slice = self.endmember_slices[phase_index]
         self.endmember_properties["partial_gibbs"][:, endmember_slice] = self.phase_properties[
@@ -1268,14 +1284,6 @@ class VectorComposite:
         if mask.any():
             f[mask.squeeze(-1)] = comp_abund[mask.squeeze(-1)] / sums[mask.squeeze(-1)]
 
-        # Ideal mixing contributions: 0*ln(0) = 0 by convention
-        R = 8.31446261815324
-        log_f = torch.where(f > 0, torch.log(f.clamp(min=1e-300)), torch.zeros_like(f))
-        ideal_partial_gibbs = R * T.unsqueeze(-1) * log_f    # [B, n_end]
-        ideal_partial_entropy = -R * log_f                    # [B, n_end]
-        ideal_mix_gibbs = (f * ideal_partial_gibbs).sum(-1)   # [B]
-        ideal_mix_entropy = (f * ideal_partial_entropy).sum(-1)  # [B]
-
         sm = phase.solution_model
         #print(sm.__class__.__name__)
 
@@ -1363,10 +1371,11 @@ class VectorComposite:
                     excess_volume[i] = float(ev)
                     excess_entropy[i] = float(ee)
 
-        # Partial properties = endmember contribution + ideal mixing + excess partials
-        partial_gibbs = gibbs + ideal_partial_gibbs + excess_partial_gibbs
+        # Partial properties = endmember contribution + excess partials
+        # (excess already contains ideal Temkin mixing for IdealSolution/AsymmetricRegularSolution)
+        partial_gibbs = gibbs + excess_partial_gibbs
         partial_volumes = vol + excess_partial_volumes
-        partial_entropies = ent + ideal_partial_entropy + excess_partial_entropies
+        partial_entropies = ent + excess_partial_entropies
 
         # Store endmember partials into global endmember_properties
         self.endmember_properties["partial_gibbs"][:, endmember_slice] = partial_gibbs
@@ -1374,9 +1383,10 @@ class VectorComposite:
         self.endmember_properties["partial_entropies"][:, endmember_slice] = partial_entropies
 
         # Aggregate to phase properties
-        molar_gibbs_phase = (f * gibbs).sum(-1) + ideal_mix_gibbs + excess_gibbs
+        # excess_gibbs / excess_entropy already include ideal Temkin configurational terms
+        molar_gibbs_phase = (f * gibbs).sum(-1) + excess_gibbs
         molar_volume_phase = (f * vol).sum(-1) + excess_volume
-        molar_entropy_phase = (f * ent).sum(-1) + ideal_mix_entropy + excess_entropy
+        molar_entropy_phase = (f * ent).sum(-1) + excess_entropy
 
         self.phase_properties["molar_gibbs"][:, phase_index] = molar_gibbs_phase
         self.phase_properties["molar_volume"][:, phase_index] = molar_volume_phase
@@ -1525,13 +1535,31 @@ class VectorComposite:
                 f"thermal_expansivity aggregation failed for phase '{getattr(phase, 'name', phase_index)}'"
             )
 
-        # Shear modulus: simple weighted sum of endmember shear moduli
+        # Shear modulus: Voigt (linear) average of endmember shear moduli within a solution
+        # For a homogeneous solid solution the crystal is uniform; linear mixing in G is appropriate.
         try:
             G_phase = (f * G_end).sum(-1)
             self.phase_properties["shear_modulus"][:, phase_index] = G_phase
         except Exception:
             self._print_scalar_fallback_warning(
                 f"shear_modulus aggregation failed for phase '{getattr(phase, 'name', phase_index)}'"
+            )
+
+        # Isentropic bulk modulus per phase: K_S = K_T / (1 - α²·K_T·T·V/Cp)
+        # Must be computed per-phase (not from assembled properties) to allow
+        # correct Reuss/VRH averaging of K_S across phases.
+        try:
+            K_T_ph = self.phase_properties["isothermal_bulk_modulus_reuss"][:, phase_index]
+            alpha_ph = self.phase_properties["thermal_expansivity"][:, phase_index]
+            Cp_ph = self.phase_properties["molar_heat_capacity_p"][:, phase_index]
+            V_ph = molar_volume_phase
+            denom = 1.0 - (alpha_ph ** 2) * K_T_ph * T * V_ph / Cp_ph.clamp(min=1e-30)
+            denom = denom.clamp(min=1e-10)
+            K_S_phase = K_T_ph / denom
+            self.phase_properties["isentropic_bulk_modulus_reuss"][:, phase_index] = K_S_phase
+        except Exception:
+            self._print_scalar_fallback_warning(
+                f"isentropic_bulk_modulus_reuss aggregation failed for phase '{getattr(phase, 'name', phase_index)}'"
             )
 
     def set_component_properties(self, **properties):
@@ -1682,16 +1710,19 @@ class VectorComposite:
     @property
     def isentropic_bulk_modulus_reuss(self):
         """
-        Returns adiabatic bulk modulus of the mineral [Pa]
+        Returns adiabatic bulk modulus of the assemblage [Pa] via VRH of per-phase K_S.
 
-        Aliased with self.K_S
+        Per-phase K_S is computed in _evaluate_solution_with_vector to ensure the
+        nonlinear K_T → K_S conversion happens before phase averaging (matching HeFESTo).
         """
+        if "isentropic_bulk_modulus_reuss" in self.phase_properties:
+            return self._reduce_phase_property("isentropic_bulk_modulus_reuss", VRH=True)
+        # Fallback: derive from assembled K_T (less accurate for multi-phase assemblages)
         K_T = self.isothermal_bulk_modulus_reuss
         alpha = self.thermal_expansivity
         C_p = self.molar_heat_capacity_p
         V = self.molar_volume
         T = self.temperature
-
         return K_T / (1.0 - (alpha**2) * K_T * T * V / C_p)
 
     @property
@@ -1702,7 +1733,11 @@ class VectorComposite:
 
     @property
     def p_wave_velocity(self):
-        return (1-(1/(torch.pi*self.Qp))) * torch.sqrt(
+        if INCLUDE_ANELASTIC_CONTRIBUTIONS:
+            prefactor = (1-(1/(torch.pi*self.Qp)))
+        else:
+            prefactor = 1.0
+        return prefactor * torch.sqrt(
             (
                 self.isentropic_bulk_modulus_reuss
                 + (4.0 / 3.0) * self.shear_modulus
@@ -1717,7 +1752,11 @@ class VectorComposite:
 
     @property
     def s_wave_velocity(self):
-        return (1-(1/(torch.pi*self.Qs)))*torch.sqrt(self.shear_modulus / self.density)
+        if INCLUDE_ANELASTIC_CONTRIBUTIONS:
+            prefactor = (1-(1/(torch.pi*self.Qs)))
+        else:
+            prefactor = 1.0
+        return prefactor * torch.sqrt(self.shear_modulus / self.density)
 
     @property
     def available_component_properties(self):

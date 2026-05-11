@@ -10,8 +10,9 @@ from pathlib import Path
 import tarfile
 import tempfile
 import pickle
-from typing import List
+from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
+import pandas as pd
 
 
 def delete_files_with_keyword(directory, keyword, dry_run=True):
@@ -496,8 +497,6 @@ def save_ml_bundle(bundle, output_path):
         # Clean up temporary directory
         shutil.rmtree(temp_dir)
 
-import pandas as pd
-
 def save_fixed_width_table(
     table,
     out_path = None,
@@ -577,5 +576,452 @@ def save_fixed_width_table(
                 else:
                     fields.append(f'{str(value):>{width}}')
             handle.write(''.join(fields) + '\n')
+
+    return output_path
+
+
+# ---------------------------------------------------------------------------
+# HeFESTo fort-file I/O
+# ---------------------------------------------------------------------------
+
+try:
+    from nMELTS.config.constants import (
+        COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO,
+        HEFESTO_ABBREVIATION_TO_SHORT_NAMES,
+        get_oxide_molar_mass,
+    )
+except ImportError:
+    try:
+        from src.nMELTS.config.constants import (
+            COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO,
+            HEFESTO_ABBREVIATION_TO_SHORT_NAMES,
+            get_oxide_molar_mass,
+        )
+    except ImportError:
+        COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO: Dict = {}
+        HEFESTO_ABBREVIATION_TO_SHORT_NAMES: Dict = {}
+
+        def get_oxide_molar_mass(name: str) -> float:  # type: ignore[misc]
+            return 100.0
+
+try:
+    import torch
+    from nMELTS.engine.EOS_arithmetic.hefesto_physub import (
+        get_hefesto_physub_context,
+        compute_physub_bulk_matrix,
+    )
+except ImportError:
+    torch = None  # type: ignore[assignment]
+
+
+PHASE_ABBREVIATION_OVERRIDES: Dict[str, str] = {
+    'c2c': 'hp-clinopyroxene',
+    'il': 'akimotoite',
+    'pv': 'bridgmanite',
+    'mw': 'ferropericlase',
+    'fea': 'iron',
+    'feg': 'iron',
+    'fee': 'iron',
+}
+
+COMPONENT_ABBREVIATION_OVERRIDES: Dict[str, str] = {
+    'mgil': 'mg-akimotoite',
+    'feil': 'fe-akimotoite',
+    'mgpv': 'mg-bridgmanite',
+    'fepv': 'fe-bridgmanite',
+    'alpv': 'al-bridgmanite',
+    'hepv': 'ferric-bridgmanite',
+    'hlpv': 'ferric-bridgmanite-ls',
+    'fapv': 'ferric-al-bridgmanite',
+    'crpv': 'cr-bridgmanite',
+    'smag': 'magnetite',
+    'fea': 'alpha-iron',
+    'feg': 'gamma-iron',
+    'fee': 'epsilon-iron',
+    'mgc2': 'hp-clinoenstatite',
+    'fec2': 'hp-clinoferrosilite',
+}
+
+
+def _safe_read_ws_table(path: str, skiprows: int = 0) -> pd.DataFrame:
+    return pd.read_csv(path, sep=r'\s+', engine='python', skiprows=skiprows)
+
+
+def _resolve_phase_name_from_abbr(phase_abbr: str) -> str:
+    if phase_abbr in PHASE_ABBREVIATION_OVERRIDES:
+        return PHASE_ABBREVIATION_OVERRIDES[phase_abbr]
+    return HEFESTO_ABBREVIATION_TO_SHORT_NAMES.get(phase_abbr, phase_abbr)
+
+
+def _resolve_component_name_from_abbr(component_abbr: str) -> str:
+    if component_abbr in COMPONENT_ABBREVIATION_OVERRIDES:
+        return COMPONENT_ABBREVIATION_OVERRIDES[component_abbr]
+    return HEFESTO_ABBREVIATION_TO_SHORT_NAMES.get(component_abbr, component_abbr)
+
+
+def _build_reverse_component_phase_map() -> Dict[str, List[str]]:
+    reverse_map: Dict[str, List[str]] = {}
+    for phase_name, comp_list in COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO.items():
+        if phase_name in {'System_main', 'Bulk_comp', 'Bulk_comp_elements'}:
+            continue
+        for component in comp_list:
+            reverse_map.setdefault(component, []).append(phase_name)
+    return reverse_map
+
+
+def _parse_control_file(control_path: str) -> Tuple[Dict[str, float], Dict[str, str]]:
+    with open(control_path, 'r', encoding='utf-8', errors='ignore') as handle:
+        lines = [line.rstrip('\n') for line in handle]
+
+    element_moles: Dict[str, float] = {}
+    control_component_to_phase_abbr: Dict[str, str] = {}
+
+    oxides_start = None
+    for i, line in enumerate(lines):
+        if line.strip().lower() == 'oxides':
+            oxides_start = i + 1
+            break
+    if oxides_start is None:
+        raise ValueError(f"No 'oxides' block found in {control_path}")
+
+    for i in range(oxides_start, len(lines)):
+        stripped = lines[i].strip()
+        if not stripped:
+            continue
+        if stripped.lower().startswith('phase '):
+            break
+        if ',' in stripped:
+            continue
+        parts = stripped.split()
+        if len(parts) < 2:
+            continue
+        symbol = parts[0]
+        if symbol.upper() == 'O':
+            symbol = 'O'
+        try:
+            value = float(parts[1])
+        except ValueError:
+            continue
+        element_moles[symbol] = value
+
+    active_phase_abbr: Optional[str] = None
+    expect_flag_line = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.lower().startswith('phase '):
+            fields = stripped.split()
+            if len(fields) >= 2:
+                active_phase_abbr = fields[1].strip()
+                expect_flag_line = True
+            continue
+        if active_phase_abbr is None:
+            continue
+        if expect_flag_line:
+            expect_flag_line = False
+            continue
+        component_abbr = stripped.split()[0]
+        control_component_to_phase_abbr[component_abbr] = active_phase_abbr
+
+    return element_moles, control_component_to_phase_abbr
+
+
+def _parse_fort56(path: str) -> pd.DataFrame:
+    return _safe_read_ws_table(path, skiprows=1)
+
+
+def _resolve_component_phase(
+    component_abbr: str,
+    component_name: str,
+    reverse_component_phase_map: Dict[str, List[str]],
+    control_component_to_phase_abbr: Dict[str, str],
+) -> Optional[str]:
+    candidates = reverse_component_phase_map.get(component_name, [])
+
+    if len(candidates) == 1:
+        return candidates[0]
+
+    if component_abbr in control_component_to_phase_abbr:
+        phase_abbr = control_component_to_phase_abbr[component_abbr]
+        phase_name = _resolve_phase_name_from_abbr(phase_abbr)
+        if len(candidates) == 0:
+            return phase_name
+        if phase_name in candidates:
+            return phase_name
+
+    if len(candidates) > 0:
+        return candidates[0]
+
+    return None
+
+
+def load_fort99_component_moles_and_labels(sim_dir: str, indexer) -> Tuple[np.ndarray, np.ndarray]:
+    """Load fort.99 components into an extensive component-moles array and
+    compute intensive (VC) and molar (P) phase labels using an ml_indexer.
+
+    Parameters
+    ----------
+    sim_dir : str
+        Directory containing a `fort.99` file.
+    indexer : object
+        ml_indexer providing `label_names` (component labels) and
+        `phaseToCompMap` (2D array-like with shape [n_phases, n_components]).
+
+    Returns
+    -------
+    VC : np.ndarray
+        Intensive phase labels with shape (n_rows, n_phases). Contains component proportions that sum to 1 across each phase
+    P : np.ndarray
+        Molar phase labels (phase moles) with shape (n_rows, n_phases).
+    """
+    from pathlib import Path as _Path
+    sim_dir = _Path(sim_dir)
+    fort99_path = sim_dir / 'fort.99'
+    if not fort99_path.exists() or not fort99_path.is_file():
+        raise FileNotFoundError(f'fort.99 not found in: {sim_dir}')
+
+    comp_df = _safe_read_ws_table(str(fort99_path), skiprows=0)
+    if comp_df.shape[1] < 6:
+        raise ValueError('fort.99 has insufficient columns to parse components')
+
+    nrows = len(comp_df)
+    component_count = len(getattr(indexer, 'label_names', []))
+    if component_count == 0:
+        raise ValueError('Indexer must expose non-empty `label_names`')
+
+    component_moles = np.zeros((nrows, component_count), dtype=float)
+
+    component_cols = list(comp_df.columns)[3:-2]
+    for comp_abbr in component_cols:
+        comp_abbr_str = str(comp_abbr).strip()
+        comp_name = _resolve_component_name_from_abbr(comp_abbr_str)
+        try:
+            comp_idx = list(indexer.label_names).index(comp_name)
+        except ValueError:
+            print(f"[WARNING] Component {comp_name} not found in indexer!")
+            continue
+        values = pd.to_numeric(comp_df[comp_abbr], errors='coerce').fillna(0.0).to_numpy(dtype=float)
+        component_moles[:, comp_idx] = values
+
+    p_to_c = np.asarray(getattr(indexer, 'phaseToCompMap', None), dtype=float)
+    if p_to_c is None or p_to_c.ndim != 2 or p_to_c.shape[1] != component_count:
+        raise ValueError('Indexer must expose `phaseToCompMap` with shape [n_phases, n_components]')
+
+    P = component_moles @ p_to_c.T
+
+    phaseComponentMoles = component_moles[:, None, :] * p_to_c[None, :, :]
+
+    comp_sums = np.sum(phaseComponentMoles, axis=2, keepdims=True)
+    print(comp_sums)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        VC = np.einsum('bpc,pc->bc', np.divide(phaseComponentMoles, comp_sums, where=(comp_sums > 0)), p_to_c) @ indexer.variedToAllComp.T
+    print(f"Shape of VC: {VC.shape}, should be {len(indexer.compositionally_variable_subset)} Shape of P: {P.shape}")
+    print(VC)
+    return VC, P
+
+
+def load_fort99_componentMoles(sim_dir: str, indexer) -> np.ndarray:
+    """Load fort.99 components into an extensive component-moles array.
+
+    Parameters
+    ----------
+    sim_dir : str
+        Directory containing a `fort.99` file.
+    indexer : object
+        ml_indexer providing `label_names` (component labels).
+
+    Returns
+    -------
+    componentMoles : np.ndarray
+        Extensive component moles with shape (n_rows, n_components).
+    """
+    from pathlib import Path as _Path
+    sim_dir = _Path(sim_dir)
+    fort99_path = sim_dir / 'fort.99'
+    #if not fort99_path.exists() or not fort99_path.is_file():
+    #    raise FileNotFoundError(f'fort.99 not found in: {sim_dir}')
+
+    comp_df = _safe_read_ws_table(str(fort99_path), skiprows=0)
+    if comp_df.shape[1] < 6:
+        raise ValueError('fort.99 has insufficient columns to parse components')
+
+    nrows = len(comp_df)
+    component_count = len(getattr(indexer, 'label_names', []))
+    if component_count == 0:
+        raise ValueError('Indexer must expose non-empty `label_names`')
+
+    component_moles = np.zeros((nrows, component_count), dtype=float)
+
+    component_cols = list(comp_df.columns)[3:-2]
+    for comp_abbr in component_cols:
+        comp_abbr_str = str(comp_abbr).strip()
+        comp_name = _resolve_component_name_from_abbr(comp_abbr_str)
+        values = pd.to_numeric(comp_df[comp_abbr], errors='coerce').fillna(0.0).to_numpy(dtype=float)
+        try:
+            comp_idx = list(indexer.label_names).index(comp_name)
+        except ValueError:
+            if values.any():
+                print(f"[WARNING] Component {comp_name} is present in fort.99 but not found in indexer!")
+            continue
+        component_moles[:, comp_idx] = values
+    return component_moles
+
+
+def extract_bulk_properties_from_simulation_dir(
+    sim_dir: str,
+    include_phase_properties: bool = False,
+    repeat: int = 1,
+) -> Dict[str, Any]:
+    """Extract bulk thermodynamic properties from a single HeFESTo simulation.
+
+    Reads all usable bulk properties from fort.56 (all numeric columns), along
+    with key tables from fort.61/68/99 for component-based diagnostics.
+
+    Parameters
+    ----------
+    sim_dir : str
+        Path to HeFESTo simulation directory (containing fort.*, control files).
+    include_phase_properties : bool, default=False
+        Reserved for compatibility.
+    repeat : int, default=1
+        Repeat every array N times (for scalability testing).
+
+    Returns
+    -------
+    dict
+        - Core arrays: 'P(GPa)', 'T(K)', 'VS(km/s)', 'VP(km/s)'
+        - One entry per numeric fort.56 bulk column
+        - 'fort56_bulk': dict[str, np.ndarray] mirror of numeric fort.56 columns
+        - 'fort56_dominant_phase': optional dominant phase labels
+        - 'component_names', 'component_moles'
+    """
+    import os as _os
+    from pathlib import Path as _Path
+
+    required_files = ['control', 'fort.56', 'fort.61', 'fort.68', 'fort.99']
+    for fname in required_files:
+        fpath = _os.path.join(sim_dir, fname)
+        if not _os.path.exists(fpath):
+            raise FileNotFoundError(f'Missing required file: {fpath}')
+
+    element_moles, control_component_to_phase_abbr = _parse_control_file(
+        _os.path.join(sim_dir, 'control')
+    )
+
+    sys_df = _parse_fort56(_os.path.join(sim_dir, 'fort.56'))
+    rho_df = _safe_read_ws_table(_os.path.join(sim_dir, 'fort.61'), skiprows=0)
+    vol_df = _safe_read_ws_table(_os.path.join(sim_dir, 'fort.68'), skiprows=0)
+    comp_df = _safe_read_ws_table(_os.path.join(sim_dir, 'fort.99'), skiprows=0)
+    fort59_path = _os.path.join(sim_dir, 'fort.59')
+    fort59_df = None
+    if _os.path.exists(fort59_path):
+        fort59_df = _safe_read_ws_table(fort59_path, skiprows=0)
+
+    table_lengths = [len(sys_df), len(rho_df), len(vol_df), len(comp_df)]
+    if fort59_df is not None:
+        table_lengths.append(len(fort59_df))
+    nrows = min(table_lengths)
+    if nrows <= 0:
+        raise ValueError('No rows found across required HeFESTo tables')
+
+    sys_df = sys_df.iloc[:nrows].reset_index(drop=True)
+    rho_df = rho_df.iloc[:nrows].reset_index(drop=True)
+    vol_df = vol_df.iloc[:nrows].reset_index(drop=True)
+    comp_df = comp_df.iloc[:nrows].reset_index(drop=True)
+    if fort59_df is not None:
+        fort59_df = fort59_df.iloc[:nrows].reset_index(drop=True)
+
+    fort56_bulk: Dict[str, np.ndarray] = {}
+    for col in sys_df.columns:
+        numeric_series = pd.to_numeric(sys_df[col], errors='coerce')
+        if numeric_series.notna().any():
+            fort56_bulk[str(col)] = numeric_series.fillna(0.0).to_numpy(dtype=np.float32)
+
+    fort59_bulk: Dict[str, np.ndarray] = {}
+    if fort59_df is not None:
+        for col in fort59_df.columns:
+            numeric_series = pd.to_numeric(fort59_df[col], errors='coerce')
+            if numeric_series.notna().any():
+                fort59_bulk[str(col)] = numeric_series.fillna(0.0).to_numpy(dtype=np.float32)
+
+    if 'P(GPa)' not in fort56_bulk or 'T(K)' not in fort56_bulk:
+        raise ValueError("fort.56 is missing required numeric columns 'P(GPa)' and/or 'T(K)'")
+
+    dominant_phase_col = None
+    for col in sys_df.columns:
+        if str(col).strip().lower() == 'dominant_phase':
+            dominant_phase_col = col
+            break
+
+    reverse_component_phase_map = _build_reverse_component_phase_map()
+    component_cols = list(comp_df.columns)[3:-2]
+
+    component_names: List[str] = []
+    component_moles_list: List[np.ndarray] = []
+
+    for comp_abbr in component_cols:
+        comp_abbr_str = str(comp_abbr).strip()
+        component_name = _resolve_component_name_from_abbr(comp_abbr_str)
+        phase_name = _resolve_component_phase(
+            component_abbr=comp_abbr_str,
+            component_name=component_name,
+            reverse_component_phase_map=reverse_component_phase_map,
+            control_component_to_phase_abbr=control_component_to_phase_abbr,
+        )
+
+        if component_name and phase_name:
+            component_names.append(component_name)
+            values = pd.to_numeric(comp_df[comp_abbr], errors='coerce').fillna(0.0).to_numpy(dtype=np.float32)
+            component_moles_list.append(values)
+
+    if not component_moles_list:
+        raise ValueError('No valid components found in fort.99')
+
+    component_moles = np.stack(component_moles_list, axis=1)
+
+    result: Dict[str, Any] = {
+        'P(GPa)': fort56_bulk['P(GPa)'],
+        'T(K)': fort56_bulk['T(K)'],
+        'VS(km/s)': fort56_bulk.get('VS(km/s)', np.zeros(nrows, dtype=np.float32)),
+        'VP(km/s)': fort56_bulk.get('VP(km/s)', np.zeros(nrows, dtype=np.float32)),
+        'fort56_bulk': fort56_bulk,
+        'fort59_bulk': fort59_bulk,
+        'component_names': component_names,
+        'component_moles': component_moles,
+    }
+
+    for col_name, values in fort56_bulk.items():
+        result[col_name] = values
+
+    for col_name, values in fort59_bulk.items():
+        result[f'fort59::{col_name}'] = values
+
+    if dominant_phase_col is not None:
+        result['fort56_dominant_phase'] = sys_df[dominant_phase_col].astype(str).to_numpy()
+
+    if repeat > 1:
+        for key, value in result.items():
+            if isinstance(value, np.ndarray):
+                result[key] = np.repeat(value, repeat, axis=0)
+            elif isinstance(value, (list, tuple)):
+                result[key] = value * repeat
+            elif isinstance(value, dict):
+                for k, v in value.items():
+                    if isinstance(v, np.ndarray):
+                        result[key][k] = np.repeat(v, repeat, axis=0)
+                    elif isinstance(v, (list, tuple)):
+                        result[key][k] = v * repeat
+
+    if torch is not None:
+        try:
+            molar_masses = np.array(
+                [get_oxide_molar_mass(name) for name in component_names],
+                dtype=np.float32,
+            )
+        except Exception:
+            molar_masses = np.ones(len(component_names), dtype=np.float32) * 100.0
+
+    return result
 
     return output_path
