@@ -37,4 +37,5 @@ For instance, instead of '→', use '->'}
 {If something can be vectorized, vectorize it. This module is built for speed.}
 {When programming tests, always use the code from the repository directly. Never copy or redundantly reproduce code from the repository, as it does not truly represent the state of the tested codebase.}
 {Silent failures are bad. Never hide failures; errors should stop code execution. Never write something like `try: ... except: pass` }
+{If you are going to throw your own error statement, always include the original error message as well.}
 ```

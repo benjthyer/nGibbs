@@ -6,6 +6,7 @@ import argparse
 import tarfile
 from copy import deepcopy
 from pathlib import Path
+import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 import sys
 import re
@@ -50,6 +51,9 @@ def build_parser() -> argparse.ArgumentParser:
 """import time
 print('Sleeping for 3 hours..')
 time.sleep(3*3600)"""
+
+"""print('Sleeping for 1 hour..') # SLEEPING HERE IS INCORRECT: PUT IN MAIN GUARD TO AVOID SLEEPING ON IMPORT DURING TESTS
+time.sleep(3600)"""
 
 def _deep_update(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
     """Recursive Config updates!"""

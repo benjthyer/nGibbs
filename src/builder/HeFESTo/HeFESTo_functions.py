@@ -25,16 +25,41 @@ base_path = str(Path(__file__).parent.parent.parent.parent)
 if base_path not in sys.path:
     sys.path.insert(0, base_path)
 
-# Handle import for file_utils - try relative then absolute
 try:
-    from nMELTS.utils.file_utils import save_fixed_width_table
+    from nMELTS.utils.file_utils import (
+        save_fixed_width_table,
+        PHASE_ABBREVIATION_OVERRIDES,
+        COMPONENT_ABBREVIATION_OVERRIDES,
+        _safe_read_ws_table,
+        _resolve_phase_name_from_abbr,
+        _resolve_component_name_from_abbr,
+        _build_reverse_component_phase_map,
+        _parse_control_file,
+        _parse_fort56,
+        _resolve_component_phase,
+        load_fort99_component_moles_and_labels,
+        load_fort99_componentMoles,
+        extract_bulk_properties_from_simulation_dir,
+    )
 except ImportError:
     try:
-        from src.nMELTS.utils.file_utils import save_fixed_width_table
+        from src.nMELTS.utils.file_utils import (
+            save_fixed_width_table,
+            PHASE_ABBREVIATION_OVERRIDES,
+            COMPONENT_ABBREVIATION_OVERRIDES,
+            _safe_read_ws_table,
+            _resolve_phase_name_from_abbr,
+            _resolve_component_name_from_abbr,
+            _build_reverse_component_phase_map,
+            _parse_control_file,
+            _parse_fort56,
+            _resolve_component_phase,
+            load_fort99_component_moles_and_labels,
+            load_fort99_componentMoles,
+            extract_bulk_properties_from_simulation_dir,
+        )
     except ImportError:
-        # Fallback: dummy implementation if not available
-        def save_fixed_width_table(data, out_path=None):
-            """Fallback implementation of save_fixed_width_table"""
+        def save_fixed_width_table(data, out_path=None):  # type: ignore[misc]
             pass
 
 
@@ -47,45 +72,6 @@ from nMELTS.config.constants import (
     get_oxide_molar_mass,
     OXIDE_MOLAR_MASSES
 )
-
-try:
-    import torch
-    from nMELTS.engine.EOS_arithmetic.hefesto_physub import (
-        get_hefesto_physub_context,
-        compute_physub_bulk_matrix,
-    )
-except ImportError:
-    torch = None
-
-
-PHASE_ABBREVIATION_OVERRIDES: Dict[str, str] = {
-    'c2c': 'hp-clinopyroxene',
-    'il': 'akimotoite',
-    'pv': 'bridgmanite',
-    'mw': 'ferropericlase',
-    'fea': 'iron',
-    'feg': 'iron',
-    'fee': 'iron',
-}
-
-COMPONENT_ABBREVIATION_OVERRIDES: Dict[str, str] = {
-    'mgil': 'mg-akimotoite',
-    'feil': 'fe-akimotoite',
-    'mgpv': 'mg-bridgmanite',
-    'fepv': 'fe-bridgmanite',
-    'alpv': 'al-bridgmanite',
-    'hepv': 'ferric-bridgmanite',
-    'hlpv': 'ferric-bridgmanite-ls',
-    'fapv': 'ferric-al-bridgmanite',
-    'crpv': 'cr-bridgmanite',
-    'smag': 'magnetite',
-    'fea': 'alpha-iron',
-    'feg': 'gamma-iron',
-    'fee': 'epsilon-iron',
-    'mgc2': 'hp-clinoenstatite',
-    'fec2': 'hp-clinoferrosilite',
-}
-
 
 _SIMULATION_DIR_PATTERN = re.compile(r'^Simulation(\d+)$', re.IGNORECASE)
 
@@ -850,86 +836,6 @@ def _list_simulation_dirs(workspace_dir: str) -> List[Tuple[int, str]]:
     return sims
 
 
-def _resolve_phase_name_from_abbr(phase_abbr: str) -> str:
-    if phase_abbr in PHASE_ABBREVIATION_OVERRIDES:
-        return PHASE_ABBREVIATION_OVERRIDES[phase_abbr]
-    return HEFESTO_ABBREVIATION_TO_SHORT_NAMES.get(phase_abbr, phase_abbr)
-
-
-def _resolve_component_name_from_abbr(component_abbr: str) -> str:
-    if component_abbr in COMPONENT_ABBREVIATION_OVERRIDES:
-        return COMPONENT_ABBREVIATION_OVERRIDES[component_abbr]
-    return HEFESTO_ABBREVIATION_TO_SHORT_NAMES.get(component_abbr, component_abbr)
-
-
-def _build_reverse_component_phase_map() -> Dict[str, List[str]]:
-    reverse_map: Dict[str, List[str]] = {}
-    for phase_name, comp_list in COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO.items():
-        if phase_name in {'System_main', 'Bulk_comp', 'Bulk_comp_elements'}:
-            continue
-        for component in comp_list:
-            reverse_map.setdefault(component, []).append(phase_name)
-    return reverse_map
-
-
-def _parse_control_file(control_path: str) -> Tuple[Dict[str, float], Dict[str, str]]:
-    with open(control_path, 'r', encoding='utf-8', errors='ignore') as handle:
-        lines = [line.rstrip('\n') for line in handle]
-
-    element_moles: Dict[str, float] = {}
-    control_component_to_phase_abbr: Dict[str, str] = {}
-
-    oxides_start = None
-    for i, line in enumerate(lines):
-        if line.strip().lower() == 'oxides':
-            oxides_start = i + 1
-            break
-    if oxides_start is None:
-        raise ValueError(f"No 'oxides' block found in {control_path}")
-
-    for i in range(oxides_start, len(lines)):
-        stripped = lines[i].strip()
-        if not stripped:
-            continue
-        if stripped.lower().startswith('phase '):
-            break
-        if ',' in stripped:
-            continue
-        parts = stripped.split()
-        if len(parts) < 2:
-            continue
-        symbol = parts[0]
-        if symbol.upper() == 'O':
-            symbol = 'O'
-        try:
-            value = float(parts[1])
-        except ValueError:
-            continue
-        element_moles[symbol] = value
-
-    active_phase_abbr: Optional[str] = None
-    expect_flag_line = False
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.lower().startswith('phase '):
-            fields = stripped.split()
-            if len(fields) >= 2:
-                active_phase_abbr = fields[1].strip()
-                expect_flag_line = True
-            continue
-        if active_phase_abbr is None:
-            continue
-        if expect_flag_line:
-            expect_flag_line = False
-            continue
-        component_abbr = stripped.split()[0]
-        control_component_to_phase_abbr[component_abbr] = active_phase_abbr
-
-    return element_moles, control_component_to_phase_abbr
-
-
 def _compute_bulk_from_elements(element_moles: Dict[str, float]) -> Tuple[Dict[str, float], Dict[str, float], float]:
     required = ['Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O']
     missing = [el for el in required if el not in element_moles]
@@ -978,31 +884,6 @@ def _compute_bulk_from_elements(element_moles: Dict[str, float]) -> Tuple[Dict[s
     return bulk_comp_wt, bulk_elements, system_mass
 
 
-def _resolve_component_phase(
-    component_abbr: str,
-    component_name: str,
-    reverse_component_phase_map: Dict[str, List[str]],
-    control_component_to_phase_abbr: Dict[str, str],
-) -> Optional[str]:
-    candidates = reverse_component_phase_map.get(component_name, [])
-
-    if len(candidates) == 1:
-        return candidates[0]
-
-    if component_abbr in control_component_to_phase_abbr:
-        phase_abbr = control_component_to_phase_abbr[component_abbr]
-        phase_name = _resolve_phase_name_from_abbr(phase_abbr)
-        if len(candidates) == 0:
-            return phase_name
-        if phase_name in candidates:
-            return phase_name
-
-    if len(candidates) > 0:
-        return candidates[0]
-
-    return None
-
-
 def _safe_assign(
     table: np.ndarray,
     indexer,
@@ -1021,10 +902,6 @@ def _safe_assign(
         table[:, col_idx] += values
     else:
         table[:, col_idx] = values
-
-
-def _parse_fort56(path: str) -> pd.DataFrame:
-    return _safe_read_ws_table(path, skiprows=1)
 
 
 def _extract_phase_series_from_prefixed_columns(

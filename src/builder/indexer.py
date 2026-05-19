@@ -518,9 +518,9 @@ class DatasetIndexer:
             if phase in self.EXCLUDED_PHASES:
                 continue
 
-            """if len(components) <= 1:
-                # Keep pure phases; they need to stay even if their single component is excluded WHY??
-                continue"""
+            if len(components) <= 1:
+                # Pure phases are kept; zero-mass exclusion is handled by exclude_zero_sum_components
+                continue
 
             # If every component for this phase is excluded, mark the phase as excluded
             excluded_for_phase = self.EXCLUDED_COMPONENTS_BY_PHASE.get(phase, set())

@@ -11,6 +11,13 @@ except ImportError:
     torch = None
     TORCH_AVAILABLE = False
 
+try:
+    import matplotlib.pyplot as plt
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    plt = None
+    MATPLOTLIB_AVAILABLE = False
+
 
 def QFM_fO2(P, K):
     """
@@ -241,6 +248,225 @@ def grid_sample(params, table=np.array([])):
     else:
         return table
 
+def grid_sample_explicit(params, table=np.array([])):
+    """
+    Generates a numpy array grid sample recursively for arbitrary parameters.
+    Let params be a nested list, with each sublist of [min, max, len] passed to np.linspace.
+    Order of params determines column order in the output table.
+    
+    Args:
+        params: Nested list of [min, max, len] for each parameter
+        table: Accumulated table (used in recursion)
+        
+    Returns:
+        np.ndarray: Grid sample table
+    """
+    params = list(params)  # Copy to avoid side-effects
+    param = params.pop()
+    new_col = param # Only literal values used, more custom. 
+    
+    if not table.shape[0]:
+        table = new_col
+    else:
+        print(table)
+        table = np.append(np.repeat(new_col, table.shape[0], axis=0),
+                          np.tile(table, (new_col.shape[0], 1)), axis=1)
+    
+    if len(params):
+        return grid_sample_explicit(params, table)
+    else:
+        return table
+
+def mix_compositions(compositions: list, fractions: list) -> dict:
+    """Mix composition dictionaries by normalizing each then blending by fractions.
+
+    Each composition is normalized so its values sum to 1.0, then the normalized
+    compositions are combined using the supplied fractions (which are themselves
+    normalized to sum to 1.0).
+
+    Args:
+        compositions: list of dicts mapping element/oxide names to numeric amounts
+        fractions   : mixing weights, same length as compositions (need not sum to 1)
+
+    Returns:
+        dict: single mixed composition (values sum to 1.0)
+    """
+    assert len(compositions) == len(fractions) and len(fractions) > 0, \
+        "compositions and fractions must be non-empty and the same length"
+
+    fracs = np.asarray(fractions, dtype=np.float64)
+    fracs = fracs / fracs.sum()
+
+    all_keys = sorted({k for comp in compositions for k in comp})
+
+    mixed = {k: 0.0 for k in all_keys}
+
+    for comp, frac in zip(compositions, fracs):
+        total = sum(comp.values())
+        if total == 0.0:
+            raise ValueError("A composition has all-zero values and cannot be normalized.")
+        for key in all_keys:
+            mixed[key] += frac * comp.get(key, 0.0) / total
+
+
+    return mixed
+
+
+
+class TernaryAxes:
+    """Ternary (or trapezoidal) diagram backed by a matplotlib Axes.
+
+    Coordinate convention
+    ---------------------
+    All data is passed as (B, 3) arrays where columns are
+    [bottom-left fraction, bottom-right fraction, top fraction].
+    Rows need not sum to 1; they are normalised internally.
+
+    The ``max_top`` parameter clips the north (top) axis:
+      * 1.0  → full equilateral triangle
+      * 0.5  → trapezoid showing top 50 % of north-axis range
+      * 0.1  → narrow strip near the base
+    """
+
+    _H = np.sqrt(3) / 2  # height of a unit-side equilateral triangle
+
+    def __init__(self, ax, corner_labels, max_top: float = 1.0):
+        """
+        Parameters
+        ----------
+        ax            : matplotlib Axes
+        corner_labels : sequence of 3 str — [bottom-left, bottom-right, top]
+        max_top       : float in (0, 1] — fraction of north axis to display
+        """
+        if not MATPLOTLIB_AVAILABLE:
+            raise ImportError("matplotlib is required for TernaryAxes")
+        self.ax = ax
+        self.corner_labels = list(corner_labels)
+        self.max_top = float(np.clip(max_top, 1e-3, 1.0))
+        self._data_artists = []
+        self._draw_frame()
+
+    def _to_cartesian(self, coords: np.ndarray):
+        """Convert (B, 3) ternary [left, right, top] to Cartesian x, y."""
+        c = np.asarray(coords, dtype=float)
+        if c.ndim == 1:
+            c = c[None]
+        s = c.sum(axis=1, keepdims=True)
+        s[s == 0] = 1.0
+        c = c / s
+        x = c[:, 1] + 0.5 * c[:, 2]
+        y = self._H * c[:, 2]
+        return x, y
+
+    def _draw_frame(self):
+        ax, m, H = self.ax, self.max_top, self._H
+        BL = [0.0,       0.0    ]
+        BR = [1.0,       0.0    ]
+        TL = [0.5 * m,   H * m  ]
+        TR = [1 - 0.5*m, H * m  ]
+        verts = [BL, BR, [0.5, H]] if m >= 1.0 - 1e-6 else [BL, BR, TR, TL]
+        ax.add_patch(plt.Polygon(verts, closed=True, fill=False, ec='k', lw=1.5))
+
+        # Grid lines (4 inner divisions per axis)
+        for i in range(1, 5):
+            f = i / 5.0
+            ct = f * m                              # constant-top value
+            c_top = min(1.0 - f, m)                # max top for const-a or const-b lines
+
+            # Horizontal: constant top fraction = ct
+            ax.plot([0.5*ct, 1 - 0.5*ct], [H*ct, H*ct],
+                    color='grey', lw=0.35, alpha=0.45)
+            # Left-to-right diagonal: constant left fraction = f
+            ax.plot([1 - f,           1 - f - 0.5*c_top],
+                    [0.0,             H * c_top         ],
+                    color='grey', lw=0.35, alpha=0.45)
+            # Right-to-left diagonal: constant right fraction = f
+            ax.plot([f,               f + 0.5*c_top    ],
+                    [0.0,             H * c_top         ],
+                    color='grey', lw=0.35, alpha=0.45)
+
+        off = 0.06
+        ax.text(-off, -0.04, self.corner_labels[0],
+                ha='right', va='top', fontsize=20, fontweight='bold')
+        ax.text(1 + off, -0.04, self.corner_labels[1],
+                ha='left',  va='top', fontsize=20, fontweight='bold')
+        ax.text(0.5, H*m + 0.04, self.corner_labels[2],
+                ha='center', va='bottom', fontsize=20, fontweight='bold')
+
+        ax.set_aspect('equal')
+        ax.axis('off')
+        ax.set_xlim(-0.22, 1.22)
+        ax.set_ylim(-0.13, H * m + 0.20)
+
+    def clear_data(self):
+        """Remove all artists added by add_points, keeping the frame."""
+        for a in self._data_artists:
+            try:
+                a.remove()
+            except Exception:
+                pass
+        self._data_artists.clear()
+
+    def add_points(self, data, text_labels=None, **kwargs):
+        """Plot points on the ternary.
+
+        Parameters
+        ----------
+        data        : dict {str: array-like (3,)} or ndarray (B, 3)
+                      Ternary coordinates [left, right, top].  If a dict,
+                      keys are used as text labels plotted next to each point.
+        text_labels : sequence of str, optional — per-row labels for ndarray input
+        **kwargs    : forwarded to ``ax.plot`` (e.g. marker='+', color='k', ls='none')
+
+        Returns self for chaining.
+        """
+        if isinstance(data, dict):
+            for lbl, coords in data.items():
+                x, y = self._to_cartesian(np.asarray(coords, dtype=float).reshape(1, 3))
+                lines = self.ax.plot(x, y, **kwargs)
+                txt = self.ax.text(float(x[0]), float(y[0]) + 0.02, lbl,
+                                   fontsize=7, ha='center', va='bottom', clip_on=True)
+                self._data_artists.extend(lines)
+                self._data_artists.append(txt)
+        else:
+            arr = np.asarray(data, dtype=float)
+            if arr.ndim == 1:
+                arr = arr[None]
+            x, y = self._to_cartesian(arr)
+            lines = self.ax.plot(x, y, **kwargs)
+            self._data_artists.extend(lines)
+            if text_labels is not None:
+                for xi, yi, lbl in zip(x, y, text_labels):
+                    txt = self.ax.text(float(xi), float(yi) + 0.02, str(lbl),
+                                       fontsize=7, ha='center', va='bottom', clip_on=True)
+                    self._data_artists.append(txt)
+        return self
+
+
+def make_ternary(corner_labels, data=None, ax=None, max_top: float = 1.0, figsize=None):
+    """Create a ternary (or trapezoidal) diagram and return a TernaryAxes.
+
+    Parameters
+    ----------
+    corner_labels : sequence of 3 str — [bottom-left, bottom-right, top]
+    data          : dict {str: (3,)} or ndarray (B, 3), optional — initial data
+    ax            : matplotlib Axes; creates a new figure if None
+    max_top       : float in (0, 1] — fraction of north axis to show
+    figsize       : (w, h) for new figure
+
+    Returns
+    -------
+    TernaryAxes — call ``.add_points()`` to overlay more data on the same diagram
+    """
+    if not MATPLOTLIB_AVAILABLE:
+        raise ImportError("matplotlib is required for make_ternary")
+    if ax is None:
+        _, ax = plt.subplots(figsize=figsize or (5, 4))
+    t = TernaryAxes(ax, corner_labels, max_top=max_top)
+    if data is not None:
+        t.add_points(data)
+    return t
+
 
 def squash_to_range(x, min_=0.1, max_=0.95):
     """
@@ -434,5 +660,21 @@ class Normalizer:
         
         return Normalizer(min_tensor, range_tensor, cuda=(device == 'cuda'))
 
+# BJT Cooked indexing helper for Ji Ching's isentropic-isothermal divide problem
+def IDX_2D_Lithosphere(min_idxes, n_idx):
+    """Generates two 2D indexing arrays given a list of minimum indexes for each column and the total number of column IDXs,
+    where isentropic is higher and isothermal is lower"""
+    isentropicxIDX = np.empty((0,), dtype=int)
+    isentropicyIDX = np.empty((0,), dtype=int)
+    isothermalxIDX = np.empty((0,), dtype=int)
+    isothermalyIDX = np.empty((0,), dtype=int)
+    for i, mIDX in enumerate(min_idxes):
+        new_S_IDX = np.arange(mIDX, n_idx)
+        new_T_IDX = np.arange(mIDX)
+        isentropicyIDX = np.append(isentropicyIDX, new_S_IDX)
+        isothermalyIDX = np.append(isothermalyIDX, new_T_IDX)
+        isentropicxIDX = np.append(isentropicxIDX, np.full_like(new_S_IDX, i))
+        isothermalxIDX = np.append(isothermalxIDX, np.full_like(new_T_IDX, i))
+    return (isentropicxIDX.astype(int), isentropicyIDX.astype(int)), (isothermalxIDX.astype(int), isothermalyIDX.astype(int))
 
 
