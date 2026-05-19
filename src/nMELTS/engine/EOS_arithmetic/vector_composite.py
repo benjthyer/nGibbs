@@ -1616,9 +1616,6 @@ class VectorComposite:
             vol_unnorm = mole_fracs * self.phase_properties["molar_volume"]
             print(self.phase_properties["molar_volume"].size())
             weights = vol_unnorm / vol_unnorm.nansum(dim=-1, keepdim=True)# torch.clamp(vol_unnorm.sum(dim=-1, keepdim=True), min=1e-30)
-            print(vol_unnorm.nansum(dim=-1).size())
-            print('################### WEIGHTS ##################')
-            print(weights)
         else:
                 weights = mole_fracs
 

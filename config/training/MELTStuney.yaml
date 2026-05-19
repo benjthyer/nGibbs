@@ -1,7 +1,9 @@
-tarname: '102Isothermal_NoCr'       #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
+tarname: '102Isothermal_Cr'       #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
     
 warm_start: None #pGeoDynamicsIsentropicNoCrApr20_train1 #None #pGeoDynamicsIsothemalNoCrMar11_train6 #None #pGeoDynPTNoCrBinaries #None # 102CrMoleLinear
   
+
+
 
 encoderLayerUp: 1
 encoderLayerDown: 0

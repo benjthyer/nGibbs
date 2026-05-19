@@ -298,7 +298,7 @@ def mix_compositions(compositions: list, fractions: list) -> dict:
     fracs = fracs / fracs.sum()
 
     all_keys = sorted({k for comp in compositions for k in comp})
-    print(f"Keys: {all_keys}")
+
     mixed = {k: 0.0 for k in all_keys}
 
     for comp, frac in zip(compositions, fracs):
@@ -307,7 +307,7 @@ def mix_compositions(compositions: list, fractions: list) -> dict:
             raise ValueError("A composition has all-zero values and cannot be normalized.")
         for key in all_keys:
             mixed[key] += frac * comp.get(key, 0.0) / total
-    print(f"Mixed: {mixed}")
+
 
     return mixed
 
@@ -660,5 +660,21 @@ class Normalizer:
         
         return Normalizer(min_tensor, range_tensor, cuda=(device == 'cuda'))
 
+# BJT Cooked indexing helper for Ji Ching's isentropic-isothermal divide problem
+def IDX_2D_Lithosphere(min_idxes, n_idx):
+    """Generates two 2D indexing arrays given a list of minimum indexes for each column and the total number of column IDXs,
+    where isentropic is higher and isothermal is lower"""
+    isentropicxIDX = np.empty((0,), dtype=int)
+    isentropicyIDX = np.empty((0,), dtype=int)
+    isothermalxIDX = np.empty((0,), dtype=int)
+    isothermalyIDX = np.empty((0,), dtype=int)
+    for i, mIDX in enumerate(min_idxes):
+        new_S_IDX = np.arange(mIDX, n_idx)
+        new_T_IDX = np.arange(mIDX)
+        isentropicyIDX = np.append(isentropicyIDX, new_S_IDX)
+        isothermalyIDX = np.append(isothermalyIDX, new_T_IDX)
+        isentropicxIDX = np.append(isentropicxIDX, np.full_like(new_S_IDX, i))
+        isothermalxIDX = np.append(isothermalxIDX, np.full_like(new_T_IDX, i))
+    return (isentropicxIDX.astype(int), isentropicyIDX.astype(int)), (isothermalxIDX.astype(int), isothermalyIDX.astype(int))
 
 
