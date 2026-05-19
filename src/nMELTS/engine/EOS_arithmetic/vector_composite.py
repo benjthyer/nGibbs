@@ -787,11 +787,11 @@ class VectorComposite:
             P_GPa = self.pressure.detach().cpu().numpy() * 1e-9
             T_K = self.temperature.detach().cpu().numpy()
             Qs_np, Qp_np = _qr19_vec(P_GPa, T_K)
-            print(f"Qs: {Qs_np[::1000]}, Qp: {Qp_np[::1000]}")
+            #print(f"Qs: {Qs_np[::1000]}, Qp: {Qp_np[::1000]}")
             dev, dt = self.pressure.device, self.pressure.dtype
             self.Qs = torch.as_tensor(Qs_np, device=dev, dtype=dt)
             self.Qp = torch.as_tensor(Qp_np, device=dev, dtype=dt)
-            print(self.Qp)
+            #print(self.Qp)
 
         if self.phase_models is not None:
             self.evaluate_backend_properties()
@@ -1284,6 +1284,14 @@ class VectorComposite:
         if mask.any():
             f[mask.squeeze(-1)] = comp_abund[mask.squeeze(-1)] / sums[mask.squeeze(-1)]
 
+        # Emulator outputs can be slightly negative for absent/trace phases.
+        # Clip and renormalize so log(xᵢ) in ideal-mixing entropy never sees
+        # negative or zero fractions, which would produce NaN/±∞.
+        f = torch.clamp(f, min=0.0)
+        f_sums = f.sum(-1, keepdim=True)
+        pos_mask = f_sums.squeeze(-1) > 0
+        f[pos_mask] = f[pos_mask] / f_sums[pos_mask]
+
         sm = phase.solution_model
         #print(sm.__class__.__name__)
 
@@ -1591,7 +1599,7 @@ class VectorComposite:
         if name not in self.component_properties:
             raise AttributeError(f"component property '{name}' has not been set")
         values = self.component_properties[name]
-        print(f"Reducing component property '{name}':")
+        #print(f"Reducing component property '{name}':")
         #print(values)
         #print(torch.sum(self.component_abundances * values, dim=-1))
         return torch.nansum(self.component_abundances * values, dim=-1)

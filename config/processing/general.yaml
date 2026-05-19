@@ -5,13 +5,13 @@
 # DATASET SELECTION
 # ============================================================================
 dataset: #EXPECTED FILENAME: "nMELTS/data/MELTStables/{MELTSModel}/{'MELTS' if MELTSModel in ['102', '110', '120', 'p'] else ''}{MELTSModel}_<Train/Valid>set{Date}{Mode}"
-  MELTSModel: '110'          # MELTS model version: '102', '110', '120', 'p'. Affects which directory dataproducts are read from and written to
-  Date: 'Feb13'               # Date identifier for dataset naming
+  MELTSModel: '102'          # MELTS model version: '102', '110', '120', 'p'. Affects which directory dataproducts are read from and written to
+  Date: 'Feb28Cr'               # Date identifier for dataset naming
   Mode: 'BatchCooling'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
-outname: '110test'                  # Base name for output folder (without extension). Auto-Generated if blank
+outname: '102IsentropicCr'                  # Base name for output folder (without extension). Auto-Generated if blank
 
 
 
@@ -31,7 +31,7 @@ freeOutputs: # Non-chemical labels to predict. These are used for training the s
   #- 'VP(km/s)(System_main)'
   #- 'dVdP*10^6(System_main)' # COMPRESSIBILITY
   #- 'dVdT*10^6(System_main)' # THERMAL EXPANSION
-  - 'H(System_main)'
+  #- 'H(System_main)'
   #- 'viscosity(System_main)' # 
   #- 'Cp(System_main)' #
   #- 'rhos(System_main)' # Solid Density g/cc

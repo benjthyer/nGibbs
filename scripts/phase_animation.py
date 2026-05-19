@@ -249,6 +249,8 @@ if __name__ == '__main__':
         'FeO': 8.05,
         'MgO': 37.8,
         'CaO': 3.55,
+        'Fe2O3': 0.30,
+        'Cr2O3': 0.1
     }
     comp_array = np.zeros((1, len(input_dict)), dtype=np.float32)
     comp_headers = list(input_dict.keys())
@@ -257,8 +259,10 @@ if __name__ == '__main__':
 
     # Grid: P(300 steps) × S(4 steps) × Na2O(50 steps)
     # → subplot variable = S (4 unique values), animation variable = Na2O (50 frames)
-    features = grid_sample([[0, 140, 300], [2.3, 2.9, 4], [0.5, 4, 200]], comp_array)
+    features = grid_sample([[0, 140, 140], [2.4, 2.7, 4], [0.5, 4, 50]], comp_array)
     headers = ['P(GPa)(System_main)', 'S(J/g/K)(System_main)', 'Na2O'] + comp_headers
+
+
 
     animate_phase_diagram(features, headers, save_path='pyrolite_phase_animation.gif')
 

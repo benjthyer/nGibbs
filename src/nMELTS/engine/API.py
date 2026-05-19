@@ -165,7 +165,7 @@ class InputParser:
         headers_out = list(headers)
         if composition_space == 'elements':
             if 'O' in headers:
-                print("Adding ferric column...")
+                #print("Adding ferric column...")
                 values, headers_out = self._add_ferric_column(values, headers)
         
         return values, headers_out, composition_space
@@ -472,12 +472,6 @@ class HeFESToAPI:
             print("[INFO] HeFESToAdiabatAPI initialized successfully.")
 
         self.burnman_minerals = {phase_name: getattr(burnman.minerals.SLB_2024, self.burnman_translator[phase_name])() for phase_name in self.isothermal_emulator.ml_indexer.all_phases}
-        for phase_name, burnman_phase in self.burnman_minerals.items():
-            try:
-                print(f"  Loaded Burnman phase: {phase_name} -> {burnman_phase}, solution_model: {burnman_phase.solution_model}")
-            except Exception as e:
-                print(f"Loaded Pure Burnman phase: {phase_name} -> {burnman_phase}")
-        #print(self.burnman_minerals)
 
     def get_property_burnman_from_assemblage(
         self,
@@ -675,231 +669,187 @@ class HeFESToAPI:
             cuda=(self.device.type == 'cuda')
         )
     
-    def get_T(
-        self,
-        features_and_phase_moles_and_chem_out: Union[np.ndarray, torch.Tensor],
-        normalize_features: bool = True,
-    ) -> torch.Tensor:
-        """
-        Get temperature from isentropic emulator output.
-        
-        Lightweight frontend that:
-        1. Passes features through isentropic emulator
-        2. Builds temperature model inputs from emulator outputs
-        3. Passes through temperature FCNN
-        4. Returns temperature predictions
-        
-        Parameters
-        ----------
-        features : array-like
-            Input features (B, F) with intensive variables + composition
-        normalize_features : bool, default=True
-            Whether to normalize input features
-        
-        Returns
-        -------
-        torch.Tensor
-            Temperatures (B,) in Kelvin
-        """
-        # Normalize for temperature model
-        if normalize_features:
-            temp_input_norm = self.temp_input_normalizer.norm(features_and_phase_moles_and_chem_out)
-        else:
-            temp_input_norm = features_and_phase_moles_and_chem_out
-        
-
-        # Forward through temperature FCNN
-        with torch.no_grad():
-            temp_output_norm = self.temperature_model(temp_input_norm) # emulator type doesn't matter
-
-        # Denormalize output
-        temperature = self.temp_output_normalizer.denorm(temp_output_norm)
-        
-        return temperature.squeeze(-1)
-    
+    #NOTE: This assumes that the isentropic and isothermal emulators have S and T in the same position within the features
     def get_isentrope(
         self,
         features: Union[np.ndarray, torch.Tensor, Sequence],
-        pressures: Union[np.ndarray, torch.Tensor],
+        headers: Sequence[str],
+        pressures: Union[np.ndarray, torch.Tensor] = None,
         potential_temperatures: Optional[Union[np.ndarray, torch.Tensor]] = None,
         batch_size: int = 2**16,
         normalize_features: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        outputs=None,
+        properties: Optional[Sequence[str]] = None,
+    ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, Dict[str, np.ndarray]]]:
         """
-        Compute isentropic adiabats along pressure transects.
-        
-        Process:
-        1. Use isothermal model to compute entropy at each input state (P=0)
-        2. Create grid of (T, P) states for entropy-constrained search
-        3. Forward through isentropic model for all (T, P) combinations
-        4. Predict temperatures via temperature FCNN
-        5. Return organized (T, P) adiabats
-        
+        Compute isentropic adiabats along a pressure grid.
+
+        Two modes of operation:
+
+        Mode A — potential_temperatures provided:
+            features must have exactly 1 row. That row is tiled to
+            len(potential_temperatures) rows and the temperature column is
+            overwritten by each potential temperature. The isothermal emulator
+            evaluates each state at P=0.0001 GPa; Burnman then computes the
+            reference entropy S (J/g/K) for each. Each S is swept across the
+            pressure grid via the isentropic model.
+            Output shape: (len(potential_temperatures), len(pressures)).
+
+        Mode B — no potential_temperatures:
+            features can have any number of rows N; composition may vary
+            freely across rows. The T column of each row acts as that row's
+            potential temperature. Entropy is computed per row at P=0.0001 GPa,
+            then each S is swept across the pressure grid.
+            Output shape: (N, len(pressures)).
+
         Parameters
         ----------
-        features : array-like
-            Input features (T, F) or (N, F). If multiple rows:
-            - Each row is a distinct composition/condition
-            - potential_temperatures must match length or be None
-        pressures : array-like
-            1D array of pressures for adiabat search
+        features : array-like (N, F)
+            Input features. Mode A requires N == 1.
+        headers : sequence of str
+            Column headers for features.
+        pressures : array-like, optional
+            Pressure grid in GPa. Defaults to linspace(0, 140, 300).
         potential_temperatures : array-like, optional
-            Potential temperatures (K) for each feature row.
-            If None, will be computed from isothermal model at reference pressure.
-            If features is (1, F), can be array of any length.
-            If features is (N, F) with N > 1, must match N or be None.
-        batch_size : int, default=2**16
-            Batch size for staged evaluation
-        normalize_features : bool, default=True
-            Whether to normalize input features
-        
+            Potential temperatures (K). None → use T column from features.
+        batch_size : int
+            Batch size for staged evaluation.
+        normalize_features : bool
+            Whether to normalize input features before emulator calls.
+        properties : sequence of str, optional
+            Burnman property names to evaluate at each isentropic (P, T) state
+            (e.g. ['density', 'p_wave_velocity', 'entropy_by_mass']). Each
+            property is returned as an np.ndarray of shape (n_S, n_P).
+            When provided, a third return value (dict) is included.
+
         Returns
         -------
-        tuple of torch.Tensor
-            (temperatures, pressures_grid)
-            temperatures shape: (N_input, len(pressures))
-            pressures_grid shape: (N_input, len(pressures))
-            Each row represents an isentrope along pressure
+        temperatures_grid : torch.Tensor, shape (n_S, n_P)
+        pressures_grid : torch.Tensor, shape (n_S, n_P)
+        properties_dict : dict[str, np.ndarray], shape (n_S, n_P) per key
+            Only returned when `properties` is not None.
         """
-        features = torch.as_tensor(features, dtype=torch.float32, device=self.device)
+        features_arr = np.asarray(features, dtype=np.float32)
+        if features_arr.ndim != 2:
+            raise ValueError(f"features must be 2D, got shape {features_arr.shape}")
+
+        if pressures is None:
+            pressures = np.linspace(0, 140, 300)
         pressures = np.asarray(pressures, dtype=np.float32).flatten()
-        
-        if features.ndim != 2:
-            raise ValueError(f"features must be 2D, got shape {features.shape}")
-        
-        n_input = features.shape[0]
         n_press = len(pressures)
-        
-        # Validate potential_temperatures
-        if potential_temperatures is not None:
-            potential_temperatures = np.asarray(
-                potential_temperatures, dtype=np.float32
-            ).flatten()
-            if potential_temperatures.shape[0] not in [1, n_input]:
-                raise ValueError(
-                    f"potential_temperatures must have length 1 or {n_input}, "
-                    f"got {potential_temperatures.shape[0]}"
-                )
-        
-        if self.verbose:
-            print(f"[INFO] Computing isentropes:")
-            print(f"  Input features: {features.shape}")
-            print(f"  Pressures: {n_press} values")
-            print(f"  Total states to evaluate: {n_input * n_press}")
-        
-        # Step 1: Get entropy values from isothermal model at reference pressure
-        # Use isothermal model with features to extract entropy-related state
-        # For now, we'll get phase compositions which are entropy-constrained
-        if self.verbose:
-            print("  [1/4] Evaluating isothermal model for entropy constraint...")
-        
-        iso_therm_output = self.isothermal_emulator.forwardMB(
-            features, Normalize=normalize_features,
-            outputs=['component_moles', 'phase_moles']
-        )
-        component_moles_iso = iso_therm_output['component_moles']
-        
-        # Step 2: Create design matrix for (T, P) grid
-        if self.verbose:
-            print("  [2/4] Creating (T, P) design matrix...")
-        
-        # Get feature indices
+        pressures_t = torch.tensor(pressures, dtype=torch.float32, device=self.device)
+
         iso_feat_names = list(self.isothermal_emulator.ml_indexer.featureNames)
-        temp_idx = iso_feat_names.index('Temperature')
-        pressure_idx = iso_feat_names.index('Pressure')
-        
-        # If single input, broadcast to allow multiple potential temperatures
-        if n_input == 1 and potential_temperatures is not None:
-            base_feat = features.repeat(potential_temperatures.shape[0], 1)
-            potential_temperatures_used = potential_temperatures
+        temp_idx = iso_feat_names.index('T(K)(System_main)')
+        iso_pressure_idx = iso_feat_names.index('P(GPa)(System_main)')
+
+        isen_feat_names = list(self.isentropic_emulator.ml_indexer.featureNames)
+        entropy_idx = isen_feat_names.index('S(J/g/K)(System_main)')
+        isen_pressure_idx = isen_feat_names.index('P(GPa)(System_main)')
+
+        # --- Build isothermal reference features at P=0.0001 ---
+        if potential_temperatures is not None:
+            # Mode A: single composition tiled over potential temperatures
+            if features_arr.shape[0] != 1:
+                raise ValueError(
+                    f"When potential_temperatures is provided, features must have exactly 1 row, "
+                    f"got {features_arr.shape[0]}"
+                )
+            potential_temperatures = np.asarray(potential_temperatures, dtype=np.float32).flatten()
+            n_S = len(potential_temperatures)
+
+            iso_single, _ = self.parse_input(features_arr, headers=headers)  # (1, F_iso)
+            iso_ref = iso_single.repeat(n_S, 1)                               # (n_S, F_iso)
+            iso_ref[:, temp_idx] = torch.tensor(
+                potential_temperatures, dtype=torch.float32, device=self.device
+            )
+            iso_ref[:, iso_pressure_idx] = 0.0001
+            T_for_burnman = torch.tensor(
+                potential_temperatures, dtype=torch.float64, device=self.device
+            )
+
         else:
-            base_feat = features
-            if potential_temperatures is not None:
-                potential_temperatures_used = potential_temperatures
-            else:
-                potential_temperatures_used = None
-        
-        # Create grid (broadcast each feature to all pressures)
-        design_matrix = self._create_iso_design_matrix(
-            base_feat,
-            pressures,
-            temp_idx,
-            pressure_idx,
-            potential_temperatures_used,
-        )
-        
-        # Step 3: Forward through isentropic model
+            # Mode B: N rows, T column provides each row's potential temperature
+            n_S = features_arr.shape[0]
+            iso_ref, _ = self.parse_input(features_arr, headers=headers)     # (n_S, F_iso)
+            T_for_burnman = iso_ref[:, temp_idx].to(dtype=torch.float64, device=self.device)
+            iso_ref = iso_ref.clone()
+            iso_ref[:, iso_pressure_idx] = 0.0001
+
         if self.verbose:
-            print("  [3/4] Evaluating isentropic model (staged)...")
-        
-        design_tensor = torch.as_tensor(
-            design_matrix, dtype=torch.float32, device=self.device
-        )
-        
-        iso_outputs = self._staged_forward(
-            self.isentropic_emulator.forwardMB,
-            design_tensor,
+            print(f"[get_isentrope] n_S={n_S}, n_P={n_press}, total states={n_S * n_press}")
+
+        # --- Step 1: Isothermal emulator at P=0.0001 → component moles ---
+        iso_out = self._staged_forward(
+            self.isothermal_emulator.forwardMB,
+            iso_ref,
             batch_size,
             Normalize=normalize_features,
-            outputs=['component_moles']
+            outputs=['component_moles'],
         )
-        pred_component_moles = iso_outputs[0]
-        
-        # Step 4: Predict temperatures
+        component_moles = iso_out['component_moles'].to(device=self.device, dtype=torch.float64)
+
+        # --- Step 2: Burnman vectorized → reference entropy S (J/g/K) ---
+        P_ref = torch.full((n_S,), 0.0001, dtype=torch.float64, device=self.device)
+        PT_ref = torch.stack([P_ref, T_for_burnman], dim=1)  # (n_S, 2): columns = [P, T]
+
+        burnman_props = self.get_property_burnman_vectorized_from_assemblage(
+            component_moles,
+            PT_ref,
+            property_names=['entropy_by_mass'],
+        )
+        S_values = torch.tensor(
+            burnman_props['entropy_by_mass']/1000, dtype=torch.float32, device=self.device
+        )  # (n_S,)
+        print(f"Reference entropies (J/g/K) at P=0.0001 GPa: {S_values.cpu().numpy()}")
+
+        # --- Step 3: Isentropic design matrix (n_S * n_press, F) ---
+        # Each of the n_S base rows is repeated n_press times, then S and P
+        # columns are overwritten with target entropy and pressure values.
+        isen_design = iso_ref.repeat_interleave(n_press, dim=0)  # (n_S * n_press, F)
+        isen_design[:, entropy_idx] = S_values.repeat_interleave(n_press)
+        isen_design[:, isen_pressure_idx] = pressures_t.repeat(n_S)
+
+        # --- Step 4: Isentropic model → component moles ---
+        isen_out = self._staged_forward(
+            self.isentropic_emulator.forwardMB,
+            isen_design,
+            batch_size,
+            Normalize=normalize_features,
+            outputs=['phase_moles', 'chem_out', 'component_moles'],
+        )
+        pred_component_moles = isen_out['component_moles'].to(device=self.device, dtype=torch.float64)
+        temperatures_pred = self.get_T(torch.concatenate([isen_design, isen_out['phase_moles'], isen_out['chem_out']], dim=1), normalize_features=normalize_features) # This is another neural network! 
+
+        # --- Step 6: Reshape → (n_S, n_press) ---
+        temperatures_grid = temperatures_pred.reshape(n_S, n_press)
+        pressures_grid = pressures_t.unsqueeze(0).expand(n_S, -1)
+
         if self.verbose:
-            print("  [4/4] Predicting temperatures (staged)...")
-        
-        temp_input_norm = self.temp_input_normalizer.norm(pred_component_moles)
+            print(f"[get_isentrope] Output temperatures shape: {temperatures_grid.shape}")
 
-        with torch.no_grad():
-            temp_output_norm = self._staged_forward(
-                self.temperature_model,
-                temp_input_norm,
-                batch_size,
-            )
-            if not isinstance(temp_output_norm, (list, tuple)):
-                temp_output_norm = [temp_output_norm]
+        if properties is None:
+            return temperatures_grid, pressures_grid
 
-        temperatures_norm = temp_output_norm[0]
-        temperatures_pred = self.temp_output_normalizer.denorm(temperatures_norm)
-        temperatures_pred = temperatures_pred.squeeze(-1)
+        # --- Step 7: Burnman properties at isentropic (P, T) states ---
+        # PT columns = [P, T], matching get_property_burnman_vectorized_from_assemblage convention
+        P_flat = pressures_grid.reshape(-1).to(dtype=torch.float64, device=self.device)
+        T_flat = temperatures_grid.reshape(-1).to(dtype=torch.float64, device=self.device)
+        PT_isen = torch.stack([P_flat, T_flat], dim=1)  # (n_S * n_press, 2)
 
-        # Step 5: Reorganize output to (N_input, P) shape
-        temperatures_grid = temperatures_pred.reshape(n_input, n_press)
-        pressures_grid = torch.tensor(
-            np.tile(pressures, (n_input, 1)), device=self.device, dtype=torch.float32
+        raw_props = self.get_property_burnman_vectorized_from_assemblage(
+            pred_component_moles.to(device=self.device, dtype=torch.float64),
+            PT_isen,
+            property_names=list(properties),
         )
 
-        if self.verbose:
-            print(f"  Output shapes: {temperatures_grid.shape}")
+        properties_dict = {
+            name: np.asarray(arr).reshape(n_S, n_press)
+            for name, arr in raw_props.items()
+        }
 
-        return temperatures_grid, pressures_grid
+        return temperatures_grid, pressures_grid, properties_dict
         
-        # Create output design matrix
-        design = np.zeros(
-            (n_input * n_press, n_feat), dtype=np.float32
-        )
-        
-        for i in range(n_input):
-            start_idx = i * n_press
-            end_idx = (i + 1) * n_press
-            
-            # Tile base features for all pressures
-            design[start_idx:end_idx] = np.tile(
-                base_feat_np[i:i+1], (n_press, 1)
-            )
-            
-            # Set pressure column
-            design[start_idx:end_idx, pressure_idx] = pressures
-            
-            # Set temperature column if provided
-            if potential_temperatures is not None:
-                if len(potential_temperatures) == n_input:
-                    design[start_idx:end_idx, temp_idx] = potential_temperatures[i]
-                elif len(potential_temperatures) == 1:
-                    design[start_idx:end_idx, temp_idx] = potential_temperatures[0]
-        
-        return design
     
     def _staged_forward(
         self,
@@ -1249,6 +1199,46 @@ class HeFESToAPI:
             results['temperature'] = self.get_T(torch.concatenate([features, results['phase_moles'].to(self.device), results['chem_out'].to(self.device)], dim=1), normalize_features=normalize_features)
 
         return results
+
+    def get_T(
+        self,
+        features: Union[np.ndarray, torch.Tensor],
+        normalize_features: bool = True,
+    ) -> torch.Tensor:
+        """
+        Get temperature from isentropic emulator output.
+        
+        Lightweight frontend that:
+        1. Passes features through isentropic emulator
+        2. Builds temperature model inputs from emulator outputs
+        3. Passes through temperature FCNN
+        4. Returns temperature predictions
+        
+        Parameters
+        ----------
+        features : array-like
+            Input features (B, F) with intensive variables + composition
+        normalize_features : bool, default=True
+            Whether to normalize input features
+        
+        Returns
+        -------
+        torch.Tensor
+            Temperatures (B,) in Kelvin
+        """
+        features = torch.as_tensor(features, dtype=torch.float32, device=self.device)
+        
+        # Normalize for temperature model
+        temp_input_norm = self.temp_input_normalizer.norm(features)
+        
+        # Forward through temperature FCNN
+        with torch.no_grad():
+            temp_output_norm = self.temperature_model(temp_input_norm)
+        
+        # Denormalize output
+        temperature = self.temp_output_normalizer.denorm(temp_output_norm)
+        
+        return temperature.squeeze(-1)
 
 
 

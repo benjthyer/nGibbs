@@ -218,6 +218,9 @@ class NN_MELTS:
             if name in header_to_idx:
                 reordered[:, out_idx] = values[:, header_to_idx[name]]
 
+        if composition_space == 'oxides':
+            reordered = self.convertOxToMol(torch.tensor(reordered, dtype=torch.float32, device=self.dev), convert=True)
+
         out_key = return_type.lower()
         if out_key not in ['same', 'numpy', 'torch', 'dataframe']:
             raise ValueError("return_type must be one of: same, numpy, torch, dataframe")
@@ -269,6 +272,9 @@ class NN_MELTS:
             colsize = oxides.shape[1]
             unclosed = (oxides @ self.Minv[:colsize, :colsize]) @ self.oxToEl[:colsize]
             closedmoles = unclosed / unclosed.sum(dim=1, keepdim=True)
+            #pd.DataFrame(closedmoles.detach().cpu().numpy(), columns=self.ml_indexer.Elkeys).to_csv('closedmoles.csv', index=False) #Temp for grabbing element comp. 
+            #print("Closed moles saved to 'closedmoles.csv'")
+
             return torch.cat([conditions, closedmoles], dim=1)
         else:
             unclosed = features[:, self.feature_offset:]

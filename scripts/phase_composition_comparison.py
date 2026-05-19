@@ -388,7 +388,7 @@ if __name__ == '__main__':
         composition=DMM_PS,
         save_path='phase_composition_comparison.gif',
         interval=150,
-        ground_truth_el_comps=phase_el_comps,
-        ground_truth_PS=PS[Desired_S],
+        #ground_truth_el_comps=phase_el_comps,
+        #ground_truth_PS=PS[Desired_S],
         max_pressure_gpa=40.0
     )
