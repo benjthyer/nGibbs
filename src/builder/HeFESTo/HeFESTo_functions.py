@@ -14,6 +14,7 @@ from time import time
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 import sys
+import torch
 
 src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
