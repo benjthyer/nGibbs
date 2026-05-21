@@ -30,7 +30,8 @@ Workspace/
 *Sims/
 Legacy/
 *Legacy/
-data/
+/data/
+!/src/module/engine/data/
 temp_models/
 
 alphamelts-app-2.3.1-linux/
