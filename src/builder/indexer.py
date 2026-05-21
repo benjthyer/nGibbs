@@ -25,7 +25,7 @@ if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
 # Import defaults from constants for melts-liquid label generation and oxide indexing
-from nMELTS.config.constants import (
+from module.config.constants import (
     COMPONENTS_IN_PHASES,
     COMPONENTS_IN_PHASES_HEFESTO,
     COMPOSITIONAL_COMPONENTS_IN_PHASES,
@@ -33,7 +33,7 @@ from nMELTS.config.constants import (
     default_Elkeys,
     REQUIRED_ELEMENTS,
 )
-from nMELTS.config.ml_indexer import MLIndexer
+from module.config.ml_indexer import MLIndexer
 
 # Element to oxide mapping dictionary
 ELEMENT_TO_OXIDE = {

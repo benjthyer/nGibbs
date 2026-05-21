@@ -1,15 +1,17 @@
 """
-High-level API for HeFESTo adiabat modeling.
+High-level API for thermodynamic emulators.
 
 Provides user-friendly interfaces for:
 - Getting temperatures from isentropic states
 - Computing isentropic adiabats along pressure transects
 - Parsing and converting input compositions
 - Managing emulator ensembles (isothermal, isentropic, temperature models)
+
+Base class: EmulatorAPI — model-agnostic adiabat workflows
+Subclass:   HeFESToAPI  — adds Burnman EOS backend for HeFESTo
 """
 
 import gc
-
 import numpy as np
 import pandas as pd
 import torch
@@ -17,9 +19,6 @@ from pathlib import Path
 from typing import Optional, Sequence, Tuple, Union, Dict, Any
 import sys
 import time
-import copy
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
 import tqdm
 
 
@@ -33,7 +32,7 @@ base_path = str(Path(__file__).parent.parent.parent.parent)
 if base_path not in sys.path:
     sys.path.insert(0, base_path)
 
-from nMELTS.engine.EOS_arithmetic.vector_composite import VectorComposite
+from module.engine.EOS_arithmetic.vector_composite import VectorComposite
 import EOS_arithmetic.burnman as burnman
 
 from .NN import _load_temperature_model
@@ -71,22 +70,22 @@ burnman_phase_aliases = {
     'gamma-iron':'gamma_fcc_iron',
     'epsilon-iron':'epsilon_hcp_iron',
 }
-    
+
 
 class InputParser:
     """
     Parser for input composition data.
-    
+
     Handles:
     - Detection of oxide vs element input
     - Iron speciation when oxygen is present
     - Column reordering via emulator interface
     """
-    
+
     def __init__(self, emulator: NN_MELTS):
         """
         Initialize parser with an emulator reference.
-        
+
         Parameters
         ----------
         emulator : NN_MELTS
@@ -95,7 +94,7 @@ class InputParser:
         self.emulator = emulator
         self.Elkeys = list(emulator.Elkeys)
         self.Oxides = list(emulator.Oxides)
-    
+
     def parse_composition(
         self,
         table: Union[np.ndarray, torch.Tensor],
@@ -104,10 +103,10 @@ class InputParser:
     ) -> Tuple[np.ndarray, Sequence[str], str]:
         """
         Parse input composition table and detect composition space.
-        
+
         If 'O' (oxygen) is present in elements and Fe is present, will
         recalculate elemental mole fractions to differentiate Fe2+ and Fe3+.
-        
+
         Parameters
         ----------
         table : array-like
@@ -117,7 +116,7 @@ class InputParser:
         composition_space : str, optional
             If provided, uses this ('elements' or 'oxides').
             Otherwise, auto-detects from headers.
-        
+
         Returns
         -------
         tuple
@@ -131,10 +130,10 @@ class InputParser:
             values = table.detach().cpu().numpy()
         else:
             values = np.asarray(table, dtype=np.float32)
-        
+
         if values.ndim != 2:
             raise ValueError(f"table must be 2D, got shape {values.shape}")
-        
+
         # Determine headers
         if headers is None:
             if hasattr(table, 'columns'):
@@ -145,21 +144,21 @@ class InputParser:
                 )
         else:
             headers = [str(h) for h in headers]
-        
+
         if len(values[0]) != len(headers):
             raise ValueError(
                 f"Header count ({len(headers)}) does not match "
                 f"table columns ({values.shape[1]})"
             )
-        
+
         # Auto-detect composition space if not provided
         if composition_space is None:
             composition_space = self._detect_composition_space(headers)
-        
+
         composition_space = composition_space.lower()
         if composition_space not in ['elements', 'oxides']:
             raise ValueError("composition_space must be 'elements' or 'oxides'")
-        
+
         # Handle iron speciation for elements with oxygen.
         # Replace O with Fe3 so the emulator sees the expected feature space.
         headers_out = list(headers)
@@ -167,38 +166,38 @@ class InputParser:
             if 'O' in headers:
                 #print("Adding ferric column...")
                 values, headers_out = self._add_ferric_column(values, headers)
-        
+
         return values, headers_out, composition_space
-    
+
     def _detect_composition_space(self, headers: Sequence[str]) -> str:
         """
         Detect whether input is oxides or elements.
-        
+
         Parameters
         ----------
         headers : sequence of str
             Column headers
-        
+
         Returns
         -------
         str
             'elements' or 'oxides'
         """
         header_set = set(str(h).strip() for h in headers)
-        
+
         # Check for oxide indicators
         oxide_keywords = {'SiO2', 'FeO', 'Fe2O3', 'MgO', 'CaO', 'Al2O3', 'Na2O', 'K2O'}
         if any(ox in header_set for ox in oxide_keywords):
             return 'oxides'
-        
+
         # Check for element indicators
         element_keywords = {'Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'K', 'Cr', 'O'}
         if any(el in header_set for el in element_keywords):
             return 'elements'
-        
+
         # Default to elements
         return 'elements'
-    
+
     def _add_ferric_column(
         self,
         values: np.ndarray,
@@ -206,18 +205,18 @@ class InputParser:
     ) -> Tuple[np.ndarray, Sequence[str]]:
         """
         Replace O with Fe3+ by calculating ferric iron from charge balance.
-        
+
         Implements charge-balance oxygen speciation to calculate Fe3+/Fe2+ split
         based on total Fe and O available in the composition. Uses the approach
         inverse to _oxide_wt_to_element_moles in HeFESTo_functions.py.
-        
+
         Parameters
         ----------
         values : np.ndarray
             (N, F) input table with elemental composition
         headers : sequence of str
             Column headers matching input table
-        
+
         Returns
         -------
         tuple
@@ -225,17 +224,17 @@ class InputParser:
         """
         # Get column indices for Fe and O
         header_map = {str(h).strip(): i for i, h in enumerate(headers)}
-        
+
         if 'Fe' not in header_map or 'O' not in header_map:
             raise ValueError("Elemental inputs with oxygen must include both 'Fe' and 'O'")
-        
+
         fe_idx = header_map['Fe']
         o_idx = header_map['O']
-        
+
         # Extract Fe and O columns
         fe_total = values[:, fe_idx].astype(np.float32)  # Total Fe in moles
         o_total = values[:, o_idx].astype(np.float32)    # Total O in moles
-        
+
         element_moles: Dict[str, np.ndarray] = {
             'Fe': fe_total,
             'O': o_total,
@@ -263,31 +262,31 @@ def speciate_iron_from_charge_balance(
 ) -> np.ndarray:
     """
     Speciate Fe into Fe2+ and Fe3+ based on charge balance with oxygen.
-    
+
     Inverse of the oxide-to-element conversion in HeFESTo_functions.py.
     Given elemental molar composition with Fe and O, calculates Fe3+ required
     for charge neutrality based on all cation oxidation states.
-    
+
     Charge balance equation:
     sum(ox_state_i * cation_i) + 2*Fe2+ + 3*Fe3+ = 2*O_total
-    
+
     Where Fe2+ + Fe3+ = Fe_total
-    
+
     Solving for Fe3+:
     Fe3+ = 2*O_total - sum(ox_state_i * cation_i) - 2*Fe_total
-    
+
     Parameters
     ----------
     element_moles : dict[str, np.ndarray]
         Dictionary mapping element names to molar amounts (1D or 2D arrays)
         Must include 'Fe' and 'O'. Other cations ('Si', 'Mg', 'Ca', 'Al', 'Na', 'K', 'Cr')
         are optional and assumed 0 if missing.
-    
+
     Returns
     -------
     np.ndarray
         Fe3+ molar amounts, clipped to [0, Fe_total]
-    
+
     Raises
     ------
     KeyError
@@ -295,19 +294,19 @@ def speciate_iron_from_charge_balance(
     """
     if 'Fe' not in element_moles or 'O' not in element_moles:
         raise KeyError("element_moles must include 'Fe' and 'O'")
-    
+
     fe_total = np.asarray(element_moles['Fe'], dtype=np.float32)
     o_total = np.asarray(element_moles['O'], dtype=np.float32)
-    
+
     # Ensure arrays are at least 1D
     if fe_total.ndim == 0:
         fe_total = fe_total.reshape(1)
     if o_total.ndim == 0:
         o_total = o_total.reshape(1)
-    
+
     # Calculate cation charge contributions
     cation_charges = np.zeros_like(fe_total, dtype=np.float32)
-    
+
     cation_specs = {
         'Si': 4,
         'Mg': 2,
@@ -317,20 +316,20 @@ def speciate_iron_from_charge_balance(
         'K': 1,
         'Cr': 3,
     }
-    
+
     for elem, ox_state in cation_specs.items():
         if elem in element_moles:
             moles = np.asarray(element_moles[elem], dtype=np.float32)
             if moles.ndim == 0:
                 moles = moles.reshape(1)
             cation_charges = cation_charges + ox_state * moles
-    
+
     # Solve for Fe3+ from charge balance
     fe3_moles = 2.0 * o_total - cation_charges - 2.0 * fe_total
-    
+
     # Clip to valid range
     fe3_moles = np.clip(fe3_moles, 0.0, fe_total)
-    
+
     return fe3_moles.astype(np.float32)
 
 
@@ -343,10 +342,10 @@ def create_isentrope_design_matrix(
 ) -> np.ndarray:
     """
     Create a design matrix for isentropic adiabat exploration.
-    
+
     Generates a matrix of shape (T*P, F) where each row represents a unique
     (temperature, pressure) combination, with all other features held constant.
-    
+
     Parameters
     ----------
     temperatures : array-like
@@ -359,7 +358,7 @@ def create_isentrope_design_matrix(
         Column index for temperature in features
     pressure_idx : int
         Column index for pressure in features
-    
+
     Returns
     -------
     np.ndarray
@@ -368,62 +367,65 @@ def create_isentrope_design_matrix(
     temperatures = np.asarray(temperatures, dtype=np.float32).flatten()
     pressures = np.asarray(pressures, dtype=np.float32).flatten()
     base_features = np.asarray(base_features, dtype=np.float32)
-    
+
     if base_features.ndim == 1:
         base_features = base_features.reshape(1, -1)
-    
+
     n_temps = temperatures.shape[0]
     n_press = pressures.shape[0]
     n_feat = base_features.shape[1]
-    
+
     # If base_features has multiple rows, must match temperatures
     if base_features.shape[0] != 1 and base_features.shape[0] != n_temps:
         raise ValueError(
             f"base_features must have 1 or {n_temps} rows, "
             f"got {base_features.shape[0]}"
         )
-    
+
     # Create grid: repeat base_features for each (T, P) pair
     design = np.tile(base_features, (n_temps * n_press, 1))
-    
+
     # Set temperature column: repeat each temp n_press times
     design[:, temperature_idx] = np.repeat(temperatures, n_press)
-    
+
     # Set pressure column: tile pressures for each temperature
     design[:, pressure_idx] = np.tile(pressures, n_temps)
-    
+
     return design
 
 
-class HeFESToAPI:
+class EmulatorAPI:
     """
-    High-level API for HeFESTo Emulator.
-    
+    Base API for thermodynamic emulators.
+
     Manages:
     - Isothermal and isentropic emulators
     - Temperature prediction model (FCNN)
     - Input parsing and composition handling
     - Adiabat computation workflows
+
+    Subclasses must implement `_compute_bulk_EOS_properties` to provide
+    an equation-of-state backend for entropy and bulk property evaluation.
     """
-    
+
     def __init__(
         self,
         isothermal_model_path: Union[str, Path],
         isentropic_model_path: Union[str, Path],
-        temperature_model_path: Union[str, Path],
+        temperature_model_path: Optional[Union[str, Path]] = None,
         device: str = 'cpu',
         verbose: bool = False,
     ):
         """
-        Initialize the adiabat API with emulator and temperature models.
-        
+        Initialize the emulator API with neural network models.
+
         Parameters
         ----------
         isothermal_model_path : str or Path
             Path to isothermal emulator checkpoint
         isentropic_model_path : str or Path
             Path to isentropic emulator checkpoint
-        temperature_model_path : str or Path
+        temperature_model_path : str or Path, optional
             Path to temperature FCNN checkpoint
         device : str, default='cpu'
             Torch device ('cpu' or 'cuda')
@@ -431,233 +433,84 @@ class HeFESToAPI:
             Print initialization messages
         """
         if verbose:
-            print("[INFO] Initializing HeFESToAdiabatAPI...")
-        
+            print("[INFO] Initializing EmulatorAPI...")
+
         self.device = torch.device(device)
         self.verbose = verbose
-        
-        # Load emulators
+
         if verbose:
             print(f"  Loading isothermal emulator: {isothermal_model_path}")
-        self.isothermal_emulator = self._load_emulator(
-            isothermal_model_path, device
-        )
-        # Build Burnman input translator
-        phase_names = self.isothermal_emulator.ml_indexer.all_phases
-        self.burnman_translator = {phase:phase for phase in phase_names} # Most identical, now map exceptions
-        
-        for hefesto_name, burnman_name in burnman_phase_aliases.items():
-            self.burnman_translator[hefesto_name] = burnman_name
-        
+        self.isothermal_emulator = self._load_emulator(isothermal_model_path, device)
+
         if verbose:
             print(f"  Loading isentropic emulator: {isentropic_model_path}")
-        self.isentropic_emulator = self._load_emulator(
-            isentropic_model_path, device
-        )
-        
-        # Load temperature model
+        self.isentropic_emulator = self._load_emulator(isentropic_model_path, device)
+
         if verbose:
             print(f"  Loading temperature FCNN: {temperature_model_path}")
         self._setup_temperature_model(temperature_model_path)
-        
-        # Load HeFESTo physub context
-        """if verbose:
-            print("  Loading HeFESTo physub context...")
-        self.hefesto_context = get_hefesto_physub_context()"""
-        
-        # Setup parser
+
         self.parser = InputParser(self.isothermal_emulator)
-        
+
         if verbose:
-            print("[INFO] HeFESToAdiabatAPI initialized successfully.")
+            print("[INFO] EmulatorAPI initialized successfully.")
 
-        self.burnman_minerals = {phase_name: getattr(burnman.minerals.SLB_2024, self.burnman_translator[phase_name])() for phase_name in self.isothermal_emulator.ml_indexer.all_phases}
-        #print(self.burnman_minerals)
-
-    def get_property_burnman_from_assemblage(
+    def _compute_bulk_EOS_properties(
         self,
-        intensive_moles: torch.Tensor,
-        phase_moles: torch.Tensor,
+        component_moles: torch.Tensor,
         PT: torch.Tensor,
-        dtype = torch.float64,
-        property_names = ['S', 'rho', 'v_p', 'v_s', 'molar_mass', 'K_T', 'K_S']):
-    
+        property_names: Sequence[str],
+    ) -> Dict[str, np.ndarray]:
         """
-        Compute properties for a given assemblage using Burnman.
-        
+        Compute bulk EOS properties for a given assemblage.
+
+        Must be implemented by subclasses to provide a thermodynamic
+        equation-of-state backend (e.g. Burnman for HeFESTo).
+
         Parameters
         ----------
-        intensive_moles : np.array
-            (N, C) tensor of intensive component moles from emulator output
-        phase_moles : np.array
-            (N, P) tensor of phase moles from emulator output
-        PT : np.array   
-            (N, 2) tensor of pressure and temperature values
+        component_moles : torch.Tensor, shape (N, C)
+            Component mole fractions from emulator output
+        PT : torch.Tensor, shape (N, 2)
+            Pressure (GPa) and temperature (K): PT[:, 0] = P, PT[:, 1] = T
         property_names : sequence of str
-            List of properties recongnized by burnman to compute (e.g., ['bulk_modulus', 'density'])
-        
+            Property names to compute (e.g. 'entropy_by_mass', 'density')
+
         Returns
         -------
-        numpy.ndarray
-            Array of shape (N, len(property_names)) with computed properties for each assemblage
+        dict[str, np.ndarray]
+            Mapping from property name to array of shape (N,)
         """
-
-        time_start = time.time()
-
-        nrows = intensive_moles.shape[0]
-
-        assert nrows == phase_moles.shape[0], "Batch size of intensive_moles and phase_moles must match"
-
-        outmatrix = np.zeros((nrows, len(property_names)), dtype=np.float32)
-
-        def _compute_chunk(start_idx: int, end_idx: int):
-            """Compute a contiguous slice of assemblages in one worker thread."""
-            local_minerals = copy.deepcopy(self.burnman_minerals)
-            chunk_out = np.zeros((end_idx - start_idx, len(property_names)), dtype=np.float32)
-
-            for local_row, i in enumerate(range(start_idx, end_idx)):
-                nonzero_phase_idx = np.where(phase_moles[i] > 0)[0]
-                moles = phase_moles[i, nonzero_phase_idx]
-                total_moles = moles.sum()
-                phase_input = {}
-
-                for idx in nonzero_phase_idx:
-                    phase_name = self.isothermal_emulator.ml_indexer.all_phases[idx]
-                    burnman_phase_name = self.burnman_translator[phase_name]
-                    if burnman_phase_name is None:
-                        raise ValueError(f"Phase '{phase_name}' not recognized in Burnman translator")
-
-                    try:
-                        phase_input[burnman_phase_name] = local_minerals[phase_name]
-                    except Exception as e:
-                        raise ValueError(f"Error loading Burnman phase '{burnman_phase_name}': {e}")
-
-                    if phase_name in self.isothermal_emulator.ml_indexer.compositionally_variable_phases:
-                        phase_input[burnman_phase_name].set_composition(
-                            intensive_moles[i, self.isothermal_emulator.ml_indexer.label_indices_comp[phase_name]].tolist()
-                        )
-
-                assemblage = burnman.Composite(
-                    phases=[phase_input[phase] for phase in phase_input.keys()],
-                    fractions=(moles / total_moles).tolist(),
-                    fraction_type='molar',
-                    name='rock'
-                )
-                assemblage.set_state(PT[i, 0].item() * 1e9, PT[i, 1].item())
-
-                for j, prop in enumerate(property_names):
-                    try:
-                        chunk_out[local_row, j] = getattr(assemblage, prop).detach().cpu().numpy()
-                    except Exception as e:
-                        raise ValueError(f"Error computing property '{prop}' for assemblage {i}: {e}")
-
-            return start_idx, chunk_out
-
-        # Use thread pool to compute contiguous chunks in parallel.
-        n_threads = min(4, nrows)
-        chunk_size = (nrows + n_threads - 1) // n_threads
-        chunk_ranges = [
-            (start, min(start + chunk_size, nrows))
-            for start in range(0, nrows, chunk_size)
-        ]
-
-        with ThreadPoolExecutor(max_workers=n_threads) as executor:
-            futures = [executor.submit(_compute_chunk, start, end) for start, end in chunk_ranges]
-            for future in futures:
-                try:
-                    start_idx, chunk_out = future.result()
-                    outmatrix[start_idx:start_idx + chunk_out.shape[0], :] = chunk_out
-                except Exception as e:
-                    raise RuntimeError(f"Error in thread worker: {e}")
-            
-        print(f"Burnman property computation for {nrows} assemblages and properties {property_names} took {time.time() - time_start:.2f} seconds")
-        return outmatrix, property_names
-    
-    
-    def get_property_burnman_vectorized_from_assemblage(
-        self,
-        componentMoles,
-        PT,
-        property_names = ['entropy_by_mass', 'density', 'p_wave_velocity', 's_wave_velocity', 'isothermal_bulk_modulus_reuss']):
-    
-        """
-        Compute properties for a given assemblage using Burnman.
-        
-        Parameters
-        ----------
-        intensive_moles : np.array
-            (N, C) tensor of intensive component moles from emulator output
-        phase_moles : np.array
-            (N, P) tensor of phase moles from emulator output
-        PT : np.array   
-            (N, 2) tensor of pressure and temperature values
-        property_names : sequence of str
-            List of properties recongnized by burnman to compute (e.g., ['bulk_modulus', 'density'])
-        
-        Returns
-        -------
-        numpy.ndarray
-            Array of shape (N, len(property_names)) with computed properties for each assemblage
-        """
-
-        time_start = time.time()
-
-        self.VecEOS = VectorComposite(
-        #component_names=[self.burnman_translator[phase] for phase in self.isentropic_emulator.ml_indexer.label_names],
-        #phase_names=[self.burnman_translator[phase] for phase in self.isothermal_emulator.ml_indexer.all_phases],
-        phase_identity=torch.tensor(self.isothermal_emulator.ml_indexer.phaseToCompMap.T, dtype=torch.float64, device=self.device),
-        component_abundances=componentMoles,
-        phase_models=self.burnman_minerals,
-        pressure=PT[:,0],
-        temperature=PT[:,1],
-        device=self.device,
-        dtype=torch.float64
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement _compute_bulk_EOS_properties"
         )
-
-        #self.VecEOS.evaluate_backend_properties()
-
-        nrows = componentMoles.size()[0]
-
-        assert nrows == PT.size()[0], "Batch size of intensive_moles and phase_moles must match"
-
-        #outmatrix = np.zeros((nrows, len(property_names)), dtype=np.float32)
-        outdict = {}
-
-        for j, prop in enumerate(property_names):
-            try:
-                outdict[prop] = getattr(self.VecEOS, prop).detach().cpu().numpy()
-            except Exception as e:
-                raise ValueError(f"Error computing property '{prop}': {e}")
-
-        print(f"Burnman property computation for {nrows} assemblages and properties {property_names} took {time.time() - time_start:.2f} seconds")
-        return outdict
 
     @staticmethod
     def _load_emulator(model_path: Union[str, Path], device: str) -> NN_MELTS:
         """Load and wrap a checkpoint as NN_MELTS emulator."""
         from ..engine.NN import rebuild_MELTS_model
-        
+
         model_path = Path(model_path)
         if not model_path.exists():
             raise FileNotFoundError(f"Model not found: {model_path}")
-        
+
         model = rebuild_MELTS_model(str(model_path))
         return NN_MELTS(model, cuda=(device == 'cuda'))
-    
+
     def _setup_temperature_model(self, checkpoint_path: Union[str, Path]) -> None:
         """Load temperature FCNN and setup normalizers."""
         checkpoint_path = Path(checkpoint_path)
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"Temperature model not found: {checkpoint_path}")
-        
+
         # Load model
         model, payload, x_min, x_range, y_min, y_range = _load_temperature_model(
             checkpoint_path, self.device
         )
-        
+
         self.temperature_model = model
         self.temperature_payload = payload
-        
+
         # Setup normalizers as torch tensors
         self.temp_input_normalizer = Normalizer(
             torch.tensor(x_min, dtype=torch.float32),
@@ -669,7 +522,7 @@ class HeFESToAPI:
             torch.tensor(y_range, dtype=torch.float32),
             cuda=(self.device.type == 'cuda')
         )
-    
+
     #NOTE: This assumes that the isentropic and isothermal emulators have S and T in the same position within the features
     def get_isentrope(
         self,
@@ -691,9 +544,9 @@ class HeFESToAPI:
             features must have exactly 1 row. That row is tiled to
             len(potential_temperatures) rows and the temperature column is
             overwritten by each potential temperature. The isothermal emulator
-            evaluates each state at P=0.0001 GPa; Burnman then computes the
-            reference entropy S (J/g/K) for each. Each S is swept across the
-            pressure grid via the isentropic model.
+            evaluates each state at P=0.0001 GPa; `_compute_bulk_EOS_properties`
+            then computes the reference entropy S (J/g/K) for each. Each S is
+            swept across the pressure grid via the isentropic model.
             Output shape: (len(potential_temperatures), len(pressures)).
 
         Mode B — no potential_temperatures:
@@ -718,7 +571,7 @@ class HeFESToAPI:
         normalize_features : bool
             Whether to normalize input features before emulator calls.
         properties : sequence of str, optional
-            Burnman property names to evaluate at each isentropic (P, T) state
+            EOS property names to evaluate at each isentropic (P, T) state
             (e.g. ['density', 'p_wave_velocity', 'entropy_by_mass']). Each
             property is returned as an np.ndarray of shape (n_S, n_P).
             When provided, a third return value (dict) is included.
@@ -765,7 +618,7 @@ class HeFESToAPI:
                 potential_temperatures, dtype=torch.float32, device=self.device
             )
             iso_ref[:, iso_pressure_idx] = 0.0001
-            T_for_burnman = torch.tensor(
+            T_for_EOS = torch.tensor(
                 potential_temperatures, dtype=torch.float64, device=self.device
             )
 
@@ -773,7 +626,7 @@ class HeFESToAPI:
             # Mode B: N rows, T column provides each row's potential temperature
             n_S = features_arr.shape[0]
             iso_ref, _ = self.parse_input(features_arr, headers=headers)     # (n_S, F_iso)
-            T_for_burnman = iso_ref[:, temp_idx].to(dtype=torch.float64, device=self.device)
+            T_for_EOS = iso_ref[:, temp_idx].to(dtype=torch.float64, device=self.device)
             iso_ref = iso_ref.clone()
             iso_ref[:, iso_pressure_idx] = 0.0001
 
@@ -790,17 +643,17 @@ class HeFESToAPI:
         )
         component_moles = iso_out['component_moles'].to(device=self.device, dtype=torch.float64)
 
-        # --- Step 2: Burnman vectorized → reference entropy S (J/g/K) ---
+        # --- Step 2: EOS backend → reference entropy S (J/g/K) ---
         P_ref = torch.full((n_S,), 0.0001, dtype=torch.float64, device=self.device)
-        PT_ref = torch.stack([P_ref, T_for_burnman], dim=1)  # (n_S, 2): columns = [P, T]
+        PT_ref = torch.stack([P_ref, T_for_EOS], dim=1)  # (n_S, 2): columns = [P, T]
 
-        burnman_props = self.get_property_burnman_vectorized_from_assemblage(
+        eos_props = self._compute_bulk_EOS_properties(
             component_moles,
             PT_ref,
             property_names=['entropy_by_mass'],
         )
         S_values = torch.tensor(
-            burnman_props['entropy_by_mass']/1000, dtype=torch.float32, device=self.device
+            eos_props['entropy_by_mass']/1000, dtype=torch.float32, device=self.device
         )  # (n_S,)
         print(f"Reference entropies (J/g/K) at P=0.0001 GPa: {S_values.cpu().numpy()}")
 
@@ -820,7 +673,7 @@ class HeFESToAPI:
             outputs=['phase_moles', 'chem_out', 'component_moles'],
         )
         pred_component_moles = isen_out['component_moles'].to(device=self.device, dtype=torch.float64)
-        temperatures_pred = self.get_T(torch.concatenate([isen_design, isen_out['phase_moles'], isen_out['chem_out']], dim=1), normalize_features=normalize_features) # This is another neural network! 
+        temperatures_pred = self.get_T(torch.concatenate([isen_design, isen_out['phase_moles'], isen_out['chem_out']], dim=1), normalize_features=normalize_features) # This is another neural network!
 
         # --- Step 6: Reshape → (n_S, n_press) ---
         temperatures_grid = temperatures_pred.reshape(n_S, n_press)
@@ -832,13 +685,13 @@ class HeFESToAPI:
         if properties is None:
             return temperatures_grid, pressures_grid
 
-        # --- Step 7: Burnman properties at isentropic (P, T) states ---
-        # PT columns = [P, T], matching get_property_burnman_vectorized_from_assemblage convention
+        # --- Step 7: EOS properties at isentropic (P, T) states ---
+        # PT columns = [P, T], matching _compute_bulk_EOS_properties convention
         P_flat = pressures_grid.reshape(-1).to(dtype=torch.float64, device=self.device)
         T_flat = temperatures_grid.reshape(-1).to(dtype=torch.float64, device=self.device)
         PT_isen = torch.stack([P_flat, T_flat], dim=1)  # (n_S * n_press, 2)
 
-        raw_props = self.get_property_burnman_vectorized_from_assemblage(
+        raw_props = self._compute_bulk_EOS_properties(
             pred_component_moles.to(device=self.device, dtype=torch.float64),
             PT_isen,
             property_names=list(properties),
@@ -850,8 +703,8 @@ class HeFESToAPI:
         }
 
         return temperatures_grid, pressures_grid, properties_dict
-        
-    
+
+
     def _staged_forward(
         self,
         func,
@@ -861,7 +714,7 @@ class HeFESToAPI:
     ) -> Union[torch.Tensor, list]:
         """
         Execute function in batches for memory efficiency.
-        
+
         Parameters
         ----------
         func : callable
@@ -872,7 +725,7 @@ class HeFESToAPI:
             Batch size
         **kwargs :
             Additional arguments to pass to func
-        
+
         Returns
         -------
         torch.Tensor or list of torch.Tensor
@@ -906,29 +759,29 @@ class HeFESToAPI:
             return batch
 
         n_samples = input_tensor.size(0)
-        
+
         if n_samples <= batch_size:
             return func(input_tensor, **kwargs)
-        
+
         # Process first batch
         with torch.no_grad():
             outputs = func(input_tensor[:batch_size], **kwargs)
-            
+
             # Process remaining batches
             n_batches = (n_samples + batch_size - 1) // batch_size
             for batch_idx in tqdm.tqdm(range(1, n_batches), desc="Processing batches of size " + str(batch_size)):
                 start = batch_idx * batch_size
                 end = min((batch_idx + 1) * batch_size, n_samples)
-                
+
                 batch_outputs = func(input_tensor[start:end], **kwargs)
                 outputs = _merge_outputs(outputs, batch_outputs)
                 del batch_outputs
                 gc.collect()
-                
+
                 torch.cuda.empty_cache()
-            
+
             return outputs
-    
+
     def parse_input(
         self,
         table: Union[Dict[str, Any], np.ndarray, torch.Tensor],
@@ -937,7 +790,7 @@ class HeFESToAPI:
     ) -> torch.Tensor:
         """
         Parse and reorder input composition table.
-        
+
         Parameters
         ----------
         table : array-like
@@ -946,7 +799,7 @@ class HeFESToAPI:
             Column headers
         composition_space : str, optional
             'elements' or 'oxides'. Auto-detected if not provided.
-        
+
         Returns
         -------
         torch.Tensor
@@ -1020,7 +873,7 @@ class HeFESToAPI:
         parsed_table, headers_out, comp_space = self.parser.parse_composition(
             values, headers, composition_space
         )
-        
+
         # Use the emulator that matches the canonicalized thermodynamic feature.
         reordered = emulator.reorder_input_table(
             parsed_table,
@@ -1033,7 +886,7 @@ class HeFESToAPI:
         non_chem_features = len(self.isentropic_emulator.ml_indexer.featureNames) # The emulator type doesn't matter: But they both need to agree on open or closed oxygen systematics
         chem_sum = reordered[:,non_chem_features:].sum(dim=1)
         reordered[:,non_chem_features:] = reordered[:,non_chem_features:] / chem_sum.unsqueeze(1)
-        
+
         return reordered.to(self.device), 'isentropic' if has_entropy else 'isothermal'
 
 
@@ -1095,7 +948,7 @@ class HeFESToAPI:
             emulator = self.isentropic_emulator
         else:
             raise ValueError(f"parser determined model is not recognized: {modeltype} must be 'isothermal' or 'isentropic'")
-        
+
         if 'temperature' in outputs:
             if 'chem_out' not in outputs:
                 outputs = list(outputs) + ['chem_out']
@@ -1114,7 +967,7 @@ class HeFESToAPI:
             batch_size,
             Normalize=normalize_features,
             WtPercent=wt_percent,
-            comp_table_out=comp_table_out,  
+            comp_table_out=comp_table_out,
             outputs=outputs,
         )
 
@@ -1174,7 +1027,7 @@ class HeFESToAPI:
             emulator = self.isentropic_emulator
         else:
             raise ValueError(f"parser determined model is not recognized: {modeltype} must be 'isothermal' or 'isentropic'")
-        
+
         if 'temperature' in outputs:
             if 'chem_out' not in outputs:
                 outputs = list(outputs) + ['chem_out']
@@ -1208,40 +1061,267 @@ class HeFESToAPI:
     ) -> torch.Tensor:
         """
         Get temperature from isentropic emulator output.
-        
+
         Lightweight frontend that:
         1. Passes features through isentropic emulator
         2. Builds temperature model inputs from emulator outputs
         3. Passes through temperature FCNN
         4. Returns temperature predictions
-        
+
         Parameters
         ----------
         features : array-like
             Input features (B, F) with intensive variables + composition
         normalize_features : bool, default=True
             Whether to normalize input features
-        
+
         Returns
         -------
         torch.Tensor
             Temperatures (B,) in Kelvin
         """
         features = torch.as_tensor(features, dtype=torch.float32, device=self.device)
-        
+
         # Normalize for temperature model
         temp_input_norm = self.temp_input_normalizer.norm(features)
-        
+
         # Forward through temperature FCNN
         with torch.no_grad():
             temp_output_norm = self.temperature_model(temp_input_norm)
-        
+
         # Denormalize output
         temperature = self.temp_output_normalizer.denorm(temp_output_norm)
-        
+
         return temperature.squeeze(-1)
 
 
+class HeFESToAPI(EmulatorAPI):
+    """
+    HeFESTo emulator API with Burnman EOS backend.
+
+    Extends EmulatorAPI with Burnman-based bulk property evaluation,
+    enabling isentrope computation and physical property retrieval for
+    the HeFESTo mineral physics database.
+    """
+
+    def __init__(
+        self,
+        isothermal_model_path: Union[str, Path],
+        isentropic_model_path: Union[str, Path],
+        temperature_model_path: Optional[Union[str, Path]] = None,
+        device: str = 'cpu',
+        verbose: bool = False,
+    ):
+        """
+        Initialize HeFESTo API with emulator models and Burnman phases.
+
+        Parameters
+        ----------
+        isothermal_model_path : str or Path
+            Path to isothermal emulator checkpoint
+        isentropic_model_path : str or Path
+            Path to isentropic emulator checkpoint
+        temperature_model_path : str or Path, optional
+            Path to temperature FCNN checkpoint
+        device : str, default='cpu'
+            Torch device ('cpu' or 'cuda')
+        verbose : bool, default=False
+            Print initialization messages
+        """
+        if verbose:
+            print("[INFO] Initializing HeFESToAPI...")
+
+        super().__init__(
+            isothermal_model_path,
+            isentropic_model_path,
+            temperature_model_path,
+            device,
+            verbose,
+        )
+
+        # Build Burnman input translator
+        phase_names = self.isothermal_emulator.ml_indexer.all_phases
+        self.burnman_translator = {phase: phase for phase in phase_names}
+        for hefesto_name, burnman_name in burnman_phase_aliases.items():
+            self.burnman_translator[hefesto_name] = burnman_name
+
+        self.burnman_minerals = {
+            phase_name: getattr(burnman.minerals.SLB_2024, self.burnman_translator[phase_name])()
+            for phase_name in self.isothermal_emulator.ml_indexer.all_phases
+        }
+
+        if verbose:
+            print("[INFO] HeFESToAPI initialized successfully.")
+
+    def _compute_bulk_EOS_properties(
+        self,
+        component_moles: torch.Tensor,
+        PT: torch.Tensor,
+        property_names: Sequence[str],
+    ) -> Dict[str, np.ndarray]:
+        """Delegate to Burnman backend."""
+        return self.get_property_burnman_vectorized_from_assemblage(
+            component_moles, PT, property_names
+        )
+
+    def get_property_burnman_vectorized_from_assemblage(
+        self,
+        componentMoles,
+        PT,
+        property_names = ['entropy_by_mass', 'density', 'p_wave_velocity', 's_wave_velocity', 'isothermal_bulk_modulus_reuss']):
+
+        """
+        Compute properties for a given assemblage using Burnman.
+
+        Parameters
+        ----------
+        intensive_moles : np.array
+            (N, C) tensor of intensive component moles from emulator output
+        phase_moles : np.array
+            (N, P) tensor of phase moles from emulator output
+        PT : np.array
+            (N, 2) tensor of pressure and temperature values
+        property_names : sequence of str
+            List of properties recongnized by burnman to compute (e.g., ['bulk_modulus', 'density'])
+
+        Returns
+        -------
+        numpy.ndarray
+            Array of shape (N, len(property_names)) with computed properties for each assemblage
+        """
+
+        time_start = time.time()
+
+        self.VecEOS = VectorComposite(
+        #component_names=[self.burnman_translator[phase] for phase in self.isentropic_emulator.ml_indexer.label_names],
+        #phase_names=[self.burnman_translator[phase] for phase in self.isothermal_emulator.ml_indexer.all_phases],
+        phase_identity=torch.tensor(self.isothermal_emulator.ml_indexer.phaseToCompMap.T, dtype=torch.float64, device=self.device),
+        component_abundances=componentMoles,
+        phase_models=self.burnman_minerals,
+        pressure=PT[:,0],
+        temperature=PT[:,1],
+        device=self.device,
+        dtype=torch.float64
+        )
+
+        #self.VecEOS.evaluate_backend_properties()
+
+        nrows = componentMoles.size()[0]
+
+        assert nrows == PT.size()[0], "Batch size of intensive_moles and phase_moles must match"
+
+        #outmatrix = np.zeros((nrows, len(property_names)), dtype=np.float32)
+        outdict = {}
+
+        for j, prop in enumerate(property_names):
+            try:
+                outdict[prop] = getattr(self.VecEOS, prop).detach().cpu().numpy()
+            except Exception as e:
+                raise ValueError(f"Error computing property '{prop}': {e}")
+
+        print(f"Burnman property computation for {nrows} assemblages and properties {property_names} took {time.time() - time_start:.2f} seconds")
+        return outdict
+
+class MELTSAPI:
+    """
+    Dispatcher API for MELTS emulators with Cr / NoCr model variants.
+
+    Holds two EmulatorAPI sub-instances and routes every call to the
+    correct one by inspecting the input headers: if 'Cr' or 'Cr2O3'
+    appears, the Cr sub-API is used; otherwise the NoCr sub-API is used.
+
+    The public interface mirrors EmulatorAPI (ForwardMB, ForwardNN,
+    get_isentrope, parse_input). For methods that don't carry headers
+    (e.g. get_T) access the sub-API directly via .nocr or .cr.
+    """
+
+    def __init__(
+        self,
+        isothermal_NoCr_model_path: Union[str, Path],
+        isothermal_Cr_model_path: Union[str, Path],
+        isentropic_NoCr_model_path: Union[str, Path],
+        isentropic_Cr_model_path: Union[str, Path],
+        temperature_NoCr_model_path: Optional[Union[str, Path]] = None,
+        temperature_Cr_model_path: Optional[Union[str, Path]] = None,
+        device: str = 'cpu',
+        verbose: bool = False,
+    ):
+        """
+        Initialize MELTS API, building NoCr and Cr sub-APIs.
+
+        Parameters
+        ----------
+        isothermal_NoCr_model_path : str or Path
+            Path to isothermal emulator checkpoint (NoCr)
+        isothermal_Cr_model_path : str or Path
+            Path to isothermal emulator checkpoint (Cr)
+        isentropic_NoCr_model_path : str or Path
+            Path to isentropic emulator checkpoint (NoCr)
+        isentropic_Cr_model_path : str or Path
+            Path to isentropic emulator checkpoint (Cr)
+        temperature_NoCr_model_path : str or Path, optional
+            Path to temperature FCNN checkpoint (NoCr)
+        temperature_Cr_model_path : str or Path, optional
+            Path to temperature FCNN checkpoint (Cr)
+        device : str, default='cpu'
+            Torch device ('cpu' or 'cuda')
+        verbose : bool, default=False
+            Print initialization messages
+        """
+        if verbose:
+            print("[INFO] Initializing MELTSAPI (NoCr)...")
+        self.nocr = EmulatorAPI(
+            isothermal_NoCr_model_path,
+            isentropic_NoCr_model_path,
+            temperature_NoCr_model_path,
+            device,
+            verbose,
+        )
+        if verbose:
+            print("[INFO] Initializing MELTSAPI (Cr)...")
+        self.cr = EmulatorAPI(
+            isothermal_Cr_model_path,
+            isentropic_Cr_model_path,
+            temperature_Cr_model_path,
+            device,
+            verbose,
+        )
+        self.device = torch.device(device)
+        self.verbose = verbose
+        if verbose:
+            print("[INFO] MELTSAPI initialized successfully.")
+
+    def _route(
+        self,
+        table=None,
+        headers: Optional[Sequence[str]] = None,
+    ) -> EmulatorAPI:
+        """
+        Select NoCr or Cr sub-API from headers.
+
+        Checks `headers` first; if None, falls back to DataFrame column
+        names. Routes to .cr if 'Cr' or 'Cr2O3' is present, else .nocr.
+        """
+        header_list = headers
+        if header_list is None and hasattr(table, 'columns'):
+            header_list = list(table.columns)
+        if header_list is not None:
+            header_set = {str(h).strip() for h in header_list}
+            if 'Cr' in header_set or 'Cr2O3' in header_set:
+                return self.cr
+        return self.nocr
+
+    def ForwardMB(self, table, headers=None, **kwargs):
+        return self._route(table, headers).ForwardMB(table, headers=headers, **kwargs)
+
+    def ForwardNN(self, table, headers=None, **kwargs):
+        return self._route(table, headers).ForwardNN(table, headers=headers, **kwargs)
+
+    def get_isentrope(self, features, headers, **kwargs):
+        return self._route(headers=headers).get_isentrope(features, headers, **kwargs)
+
+    def parse_input(self, table, headers=None, **kwargs):
+        return self._route(table, headers).parse_input(table, headers=headers, **kwargs)
 
 # Model paths - resolved relative to this file's location
 _this_file_dir = Path(__file__).parent
@@ -1271,4 +1351,3 @@ if adiabat_NPT_path.exists() and adiabat_NPS_path.exists() and adiabat_TfromS_pa
             temperature_model_path=str(adiabat_TfromS_path),
             device='cuda'
         )
-

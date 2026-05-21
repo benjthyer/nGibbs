@@ -1,4 +1,4 @@
-import nMELTS.engine.NN as NN
+import module.engine.NN as NN
 import numpy as np
 import torch
 from torch.utils.data import DataLoader

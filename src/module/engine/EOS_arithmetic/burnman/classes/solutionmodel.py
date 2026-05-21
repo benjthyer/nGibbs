@@ -18,13 +18,13 @@ Interaction = make_dataclass(
     "Interaction", ["inds", "expts", "f_r", "m_jr", "f_rs", "m_jrs"]
 )
 
-try:
-    ag = importlib.import_module("autograd")
+"""try: # Not used in nGibbs implementation
+    ag = importlib.import_module('autograd')
 except ImportError as err:
     print(
-        f"Warning: {err}. "
-        "For full functionality of BurnMan, please install autograd."
-    )
+        f'Warning: {err}. '
+        'For full functionality of BurnMan, please install autograd.'
+    )"""
 
 
 def _ideal_activities_fct(
@@ -1176,9 +1176,9 @@ class SubregularSolution(IdealSolution):
             self, pressure, temperature, molar_fractions
         ) * self.activity_coefficients(pressure, temperature, molar_fractions)
 
-
+"""
 class FunctionSolution(IdealSolution):
-    """
+    
     Solution model implementing a generalized solution model.
     The extensive excess nonconfigurational Gibbs energy is
     provided as a function by the user.
@@ -1197,12 +1197,12 @@ class FunctionSolution(IdealSolution):
         Note that the function must be extensive; if the molar amounts
         are doubled, the Gibbs energy must also double.
     :type excess_gibbs_function: function
-    """
+    
 
     def __init__(self, endmembers, excess_gibbs_function):
-        """
-        Initialization function for the GeneralSolution class.
-        """
+       
+        #Initialization function for the GeneralSolution class.
+     
         # Initialize attributes from IdealSolution
         IdealSolution.__init__(self, endmembers)
 
@@ -1350,7 +1350,7 @@ class FunctionSolution(IdealSolution):
     def activities(self, pressure, temperature, molar_fractions):
         return IdealSolution.activities(
             self, pressure, temperature, molar_fractions
-        ) * self.activity_coefficients(pressure, temperature, molar_fractions)
+        ) * self.activity_coefficients(pressure, temperature, molar_fractions)"""
 
 
 class PolynomialSolution(IdealSolution):

@@ -27,7 +27,7 @@ from .melts_file_builder import (
     #pull_number
 )
 
-from nMELTS.utils.string_utils import pull_number
+from module.utils.string_utils import pull_number
 #from ...nMELTS.config.indexer import DatasetIndexer
 
 # You Need GNU parallel to run this! https://build.opensuse.org/package/show/home:tange/parallel

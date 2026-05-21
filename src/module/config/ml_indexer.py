@@ -10,6 +10,8 @@ import pandas as pd
 from pathlib import Path
 from typing import List, Dict, Set, Tuple, Optional, Any
 import json
+import sys
+
 from .constants import default_Elkeys, all_Elkeys, get_oxide_molar_mass
 from ..utils.math_utils import Normalizer
 

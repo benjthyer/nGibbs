@@ -33,14 +33,14 @@ SRC_PATH = REPO_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from nMELTS.engine.NN import VariableGeometryFCNNRegressor, rebuild_MELTS_model, _load_temperature_model
-from nMELTS.engine.emulator import NN_MELTS
-from nMELTS.engine.EOS_arithmetic import (
+from module.engine.NN import VariableGeometryFCNNRegressor, rebuild_MELTS_model, _load_temperature_model
+from module.engine.emulator import NN_MELTS
+from module.engine.EOS_arithmetic import (
     PHYSUB_BULK_ATTRIBUTE_NAMES,
     compute_physub_bulk_matrix,
     get_hefesto_physub_context,
 )
-from nMELTS.utils.file_utils import load_ml_bundle
+from module.utils.file_utils import load_ml_bundle
 
 
 PHYSUB_COMPONENT_ATTRIBUTE_NAMES: Tuple[str, ...] = (

@@ -125,7 +125,7 @@ def main():
 
     # Import API and HeFESTo functions
     try:
-        from src.nMELTS.engine.API import HeFESToEmulatorCPU
+        from src.module.engine.API import HeFESToEmulatorCPU
         if HeFESToEmulatorCPU is None:
             raise RuntimeError('HeFESToEmulatorCPU not available (models not found at import)')
     except ImportError as exc:

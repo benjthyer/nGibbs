@@ -9,12 +9,53 @@ import time
 import numpy as np
 import torch
 import pandas as pd
+from pathlib import Path
+import sys
+
+mod_root = Path(__file__).parent.parent
+print(mod_root)
+sys.path.insert(0, str(mod_root))
 
 # Import utility functions
-from ..utils.math_utils import QFM_fO2, Fe2O3_FeO_ratio, QFM_fO2_torch, Normalizer
+from  utils.math_utils import QFM_fO2, Fe2O3_FeO_ratio, QFM_fO2_torch, Normalizer
+from  config.constants import OXIDE_MOLAR_MASSES as oxide_molar_masses
 
-from ..engine.NN import MidLevelNetwork
+ferric_to_ferrous_ratio =  (2*oxide_molar_masses['FeO'])/oxide_molar_masses['Fe2O3']
 
+ptt_order_oxides = ['SiO2', 'TiO2', 'Al2O3', 'Cr2O3', 'Fe2O3', 'FeO', 'FeOt', 'MnO', 'MgO', 'CaO',
+                     'Na2O', 'K2O', 'P2O5', 'H2O', 'CO2', 'Fe3Fet']
+
+ptt_short_to_long_phases =  {
+    'liq1': 'liquid1',
+    'ol1': 'olivine1',
+    'opx1': 'orthopyroxene1',
+    'cpx1': 'clinopyroxene1',
+    'g1': 'garnet1',
+    'spl1': 'spinel1',
+    'fsp1': 'feldspar1',
+    'ol2': 'olivine1',
+    'cpx2': 'clinopyroxene2',
+    'opx2': 'orthopyroxene2',
+    'g2': 'garnet2',
+    'fsp2': 'feldspar2',
+    'spl2': 'spinel2',
+    'ilm1': 'rhm-oxide1',
+    'ilm2': 'rhm-oxide2',
+    'fl1': 'fluid1',
+    'liq2': 'liquid2',
+    'liq3': 'liquid3',
+    'liq4': 'liquid4',
+    'pl1': 'plagioclase1',
+    'pl2': 'plagioclase2',
+    'afs1': 'alkali-feldspar1',
+    'afs2': 'alkali-feldspar2'
+    }
+
+ptt_long_to_short_phases = {
+    'melts-liquid': 'liq1'
+    }
+
+ptt_oxide_indexer = {ox: i for i, ox in enumerate(ptt_order_oxides)}
 
 class NN_MELTS:
     """
@@ -42,7 +83,7 @@ class NN_MELTS:
             Whether to use CUDA/GPU acceleration
         """
         # Validate input
-        if not isinstance(model, MidLevelNetwork):
+        if type(model).__name__ != 'MidLevelNetwork':
             raise TypeError(f"Model must be MidLevelNetwork, got {type(model)}")
         if not hasattr(model, 'ml_indexer') or model.ml_indexer is None:
             raise ValueError("Model must have an attached ml_indexer")

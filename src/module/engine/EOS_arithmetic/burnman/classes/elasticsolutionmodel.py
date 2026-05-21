@@ -15,13 +15,13 @@ from .solutionmodel import _non_ideal_interactions_subreg
 from .solutionmodel import logish, inverseish
 from .. import constants
 
-try:
-    ag = importlib.import_module("autograd")
+"""try: # Not used in nGibbs implementation
+    ag = importlib.import_module('autograd')
 except ImportError as err:
     print(
-        f"Warning: {err}. "
-        "For full functionality of BurnMan, please install autograd."
-    )
+        f'Warning: {err}. '
+        'For full functionality of BurnMan, please install autograd.'
+    )"""
 
 
 class ElasticSolutionModel(object):
@@ -689,9 +689,9 @@ class ElasticSubregularSolution(ElasticIdealSolution):
         n = len(molar_fractions)
         return _non_ideal_hessian_subreg(molar_fractions, n, self.Wijkp)
 
-
+"""
 class ElasticFunctionSolution(ElasticIdealSolution):
-    """
+    
     Solution model implementing a generalized elastic solution model.
     The extensive excess nonconfigurational Helmholtz energy is
     provided as a function by the user.
@@ -711,12 +711,12 @@ class ElasticFunctionSolution(ElasticIdealSolution):
         Note that the function must be extensive; if the molar amounts
         are doubled, the Helmholtz energy must also double.
     :type excess_helmholtz_function: function
-    """
+    
 
     def __init__(self, endmembers, excess_helmholtz_function):
-        """
-        Initialization function for the GeneralSolution class.
-        """
+        
+        #Initialization function for the GeneralSolution class.
+        
 
         # initialize ideal solution model
         ElasticIdealSolution.__init__(self, endmembers)
@@ -803,4 +803,4 @@ class ElasticFunctionSolution(ElasticIdealSolution):
         nonideal_entropy_hessian = self._non_ideal_entropy_hessian(
             volume, temperature, molar_fractions
         )
-        return ideal_entropy_hessian + nonideal_entropy_hessian
+        return ideal_entropy_hessian + nonideal_entropy_hessian"""

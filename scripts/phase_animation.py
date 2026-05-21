@@ -12,8 +12,8 @@ base_path = str(Path(__file__).parent.parent)
 if base_path not in sys.path:
     sys.path.insert(0, base_path)
 
-from src.nMELTS.engine.API import HeFESToEmulatorCPU
-from src.nMELTS.config.constants import HEFESTO_ABBREVIATION_TO_SHORT_NAMES
+from src.module.engine.API import HeFESToEmulatorCPU
+from src.module.config.constants import HEFESTO_ABBREVIATION_TO_SHORT_NAMES
 
 INDEX_TO_PHASE = {
      1: 'plg',  2: 'sp',  3: 'opx',  4: 'c2c',  5: 'cpx',
@@ -240,7 +240,7 @@ def animate_phase_diagram(
 
 
 if __name__ == '__main__':
-    from src.nMELTS.utils.math_utils import grid_sample
+    from src.module.utils.math_utils import grid_sample
 
     # Caracas et al., 2019 pyrolite (fixed composition)
     input_dict = {

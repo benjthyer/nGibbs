@@ -27,10 +27,10 @@ src_path = str(Path(__file__).resolve().parents[2])
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
-from nMELTS.engine.NN import rebuild_MELTS_model
-from nMELTS.engine.emulator import NN_MELTS
-from nMELTS.utils.file_utils import load_ml_bundle
-from nMELTS.utils.math_utils import grid_sample
+from module.engine.NN import rebuild_MELTS_model
+from module.engine.emulator import NN_MELTS
+from module.utils.file_utils import load_ml_bundle
+from module.utils.math_utils import grid_sample
 
 
 def _sanitize_name(name: str) -> str:

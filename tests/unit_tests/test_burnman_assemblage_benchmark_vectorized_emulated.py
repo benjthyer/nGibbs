@@ -35,7 +35,7 @@ if base_path not in sys.path:
 
 # Import API and HeFESTo functions
 
-from src.nMELTS.engine.API import HeFESToEmulatorCPU, HeFESToEmulatorGPU
+from src.module.engine.API import HeFESToEmulatorCPU, HeFESToEmulatorGPU
 
 compositions = {
     'htz_PS': {

@@ -25,9 +25,9 @@ if src_path not in sys.path:
 
 # Import from refactored modules
 from builder.indexer import DatasetIndexer
-from nMELTS.utils.string_utils import pull_number
-from nMELTS.utils.math_utils import blur_binary_boundaries
-from nMELTS.utils.file_utils import move_file
+from module.utils.string_utils import pull_number
+from module.utils.math_utils import blur_binary_boundaries
+from module.utils.file_utils import move_file
 
 
 def strip_filename_suffixes(filename, suffixes=None):
@@ -76,7 +76,7 @@ def strip_filename_suffixes(filename, suffixes=None):
     
     return result.rstrip('_') + filetype
 
-class BigMetaTable:
+class BigMetaTable():
     def __init__(self, filename, read_dir=None, memmap_mode='r+', rebuild_memmap=False,
                  allow_differing_lengths=False, header=None, Model='MELTS', OXYGEN='closed'):
         

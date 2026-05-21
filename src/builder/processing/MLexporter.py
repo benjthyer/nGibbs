@@ -22,10 +22,10 @@ if src_path not in sys.path:
 
 from .filters import filter_invalid_rows
 from config.settings import internal_train_dir, external_train_dir, external_base
-from nMELTS.utils.string_utils import pull_number
+from module.utils.string_utils import pull_number
 from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
-from nMELTS.utils.file_utils import load_ml_bundle, MLDataBundle
-from nMELTS.utils.math_utils import Normalizer
+from module.utils.file_utils import load_ml_bundle, MLDataBundle
+from module.utils.math_utils import Normalizer
 
 #featureNames = ['Pressure(System_main)', 'Temperature(System_main)', 'logfO2-QFM(System_main)']
 #freeOutputs = ['viscocity(System_main)', 'liq H (kJ)(melts-liquid)', 'Temperature(System_main)']

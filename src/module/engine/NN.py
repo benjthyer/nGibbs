@@ -13,13 +13,16 @@ import json
 import zipfile
 from pathlib import Path
 from datetime import datetime
+import sys
 
+mod_root = Path(__file__).parent.parent
+sys.path.insert(0, str(mod_root))
 
 # Import utility functions
-from nMELTS.utils.string_utils import pull_letter, pull_number_range, apply_type_conversions
+from module.utils.string_utils import pull_letter, pull_number_range, apply_type_conversions
 
 # Import constants and mappings from config (fallbacks)
-from nMELTS.config.constants import TYPE_CONVERSION_MAP
+from module.config.constants import TYPE_CONVERSION_MAP
 """from nMELTS.config import (
     Elkeys as DEFAULT_ELKEYS,
     label_indices as DEFAULT_LABEL_INDICES,
@@ -1106,7 +1109,7 @@ def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = 
     FileNotFoundError
         If zip file or required contents are missing.
     """
-    from nMELTS.config.ml_indexer import load_ml_indexer_from_state
+    from module.config.ml_indexer import load_ml_indexer_from_state
     
     zip_path = Path(zip_path)
     

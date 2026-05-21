@@ -975,7 +975,7 @@ def test_dataset_indexer(indexer):
     assert all(isinstance(el, str) for el in indexer.Elkeys), "All Elkeys must be strings"
     
     # Required elements should be present
-    from src.nMELTS.config.constants import REQUIRED_ELEMENTS
+    from src.module.config.constants import REQUIRED_ELEMENTS
     for req_el in REQUIRED_ELEMENTS:
         if "melts_liquid" not in indexer.all_phases and req_el == 'Ti':
             continue # Ti is not required for HeFESTo model

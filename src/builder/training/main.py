@@ -26,15 +26,15 @@ if base_path not in sys.path:
     sys.path.insert(0, base_path)
 
 from config import settings
-import nMELTS.engine.NN as NN
+import module.engine.NN as NN
 
 from builder.training.loadTrainData import load_ML_data
 from builder.training.optimizer_factory import normalize_scheduler_name
 from builder.training.trainer import train_Lower_MELTS, train_Upper_MELTS, symmetric_rel_l1, symmetric_rel_l2
 from builder.training.tuners import tune_Lower_MELTS, tune_Upper_MELTS
 from builder.training.logger import setup_training_logger, redirect_output, restore_output
-from nMELTS.utils.string_utils import apply_type_conversions
-from nMELTS.config.constants import TYPE_CONVERSION_MAP
+from module.utils.string_utils import apply_type_conversions
+from module.config.constants import TYPE_CONVERSION_MAP
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="nMELTS training CLI")

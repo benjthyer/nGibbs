@@ -27,7 +27,7 @@ if base_path not in sys.path:
     sys.path.insert(0, base_path)
 
 try:
-    from nMELTS.utils.file_utils import (
+    from module.utils.file_utils import (
         save_fixed_width_table,
         PHASE_ABBREVIATION_OVERRIDES,
         COMPONENT_ABBREVIATION_OVERRIDES,
@@ -44,7 +44,7 @@ try:
     )
 except ImportError:
     try:
-        from src.nMELTS.utils.file_utils import (
+        from src.module.utils.file_utils import (
             save_fixed_width_table,
             PHASE_ABBREVIATION_OVERRIDES,
             COMPONENT_ABBREVIATION_OVERRIDES,
@@ -67,7 +67,7 @@ except ImportError:
 import numpy as np
 import pandas as pd
 
-from nMELTS.config.constants import (
+from module.config.constants import (
     COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO,
     HEFESTO_ABBREVIATION_TO_SHORT_NAMES,
     get_oxide_molar_mass,

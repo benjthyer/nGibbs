@@ -23,8 +23,8 @@ if str(SRC_DIR) not in sys.path:
 from . import alphamelts_functions
 
 # Import utility functions
-from nMELTS.utils.string_utils import pull_number, random_char
-from nMELTS.utils.file_utils import count_csv_rows, count_file_lines
+from module.utils.string_utils import pull_number, random_char
+from module.utils.file_utils import count_csv_rows, count_file_lines
 
 # Import indexer and header generation
 from builder.indexer import DatasetIndexer, verify_csv_headers_match

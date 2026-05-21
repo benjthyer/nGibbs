@@ -2,15 +2,13 @@
 import sys
 import os
 import gc
-import pickle
-import tarfile
-import tempfile
 import numpy as np
 import torch
 from pathlib import Path
 
 # Ensure repo root and src are on path
 repo_root = str(Path(__file__).resolve().parents[3])
+#print(f"Repo root: {repo_root}")
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
@@ -18,11 +16,12 @@ src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
+
 from builder.training.torchDataClass import TensorDatasetFour, TensorDatasetFive
-from nMELTS.config.ml_indexer import MLIndexer
+from module.config.ml_indexer import MLIndexer
 from config.settings import external_base
-from nMELTS.utils.file_utils import load_ml_bundle, MLDataBundle
-from nMELTS.utils.math_utils import Normalizer
+from module.utils.file_utils import load_ml_bundle, MLDataBundle
+from module.utils.math_utils import Normalizer
 from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
 
 

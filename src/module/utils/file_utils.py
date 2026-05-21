@@ -404,7 +404,7 @@ def load_ml_bundle(bundle_path):
         # Load ml_indexer state directory (preferred)
         indexer_dir = Path(temp_dir) / 'ml_indexer'
         if indexer_dir.exists():
-            from nMELTS.config.ml_indexer import load_ml_indexer_from_state
+            from module.config.ml_indexer import load_ml_indexer_from_state
             bundle.ml_indexer = load_ml_indexer_from_state(indexer_dir)
         else:
             # Backward compatibility: fallback to pickle if present
@@ -586,14 +586,14 @@ def save_fixed_width_table(
 # ---------------------------------------------------------------------------
 
 try:
-    from nMELTS.config.constants import (
+    from module.config.constants import (
         COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO,
         HEFESTO_ABBREVIATION_TO_SHORT_NAMES,
         get_oxide_molar_mass,
     )
 except ImportError:
     try:
-        from src.nMELTS.config.constants import (
+        from src.module.config.constants import (
             COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO,
             HEFESTO_ABBREVIATION_TO_SHORT_NAMES,
             get_oxide_molar_mass,

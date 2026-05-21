@@ -10,7 +10,7 @@ sys.path.insert(0, str(project_root))
 #from tests.test_utils import is_almost_equal
 from tests.test_utils import setup_test_logging
 import tests.unit_tests.test_indexers.indexer_test as IDX_TEST
-from src.nMELTS.utils.file_utils import load_ml_bundle
+from src.module.utils.file_utils import load_ml_bundle
 
 
 ## Functions work on BigMetaTable object, which contains unique indexers 

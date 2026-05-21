@@ -16,8 +16,8 @@ base_path = str(Path(__file__).parent.parent)
 if base_path not in sys.path:
     sys.path.insert(0, base_path)
 
-from src.nMELTS.engine.API import HeFESToEmulatorCPU, HeFESToEmulatorGPU
-from src.nMELTS.utils.math_utils import grid_sample, mix_compositions
+from src.module.engine.API import HeFESToEmulatorCPU, HeFESToEmulatorGPU
+from src.module.utils.math_utils import grid_sample, mix_compositions
 
 PROPERTY_LABELS = {
     'entropy_by_mass':               'S (J/kg/K)',

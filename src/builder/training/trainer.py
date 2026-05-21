@@ -22,9 +22,9 @@ src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
-from nMELTS.utils.string_utils import pull_number_range
+from module.utils.string_utils import pull_number_range
 from builder.training.optimizer_factory import create_optimizer, create_scheduler, SchedulerWrapper
-import nMELTS.engine.NN as NN
+import module.engine.NN as NN
 
 # Set up temp models directory
 TEMP_MODELS_DIR = Path(__file__).parent / "temp_models"

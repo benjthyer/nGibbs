@@ -1,0 +1,9 @@
+# nMELTS Dependencies
+# Note to self: The python virtual environment is loaded by calling from terminal: conda activate ~\anaconda3\envs\torch-env
+
+# Core dependencies for src/nMELTS package
+numpy>=1.20.0
+torch>=1.9.0
+pandas>=1.3.0
+pyyaml>=5.4.1
+#autograd>=1.8.0 # Used for Burnman but not in the subset of Burnman objects used in nGibbs.
