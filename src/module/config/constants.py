@@ -263,6 +263,28 @@ HEFESTO_ABBREVIATION_TO_SHORT_NAMES: Dict[str, str] = {
     'fee': 'epsilon-iron',#
 }
 
+ptt_order_oxides = ['SiO2', 'TiO2', 'Al2O3', 'Cr2O3', 'Fe2O3', 'FeO', 'FeOt', 'MnO', 'MgO', 'CaO',
+                     'Na2O', 'K2O', 'P2O5', 'H2O', 'CO2', 'Fe3Fet']
+
+ptt_longs = { 
+    'liquid1' : 'melts-liquid', 
+    'alkali-feldspar1': 'k-feldspar'
+}
+
+ptt_to_short = {'liquid1': '_Liq',
+        'olivine1': '_Ol',
+        'orthopyroxene1': '_Opx',
+        'clinopyroxene1': '_Cpx',
+        'garnet1': '_Grt',
+        'spinel1': '_Sp',
+        'alkali-feldspar1': '_Kspar',
+        'quartz1': '_Qtz',
+        'rhm-oxide1': '_Rhm',
+        'apatite1': '_Apa',
+        'plagioclase1': '_Plag',
+        'fluid1': '_Fl',}
+
+ptt_oxide_indexer = {ox: i for i, ox in enumerate(ptt_order_oxides)}
 
 
 

@@ -35,6 +35,10 @@ if base_path not in sys.path:
 from module.engine.EOS_arithmetic.vector_composite import VectorComposite
 import EOS_arithmetic.burnman as burnman
 
+from ..config.constants import OXIDE_MOLAR_MASSES as oxide_molar_masses, ptt_longs, ptt_order_oxides, ptt_to_short, ptt_oxide_indexer
+
+ferric_to_ferrous_ratio =  (2*oxide_molar_masses['FeO'])/oxide_molar_masses['Fe2O3']
+
 from .NN import _load_temperature_model
 from .emulator import NN_MELTS
 from ..utils.math_utils import Normalizer
@@ -931,7 +935,7 @@ class EmulatorAPI:
             - 'wt_del_component_moles'
             - 'phase_moles'
             - 'temperature' #NN temp output for isentropic models
-
+            - 'ptt_out' Phase table output formatting like ptt
         Returns
         -------
         torch.Tensor, tuple, list, or dict
@@ -961,6 +965,15 @@ class EmulatorAPI:
         else:
             get_temp = False
 
+        if 'ptt_out' in outputs:
+            get_ptt_tables = True
+            if 'phase_tables' not in outputs:
+                outputs = list(outputs) + ['phase_tables']
+                print("[INFO] Adding 'phase_tables' to outputs for ptt_out formatting.")
+            outputs.remove('ptt_out') # ptt_out not recognized by lower level funcs.
+        else:            
+            get_ptt_tables = False
+
         results = self._staged_forward(
             emulator.forwardMB,
             features,
@@ -973,6 +986,9 @@ class EmulatorAPI:
 
         if get_temp:
             results['temperature'] = self.get_T(torch.concatenate([features, results['phase_moles'].to(self.device), results['chem_out'].to(self.device)], dim=1), normalize_features=normalize_features)
+
+        if get_ptt_tables:
+            results['ptt_out'] = self.make_ptt_out(features, results['phase_tables'][0], results['phase_tables'][1])
 
         return results
 
@@ -1040,6 +1056,15 @@ class EmulatorAPI:
         else:
             get_temp = False
 
+        if 'ptt_out' in outputs:
+            get_ptt_tables = True
+            if 'phase_tables' not in outputs:
+                outputs = list(outputs) + ['phase_tables']
+                print("[INFO] Adding 'phase_tables' to outputs for ptt_out formatting.")
+            outputs.remove('ptt_out') # ptt_out not recognized by lower level funcs.
+        else:            
+            get_ptt_tables = False
+
         results = self._staged_forward(
             emulator.forwardNN,
             features,
@@ -1051,6 +1076,9 @@ class EmulatorAPI:
 
         if get_temp:
             results['temperature'] = self.get_T(torch.concatenate([features, results['phase_moles'].to(self.device), results['chem_out'].to(self.device)], dim=1), normalize_features=normalize_features)
+
+        if get_ptt_tables:
+            results['ptt_out'] = self.make_ptt_out(features, results['phase_tables'][0], results['phase_tables'][1])
 
         return results
 
@@ -1093,6 +1121,91 @@ class EmulatorAPI:
         temperature = self.temp_output_normalizer.denorm(temp_output_norm)
 
         return temperature.squeeze(-1)
+    
+    def make_ptt_out(self, features, phaseOxWt, phaseMassNorm):
+        """
+        Create output in format of ptt pandas tables.
+        [TODO]: Calculate thermodynamic properties for bulk and each phase to include in output tables.
+        
+        Parameters
+        ----------
+        features : torch.Tensor
+            Input features
+        phaseOxWt : torch.Tensor
+            Phase oxide weight percent tables, 1st output of make_phase_tables
+        phaseMassNorm : torch.Tensor
+            Phase mass fractions, 2nd output of make_phase_tables
+            
+        Returns
+        -------
+        dict
+            of pandas DataFrames matching ptt format for each phase
+        """
+    
+
+        output = {} # Initialize dict of Pandas outputs
+        P_bar = features[:, self.ml_indexer.featureNames.index('Pressure(System_main)')].detach().cpu().numpy()
+
+        if 'Temperature(System_main)' in self.ml_indexer.featureNames: # Isothermal models
+            T_C = features[:, self.ml_indexer.featureNames.index('Temperature(System_main)')].detach().cpu().numpy()
+            s = np.full((features.size(0),), fill_value=np.nan)
+        else: # Isentropic models - we have entropy but not temperature as input features.
+            T_C = np.full((features.size(0),), fill_value=np.nan) 
+            s = features[:, self.ml_indexer.featureNames.index('S(System_main)')].detach().cpu().numpy()
+
+        output['Conditions'] = pd.DataFrame([P_bar, T_C, s], index=['P_bar', 'T_C', 's']).T
+
+        # Build oxide mappings for ptt output
+        ptt_Ox_Idx = np.array([ptt_oxide_indexer[ox] for ox in self.ml_indexer.Oxides]).astype(int)
+
+        # Build correct-order name mappings for ptt output
+        phasePresent = (phaseMassNorm > 1e-3).any(dim=0).detach().cpu().numpy().astype(int)  # (P,)
+        accountedPhases = np.zeros_like(phasePresent, dtype=int) # Track which phases we've mapped to ptt namings
+        phaseMappings = []
+        mass_array = np.zeros((features.size(0), int(phasePresent.sum())))
+        mass_cols = []
+        
+
+        for ptt_long, ptt_short in ptt_to_short:
+            if ptt_long in ptt_longs:
+                internal_name = ptt_longs[ptt_long] # special mappings for K-spar and liquid.
+            else:
+                internal_name = ptt_long[:-1] # Exclude number at the end
+            internalPhaseCol = self.ml_indexer.Mass_phasedict[internal_name]
+            if phasePresent[internalPhaseCol]:
+                accountedPhases[internalPhaseCol] = 1
+                phaseMappings.append((ptt_long, ptt_short, internal_name, internalPhaseCol))
+        
+        unaccountedPhases = phasePresent - accountedPhases
+
+
+        if np.sum(unaccountedPhases):
+            for idx in np.where(unaccountedPhases)[0]:
+                intName = self.ml_indexer.all_phases[idx]
+                pttName = intName + '1'
+                phaseMappings.append((pttName, '_' + pttName, intName, idx)) # Map phases with no naming scheme in ptt
+
+        # Now build output tables!
+        for i, (ptt_long, ptt_short, internal_name, internalPhaseCol) in enumerate(phaseMappings):
+            colnames = [Ox + ptt_short for Ox in ptt_order_oxides]
+
+            outTable = np.zeros((features.size(0), len(ptt_order_oxides)))
+            outTable[:, ptt_Ox_Idx] = phaseOxWt[:, self.ml_indexer.comp_phasedict[internal_name], :]
+
+            # Handle iron shenanigans.
+            Fe2 = outTable[:, ptt_Ox_Idx['FeO']]/oxide_molar_masses['FeO']
+            Fe3 = outTable[:, ptt_Ox_Idx['Fe2O3']]/oxide_molar_masses['Fe2O3']*2
+            Fet = Fe2 + Fe3
+            outTable[:, ptt_Ox_Idx['Fe3Fet']] = Fe3/Fet
+            outTable[:, ptt_Ox_Idx['FeOt']] = Fet * oxide_molar_masses['FeO']
+
+            output[ptt_long] = pd.DataFrame(outTable, columns=colnames)
+            mass_array[:,i] = phaseMassNorm[:, internalPhaseCol].detach().cpu().numpy()
+            mass_cols.append(ptt_long)
+        
+        output['Mass'] = pd.DataFrame(mass_array, columns=mass_cols) # Finally, mass table. 
+
+        return output
 
 
 class HeFESToAPI(EmulatorAPI):

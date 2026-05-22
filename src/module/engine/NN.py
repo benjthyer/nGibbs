@@ -408,7 +408,8 @@ class MidLevelNetwork(TunableModel):
                  highWD = 0,
                  noise = 0,
                  description='',
-                 ml_indexer=None):
+                 ml_indexer=None,
+                 device = torch.device('cpu')):
         # call TunableModel constructor
         super().__init__(
             encoderLayerUp,
@@ -467,12 +468,12 @@ class MidLevelNetwork(TunableModel):
         if len(self.comp_binariesL) > 0:
             pure_bool[self.comp_binariesL] = False
 
-        self.compToOx = torch.tensor(self.compToOx_raw, dtype=torch.float, device='cuda')
-        self.oxToEl = torch.tensor(self.oxToEl_raw, dtype=torch.float, device='cuda')
+        self.compToOx = torch.tensor(self.compToOx_raw, dtype=torch.float, device=device)
+        self.oxToEl = torch.tensor(self.oxToEl_raw, dtype=torch.float, device=device)
         self.elToOx = torch.linalg.inv(self.oxToEl[:len(self.Elkeys)]) # For FeOt only
-        self.Minv = torch.tensor(self.Minv_raw, dtype=torch.float, device='cuda')
-        self.MM = torch.tensor(self.MM_raw, dtype=torch.float, device='cuda')
-        self.Mtot = torch.tensor(self.Mtot_raw, dtype=torch.float, device='cuda').flatten()
+        self.Minv = torch.tensor(self.Minv_raw, dtype=torch.float, device=device)
+        self.MM = torch.tensor(self.MM_raw, dtype=torch.float, device=device)
+        self.Mtot = torch.tensor(self.Mtot_raw, dtype=torch.float, device=device).flatten()
 
         self.register_buffer('boolTransCompToEl', torch.tensor(self.boolTransCompToOx_raw @ self.oxToEl_raw, dtype=torch.int))
         self.register_buffer('compositionally_variable_subset', torch.tensor(self.compositionally_variable_subset_raw, dtype=int))

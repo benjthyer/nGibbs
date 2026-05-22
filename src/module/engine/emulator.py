@@ -18,44 +18,9 @@ sys.path.insert(0, str(mod_root))
 
 # Import utility functions
 from  utils.math_utils import QFM_fO2, Fe2O3_FeO_ratio, QFM_fO2_torch, Normalizer
-from  config.constants import OXIDE_MOLAR_MASSES as oxide_molar_masses
+from ..config.constants import OXIDE_MOLAR_MASSES as oxide_molar_masses, ptt_longs, ptt_order_oxides, ptt_to_short, ptt_oxide_indexer
 
 ferric_to_ferrous_ratio =  (2*oxide_molar_masses['FeO'])/oxide_molar_masses['Fe2O3']
-
-ptt_order_oxides = ['SiO2', 'TiO2', 'Al2O3', 'Cr2O3', 'Fe2O3', 'FeO', 'FeOt', 'MnO', 'MgO', 'CaO',
-                     'Na2O', 'K2O', 'P2O5', 'H2O', 'CO2', 'Fe3Fet']
-
-ptt_short_to_long_phases =  {
-    'liq1': 'liquid1',
-    'ol1': 'olivine1',
-    'opx1': 'orthopyroxene1',
-    'cpx1': 'clinopyroxene1',
-    'g1': 'garnet1',
-    'spl1': 'spinel1',
-    'fsp1': 'feldspar1',
-    'ol2': 'olivine1',
-    'cpx2': 'clinopyroxene2',
-    'opx2': 'orthopyroxene2',
-    'g2': 'garnet2',
-    'fsp2': 'feldspar2',
-    'spl2': 'spinel2',
-    'ilm1': 'rhm-oxide1',
-    'ilm2': 'rhm-oxide2',
-    'fl1': 'fluid1',
-    'liq2': 'liquid2',
-    'liq3': 'liquid3',
-    'liq4': 'liquid4',
-    'pl1': 'plagioclase1',
-    'pl2': 'plagioclase2',
-    'afs1': 'alkali-feldspar1',
-    'afs2': 'alkali-feldspar2'
-    }
-
-ptt_long_to_short_phases = {
-    'melts-liquid': 'liq1'
-    }
-
-ptt_oxide_indexer = {ox: i for i, ox in enumerate(ptt_order_oxides)}
 
 class NN_MELTS:
     """
@@ -350,10 +315,11 @@ class NN_MELTS:
 
         return componentMoles
 
-    def forwardMB(self, features, Normalize=True, WtPercent=False, comp_table_out='oxides', outputs=None):
+    def forwardMB(self, features, Normalize=True, WtPercent=False, comp_table_out='oxides',
+                  optimize_masses=False, protect_opx=False, outputs=None):
         """
         Forward pass through the model with mass balancing.
-        
+
         Parameters:
         -----------
         features : torch.Tensor
@@ -361,12 +327,17 @@ class NN_MELTS:
         Normalize : bool, default=True
             Whether to normalize features. This is not referring to normalizing the composition but rather the entire feature vector. Compositions are enforced to be normalized
         WtPercent : bool, default=False
-            Whether input is in weight percent, otherwise mole fraction. 
+            Whether input is in weight percent, otherwise mole fraction.
         comp_table_out DEPRECATED: str, default='oxides'
             Output format: 'oxides', 'comps', 'components', or None
-            
+        optimize_masses : bool, default=False
+            Whether to run the linear-algebra mass-balance optimization in polish_masses.
+        protect_opx : bool, default=False
+            Whether to protect orthopyroxene during mass polishing.
+
         outputs : sequence[str] or None, default=None
             Optional selector list. Valid values:
+            - 'likelihoods'
             - 'transcomponent_hat'
             - 'chem_out'
             - 'phase_tables'
@@ -380,6 +351,10 @@ class NN_MELTS:
             Default returns (transcomponent_hat, phase_tables) for backward compatibility.
             If outputs is provided, returns a dict containing only requested keys.
         """
+        _VALID_MB_OUTPUTS = {
+            'likelihoods', 'transcomponent_hat', 'chem_out', 'phase_tables',
+            'component_moles', 'wt_del_component_moles', 'phase_moles',
+        }
         if Normalize:
             norm_features = self.norm_features.norm(self.convertOxToMol(features, convert=WtPercent))
         else:
@@ -389,22 +364,24 @@ class NN_MELTS:
                 norm_features, detailed=True
             )
 
-
-            
             requested_outputs = None
             if outputs is not None:
                 requested_outputs = []
                 for key in outputs:
-                    if key not in ['transcomponent_hat', 'chem_out', 'phase_tables', 'component_moles', 'wt_del_component_moles', 'phase_moles']:
+                    if key not in _VALID_MB_OUTPUTS:
                         raise KeyError(
                             f"Unknown forwardMB output selector '{key}'. "
-                            "Valid selectors are: transcomponent_hat, chem_out, phase_tables, "
-                            "component_moles, wt_del_component_moles, phase_moles"
+                            f"Valid selectors are: {', '.join(sorted(_VALID_MB_OUTPUTS))}"
                         )
                     if key not in requested_outputs:
                         requested_outputs.append(key)
             else:
-                requested_outputs = ['phase_tables'] # Default output if no output specified
+                requested_outputs = ['phase_tables']
+
+            need_likelihoods = 'likelihoods' in requested_outputs
+            polish_requested = [k for k in requested_outputs if k != 'likelihoods']
+            if not polish_requested:
+                polish_requested = ['phase_tables']
 
             polish_result = self.polish_masses(
                 phaseMoles,
@@ -412,16 +389,19 @@ class NN_MELTS:
                 componentMoles,
                 phaseProportions,
                 features=norm_features,
-                optimize_masses=False,
-                protect_opx=False,
+                optimize_masses=optimize_masses,
+                protect_opx=protect_opx,
                 comp_table_out=comp_table_out,
                 output_componentMoles=False,
-                outputs=requested_outputs
+                outputs=polish_requested
             )
 
             if outputs is None:
-                transcomponent_hat, mass_tens = polish_result #compTable and massTable
+                transcomponent_hat, mass_tens = polish_result  # compTable and massTable
                 return transcomponent_hat, mass_tens
+
+            if need_likelihoods:
+                polish_result['likelihoods'] = likelihoods.detach()
 
             return polish_result
 
@@ -807,7 +787,7 @@ class NN_MELTS:
             # Normalize oxide masses within each phase to 100%
             phaseSums = phaseOxMass.sum(dim=-1, keepdim=True)  # (B, P, 1)
             phaseOxWt = 100.0 * phaseOxMass / (phaseSums + eps)
-            return phaseOxWt[:, self.model.comp_binaries], phaseMassNorm
+            return phaseOxWt[:, self.model.comp_binaries.cpu()], phaseMassNorm # This phase is all cpu
 
         elif out in ['comps', 'components']:
             # Returns extensive, chemically variable components
