@@ -16,7 +16,7 @@ if str(REPO_ROOT) not in sys.path:
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from config.settings import internal_data_dir, internal_scratch_dir
+from recipes.settings import internal_data_dir, internal_scratch_dir
 #from builder.alphamelts.engine import alphamelts_functions # The essential ensemble MELTS functions
 #from nMELTS.utils.string_utils import pull_number, random_char
 from builder.HeFESTo import HeFESTo_functions as MELTER
@@ -24,7 +24,7 @@ from builder.indexer import generate_column_headers_hefesto, DatasetIndexer
 import numpy as np
 import pandas as pd
 from nMELTS.config.constants import HEFESTO_ABBREVIATION_TO_SHORT_NAMES, OXIDE_MOLAR_MASSES
-from scipy.stats import skewnorm
+#from scipy.stats import skewnorm
 
 def skewed_peak(x: np.ndarray, center: float, width: float, skew: float = 0, height: float = 1.0) -> np.ndarray:
     """

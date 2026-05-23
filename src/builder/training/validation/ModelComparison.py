@@ -85,7 +85,7 @@ def _staged_forward(func, input_tensor: torch.Tensor, batch_size: int, **kwargs)
             merged = [_merge(a[i], b[i]) for i in range(len(a))]
             return type(a)(merged)
         if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
-            return torch.cat([a, b.detach().cpu()], dim=0)
+            return torch.cat([a.detach().cpu(), b.detach().cpu()], dim=0)
         if isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
             return np.concatenate([a, b], axis=0)
         return b
@@ -177,19 +177,19 @@ def _evaluate_model(
         Normalize=normalize_features,
         optimize_masses=True,
         protect_opx=False,
-        outputs=["likelihoods", "phase_tables", "transcomponent_hat"],
+        outputs=["likelihoods", "phase_tables"],
     )
 
     binary_hat = (infer_out["likelihoods"] > 0.5).float().numpy()  # already on CPU via _merge
     comp_tens, mass_tens = infer_out["phase_tables"]
-    transcomponent_hat = infer_out["transcomponent_hat"]
+    #transcomponent_hat = infer_out["transcomponent_hat"]
 
     def _to_np(t):
         return t.detach().cpu().numpy() if isinstance(t, torch.Tensor) else t
 
     comp_tens = _to_np(comp_tens)        # (n_subset, n_comp_phases, n_oxides)  wt% within phase
     mass_tens = _to_np(mass_tens)        # (n_subset, n_phases)                 wt% of system
-    transcomponent_hat = _to_np(transcomponent_hat)
+    #transcomponent_hat = _to_np(transcomponent_hat)
 
     label_indices = ml_indexer.label_indices
     label_indices_comp = ml_indexer.label_indices_comp

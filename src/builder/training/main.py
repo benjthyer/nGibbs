@@ -25,7 +25,7 @@ base_path = str(Path(__file__).parent.parent.parent.parent)
 if base_path not in sys.path:
     sys.path.insert(0, base_path)
 
-from config import settings
+from recipes import settings
 import module.engine.NN as NN
 
 from builder.training.loadTrainData import load_ML_data

@@ -678,3 +678,62 @@ def IDX_2D_Lithosphere(min_idxes, n_idx):
     return (isentropicxIDX.astype(int), isentropicyIDX.astype(int)), (isothermalxIDX.astype(int), isothermalyIDX.astype(int))
 
 
+def match_rows(
+    query: np.ndarray,
+    reference: np.ndarray,
+    tol: float = 1e-5,
+    return_unmatched: bool = False,
+) -> np.ndarray:
+    """For each row in *query*, return the index of its matching row in *reference*.
+
+    Rows are matched by rounding every value to the nearest multiple of *tol*
+    and comparing the resulting integer tuples, so values differing by less than
+    ``tol / 2`` are treated as identical.  Designed for correlating grid searches
+    assembled by different mechanisms (e.g. ``grid_sample`` vs. a hand-built
+    meshgrid).
+
+    Parameters
+    ----------
+    query           : (M, F) array of rows to look up
+    reference       : (N, F) array to search in
+    tol             : absolute matching precision
+    return_unmatched: if True, unmatched rows receive index -1 and no exception
+                      is raised; if False (default) a ValueError is raised on
+                      the first unmatched row
+
+    Returns
+    -------
+    np.ndarray, shape (M,), dtype int
+        ``reference[indices[i]]`` ≈ ``query[i]`` for every i.
+        Unmatched entries are -1 when *return_unmatched* is True.
+
+    Raises
+    ------
+    ValueError
+        If any query row has no match and *return_unmatched* is False.
+    """
+    query = np.asarray(query, dtype=np.float64)
+    reference = np.asarray(reference, dtype=np.float64)
+    if query.ndim == 1:
+        query = query[None]
+    if reference.ndim == 1:
+        reference = reference[None]
+
+    ref_keys = np.round(reference / tol).astype(np.int64)
+    qry_keys = np.round(query / tol).astype(np.int64)
+
+    lookup = {tuple(row): i for i, row in enumerate(ref_keys)}
+
+    indices = np.full(len(query), -1, dtype=np.intp)
+    for i, row in enumerate(qry_keys):
+        idx = lookup.get(tuple(row), -1)
+        if idx == -1 and not return_unmatched:
+            raise ValueError(
+                f"Row {i} of query has no match in reference within tol={tol}:\n"
+                f"  query[{i}] = {query[i]}"
+            )
+        indices[i] = idx
+
+    return indices
+
+

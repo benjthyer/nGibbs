@@ -11,7 +11,7 @@ from collections import Counter
 from .material import material_property
 from .composite import Composite
 from ..utils.misc import copy_documentation
-from ..tools.equilibration import equilibrate
+#from ..tools.equilibration import equilibrate #compatibility issues....
 
 
 class RelaxedComposite(Composite):

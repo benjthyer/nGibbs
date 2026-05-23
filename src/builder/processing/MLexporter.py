@@ -21,7 +21,7 @@ if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
 from .filters import filter_invalid_rows
-from config.settings import internal_train_dir, external_train_dir, external_base
+from recipes.settings import internal_train_dir, external_train_dir, external_base
 from module.utils.string_utils import pull_number
 from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
 from module.utils.file_utils import load_ml_bundle, MLDataBundle

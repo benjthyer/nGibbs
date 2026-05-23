@@ -90,7 +90,7 @@ def _load_fcnn_checkpoint(
     checkpoint_path: Path,
     device: torch.device,
 ) -> Tuple[VariableGeometryFCNNRegressor, Dict, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    payload = torch.load(checkpoint_path, map_location=device)
+    payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     model_config = payload.get("model_config")
     if not model_config:

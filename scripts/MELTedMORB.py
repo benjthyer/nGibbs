@@ -13,7 +13,7 @@ from nMELTS.utils.string_utils import  random_char
 from nMELTS.utils.math_utils import  grid_sample
 from nMELTS.config.constants import OXIDE_MOLAR_MASSES
 from builder.indexer import generate_column_headers, DatasetIndexer
-from config.settings import internal_data_dir, internal_scratch_dir
+from recipes.settings import internal_data_dir, internal_scratch_dir
 
 import numpy as np
 import time

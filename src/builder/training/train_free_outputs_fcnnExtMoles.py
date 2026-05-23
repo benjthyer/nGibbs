@@ -706,7 +706,7 @@ def main() -> None:
     # Load best checkpoints for evaluation if available.
     if best_model1_path.exists():
         print(f"\nLoading best checkpoint for model 1: {best_model1_path}")
-        model_features_only.load_state_dict(torch.load(best_model1_path, map_location=device))
+        model_features_only.load_state_dict(torch.load(best_model1_path, map_location=device, weights_only=False))
 
     metrics["features_gt_component_moles"]["train"] = _evaluate_denorm(
         model=model_features_only,
@@ -728,7 +728,7 @@ def main() -> None:
     if model_augmented is not None and x2_train is not None and x2_test is not None:
         if best_model2_path.exists():
             print(f"Loading best checkpoint for model 2: {best_model2_path}")
-            model_augmented.load_state_dict(torch.load(best_model2_path, map_location=device))
+            model_augmented.load_state_dict(torch.load(best_model2_path, map_location=device, weights_only=False))
 
         metrics["features_pred_component_moles"]["train"] = _evaluate_denorm(
             model=model_augmented,

@@ -21,29 +21,26 @@ import sys
 import time
 import tqdm
 
-
-src_path = str(Path(__file__).parent.parent.parent)
-if src_path not in sys.path:
-    sys.path.insert(0, src_path)
 file_path = str(Path(__file__).parent)
 if file_path not in sys.path:
     sys.path.insert(0, file_path)
-base_path = str(Path(__file__).parent.parent.parent.parent)
-if base_path not in sys.path:
-    sys.path.insert(0, base_path)
+module_path = str(Path(__file__).parent.parent)
+if module_path not in sys.path:
+    sys.path.insert(0, module_path)
+print(f"Module path added to sys.path: {module_path}")
 
-from module.engine.EOS_arithmetic.vector_composite import VectorComposite
+from engine.EOS_arithmetic.vector_composite import VectorComposite
 import EOS_arithmetic.burnman as burnman
 
-from ..config.constants import OXIDE_MOLAR_MASSES as oxide_molar_masses, ptt_longs, ptt_order_oxides, ptt_to_short, ptt_oxide_indexer
+from config.constants import OXIDE_MOLAR_MASSES as oxide_molar_masses, ptt_longs, ptt_order_oxides, ptt_to_short, ptt_oxide_indexer
 
 ferric_to_ferrous_ratio =  (2*oxide_molar_masses['FeO'])/oxide_molar_masses['Fe2O3']
 
-from .NN import _load_temperature_model
-from .emulator import NN_MELTS
-from ..utils.math_utils import Normalizer
+from NN import _load_temperature_model
+from emulator import NN_MELTS
+from utils.math_utils import Normalizer
 
-aliases = {
+aliases = { # 
     'T': 'T(K)(System_main)',
     'T(K)': 'T(K)(System_main)',
     'Temperature': 'T(K)(System_main)',
@@ -450,9 +447,10 @@ class EmulatorAPI:
             print(f"  Loading isentropic emulator: {isentropic_model_path}")
         self.isentropic_emulator = self._load_emulator(isentropic_model_path, device)
 
-        if verbose:
-            print(f"  Loading temperature FCNN: {temperature_model_path}")
-        self._setup_temperature_model(temperature_model_path)
+        if temperature_model_path is not None:
+            if verbose:
+                print(f"  Loading temperature FCNN: {temperature_model_path}")
+            self._setup_temperature_model(temperature_model_path)
 
         self.parser = InputParser(self.isothermal_emulator)
 
@@ -492,7 +490,7 @@ class EmulatorAPI:
     @staticmethod
     def _load_emulator(model_path: Union[str, Path], device: str) -> NN_MELTS:
         """Load and wrap a checkpoint as NN_MELTS emulator."""
-        from ..engine.NN import rebuild_MELTS_model
+        from engine.NN import rebuild_MELTS_model
 
         model_path = Path(model_path)
         if not model_path.exists():
@@ -809,9 +807,9 @@ class EmulatorAPI:
         torch.Tensor
             Reordered features on correct device
         """
-        def _canonicalize_header(name: str) -> str:
+        """def _canonicalize_header(name: str) -> str:
             key = str(name).strip()
-            return aliases.get(key, key)
+            return aliases.get(key, key)"""
 
         if isinstance(table, dict):
             if headers is None:
@@ -858,10 +856,10 @@ class EmulatorAPI:
             if headers is not None:
                 headers = [str(h) for h in headers]
 
-        headers = [_canonicalize_header(header) for header in headers]
+        #headers = [_canonicalize_header(header) for header in headers]
 
-        has_temperature = 'T(K)(System_main)' in headers
-        has_entropy = 'S(J/g/K)(System_main)' in headers
+        has_temperature = 'T(K)(System_main)' in headers or 'Temperature(System_main)' in headers
+        has_entropy = 'S(J/g/K)(System_main)' in headers or 'S(System_main)' in headers
         if has_temperature and has_entropy:
             raise ValueError(
                 "Input headers cannot include both temperature and entropy features"
@@ -872,7 +870,7 @@ class EmulatorAPI:
         elif has_temperature:
             emulator = self.isothermal_emulator
         else:
-            raise ValueError("Input headers must include either temperature or entropy features: T(K)(System_main) or S(J/g/K)(System_main).\n You have: {}".format(headers))
+            raise ValueError("Input headers must include either temperature or entropy features: T(K)(System_main) / 'Temperature(System_main)' or S(J/g/K)(System_main) / 'S(System_main)'.\n You have: {}".format(headers))
 
         parsed_table, headers_out, comp_space = self.parser.parse_composition(
             values, headers, composition_space
@@ -988,7 +986,7 @@ class EmulatorAPI:
             results['temperature'] = self.get_T(torch.concatenate([features, results['phase_moles'].to(self.device), results['chem_out'].to(self.device)], dim=1), normalize_features=normalize_features)
 
         if get_ptt_tables:
-            results['ptt_out'] = self.make_ptt_out(features, results['phase_tables'][0], results['phase_tables'][1])
+            results['ptt_out'] = self.make_ptt_out(features, results['phase_tables'][0], results['phase_tables'][1], isentropic=(modeltype=='isentropic'))
 
         return results
 
@@ -1078,7 +1076,7 @@ class EmulatorAPI:
             results['temperature'] = self.get_T(torch.concatenate([features, results['phase_moles'].to(self.device), results['chem_out'].to(self.device)], dim=1), normalize_features=normalize_features)
 
         if get_ptt_tables:
-            results['ptt_out'] = self.make_ptt_out(features, results['phase_tables'][0], results['phase_tables'][1])
+            results['ptt_out'] = self.make_ptt_out(features, results['phase_tables'][0], results['phase_tables'][1], isentropic=(modeltype=='isentropic'))
 
         return results
 
@@ -1122,9 +1120,9 @@ class EmulatorAPI:
 
         return temperature.squeeze(-1)
     
-    def make_ptt_out(self, features, phaseOxWt, phaseMassNorm):
+    def make_ptt_out(self, features, phaseOxWt, phaseMassNorm, isentropic=None):
         """
-        Create output in format of ptt pandas tables.
+        Create output in format of ptt pandas tables. This should only be used internally.
         [TODO]: Calculate thermodynamic properties for bulk and each phase to include in output tables.
         
         Parameters
@@ -1135,7 +1133,9 @@ class EmulatorAPI:
             Phase oxide weight percent tables, 1st output of make_phase_tables
         phaseMassNorm : torch.Tensor
             Phase mass fractions, 2nd output of make_phase_tables
-            
+        isentropic : bool, optional
+            Whether the input features are isentropic
+
         Returns
         -------
         dict
@@ -1144,19 +1144,21 @@ class EmulatorAPI:
     
 
         output = {} # Initialize dict of Pandas outputs
-        P_bar = features[:, self.ml_indexer.featureNames.index('Pressure(System_main)')].detach().cpu().numpy()
+        P_bar = features[:, self.isentropic_emulator.ml_indexer.featureNames.index('Pressure(System_main)')].detach().cpu().numpy()
 
-        if 'Temperature(System_main)' in self.ml_indexer.featureNames: # Isothermal models
-            T_C = features[:, self.ml_indexer.featureNames.index('Temperature(System_main)')].detach().cpu().numpy()
+        indexer = self.isentropic_emulator.ml_indexer if isentropic else self.isothermal_emulator.ml_indexer # get appropriate indexer
+
+        if not isentropic: # Isothermal models
+            T_C = features[:, indexer.featureNames.index('Temperature(System_main)')].detach().cpu().numpy()
             s = np.full((features.size(0),), fill_value=np.nan)
         else: # Isentropic models - we have entropy but not temperature as input features.
             T_C = np.full((features.size(0),), fill_value=np.nan) 
-            s = features[:, self.ml_indexer.featureNames.index('S(System_main)')].detach().cpu().numpy()
+            s = features[:, indexer.featureNames.index('S(System_main)')].detach().cpu().numpy()
 
         output['Conditions'] = pd.DataFrame([P_bar, T_C, s], index=['P_bar', 'T_C', 's']).T
 
         # Build oxide mappings for ptt output
-        ptt_Ox_Idx = np.array([ptt_oxide_indexer[ox] for ox in self.ml_indexer.Oxides]).astype(int)
+        ptt_Ox_Idx = np.array([ptt_oxide_indexer[ox] for ox in indexer.Oxides]).astype(int)
 
         # Build correct-order name mappings for ptt output
         phasePresent = (phaseMassNorm > 1e-3).any(dim=0).detach().cpu().numpy().astype(int)  # (P,)
@@ -1164,14 +1166,15 @@ class EmulatorAPI:
         phaseMappings = []
         mass_array = np.zeros((features.size(0), int(phasePresent.sum())))
         mass_cols = []
+        all_mass_cols = []
         
 
-        for ptt_long, ptt_short in ptt_to_short:
+        for ptt_long, ptt_short in ptt_to_short.items():
             if ptt_long in ptt_longs:
                 internal_name = ptt_longs[ptt_long] # special mappings for K-spar and liquid.
             else:
                 internal_name = ptt_long[:-1] # Exclude number at the end
-            internalPhaseCol = self.ml_indexer.Mass_phasedict[internal_name]
+            internalPhaseCol = indexer.mass_phasedict[internal_name]
             if phasePresent[internalPhaseCol]:
                 accountedPhases[internalPhaseCol] = 1
                 phaseMappings.append((ptt_long, ptt_short, internal_name, internalPhaseCol))
@@ -1181,31 +1184,58 @@ class EmulatorAPI:
 
         if np.sum(unaccountedPhases):
             for idx in np.where(unaccountedPhases)[0]:
-                intName = self.ml_indexer.all_phases[idx]
+                intName = indexer.all_phases[idx]
                 pttName = intName + '1'
                 phaseMappings.append((pttName, '_' + pttName, intName, idx)) # Map phases with no naming scheme in ptt
 
+
         # Now build output tables!
         for i, (ptt_long, ptt_short, internal_name, internalPhaseCol) in enumerate(phaseMappings):
-            colnames = [Ox + ptt_short for Ox in ptt_order_oxides]
+            print(internal_name)
+            if internal_name in indexer.compositionally_variable_phases:
+                print(f"Phase {internal_name} is compositionally variable!.")
+                colnames = [Ox + ptt_short for Ox in ptt_order_oxides]
 
-            outTable = np.zeros((features.size(0), len(ptt_order_oxides)))
-            outTable[:, ptt_Ox_Idx] = phaseOxWt[:, self.ml_indexer.comp_phasedict[internal_name], :]
+                outTable = np.zeros((features.size(0), len(ptt_order_oxides)))
+                outTable[:, ptt_Ox_Idx] = phaseOxWt[:, indexer.comp_phasedict[internal_name], :]
 
-            # Handle iron shenanigans.
-            Fe2 = outTable[:, ptt_Ox_Idx['FeO']]/oxide_molar_masses['FeO']
-            Fe3 = outTable[:, ptt_Ox_Idx['Fe2O3']]/oxide_molar_masses['Fe2O3']*2
-            Fet = Fe2 + Fe3
-            outTable[:, ptt_Ox_Idx['Fe3Fet']] = Fe3/Fet
-            outTable[:, ptt_Ox_Idx['FeOt']] = Fet * oxide_molar_masses['FeO']
+                # Handle iron shenanigans.
+                Fe2 = outTable[:, ptt_oxide_indexer['FeO']]/oxide_molar_masses['FeO']
+                Fe3 = outTable[:, ptt_oxide_indexer['Fe2O3']]/oxide_molar_masses['Fe2O3']*2
+                Fet = Fe2 + Fe3
+                outTable[:, ptt_oxide_indexer['Fe3Fet']] = Fe3/Fet
+                outTable[:, ptt_oxide_indexer['FeOt']] = Fet * oxide_molar_masses['FeO']
 
-            output[ptt_long] = pd.DataFrame(outTable, columns=colnames)
+                output[ptt_long] = pd.DataFrame(outTable, columns=colnames)
+
             mass_array[:,i] = phaseMassNorm[:, internalPhaseCol].detach().cpu().numpy()
             mass_cols.append(ptt_long)
-        
-        output['Mass'] = pd.DataFrame(mass_array, columns=mass_cols) # Finally, mass table. 
+            all_mass_cols.append(ptt_short)
+        all_mass_cols = list(output['Conditions'].columns) + all_mass_cols # Combine condition and mass column names for "All" table
+
+        output['mass_g'] = pd.DataFrame(mass_array, columns=mass_cols) # Finally, mass table. 
+        output['All'] = pd.DataFrame(np.concatenate([output['Conditions'], mass_array], axis=1), columns=all_mass_cols) # A version of the mass table with short column names for easy parsing in ptt scripts such as phase diagrams
 
         return output
+    
+    def divide_ptt_tables(self, ptt_out, tableIDX):
+        """
+        Divide ptt rows in output tables according to tableIDX
+        """
+
+        tableIDX = tableIDX.astype(int)
+        IDs = np.unique(tableIDX)
+        divided_output = {}
+        for id in IDs: # initialize dict of divided outputs for each unique tableIDX
+            divided_output[f"Run {id}"] = {}
+
+        for key, df in ptt_out.items(): 
+            for id in IDs:
+                divided_output[f"Run {id}"][key] = df.iloc[tableIDX == id]
+
+        return divided_output
+
+
 
 
 class HeFESToAPI(EmulatorAPI):
@@ -1435,6 +1465,11 @@ class MELTSAPI:
 
     def parse_input(self, table, headers=None, **kwargs):
         return self._route(table, headers).parse_input(table, headers=headers, **kwargs)
+    
+    def divide_ptt_tables(self, ptt_out, tableIDX):
+        return self.cr.divide_ptt_tables(ptt_out, tableIDX) # Function is agnostic of model.
+
+# Initialize APIs for best models.
 
 # Model paths - resolved relative to this file's location
 _this_file_dir = Path(__file__).parent
@@ -1444,23 +1479,53 @@ adiabat_NPT_path = _models_dir / "HeFESTo_adiabats_NPT.tar"
 adiabat_NPS_path = _models_dir / "HeFESTo_adiabats_NPS.tar"
 adiabat_TfromS_path = _models_dir / "T_from_S_HeFESTo_adiabats.pt"
 print(f"[INFO] Looking for HeFESTo model at: {adiabat_NPT_path}")
-# Only instantiate emulators if model files exist
+
+MELTS102_dir = _this_file_dir / "TrainedModels" / "MELTS102"
+
+
+
 HeFESToEmulatorCPU = None
 HeFESToEmulatorGPU = None
+MELTS102EmulatorCPU = None
+MELTS102EmulatorGPU = None
 
 
-if adiabat_NPT_path.exists() and adiabat_NPS_path.exists() and adiabat_TfromS_path.exists():
-    HeFESToEmulatorCPU = HeFESToAPI(
+
+
+HeFESToEmulatorCPU = HeFESToAPI(
+    isothermal_model_path=str(adiabat_NPT_path),
+    isentropic_model_path=str(adiabat_NPS_path),
+    temperature_model_path=str(adiabat_TfromS_path),
+    device='cpu'
+)
+
+MELTS102EmulatorCPU = MELTSAPI(
+    isothermal_NoCr_model_path = str(MELTS102_dir / "Isothermal_NoCr.tar"),
+    isothermal_Cr_model_path = str(MELTS102_dir / "Isothermal_Cr.tar"),
+    isentropic_NoCr_model_path = str(MELTS102_dir / "Isentropic_NoCr.tar"),
+    isentropic_Cr_model_path = str(MELTS102_dir / "Isentropic_Cr.tar"),
+    device='cpu'
+)
+
+if torch.cuda.is_available():
+    HeFESToEmulatorGPU = HeFESToAPI(
         isothermal_model_path=str(adiabat_NPT_path),
         isentropic_model_path=str(adiabat_NPS_path),
         temperature_model_path=str(adiabat_TfromS_path),
-        device='cpu'
+        device='cuda'
     )
 
-    if torch.cuda.is_available():
-        HeFESToEmulatorGPU = HeFESToAPI(
-            isothermal_model_path=str(adiabat_NPT_path),
-            isentropic_model_path=str(adiabat_NPS_path),
-            temperature_model_path=str(adiabat_TfromS_path),
-            device='cuda'
-        )
+    MELTS102EmulatorGPU = MELTSAPI(
+    isothermal_NoCr_model_path = str(MELTS102_dir / "Isothermal_NoCr.tar"),
+    isothermal_Cr_model_path = str(MELTS102_dir / "Isothermal_Cr.tar"),
+    isentropic_NoCr_model_path = str(MELTS102_dir / "Isentropic_NoCr.tar"),
+    isentropic_Cr_model_path = str(MELTS102_dir / "Isentropic_Cr.tar"),
+    device='cuda'
+    )
+
+if __name__ == "__main__": # For testing API loading...
+    print("Available APIs:")
+    print(f"HeFESToEmulatorCPU: {HeFESToEmulatorCPU}")
+    print(f"HeFESToEmulatorGPU: {HeFESToEmulatorGPU}")
+    print(f"MELTS102EmulatorCPU: {MELTS102EmulatorCPU}")
+    print(f"MELTS102EmulatorGPU: {MELTS102EmulatorGPU}")

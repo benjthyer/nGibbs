@@ -19,10 +19,10 @@ mod_root = Path(__file__).parent.parent
 sys.path.insert(0, str(mod_root))
 
 # Import utility functions
-from module.utils.string_utils import pull_letter, pull_number_range, apply_type_conversions
+from utils.string_utils import pull_letter, pull_number_range, apply_type_conversions
 
 # Import constants and mappings from config (fallbacks)
-from module.config.constants import TYPE_CONVERSION_MAP
+from config.constants import TYPE_CONVERSION_MAP
 """from nMELTS.config import (
     Elkeys as DEFAULT_ELKEYS,
     label_indices as DEFAULT_LABEL_INDICES,
@@ -115,7 +115,7 @@ def _load_temperature_model( # Loading function for get_T FCNN for isentropic mo
     checkpoint_path: Path,
     device: torch.device,
 ): # -> Tuple[VariableGeometryFCNNRegressor, Dict, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    payload = torch.load(checkpoint_path, map_location=device)
+    payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model_config = payload.get("model_config")
     if not model_config:
         raise KeyError(f"Missing model_config in temperature checkpoint: {checkpoint_path}")
@@ -1110,7 +1110,7 @@ def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = 
     FileNotFoundError
         If zip file or required contents are missing.
     """
-    from module.config.ml_indexer import load_ml_indexer_from_state
+    from config.ml_indexer import load_ml_indexer_from_state
     
     zip_path = Path(zip_path)
     
@@ -1144,7 +1144,7 @@ def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = 
         
         # === Load state_dict ===
         state_dict_path = temp_path / 'state_dict.pt'
-        saved_state_dict = torch.load(state_dict_path, map_location='cpu')
+        saved_state_dict = torch.load(state_dict_path, map_location='cpu', weights_only=False)
         
         if low_only or load_prefixes is not None:
             effective_prefixes = load_prefixes if load_prefixes is not None else ["encoder.", "sat_head."]
@@ -1216,7 +1216,7 @@ def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only=False, ml_ind
 
     # Try legacy format first, fall back to zip if it's actually a zip file
     try:
-        ckpt = torch.load(DictFilePath, map_location='cpu')
+        ckpt = torch.load(DictFilePath, map_location='cpu', weights_only=False)
         configuration = ckpt['config']
         
         if substitutions is not None:

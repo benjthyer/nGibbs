@@ -269,7 +269,7 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
         
 
-    model.load_state_dict(torch.load(str(TEMP_MODELS_DIR / 'temp_binary_train.pt')))
+    model.load_state_dict(torch.load(str(TEMP_MODELS_DIR / 'temp_binary_train.pt'), weights_only=False))
     print(f"Best Test Loss: {best_test_loss:.5f} at epoch {np.argmin(test_losses)+1}")
     return best_test_loss
 
@@ -560,5 +560,5 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
         
 
-    model.load_state_dict(torch.load(str(TEMP_MODELS_DIR / 'temp_upper_train.pt')))
+    model.load_state_dict(torch.load(str(TEMP_MODELS_DIR / 'temp_upper_train.pt'), weights_only=False))
     return best_test_loss

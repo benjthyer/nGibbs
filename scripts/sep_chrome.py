@@ -14,7 +14,7 @@ if str(REPO_ROOT) not in sys.path:
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from config.settings import internal_data_dir
+from recipes.settings import internal_data_dir
 from builder.processing.BigMetaTable import BigMetaTable
 from nMELTS.utils.file_utils import delete_files_with_keyword
 

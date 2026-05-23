@@ -18,7 +18,7 @@ from src.builder.processing.MLexporter import load_ml_bundle
 from src.builder.processing import filters
 from tests.unit_tests.test_processing.ML_export_tests import run_tests_on_bundle, sanity_check_bundle
 from tests.unit_tests.test_indexers.indexer_test import _ml_indexer_is_equal
-from config.settings import internal_train_dir, external_train_dir
+from recipes.settings import internal_train_dir, external_train_dir
 from tests.test_utils import setup_test_logging
 
 

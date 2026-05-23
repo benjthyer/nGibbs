@@ -456,7 +456,7 @@ def _load_and_validate_bundle(bundle_path: Path, label: str):
 
 
 def _load_checkpoint_state_dict(checkpoint_path: Path, device: torch.device) -> Dict[str, torch.Tensor]:
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
         return checkpoint["state_dict"]
     if isinstance(checkpoint, dict):

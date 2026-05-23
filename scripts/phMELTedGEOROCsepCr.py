@@ -14,7 +14,7 @@ if str(REPO_ROOT) not in sys.path:
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from config.settings import internal_data_dir, internal_scratch_dir
+from recipes.settings import internal_data_dir, internal_scratch_dir
 #from builder.alphamelts.engine import alphamelts_functions # The essential ensemble MELTS functions
 #from nMELTS.utils.string_utils import pull_number, random_char
 from builder.alphamelts.engine import RandomMelters as RM

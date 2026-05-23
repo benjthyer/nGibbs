@@ -4,6 +4,12 @@
 # empty files
 emptyfile.txt
 
+# compiled fortran
+*.o
+
+# Ptt text outputs
+*tbl.txt
+
 # Debugging Temps
 src/nMELTS/config/projections/compToOxV2_cationcharge.xlsx
 src/nMELTS/config/projections/PxSp_Comp_TransformV2_old.csv/

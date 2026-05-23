@@ -265,7 +265,7 @@ from . import eos
 from . import calibrants
 
 # High level tools
-from . import tools
+"""from . import tools
 from .tools.equilibration import equilibrate
 from .tools.partitioning import calculate_nakajima_fp_pv_partition_coefficient
 
@@ -274,6 +274,6 @@ from .optimize import composition_fitting
 from .optimize import linear_fitting
 from .optimize import nonlinear_fitting
 from .optimize import nonlinear_solvers
-from .optimize import eos_fitting
+from .optimize import eos_fitting"""
 
 #__version__ = importlib.metadata.version("burnman")

@@ -11,7 +11,7 @@ from collections import namedtuple
 import logging
 
 from ..constants import logish_eps
-from ..optimize.nonlinear_solvers import damped_newton_solve, TerminationCode
+#from ..optimize.nonlinear_solvers import damped_newton_solve, TerminationCode compatibility issues
 from ..classes.solution import Solution
 
 P_scaling = 1.0e9  # Pa

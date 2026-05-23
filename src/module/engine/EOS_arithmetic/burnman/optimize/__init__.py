@@ -8,8 +8,8 @@ Optimization functions
 (fitting and solving)
 """
 
-from . import composition_fitting
+"""from . import composition_fitting
 from . import eos_fitting
 from . import linear_fitting
 from . import nonlinear_fitting
-from . import nonlinear_solvers
+from . import nonlinear_solvers"""

@@ -268,16 +268,17 @@ ptt_order_oxides = ['SiO2', 'TiO2', 'Al2O3', 'Cr2O3', 'Fe2O3', 'FeO', 'FeOt', 'M
 
 ptt_longs = { 
     'liquid1' : 'melts-liquid', 
-    'alkali-feldspar1': 'k-feldspar'
+    #'alkali-feldspar1': 'k-feldspar'
 }
 
 ptt_to_short = {'liquid1': '_Liq',
         'olivine1': '_Ol',
         'orthopyroxene1': '_Opx',
         'clinopyroxene1': '_Cpx',
+        #'clinopyroxene2': '_Cpx2', Breaks my code for some reason.
         'garnet1': '_Grt',
         'spinel1': '_Sp',
-        'alkali-feldspar1': '_Kspar',
+        'k-feldspar1': '_Kspar',
         'quartz1': '_Qtz',
         'rhm-oxide1': '_Rhm',
         'apatite1': '_Apa',

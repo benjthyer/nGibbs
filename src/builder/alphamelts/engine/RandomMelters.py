@@ -28,7 +28,7 @@ from module.utils.file_utils import count_csv_rows, count_file_lines
 
 # Import indexer and header generation
 from builder.indexer import DatasetIndexer, verify_csv_headers_match
-from config.settings import internal_scratch_dir
+from recipes.settings import internal_scratch_dir
 
 # Set up paths
 EnsembleLocation = str(internal_scratch_dir())

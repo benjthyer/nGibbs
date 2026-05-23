@@ -30,17 +30,17 @@ IP_PYROLITE = [19, 20, 21, 22, 10, 11, 12, 18, 14, 15, 13, 8, 16, 9,
 
 def _phase_colors() -> dict:
     col = {}
-    for p in ['qtz', 'coes', 'st', 'apbo', 'cacl']:
+    for p in ['qtz', 'coes', 'st', 'apbo', 'cacl']: # SiO2
         col[p] = 'dimgray'
-    for p in ['plg', 'pwo', 'wo', 'neph']:
+    for p in ['plg', 'pwo', 'wo', 'neph']: #Feldspars and feldspathoids
         col[p] = 'lightgray'
     for p in ['ky', 'nal']:
         col[p] = 'mediumpurple'
-    for p in ['opx', 'cpx', 'c2c']:
+    for p in ['opx', 'cpx', 'c2c']: # Pyroxenes
         col[p] = 'steelblue'
     col['sp']  = 'brown'
     col['gt']  = 'red'
-    for p in ['ol', 'wa', 'ri', 'il']:
+    for p in ['ol', 'wa', 'ri', 'il']: # 
         col[p] = 'forestgreen'
     col['pv']  = 'khaki'
     col['ppv'] = 'goldenrod'
@@ -48,7 +48,7 @@ def _phase_colors() -> dict:
     col['cpv'] = 'tan'
     for p in ['fea', 'feg', 'fee']:
         col[p] = 'sienna'
-    col['mw'] = 'magenta'
+    col['mw'] = 'magenta' 
     return col
 
 

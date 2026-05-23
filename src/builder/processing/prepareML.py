@@ -36,7 +36,7 @@ from builder.processing.BigMetaTable import BigMetaTable
 from builder.processing import filters
 
 # Import settings and utilities
-from config.settings import internal_data_dir, external_data_dir, external_base, internal_train_dir, external_train_dir
+from recipes.settings import internal_data_dir, external_data_dir, external_base, internal_train_dir, external_train_dir
 from module.utils.file_utils import delete_files_with_keyword, move_files_with_extension, get_baseline_files, clear_new_files
 
 # Exporter functions
