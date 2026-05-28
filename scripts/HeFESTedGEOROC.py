@@ -250,12 +250,17 @@ def main() -> None:
             EnsembleLocation=ensemble_location,
         )
 
-        fault_ids = MELTER.import_HeFESTo_components(
+        passed_ids, malformed_ids, empty_ids = MELTER.import_HeFESTo_components(
             workspace_dir=ensemble_location,
             indexer=indexer,
             dataname=out_csv,
         )
-        print(f'HeFESTo parse complete. Fault IDs: {fault_ids}')
+        print(
+            'HeFESTo parse complete. '
+            f'Passed IDs: {len(passed_ids)}, '
+            f'Malformed IDs: {malformed_ids}, '
+            f'Empty IDs: {empty_ids}'
+        )
         print(f'Compiled output written to: {out_csv}')
         print(f'Wt debug info:')
         for wt in wts:

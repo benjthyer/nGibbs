@@ -1,5 +1,15 @@
 _____________________ Unreleased _______________________
 
+2026-05-26: Made EOS benchmark script path handling Windows-safe.
+- benchmark_test.py now uses absolute script-relative paths.
+- BENCHMARK, control, params, and DOS table paths no longer use CWD.
+
+2026-05-26: Refactored HeFESTo import classification and script usage.
+- import_HeFESTo_components now returns passed, malformed, and empty IDs.
+- Moved empty/malformed classification into importer read loop.
+- Removed pre-import model-dir classification in import_model_subdirs.py.
+- Updated import_hefesto_subdirs.py and HeFESTedGEOROC.py callsites.
+
 2026-04-24: Added FCNN free-output validation plotting script.
 - Added ValidateFreeOutputsFCNN.py in validation for three run modes.
 - Modes: FCNN1 features-only, FCNN2 with GT extras, FCNN2 with emulator.

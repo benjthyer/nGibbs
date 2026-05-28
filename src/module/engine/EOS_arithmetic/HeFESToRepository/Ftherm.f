@@ -61,11 +61,11 @@ C  Optic Continuum
 c        Ftherm = 3.*fn*Rgas*Ti*(Fd + Fs + Fe + Fo)
 c        Ftherm = 3.*fn*Rgas*Ti*(Fd + Fs + Fe + Fo) + 9./8.*fn*Rgas*wd1
 
-        if (.not. trace_opened) then
-         open(73,file='fort.73',status='unknown',form='formatted')
-         trace_opened = .true.
-        end if
-        write(73,*) 'FTHERM',Ti,su,do,wd1,ws1,we1,wou,wol,Fd,Fs,Fe,Fo,Ftherm
+        ! if (.not. trace_opened) then
+        !  open(73,file='fort.73',status='unknown',form='formatted')
+        !  trace_opened = .true.
+        ! end if
+        ! write(73,*) 'FTHERM',Ti,su,do,wd1,ws1,we1,wou,wol,Fd,Fs,Fe,Fo,Ftherm
 
         return
         end

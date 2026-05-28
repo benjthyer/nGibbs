@@ -2,21 +2,18 @@
 Import HeFESTo workspaces from a root path.
 
 The script recursively searches for the lowest-level workspace directories
-that directly contain SimulationN folders.
+that directly contain model_XXXXXX folders.
 
 For each discovered workspace directory:
-1) Cleanup simulation subdirectories:
-     - If a simulation directory contains only 'control' or 'control' + 'ad.in',
-         delete that simulation directory.
-     - Otherwise, delete files named 'fort.29' and 'qout' when present.
-2) Run import_HeFESTo_components() on that workspace.
+1) Run import_HeFESTo_components() on that workspace.
+
+This variant performs no cleanup or deletion.
 """
 
 from __future__ import annotations
 
 import argparse
 import re
-import shutil
 import sys
 from pathlib import Path
 
@@ -30,11 +27,14 @@ if str(SRC_DIR) not in sys.path:
 
 from builder.HeFESTo.HeFESTo_functions import import_HeFESTo_components  # noqa: E402
 from builder.indexer import DatasetIndexer, generate_column_headers_hefesto  # noqa: E402
-from nMELTS.config.constants import COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO  # noqa: E402
+from module.config.constants import COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO  # noqa: E402
 
 
-_SIM_DIR_PATTERN = re.compile(r'^simulation\d+$', flags=re.IGNORECASE)
+_SIM_DIR_PATTERN = re.compile(r'^model_\d{6}$', flags=re.IGNORECASE)
 
+
+def _is_model_dir(entry: Path) -> bool:
+    return entry.is_dir() and _SIM_DIR_PATTERN.match(entry.name) is not None
 
 def _build_hefesto_indexer() -> DatasetIndexer:
     excluded = {'System_main', 'Bulk_comp', 'Bulk_comp_elements'}
@@ -47,41 +47,9 @@ def _build_hefesto_indexer() -> DatasetIndexer:
     return DatasetIndexer(headers, OXYGEN='closed', MODEL='HeFESTo')
 
 
-def _looks_like_control_only_dir(sim_dir: Path) -> bool:
-    files = {entry.name for entry in sim_dir.iterdir() if entry.is_file()}
-    has_nested_dirs = any(entry.is_dir() for entry in sim_dir.iterdir())
-    if has_nested_dirs:
-        return False
-    if 'control' not in files:
-        return False
-    return files.issubset({'control', 'ad.in'})
-
-
-def _cleanup_simulation_dirs(workspace_dir: Path) -> tuple[int, int]:
-    deleted_dirs = 0
-    deleted_files = 0
-
-    for entry in workspace_dir.iterdir():
-        if not entry.is_dir() or _SIM_DIR_PATTERN.match(entry.name) is None:
-            continue
-
-        if _looks_like_control_only_dir(entry):
-            shutil.rmtree(entry)
-            deleted_dirs += 1
-            continue
-
-        for file_name in ('fort.29', 'qout'):
-            target = entry / file_name
-            if target.exists() and target.is_file():
-                target.unlink()
-                deleted_files += 1
-
-    return deleted_dirs, deleted_files
-
-
 def _contains_simulation_dirs(path: Path) -> bool:
     for entry in path.iterdir():
-        if entry.is_dir() and _SIM_DIR_PATTERN.match(entry.name) is not None:
+        if _is_model_dir(entry):
             return True
     return False
 
@@ -106,8 +74,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             'Recursively find HeFESTo workspaces under a root directory and '
-            'run import_HeFESTo_components() for each workspace, with optional '
-            'phase-change export and pre-import simulation directory cleanup.'
+            'run import_HeFESTo_components() for each workspace.'
         )
     )
     parser.add_argument(
@@ -153,36 +120,41 @@ def main() -> int:
     indexer = _build_hefesto_indexer()
 
     total_faults = 0
-    total_deleted_dirs = 0
-    total_deleted_files = 0
-
+    total_successful_imports = 0
+    total_empty_dirs = 0
+    total_malformed_dirs = 0
     dataname = args.dataname
     phase_change_dataname = args.phase_change_dataname
 
     for workspace_dir in workspace_dirs:
-        deleted_dirs, deleted_files = _cleanup_simulation_dirs(workspace_dir)
-        total_deleted_dirs += deleted_dirs
-        total_deleted_files += deleted_files
-
-        _, malformed_ids, empty_ids = import_HeFESTo_components(
+        passed_ids, malformed_ids, empty_ids = import_HeFESTo_components(
             workspace_dir=str(workspace_dir),
             indexer=indexer,
             dataname=dataname,
             phase_change_dataname=phase_change_dataname,
         )
 
-        n_faults = int(len(malformed_ids) + len(empty_ids))
+        n_successful_imports = int(len(passed_ids))
+        malformed_dirs = int(len(malformed_ids))
+        empty_dirs = int(len(empty_ids))
+        n_faults = malformed_dirs + empty_dirs
+
+        total_successful_imports += n_successful_imports
+        total_empty_dirs += empty_dirs
+        total_malformed_dirs += malformed_dirs
         total_faults += n_faults
 
         print(f'Workspace: {workspace_dir}')
-        print(f'  Deleted control-only Simulation dirs: {deleted_dirs}')
-        print(f'  Deleted fort.29/qout files: {deleted_files}')
+        print(f'  Successful imports: {n_successful_imports}')
+        print(f'  Empty model dirs: {empty_dirs}')
+        print(f'  Malformed model dirs: {malformed_dirs}')
         print(f'  Fault simulation IDs count: {n_faults}')
 
     print('Summary:')
     print(f'  Workspaces processed: {len(workspace_dirs)}')
-    print(f'  Deleted control-only Simulation dirs: {total_deleted_dirs}')
-    print(f'  Deleted fort.29/qout files: {total_deleted_files}')
+    print(f'  Total successful imports: {total_successful_imports}')
+    print(f'  Total empty model dirs: {total_empty_dirs}')
+    print(f'  Total malformed model dirs: {total_malformed_dirs}')
     print(f'  Total fault simulation IDs: {total_faults}')
 
     return 0

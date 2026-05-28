@@ -287,8 +287,13 @@ ptt_to_short = {'liquid1': '_Liq',
 
 ptt_oxide_indexer = {ox: i for i, ox in enumerate(ptt_order_oxides)}
 
+HeFESTo_snames_short = ['an', 'ab', 'sp', 'hc', 'smag', 'picr', 'en', 'fs', 'mgts', 'odi', 'mgc2', 'fec2', 'di', 'he', 'cen', 'cats', 'jd', 'acm', 'wo', 'pwo', 'py', 'al', 
+ 'gr', 'mgmj', 'namj', 'andr', 'knor', 'capv', 'fo', 'fa', 'mgwa', 'fewa', 'mgri', 'feri', 'mgil', 'feil', 'co', 'hem', 'esk', 'mgpv', 'fepv', 'alpv', 
+ 'hepv', 'hlpv', 'fapv', 'crpv', 'mppv', 'fppv', 'appv', 'hppv', 'cppv', 'mgcf', 'fecf', 'nacf', 'hmag', 'crcf', 'mnal', 'fnal', 'nnal', 'pe', 'wu', 
+ 'wuls', 'anao', 'mag', 'qtz', 'coes', 'st', 'apbo', 'ky', 'neph', 'fea', 'feg', 'fee']
 
 
+HeFESTo_snames_long = [HEFESTO_ABBREVIATION_TO_SHORT_NAMES[abbr] for abbr in HeFESTo_snames_short]
 
 # Deep-copy dict-of-lists so appending state variables does not mutate
 # the compositional-only dictionaries.

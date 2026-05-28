@@ -242,7 +242,7 @@ class DatasetIndexer:
         
 
         # Exclude components whose oxides fall outside the active Oxides list
-        projections_dir = Path(__file__).resolve().parent.parent / 'nMELTS' / 'config' / 'projections'
+        projections_dir = Path(__file__).resolve().parent.parent / 'module' / 'config' / 'projections'
         comp_to_ox_path = projections_dir / 'compToOxV2.csv'
         if self.OXYGEN == 'open':
             ox_to_el_path = projections_dir / 'OxToElV2.csv'

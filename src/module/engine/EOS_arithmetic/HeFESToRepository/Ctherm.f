@@ -51,11 +51,11 @@ C  Optic Continuum
 
         Ctherm = 3.*fn*Rgas*(Cd + Cs + Ce + Co)
 
-        if (.not. trace_opened) then
-         open(71,file='fort.71',status='unknown',form='formatted')
-         trace_opened = .true.
-        end if
-        write(71,*) 'CTHERM',Ti,su,do,wdav,wsav,qe,qo,Cd,Cs,Ce,Co,Ctherm
+        ! if (.not. trace_opened) then
+        !  open(71,file='fort.71',status='unknown',form='formatted')
+        !  trace_opened = .true.
+        ! end if
+        ! write(71,*) 'CTHERM',Ti,su,do,wdav,wsav,qe,qo,Cd,Cs,Ce,Co,Ctherm
 
         return
         end

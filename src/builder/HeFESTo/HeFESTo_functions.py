@@ -74,7 +74,7 @@ from module.config.constants import (
     OXIDE_MOLAR_MASSES
 )
 
-_SIMULATION_DIR_PATTERN = re.compile(r'^Simulation(\d+)$', re.IGNORECASE)
+_SIMULATION_DIR_PATTERN = re.compile(r'^(?:Simulation(\d+)|model_(\d{6}))$', re.IGNORECASE)
 
 
 EnsembleLocation = None
@@ -817,10 +817,15 @@ def load_fort99_componentMoles(sim_dir: str, indexer) -> Tuple[np.ndarray, np.nd
 
 
 def _extract_sim_id(sim_name: str) -> Optional[int]:
-    match = re.search(r'simulation(\d+)$', sim_name.lower())
+    match = _SIMULATION_DIR_PATTERN.match(sim_name)
     if match is None:
         return None
-    return int(match.group(1))
+
+    simulation_number = match.group(1) or match.group(2)
+    if simulation_number is None:
+        return None
+
+    return int(simulation_number)
 
 
 def _list_simulation_dirs(workspace_dir: str) -> List[Tuple[int, str]]:
@@ -940,6 +945,63 @@ def _ensure_existing_csv_headers_match(dataname: str, expected_headers: List[str
         )
 
 
+def _checkpoint_path_for_csv(dataname: str) -> str:
+    csv_path = Path(dataname)
+    return str(csv_path.with_name(f'{csv_path.name}.checkpoint.txt'))
+
+
+def _read_checkpoint_sim_id(checkpoint_path: str) -> Optional[int]:
+    if not os.path.exists(checkpoint_path):
+        return None
+
+    raw_value = Path(checkpoint_path).read_text(encoding='utf-8').strip()
+    if raw_value == '':
+        raise ValueError(f'Checkpoint file is empty: {checkpoint_path}')
+
+    try:
+        return int(raw_value)
+    except ValueError as exc:
+        raise ValueError(f'Invalid checkpoint value in {checkpoint_path}: {raw_value!r}') from exc
+
+
+def _write_checkpoint_sim_id(checkpoint_path: str, sim_id: int) -> None:
+    Path(checkpoint_path).write_text(f'{int(sim_id)}\n', encoding='utf-8')
+
+
+def _remove_file_if_exists(path_value: str) -> None:
+    if os.path.exists(path_value):
+        os.remove(path_value)
+
+
+def _flush_import_buffers(
+    dataname: str,
+    phase_change_dataname: Optional[str],
+    headers: List[str],
+    data_blocks: List[np.ndarray],
+    phase_change_blocks: List[np.ndarray],
+) -> None:
+    data_block = None
+    if len(data_blocks) > 0:
+        data_block = np.concatenate(data_blocks, axis=0) if len(data_blocks) > 1 else data_blocks[0]
+
+    phase_change_block = None
+    if phase_change_dataname is not None and len(phase_change_blocks) > 0:
+        phase_change_block = (
+            np.concatenate(phase_change_blocks, axis=0)
+            if len(phase_change_blocks) > 1
+            else phase_change_blocks[0]
+        )
+
+    if data_block is not None:
+        _write_block_to_csv(dataname, headers, data_block)
+
+    if phase_change_block is not None:
+        _write_block_to_csv(phase_change_dataname, headers, phase_change_block)
+
+    data_blocks.clear()
+    phase_change_blocks.clear()
+
+
 def import_HeFESTo_components(
     workspace_dir,
     indexer,
@@ -969,35 +1031,72 @@ def import_HeFESTo_components(
         zero/non-zero transitions. A boundary includes the transition row
         and its immediately previous row, using tolerance 1e-6.
 
+    A checkpoint text file is written next to ``dataname`` after each flushed
+    batch of 128 simulations. If the import is restarted and that checkpoint
+    remains, the function resumes from the next simulation ID. The checkpoint
+    file is removed when the import completes successfully.
+
     Returns
     -------
-    np.ndarray
-        Unique failing Simulation IDs.
+    tuple[list[int], list[int], list[int]]
+        ``(passed_ids, malformed_ids, empty_ids)`` where each list contains
+        unique Simulation IDs classified during parsing.
     """
-    faultIDs: List[int] = []
+    passed_ids: List[int] = []
+    malformed_ids: List[int] = []
+    empty_ids: List[int] = []
     reverse_component_phase_map = _build_reverse_component_phase_map()
     sim_dirs = _list_simulation_dirs(workspace_dir)
     _ensure_existing_csv_headers_match(dataname, indexer.database_headers)
     if phase_change_dataname is not None:
         _ensure_existing_csv_headers_match(phase_change_dataname, indexer.database_headers)
 
+    checkpoint_path = _checkpoint_path_for_csv(dataname)
+    resume_after_sim_id = _read_checkpoint_sim_id(checkpoint_path)
+
     if not os.path.exists(dataname):
         pd.DataFrame(columns=indexer.database_headers).to_csv(dataname, index=False)
     if phase_change_dataname is not None and not os.path.exists(phase_change_dataname):
         pd.DataFrame(columns=indexer.database_headers).to_csv(phase_change_dataname, index=False)
 
+    data_blocks: List[np.ndarray] = []
+    phase_change_blocks: List[np.ndarray] = []
+    processed_since_flush = 0
+    last_flushed_sim_id: Optional[int] = resume_after_sim_id
+
     for sim_id, sim_dir in sim_dirs:
+        if resume_after_sim_id is not None and sim_id <= resume_after_sim_id:
+            continue
+
         control_path = os.path.join(sim_dir, 'control')
         fort56_path = os.path.join(sim_dir, 'fort.56')
         fort61_path = os.path.join(sim_dir, 'fort.61')
         fort68_path = os.path.join(sim_dir, 'fort.68')
         fort99_path = os.path.join(sim_dir, 'fort.99')
 
-        try:
-            for req_path in [control_path, fort56_path, fort61_path, fort68_path, fort99_path]:
-                if not os.path.exists(req_path):
-                    raise FileNotFoundError(f'Missing required file: {req_path}')
+        sim_contents = [
+            entry
+            for entry in os.listdir(sim_dir)
+            if os.path.isfile(os.path.join(sim_dir, entry))
+        ]
+        if len(sim_contents) == 0:
+            empty_ids.append(sim_id)
+            continue
 
+        if not os.path.exists(control_path):
+            malformed_ids.append(sim_id)
+            continue
+
+        missing_outputs = [
+            req_path
+            for req_path in [fort56_path, fort61_path, fort68_path, fort99_path]
+            if not os.path.exists(req_path)
+        ]
+        if len(missing_outputs) > 0:
+            malformed_ids.append(sim_id)
+            continue
+
+        try:
             element_moles, control_component_to_phase_abbr = _parse_control_file(control_path)
             bulk_comp_wt, bulk_elements, system_mass = _compute_bulk_from_elements(element_moles)
 
@@ -1143,20 +1242,47 @@ def import_HeFESTo_components(
                     phase_change_boundary_rows.append(int(row_idx - 1))
                     phase_change_boundary_rows.append(int(row_idx))
 
-            _write_block_to_csv(dataname, indexer.database_headers, out)
-
+            data_blocks.append(out)
             if phase_change_dataname is not None and len(phase_change_boundary_rows) > 0:
-                _write_block_to_csv(
-                    phase_change_dataname,
-                    indexer.database_headers,
-                    out[phase_change_boundary_rows, :],
+                phase_change_blocks.append(out[phase_change_boundary_rows, :])
+
+            processed_since_flush += 1
+            last_flushed_sim_id = sim_id
+
+            if processed_since_flush >= 16:
+                _flush_import_buffers(
+                    dataname=dataname,
+                    phase_change_dataname=phase_change_dataname,
+                    headers=indexer.database_headers,
+                    data_blocks=data_blocks,
+                    phase_change_blocks=phase_change_blocks,
                 )
+                _write_checkpoint_sim_id(checkpoint_path, sim_id)
+                processed_since_flush = 0
+
+            passed_ids.append(sim_id)
 
         except Exception as exc:
             print(f'Simulation{sim_id} FAILED at {sim_dir}: {type(exc).__name__}: {exc}')
-            faultIDs.append(sim_id)
+            malformed_ids.append(sim_id)
 
-    return np.unique(np.asarray(faultIDs, dtype=int))
+    if len(data_blocks) > 0 or len(phase_change_blocks) > 0:
+        _flush_import_buffers(
+            dataname=dataname,
+            phase_change_dataname=phase_change_dataname,
+            headers=indexer.database_headers,
+            data_blocks=data_blocks,
+            phase_change_blocks=phase_change_blocks,
+        )
+        if last_flushed_sim_id is not None:
+            _write_checkpoint_sim_id(checkpoint_path, last_flushed_sim_id)
+
+    _remove_file_if_exists(checkpoint_path)
+
+    def _unique_sorted(ids: List[int]) -> List[int]:
+        return sorted(set(int(value) for value in ids))
+
+    return _unique_sorted(passed_ids), _unique_sorted(malformed_ids), _unique_sorted(empty_ids)
 
 
 def extract_bulk_properties_from_simulation_dir(

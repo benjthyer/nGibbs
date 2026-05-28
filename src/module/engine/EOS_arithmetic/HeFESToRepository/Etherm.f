@@ -69,11 +69,11 @@ c        Etherm = 3.*fn*Rgas*Ti*(ud + us + ue + uo) + 9./8.*fn*Rgas*wd1
 c        print*, 'Etherm',Etherm,fn,Rgas,Ti,ud/(3.*fn*Rgas*Ti),us/(3.*fn*Rgas*Ti),ue/(3.*fn*Rgas*Ti),uo/(3.*fn*Rgas*Ti)
 c     &   ,wd1,we1,qe1,su
 
-        if (.not. trace_opened) then
-         open(72,file='fort.72',status='unknown',form='formatted')
-         trace_opened = .true.
-        end if
-        write(72,*) 'ETHERM',Ti,su,do,wd1,ws1,we1,wou,wol,ud,us,ue,uo,Etherm
+        ! if (.not. trace_opened) then
+        !  open(72,file='fort.72',status='unknown',form='formatted')
+        !  trace_opened = .true.
+        ! end if
+        ! write(72,*) 'ETHERM',Ti,su,do,wd1,ws1,we1,wou,wol,ud,us,ue,uo,Etherm
 
         return
         end

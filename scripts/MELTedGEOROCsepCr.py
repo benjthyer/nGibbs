@@ -43,21 +43,21 @@ import time
 time.sleep(8000)"""
 
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-input_date = 'Feb16UM'
+input_date = 'May23'
 
 input_ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
-MELTSmodels = ['p']#, '102'] # MELTS models to run. To add: MAGEmin
+MELTSmodels = ['120']#, '102'] # MELTS models to run. To add: MAGEmin
 FXes = ['Batch']#, 'FxCryst']
 Prange = None # Auto if None, for lithosphere/aesthenospere (p)
 
 total_to_run = int(300) # How many total simulations to run
-ultramafics_to_run = total_to_run#int(total_to_run * 0.5)
-mafics_to_run = 0#int(total_to_run * 0.4)
-full_to_run = 0#int(total_to_run * 0.1)
+ultramafics_to_run = int(total_to_run * 0.1)
+mafics_to_run = int(total_to_run * 0.4)
+full_to_run = int(total_to_run * 0.5)
 
-startTs = [1600]#, 1800]
+startTs = [1800]#, 1800]
 delta = -4
-input_liquid_fractions = [15]#, 100] # Make above 100 to allow for superliquidus
+input_liquid_fractions = [101]#, 100] # Make above 100 to allow for superliquidus
 simcycle = 50 # How many simulations to run per iteration
 
 #storage_directory = f'/mnt/d/Workspace/{MELTSModel}Datasets/'
@@ -87,7 +87,8 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
                         ZeroOxides.append(zeroOx)
             else:
                 allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclase','k-feldspar','garnet',
-                    'nepheline','leucite','biotite','rhm-oxide','alloy-solid','alloy-liquid','apatite','whitlockite','quartz','tridymite','cristobalite','muscovite','fluid','liquid']
+                    'nepheline','leucite','biotite','rhm-oxide','apatite','whitlockite','quartz','tridymite',#'cristobalite',
+                    'muscovite','fluid','liquid', 'hornblende', 'alloy-solid','alloy-liquid']
 
             # Generate headers and create indexer for this set of phases
             headers = generate_column_headers(allowed_phases, mode=MELTSModel, zeroOxides=ZeroOxides)

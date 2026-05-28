@@ -32,9 +32,10 @@ print(f"Module path added to sys.path: {module_path}")
 from engine.EOS_arithmetic.vector_composite import VectorComposite
 import EOS_arithmetic.burnman as burnman
 
-from config.constants import OXIDE_MOLAR_MASSES as oxide_molar_masses, ptt_longs, ptt_order_oxides, ptt_to_short, ptt_oxide_indexer
+from config.constants import OXIDE_MOLAR_MASSES as oxide_molar_masses, ptt_longs, ptt_order_oxides, ptt_to_short, ptt_oxide_indexer, HeFESTosnames_long
 
 ferric_to_ferrous_ratio =  (2*oxide_molar_masses['FeO'])/oxide_molar_masses['Fe2O3']
+snames_dict = {name: i for i, name in enumerate(HeFESTosnames_long)}
 
 from NN import _load_temperature_model
 from emulator import NN_MELTS
@@ -1292,6 +1293,11 @@ class HeFESToAPI(EmulatorAPI):
             phase_name: getattr(burnman.minerals.SLB_2024, self.burnman_translator[phase_name])()
             for phase_name in self.isothermal_emulator.ml_indexer.all_phases
         }
+        
+        assert self.isothermal_emulator.ml_indexer.label_names == self.isentropic_emulator.ml_indexer.label_names # Assume the label names are model-agnostic
+
+        self.PropertyIDX = np.array([snames_dict[name] for name in self.isothermal_emulator.ml_indexer.label_names])
+
 
         if verbose:
             print("[INFO] HeFESToAPI initialized successfully.")
