@@ -190,3 +190,75 @@ def cold_bulk_modulus_vec(
            * (1.0 + g_l * (3.0 * Kop - 1.0) - 4.5 * Kop * g_l**2)
 
     return np.where(ibv == 1, Kc_v, np.where(ibv == 2, Kc_l, Kc_bm))
+
+
+# ---------------------------------------------------------------------------
+# Torch-native versions (GPU-compatible)
+# ---------------------------------------------------------------------------
+
+def cold_pressure_torch(Vi, Vo, Ko, Kop, Kopp, a5, ibv=None):
+    """Torch equivalent of cold_pressure_vec."""
+    import torch
+    f    = 0.5 * ((Vi / Vo) ** (-2.0 / 3.0) - 1.0)
+    a3   = 1.5 * (Kop - 4.0)
+    a4_p = torch.where(Kopp != 0.0,
+                       1.5 * (Ko * Kopp + Kop * (Kop - 7.0) + 143.0 / 9.0),
+                       torch.zeros_like(Kopp))
+    pc_bm = (3.0 * Ko * f * (1.0 + 2.0 * f) ** 2.5
+             * (1.0 + (1.5 * Kop - 6.0) * f + a4_p * f**2))
+    if ibv is None:
+        return pc_bm
+    xV   = (Vi / Vo) ** (1.0 / 3.0)
+    eta  = 1.5 * (Kop - 1.0)
+    pc_v = Ko * (2.0 + (eta - 1.0) * xV - eta * xV**2) * torch.exp(eta * (1.0 - xV)) / xV**2
+    g_l  = -0.5 * ((Vi / Vo) ** (2.0 / 3.0) - 1.0)
+    pc_l = Ko * (1.0 - 2.0 * g_l) ** (-0.5) * (1.0 + g_l * (3.0*Kop - 1.0) - 4.5*Kop*g_l**2)
+    return torch.where(ibv == 1, pc_v, torch.where(ibv == 2, pc_l, pc_bm))
+
+
+def cold_bulk_modulus_torch(Vi, Vo, Ko, Kop, Kopp, a5, ibv=None):
+    """Torch equivalent of cold_bulk_modulus_vec."""
+    import torch
+    f   = 0.5 * ((Vi / Vo) ** (-2.0 / 3.0) - 1.0)
+    a3  = 3.0 * (Kop - 4.0)
+    a4  = torch.where(Kopp != 0.0,
+                      9.0 * (Kopp + Kop * (Kop - 7.0) + 143.0 / 9.0),
+                      torch.zeros_like(Kopp))
+    Kc_bm = Ko * (1.0 + 2.0 * f) ** 2.5 * (
+        1.0
+        + (7.0 + a3) * f
+        + (4.5 * a3 + 0.5 * a4) * f**2
+        + (11.0 / 6.0 * a4 + a5 / 6.0) * f**3
+        + 13.0 / 24.0 * a5 * f**4
+    )
+    if ibv is None:
+        return Kc_bm
+    xV   = (Vi / Vo) ** (1.0 / 3.0)
+    eta  = 1.5 * (Kop - 1.0)
+    Kc_v = Ko * (2.0 + (eta - 1.0) * xV - eta * xV**2) * torch.exp(eta*(1.0-xV)) / xV**2
+    g_l  = -0.5 * ((Vi / Vo) ** (2.0 / 3.0) - 1.0)
+    Kc_l = Ko * (1.0 - 2.0*g_l)**(-0.5) * (1.0 + g_l*(3.0*Kop-1.0) - 4.5*Kop*g_l**2)
+    return torch.where(ibv == 1, Kc_v, torch.where(ibv == 2, Kc_l, Kc_bm))
+
+
+def pressure_torch(Vi, Ti, Pi_target, Vo, Ko, Kop, Kopp,
+                   gamma, q, fn, wd1, a5, izp, be, ge, q2A2,
+                   To, Uth, Uto, wd1_Vi=None, ibv=None):
+    """Torch equivalent of pressure_vec."""
+    import torch
+    from .constants import Rgas
+    pc  = cold_pressure_torch(Vi, Vo, Ko, Kop, Kopp, a5, ibv=ibv)
+    ph  = 1.0e-3 * (gamma / Vi) * (Uth - Uto)
+    Ti_b = Ti.expand_as(Vi) if Ti.shape != Vi.shape else Ti
+    To_b = To.expand_as(Vi) if To.shape != Vi.shape else To
+    pa   = 1.0e-3 * 3.0 * fn * Rgas * q2A2 * (Ti_b**2 - To_b**2) / Vi
+    beta = be * (Vi / Vo) ** ge
+    pel  = 1.0e-3 * 0.5 * ge * beta * (Ti_b**2 - To_b**2) / Vi
+    w1   = wd1_Vi if wd1_Vi is not None else wd1
+    pzp  = torch.sign(izp.float()) * torch.where(
+        izp.abs() == 1,
+        1.0e-3 * (9.0 / 8.0) * fn * Rgas * w1 * gamma / Vi,
+        torch.zeros_like(Vi)
+    )
+    Pi_b = Pi_target.expand_as(Vi) if Pi_target.shape != Vi.shape else Pi_target
+    return pc + ph + pa + pel + pzp - Pi_b

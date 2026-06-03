@@ -20,7 +20,7 @@ except NameError:
 
 # Add both src and src/nMELTS to path
 src_root = repo_root / "src"
-nmelts_root = src_root / "nMELTS"
+nmelts_root = src_root / "module"
 
 if str(src_root) not in sys.path:
     sys.path.insert(0, str(src_root))
@@ -28,9 +28,9 @@ if str(nmelts_root) not in sys.path:
     sys.path.insert(0, str(nmelts_root))
 
 # Import utilities and API
-from nMELTS.utils.math_utils import grid_sample, grid_sample_explicit
-from nMELTS.engine.API import HeFESToAPI, HeFESToEmulatorCPU, HeFESToEmulatorGPU
-from nMELTS.config.constants import HEFESTO_ABBREVIATION_TO_SHORT_NAMES
+from module.utils.math_utils import grid_sample, grid_sample_explicit
+from module.engine.API import HeFESToAPI, HeFESToEmulatorCPU, HeFESToEmulatorGPU
+from module.config.constants import HEFESTO_ABBREVIATION_TO_SHORT_NAMES
 REV_HEFESTO_ABBREVIATION_TO_SHORT_NAMES = {v: k for k, v in HEFESTO_ABBREVIATION_TO_SHORT_NAMES.items()}
 
 
@@ -73,8 +73,7 @@ def example_array(batch_size):
 
     return input_grid, headers
 
-batch_sizes = np.array([2**19.5]).astype(int)#.5, 2**20, 2**20.25, 2**20.5]).astype(int) #np.append(2**np.linspace(4, 15, 20), 2**np.array([18.25,18.5])).astype(int)
-
+batch_sizes = (2**np.linspace(4, 18, 15)).astype(int)
 GPU_emulator = []
 CPU_emulator = []
 NN_emulator = []
@@ -99,25 +98,8 @@ try:
         print(f"{begin_properties - end_emulator:.4f} IO time")
         #for i in range(5):
             #print(f"Property calculation {i+1}: {time.time() - begin_properties:.4f} seconds")
-        output_properties = HeFESToEmulatorGPU.get_property_burnman_vectorized_from_assemblage(torch.tensor(output['component_moles'], dtype=torch.float32, device='cuda'), PT=PT)
+        output_properties = HeFESToEmulatorGPU._compute_bulk_EOS_properties(torch.tensor(output['component_moles'], dtype=torch.float32, device='cuda'), PT=PT)
         GPU_properties.append(time.time() - begin_properties)
-
-    """for batch_size in batch_sizes:
-        print(f'GPU: {batch_size}')
-        input_array, headers = example_array(batch_size)
-
-        begin_emulator = time.time()
-        output = HeFESToEmulatorGPU.ForwardNN(torch.tensor(input_array, dtype=torch.float32, device='cuda'), headers=headers, outputs=['component_moles', 'temperature'])
-        end_emulator = time.time()
-        NN_emulator.append(end_emulator - begin_emulator)
-
-        PT = torch.concatenate([torch.tensor(input_array[:,0], dtype=torch.float32, device='cuda').reshape(-1, 1), torch.tensor(output['temperature'], dtype=torch.float32, device='cuda').reshape(-1, 1)], dim=1)
-
-        begin_properties = time.time()
-        print(f"{begin_properties - end_emulator:.4f} IO time")
-        output_properties = HeFESToEmulatorGPU.get_property_burnman_vectorized_from_assemblage(torch.tensor(output['component_moles'], dtype=torch.float32, device='cuda'), PT=PT)
-        NN_properties.append(time.time() - begin_properties)"""
-
 
     for batch_size in batch_sizes:
         print(f'CPU: {batch_size}')
@@ -132,8 +114,8 @@ try:
 
         begin_properties = time.time()
         print(f"{begin_properties - end_emulator:.4f} IO time")
-        #output_properties = HeFESToEmulatorCPU.get_property_burnman_vectorized_from_assemblage(torch.tensor(output['component_moles'], dtype=torch.float32, device='cpu'), PT=PT)
-        CPU_properties.append(0)#time.time() - begin_properties)
+        output_properties = HeFESToEmulatorCPU._compute_bulk_EOS_properties(torch.tensor(output['component_moles'], dtype=torch.float32, device='cpu'), PT=PT)
+        CPU_properties.append(time.time() - begin_properties)
 
 finally:
     print(f"GPU properties: {GPU_properties}")
@@ -176,17 +158,17 @@ plt.title('Emulator Performance Comparison: Assemblages per Second')
 plt.legend()
 plt.show()
 
-burnman_rate = batch_sizes*(10/4000) #seconds
+properties_rate = batch_sizes*(10/4000) #seconds
 
 plt.loglog(batch_sizes, GPU_emulator/batch_sizes, label='GPU Emulator speedup', color = 'forestgreen', linestyle='-')
 plt.loglog(batch_sizes, CPU_emulator/batch_sizes, label='CPU Emulator speedup', color = 'darkorange', linestyle='-')
-plt.loglog(batch_sizes, GPU_properties/burnman_rate, label='Burnman GPU speedup', color = 'forestgreen', linestyle='--')
-plt.loglog(batch_sizes, CPU_properties/burnman_rate, label='Burnman CPU speedup', color = 'darkorange', linestyle='--')
+plt.loglog(batch_sizes, GPU_properties/properties_rate, label='Properties GPU speedup', color = 'forestgreen', linestyle='--')
+plt.loglog(batch_sizes, CPU_properties/properties_rate, label='Properties CPU speedup', color = 'darkorange', linestyle='--')
 #plt.loglog(batch_sizes, NN_emulator, label='NN Emulator', color = 'teal', linestyle='-')
 #plt.loglog(batch_sizes, NN_properties, label='NN Properties', color = 'teal', linestyle='--')
 
 plt.xlabel('Number of Assemblages (N)')
-plt.ylabel('Relative Speed Up: nGibbsMin/(Hefesto | Burnman)')
+plt.ylabel('Relative Speed Up: nGibbsMin Equilibria/Properties')
 plt.grid(True)
 plt.title('Relative Speedup of nGibbsMin')
 plt.legend()

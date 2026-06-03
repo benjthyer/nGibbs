@@ -737,3 +737,14 @@ def match_rows(
     return indices
 
 
+def get_S(T, Ca=1):
+    """Get Entropy as a function of mantle potential temperature and Molar Ca (24 molar basis!)
+    Ca=1 is a reasonable middle-default.
+    """
+    S = 0.732261764 - 0.0220453381 * Ca + 0.00147915640 * T - 0.0160980560 * Ca**2 - 2.16492530e-07 * T**2
+    return S
+
+def get_T(P, S):
+    """Get Temperature as a function of Entropy, Pressure."""
+    T = 6029.33080527 * S - 787.844288209  * S**2 + 10.3970768783 * P - 0.0186356282034 * P**2 - 8587.97619083
+    return T

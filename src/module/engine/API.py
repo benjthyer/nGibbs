@@ -8,9 +8,10 @@ Provides user-friendly interfaces for:
 - Managing emulator ensembles (isothermal, isentropic, temperature models)
 
 Base class: EmulatorAPI — model-agnostic adiabat workflows
-Subclass:   HeFESToAPI  — adds Burnman EOS backend for HeFESTo
+Subclass:   HeFESToAPI  — add Fortranslation EOS backend for HeFESTo
 """
 
+import functools
 import gc
 import numpy as np
 import pandas as pd
@@ -29,17 +30,16 @@ if module_path not in sys.path:
     sys.path.insert(0, module_path)
 print(f"Module path added to sys.path: {module_path}")
 
-from engine.EOS_arithmetic.vector_composite import VectorComposite
-import EOS_arithmetic.burnman as burnman
+from engine.EOS_arithmetic.hefesto_vec import compute as hefesto_compute, load_control
 
-from config.constants import OXIDE_MOLAR_MASSES as oxide_molar_masses, ptt_longs, ptt_order_oxides, ptt_to_short, ptt_oxide_indexer, HeFESTosnames_long
+from config.constants import OXIDE_MOLAR_MASSES as oxide_molar_masses, ptt_longs, ptt_order_oxides, ptt_to_short, ptt_oxide_indexer, HeFESTo_snames_long
 
 ferric_to_ferrous_ratio =  (2*oxide_molar_masses['FeO'])/oxide_molar_masses['Fe2O3']
-snames_dict = {name: i for i, name in enumerate(HeFESTosnames_long)}
+snames_dict = {name: i for i, name in enumerate(HeFESTo_snames_long)}
 
 from NN import _load_temperature_model
 from emulator import NN_MELTS
-from utils.math_utils import Normalizer
+from utils.math_utils import Normalizer, get_T as _reference_adiabat
 
 aliases = { # 
     'T': 'T(K)(System_main)',
@@ -60,17 +60,6 @@ aliases = { #
     'Pressure(GPa)': 'P(GPa)(System_main)',
     'pressure': 'P(GPa)(System_main)',
     'pressure(GPa)': 'P(GPa)(System_main)',
-}
-
-burnman_phase_aliases = {
-    'spinel':'mg_fe_aluminous_spinel',
-    'hp-clinopyroxene':'c2c_pyroxene',
-    'ca-perovskite':'ca_perovskite',
-    'akimotoite':'ilmenite',
-    'post-perovskite':'post_perovskite',
-    'ca-ferrite':'cf',
-    'gamma-iron':'gamma_fcc_iron',
-    'epsilon-iron':'epsilon_hcp_iron',
 }
 
 
@@ -440,6 +429,11 @@ class EmulatorAPI:
         self.device = torch.device(device)
         self.verbose = verbose
 
+        # Store paths so _clone_as_cpu can rebuild this instance on another device
+        self._iso_path  = str(isothermal_model_path)
+        self._isen_path = str(isentropic_model_path)
+        self._temp_path = str(temperature_model_path) if temperature_model_path is not None else None
+
         if verbose:
             print(f"  Loading isothermal emulator: {isothermal_model_path}")
         self.isothermal_emulator = self._load_emulator(isothermal_model_path, device)
@@ -455,8 +449,70 @@ class EmulatorAPI:
 
         self.parser = InputParser(self.isothermal_emulator)
 
+        # _cpu_api is populated here for direct EmulatorAPI instances; for
+        # subclasses the __init_subclass__ wrapper calls _clone_as_cpu after
+        # the subclass __init__ has finished storing its own extra state.
+        self._cpu_api = None
+        if type(self) is EmulatorAPI and self.device.type != 'cpu':
+            self._cpu_api = self._clone_as_cpu()
+
         if verbose:
             print("[INFO] EmulatorAPI initialized successfully.")
+
+    def __init_subclass__(cls, **kwargs):
+        """Wrap every subclass __init__ to auto-create a CPU twin after init.
+
+        After a GPU subclass finishes its own __init__ (including all super()
+        calls and subclass-specific setup), this wrapper calls _clone_as_cpu()
+        if no CPU twin was already set.  Subclasses just need to:
+          1. Store any extra constructor args they need for cloning.
+          2. Override _clone_as_cpu() to forward those args.
+        No manual _finalize_cpu() call is required.
+        """
+        super().__init_subclass__(**kwargs)
+        original_init = cls.__init__
+
+        @functools.wraps(original_init)
+        def _auto_cpu(self, *args, **kw):
+            original_init(self, *args, **kw)
+            # Only fire from the leaf class being constructed.
+            # When a super().__init__() chain is running, intermediate wrappers
+            # see type(self) != cls and skip — so _clone_as_cpu() is only called
+            # once, after the most-derived __init__ has stored all its state.
+            if type(self) is cls and self.device.type != 'cpu' and self._cpu_api is None:
+                self._cpu_api = self._clone_as_cpu()
+
+        cls.__init__ = _auto_cpu
+
+    def _clone_as_cpu(self):
+        """Return a CPU-device copy of this EmulatorAPI.
+
+        Subclasses must override this to forward their extra constructor
+        arguments (e.g. control_path for HeFESToAPI).
+        """
+        return EmulatorAPI(
+            self._iso_path, self._isen_path, self._temp_path,
+            device='cpu', verbose=False,
+        )
+
+    def _get_cpu_func(self, func):
+        """Return the CPU-API equivalent of a GPU emulator bound method, or None.
+
+        Inspects func.__self__ to identify which of the two emulators owns the
+        method, then looks up the same method name on self._cpu_api's emulator.
+        Returns None when no CPU twin exists or func is not an emulator method.
+        """
+        if self._cpu_api is None:
+            return None
+        if not (hasattr(func, '__self__') and hasattr(func, '__func__')):
+            return None
+        owner = func.__self__
+        name  = func.__func__.__name__
+        if owner is self.isothermal_emulator:
+            return getattr(self._cpu_api.isothermal_emulator, name, None)
+        if owner is self.isentropic_emulator:
+            return getattr(self._cpu_api.isentropic_emulator, name, None)
+        return None
 
     def _compute_bulk_EOS_properties(
         self,
@@ -653,10 +709,10 @@ class EmulatorAPI:
         eos_props = self._compute_bulk_EOS_properties(
             component_moles,
             PT_ref,
-            property_names=['entropy_by_mass'],
+            property_names=['S'],
         )
         S_values = torch.tensor(
-            eos_props['entropy_by_mass']/1000, dtype=torch.float32, device=self.device
+            eos_props['S'], dtype=torch.float32, device=self.device
         )  # (n_S,)
         print(f"Reference entropies (J/g/K) at P=0.0001 GPa: {S_values.cpu().numpy()}")
 
@@ -708,6 +764,12 @@ class EmulatorAPI:
         return temperatures_grid, pressures_grid, properties_dict
 
 
+    # Batches smaller than this threshold are forwarded to the CPU API (when
+    # one exists) to avoid the GPU kernel-launch overhead that dominates for
+    # tiny inputs.  8 192 rows is a conservative crossover empirically valid
+    # for both NN forward passes and the HeFESTo EOS kernel.
+    _CPU_BATCH_THRESHOLD: int = 8_192
+
     def _staged_forward(
         self,
         func,
@@ -715,25 +777,31 @@ class EmulatorAPI:
         batch_size: int,
         **kwargs
     ) -> Union[torch.Tensor, list]:
-        """
-        Execute function in batches for memory efficiency.
+        """Execute function in batches, routing small inputs to the CPU API.
 
         Parameters
         ----------
         func : callable
-            Function to apply (e.g., model forward pass)
+            Function to apply (e.g., model forward pass).
         input_tensor : torch.Tensor
-            Input batch tensor
+            Input batch tensor.
         batch_size : int
-            Batch size
+            Maximum rows per GPU chunk.
+        _cpu_fallback : callable, keyword-only (popped before forwarding)
+            Explicit CPU function to call for small batches.  Used by
+            _compute_bulk_EOS_properties; NN forward calls are routed
+            automatically via _get_cpu_func.
         **kwargs :
-            Additional arguments to pass to func
+            Additional arguments forwarded to func (and cpu_fallback).
 
         Returns
         -------
         torch.Tensor or list of torch.Tensor
-            Concatenated outputs from all batches
+            Concatenated outputs from all batches.
         """
+        # _cpu_fallback is an internal sentinel — pop before forwarding to func
+        cpu_fallback = kwargs.pop('_cpu_fallback', None)
+
         def _merge_outputs(existing, batch):
             if isinstance(existing, dict) and isinstance(batch, dict):
                 merged = {}
@@ -763,6 +831,15 @@ class EmulatorAPI:
 
         n_samples = input_tensor.size(0)
 
+        # ── Small-batch CPU routing ───────────────────────────────────────────
+        # For NN forward passes, _get_cpu_func resolves the CPU twin
+        # automatically.  For EOS calls, an explicit _cpu_fallback is supplied.
+        if n_samples < self._CPU_BATCH_THRESHOLD:
+            cpu_fn = cpu_fallback or self._get_cpu_func(func)
+            if cpu_fn is not None:
+                return cpu_fn(input_tensor.detach().cpu(), **kwargs)
+
+        # ── GPU path (existing batched logic) ─────────────────────────────────
         if n_samples <= batch_size:
             return func(input_tensor, **kwargs)
 
@@ -1089,16 +1166,15 @@ class EmulatorAPI:
         """
         Get temperature from isentropic emulator output.
 
-        Lightweight frontend that:
-        1. Passes features through isentropic emulator
-        2. Builds temperature model inputs from emulator outputs
-        3. Passes through temperature FCNN
-        4. Returns temperature predictions
+        If the loaded checkpoint contains p_feature_idx / s_feature_idx (written by
+        train_temperature_residual_fcnn.py), the NN predicts a residual against
+        reference_adiabat(P, S) and the reference is added back.  Older checkpoints
+        that lack these keys fall back to direct temperature prediction.
 
         Parameters
         ----------
         features : array-like
-            Input features (B, F) with intensive variables + composition
+            Input features (B, F) with intensive variables + composition (raw, unnormalized)
         normalize_features : bool, default=True
             Whether to normalize input features
 
@@ -1109,17 +1185,26 @@ class EmulatorAPI:
         """
         features = torch.as_tensor(features, dtype=torch.float32, device=self.device)
 
-        # Normalize for temperature model
+        # Compute reference adiabat if checkpoint carries P/S indices
+        p_idx = self.temperature_payload.get("p_feature_idx")
+        s_idx = self.temperature_payload.get("s_feature_idx")
+        if p_idx is not None and s_idx is not None:
+            P_raw = features[:, p_idx].detach().cpu().numpy().astype(np.float64)
+            S_raw = features[:, s_idx].detach().cpu().numpy().astype(np.float64)
+            T_ref = torch.tensor(
+                np.asarray(_reference_adiabat(P_raw, S_raw), dtype=np.float32),
+                dtype=torch.float32,
+                device=self.device,
+            )
+        else:
+            T_ref = None
+
         temp_input_norm = self.temp_input_normalizer.norm(features)
-
-        # Forward through temperature FCNN
         with torch.no_grad():
-            temp_output_norm = self.temperature_model(temp_input_norm)
+            output_norm = self.temperature_model(temp_input_norm)
+        output_denorm = self.temp_output_normalizer.denorm(output_norm).squeeze(-1)
 
-        # Denormalize output
-        temperature = self.temp_output_normalizer.denorm(temp_output_norm)
-
-        return temperature.squeeze(-1)
+        return output_denorm if T_ref is None else T_ref + output_denorm
     
     def make_ptt_out(self, features, phaseOxWt, phaseMassNorm, isentropic=None):
         """
@@ -1241,9 +1326,9 @@ class EmulatorAPI:
 
 class HeFESToAPI(EmulatorAPI):
     """
-    HeFESTo emulator API with Burnman EOS backend.
+    HeFESTo emulator API with elastic/rigid EOS backend.
 
-    Extends EmulatorAPI with Burnman-based bulk property evaluation,
+    Extends EmulatorAPI with elastic/rigid bulk property evaluation,
     enabling isentrope computation and physical property retrieval for
     the HeFESTo mineral physics database.
     """
@@ -1255,9 +1340,12 @@ class HeFESToAPI(EmulatorAPI):
         temperature_model_path: Optional[Union[str, Path]] = None,
         device: str = 'cpu',
         verbose: bool = False,
+        control_path: Optional[Union[str, Path]] = None,
+        param_dir: Optional[Union[str, Path]] = None,
+        npz_path: Optional[Union[str, Path]] = None,
     ):
         """
-        Initialize HeFESTo API with emulator models and Burnman phases.
+        Initialize HeFESTo API with emulator models and phases.
 
         Parameters
         ----------
@@ -1271,6 +1359,14 @@ class HeFESToAPI(EmulatorAPI):
             Torch device ('cpu' or 'cuda')
         verbose : bool, default=False
             Print initialization messages
+        control_path : str or Path, optional
+            Path to a HeFESTo control file. Required to use
+            get_property_hefesto_vectorized_from_assemblage.
+        param_dir : str or Path, optional
+            Override for the parameter directory embedded in the control file
+            (e.g. path to HeFESTo_Parameters_010123/).
+        npz_path : str or Path, optional
+            Path to a pre-built DOS-table .npz file for the HeFESTo EOS kernel.
         """
         if verbose:
             print("[INFO] Initializing HeFESToAPI...")
@@ -1282,94 +1378,178 @@ class HeFESToAPI(EmulatorAPI):
             device,
             verbose,
         )
-
-        # Build Burnman input translator
-        phase_names = self.isothermal_emulator.ml_indexer.all_phases
-        self.burnman_translator = {phase: phase for phase in phase_names}
-        for hefesto_name, burnman_name in burnman_phase_aliases.items():
-            self.burnman_translator[hefesto_name] = burnman_name
-
-        self.burnman_minerals = {
-            phase_name: getattr(burnman.minerals.SLB_2024, self.burnman_translator[phase_name])()
-            for phase_name in self.isothermal_emulator.ml_indexer.all_phases
-        }
         
         assert self.isothermal_emulator.ml_indexer.label_names == self.isentropic_emulator.ml_indexer.label_names # Assume the label names are model-agnostic
 
         self.PropertyIDX = np.array([snames_dict[name] for name in self.isothermal_emulator.ml_indexer.label_names])
 
+        # Load vectorised HeFESTo EOS params if a control file is provided
+        _eos_dir = Path(__file__).parent / "EOS_arithmetic"
+        if control_path is None:
+            control_path = _eos_dir / "BENCHMARK" / "control"
+        if param_dir is None:
+            param_dir = _eos_dir / "HeFESTo_Parameters_010123"
+
+        # Store resolved paths so _clone_as_cpu can recreate this instance
+        self._control_path = str(control_path)
+        self._param_dir    = str(param_dir)
+        self._npz_path     = str(npz_path) if npz_path is not None else None
+
+        self.hefesto_params = None
+        self.hefesto_npz_path = self._npz_path
+        if control_path is not None:
+            self.hefesto_params = load_control(
+                str(control_path),
+                param_dir_override=str(param_dir) if param_dir is not None else None,
+            )
+            if verbose:
+                print(f"[INFO] Loaded HeFESTo params: {self.hefesto_params.nspec} species")
 
         if verbose:
             print("[INFO] HeFESToAPI initialized successfully.")
+        # __init_subclass__ wrapper creates the CPU twin automatically
+        # after this __init__ returns — no manual call needed here.
+
+    def _clone_as_cpu(self):
+        """Return a CPU HeFESToAPI with the same model paths and EOS params."""
+        return HeFESToAPI(
+            isothermal_model_path=self._iso_path,
+            isentropic_model_path=self._isen_path,
+            temperature_model_path=self._temp_path,
+            device='cpu',
+            verbose=False,
+            control_path=self._control_path,
+            param_dir=self._param_dir,
+            npz_path=self._npz_path,
+        )
+
+    # EOS chunks: large enough to amortise Python overhead, small enough to
+    # avoid OOM on systems where GPU VRAM is the bottleneck.
+    _EOS_BATCH_SIZE: int = 2 ** 15
 
     def _compute_bulk_EOS_properties(
         self,
         component_moles: torch.Tensor,
         PT: torch.Tensor,
-        property_names: Sequence[str],
+        property_names = ('rho', 'Vp', 'Vs', 'S'),
     ) -> Dict[str, np.ndarray]:
-        """Delegate to Burnman backend."""
-        return self.get_property_burnman_vectorized_from_assemblage(
-            component_moles, PT, property_names
+        """Route EOS evaluation through _staged_forward.
+
+        Gives automatic chunking for large inputs and CPU fallback for
+        small inputs — both handled transparently by _staged_forward.
+        """
+        nc = int(component_moles.shape[1])
+
+        def _as_f64(x):
+            if torch.is_tensor(x):
+                return x.detach().to(device=self.device, dtype=torch.float64)
+            return torch.tensor(np.asarray(x, dtype=np.float64), device=self.device)
+
+        combined = torch.cat([_as_f64(component_moles), _as_f64(PT)], dim=1)
+
+        def _eos_gpu(batch):
+            return self.get_property_hefesto_vectorized_from_assemblage(
+                batch[:, :nc], batch[:, nc:], property_names
+            )
+
+        cpu_fn = None
+        if self._cpu_api is not None:
+            def _eos_cpu(batch):
+                return self._cpu_api.get_property_hefesto_vectorized_from_assemblage(
+                    batch[:, :nc], batch[:, nc:], property_names
+                )
+            cpu_fn = _eos_cpu
+
+        return self._staged_forward(
+            _eos_gpu, combined, self._EOS_BATCH_SIZE, _cpu_fallback=cpu_fn
         )
 
-    def get_property_burnman_vectorized_from_assemblage(
+    def get_property_hefesto_vectorized_from_assemblage(
         self,
-        componentMoles,
-        PT,
-        property_names = ['entropy_by_mass', 'density', 'p_wave_velocity', 's_wave_velocity', 'isothermal_bulk_modulus_reuss']):
-
+        component_moles: torch.Tensor,
+        PT: torch.Tensor,
+        property_names: Sequence[str] = ('rho', 'Vp', 'Vs', 'S'),
+    ) -> Dict[str, np.ndarray]:
         """
-        Compute properties for a given assemblage using Burnman.
+        Compute bulk EOS properties using the vectorised HeFESTo EOS.
+
+        Bulk scalar outputs (shape (B,)):
+            rho   g/cm³       aggregate density
+            Vp    km/s        P-wave velocity (VRH)
+            Vs    km/s        S-wave velocity (VRH)
+            Vb    km/s        bulk sound velocity
+            S     J/g/K       aggregate entropy
+            Kh    GPa         adiabatic bulk modulus (VRH Hill)
+            Gh    GPa         shear modulus (VRH Hill)
+            Kv/Kr GPa         Voigt / Reuss adiabatic bulk moduli
+            Gv/Gr GPa         Voigt / Reuss shear moduli
+
+        Per-species outputs (shape (B, nspec)) — useful for diagnostics:
+            V     cm³/mol     converged molar volume
+            _K    GPa         isothermal bulk modulus
+            _Ks   GPa         adiabatic bulk modulus
+            _Gsh  GPa         shear modulus
+            _alp  K⁻¹         thermal expansivity
+            _Cp   J/mol/K     isobaric heat capacity
+            _rho  g/cm³       species density
+            _S    J/mol/K     species molar entropy
 
         Parameters
         ----------
-        intensive_moles : np.array
-            (N, C) tensor of intensive component moles from emulator output
-        phase_moles : np.array
-            (N, P) tensor of phase moles from emulator output
-        PT : np.array
-            (N, 2) tensor of pressure and temperature values
+        component_moles : torch.Tensor, shape (B, C)
+            Component mole fractions from emulator output. Columns correspond
+            to self.isothermal_emulator.ml_indexer.label_names; self.PropertyIDX
+            maps them into the full HeFESTo species array.
+        PT : torch.Tensor, shape (B, 2)
+            Columns: [P (GPa), T (K)].
         property_names : sequence of str
-            List of properties recongnized by burnman to compute (e.g., ['bulk_modulus', 'density'])
+            Keys to return from the compute output dict.
 
         Returns
         -------
-        numpy.ndarray
-            Array of shape (N, len(property_names)) with computed properties for each assemblage
+        dict[str, np.ndarray]
+            Requested properties keyed by name.
         """
+        if self.hefesto_params is None:
+            raise RuntimeError(
+                "HeFESTo params not loaded. Pass control_path= (and optionally "
+                "param_dir=) to HeFESToAPI.__init__."
+            )
 
-        time_start = time.time()
+        if torch.is_tensor(component_moles):
+            cm_np = component_moles.detach().cpu().numpy().astype(np.float64)
+        else:
+            cm_np = np.asarray(component_moles, dtype=np.float64)
 
-        self.VecEOS = VectorComposite(
-        #component_names=[self.burnman_translator[phase] for phase in self.isentropic_emulator.ml_indexer.label_names],
-        #phase_names=[self.burnman_translator[phase] for phase in self.isothermal_emulator.ml_indexer.all_phases],
-        phase_identity=torch.tensor(self.isothermal_emulator.ml_indexer.phaseToCompMap.T, dtype=torch.float64, device=self.device),
-        component_abundances=componentMoles,
-        phase_models=self.burnman_minerals,
-        pressure=PT[:,0],
-        temperature=PT[:,1],
-        device=self.device,
-        dtype=torch.float64
+        if torch.is_tensor(PT):
+            PT_np = PT.detach().cpu().numpy().astype(np.float64)
+        else:
+            PT_np = np.asarray(PT, dtype=np.float64)
+
+        P = PT_np[:, 0]  # (B,) GPa
+        T = PT_np[:, 1]  # (B,) K
+
+        B = cm_np.shape[0]
+        X_input = np.zeros((B, self.hefesto_params.nspec), dtype=np.float64)
+        X_input[:, self.PropertyIDX] = cm_np
+
+        eos_device = self.device.type if hasattr(self.device, 'type') else str(self.device)
+        t0 = time.time()
+        result = hefesto_compute(
+            P, T, X_input, self.hefesto_params,
+            npz_path=self.hefesto_npz_path,
+            device=eos_device if eos_device != 'cpu' else None,
         )
+        if self.verbose:
+            print(f"HeFESTo EOS for {B} assemblages took {time.time() - t0:.2f} s")
 
-        #self.VecEOS.evaluate_backend_properties()
+        try:
+            return {prop: result[prop] for prop in property_names}
+        except KeyError as e:
+            raise ValueError(
+                f"Unknown property {e}. Available keys: {list(result.keys())}"
+            ) from e
 
-        nrows = componentMoles.size()[0]
-
-        assert nrows == PT.size()[0], "Batch size of intensive_moles and phase_moles must match"
-
-        #outmatrix = np.zeros((nrows, len(property_names)), dtype=np.float32)
-        outdict = {}
-
-        for j, prop in enumerate(property_names):
-            try:
-                outdict[prop] = getattr(self.VecEOS, prop).detach().cpu().numpy()
-            except Exception as e:
-                raise ValueError(f"Error computing property '{prop}': {e}")
-
-        print(f"Burnman property computation for {nrows} assemblages and properties {property_names} took {time.time() - time_start:.2f} seconds")
-        return outdict
 
 class MELTSAPI:
     """
@@ -1483,7 +1663,7 @@ _models_dir = _this_file_dir / "TrainedModels" / "HeFESTo_Adiabats"
 
 adiabat_NPT_path = _models_dir / "HeFESTo_adiabats_NPT.tar"
 adiabat_NPS_path = _models_dir / "HeFESTo_adiabats_NPS.tar"
-adiabat_TfromS_path = _models_dir / "T_from_S_HeFESTo_adiabats.pt"
+adiabat_TfromS_path = _models_dir / "T_from_S_HeFESTo_UMadiabats.pt"
 print(f"[INFO] Looking for HeFESTo model at: {adiabat_NPT_path}")
 
 MELTS102_dir = _this_file_dir / "TrainedModels" / "MELTS102"

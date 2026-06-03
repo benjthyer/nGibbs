@@ -27,9 +27,9 @@ Key optimisations
 from __future__ import annotations
 import numpy as np
 
-from .gamset   import gamset_vec
-from .thermal  import Etherm_vec, Ctherm_vec
-from .pressure import pressure_vec, cold_bulk_modulus_vec
+from .gamset   import gamset_vec, gamset_torch
+from .thermal  import Etherm_vec, Ctherm_vec, Etherm_torch, Ctherm_torch
+from .pressure import pressure_vec, cold_bulk_modulus_vec, pressure_torch, cold_bulk_modulus_torch
 from .constants import Rgas
 
 
@@ -268,7 +268,7 @@ def solve_volume(
 
     return dict(
         V         = V_out,
-        converged = _scatter_bool(conv_f, fill=True),
+        converged = _scatter_bool(conv_f, fill=True),  # noqa: E501
         gamma     = _scatter(gs_f['gamma']),
         q         = _scatter(gs_f['q']),
         qp        = _scatter(gs_f['qp']),
@@ -291,4 +291,182 @@ def solve_volume(
         Uto       = _scatter(Uto_f),
         Cv        = _scatter(Cv_f),
         Cvo       = _scatter(Cvo_f),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Torch-native volume solver (GPU-compatible, full-array masked NR)
+# ---------------------------------------------------------------------------
+
+def solve_volume_torch(
+    Pi    : 'torch.Tensor',    # (B,) GPa
+    Ti    : 'torch.Tensor',    # (B,) K
+    apar  : 'torch.Tensor',    # (S, NPARP) already column-reduced; torch tensor
+    active: 'torch.Tensor',    # (B, S) bool
+    *,
+    device,
+    max_iter       : int   = 50,
+    tol_GPa        : float = 1.0e-8,
+    stuck_patience : int   = 5,
+    verbose        : bool  = False,
+) -> dict:
+    """Torch solve_volume — GPU-friendly NR with full-array masked updates.
+
+    Uses the same flat active-only layout as the numpy version but replaces
+    the shrinking work-set with a boolean converged mask so no dynamic tensor
+    reshaping is needed on device.
+    """
+    import torch
+
+    B, S = active.shape
+    # Nonzero gives indices of active (batch, species) pairs
+    row_idx, col_idx = torch.where(active)    # each (n_flat,)
+    n_flat = int(row_idx.shape[0])
+
+    def _g(col):        return apar[col_idx, col]
+    def _pi(col):       return apar[col_idx, col].long()
+
+    Pi_f   = Pi[row_idx];        Ti_f   = Ti[row_idx]
+    To_f   = _g(3);              fn_f   = _g(0);    zu_f   = _g(1)
+    Vo_f   = _g(5);              Ko_f   = _g(6);    Kop_f  = _g(7);   Kopp_f = _g(8)
+    wd1o_f = _g(9);              wd2o_f = _g(10);   wd3o_f = _g(11)
+    ws1o_f = _g(12);             ws2o_f = _g(13);   ws3o_f = _g(14)
+    we1o_f = _g(15);             qe1_f  = _g(16)
+    we2o_f = _g(17);             qe2_f  = _g(18)
+    we3o_f = _g(19);             qe3_f  = _g(20)
+    we4o_f = _g(21);             qe4_f  = _g(22)
+    wouo_f = _g(23);             wolo_f = _g(24)
+    gam0_f = _g(25);             qo_f   = _g(26)
+    be_f   = _g(27);             ge_f   = _g(28);   q2A2_f = _g(29)
+    ibv_f  = _pi(31);            izp_f  = _pi(33);  Got_f  = _g(36);  a5_f   = _g(42)
+
+    Kop_safe_f = torch.where(Kop_f == 0.0, torch.full_like(Kop_f, 4.0), Kop_f)
+    V_f = Vo_f * (1.0 + (Kop_safe_f / Ko_f) * Pi_f) ** (-1.0 / Kop_safe_f)
+    V_f = torch.clamp(V_f, Vo_f / 10.0, Vo_f * 10.0)
+
+    # Single sync before the NR loop: determine whether ANY active species has
+    # anisotropic acoustic modes (wd2/wd3/ws2/ws3 ≠ 0).  For the standard
+    # mantle database this is False, eliminating all aniso-branch GPU→CPU
+    # syncs inside the loop.
+    from .thermal import _has_aniso_from_modes
+    has_aniso = _has_aniso_from_modes(wd2o_f, wd3o_f, ws2o_f, ws3o_f)
+
+    conv_f   = torch.zeros(n_flat, dtype=torch.bool, device=device)
+    n_conv_prev = 0
+    stuck_cnt   = 0
+    any_converged = False
+
+    def _kw(V_w):
+        gs = gamset_torch(wd1o_f, wd2o_f, wd3o_f,
+                          ws1o_f, ws2o_f, ws3o_f,
+                          we1o_f, we2o_f, we3o_f, we4o_f,
+                          wouo_f, wolo_f,
+                          gam0_f, qo_f, Got_f, V_w, Vo_f)
+        return gs, dict(fn=fn_f, zu=zu_f,
+                        wd1=gs['wd1'], wd2=gs['wd2'], wd3=gs['wd3'],
+                        ws1=gs['ws1'], ws2=gs['ws2'], ws3=gs['ws3'],
+                        wou=gs['wou'], wol=gs['wol'],
+                        we1=gs['we1'], we2=gs['we2'],
+                        we3=gs['we3'], we4=gs['we4'],
+                        qe1=qe1_f, qe2=qe2_f, qe3=qe3_f, qe4=qe4_f)
+
+    for iteration in range(max_iter):
+        if conv_f.all():
+            break
+
+        gs_all, kw_all = _kw(V_f)
+        Uth_all = Etherm_torch(Ti=Ti_f, **kw_all, has_aniso=has_aniso)
+        Uto_all = Etherm_torch(Ti=To_f, **kw_all, has_aniso=has_aniso)
+        P_res   = pressure_torch(
+            Vi=V_f, Ti=Ti_f, Pi_target=Pi_f,
+            Vo=Vo_f, Ko=Ko_f, Kop=Kop_f, Kopp=Kopp_f,
+            gamma=gs_all['gamma'], q=gs_all['q'],
+            fn=fn_f, wd1=wd1o_f, a5=a5_f, izp=izp_f,
+            be=be_f, ge=ge_f, q2A2=q2A2_f,
+            To=To_f, Uth=Uth_all, Uto=Uto_all,
+            wd1_Vi=gs_all['wd1'], ibv=ibv_f,
+        )
+
+        new_conv  = P_res.abs() < tol_GPa
+        conv_f    = conv_f | new_conv
+        n_conv    = int(conv_f.sum().item())
+
+        if verbose:
+            print(f"  iter {iteration:3d}: max|P_res|={float(P_res.abs().max()):.3e} GPa "
+                  f"n_converged={n_conv}/{n_flat}")
+
+        if n_conv == n_flat:
+            break
+
+        if any_converged:
+            stuck_cnt = stuck_cnt + 1 if n_conv == n_conv_prev else 0
+        if n_conv > 0:
+            any_converged = True
+        n_conv_prev = n_conv
+
+        if stuck_cnt >= stuck_patience:
+            if verbose:
+                print(f"  iter {iteration}: stuck for {stuck_patience} iters → exit")
+            break
+
+        # NR update (compute for all, apply only to unconverged)
+        work    = ~conv_f
+        Cv_all  = Ctherm_torch(Ti=Ti_f, **kw_all, has_aniso=has_aniso)
+        Cvo_all = Ctherm_torch(Ti=To_f, **kw_all, has_aniso=has_aniso)
+        Kc_all  = cold_bulk_modulus_torch(V_f, Vo_f, Ko_f, Kop_f, Kopp_f, a5_f, ibv=ibv_f)
+        gam     = gs_all['gamma'];  q_g = gs_all['q']
+        ph      = 1.0e-3 * (gam / V_f) * (Uth_all - Uto_all)
+        Kth     = ((gam + 1.0 - q_g) * ph
+                   - 1.0e-3 * (gam**2 / V_f) * (Ti_f * Cv_all - To_f * Cvo_all))
+        K_eff   = torch.maximum(Kc_all + Kth, Ko_f)
+        dV      = P_res * V_f / K_eff.clamp(min=1e-10)
+        V_new   = torch.clamp(V_f + dV, Vo_f / 10.0, Vo_f * 10.0)
+        V_f     = torch.where(work, V_new, V_f)
+
+    # Final evaluation at converged V
+    gs_f, kw_f = _kw(V_f)
+    Uth_f  = Etherm_torch(Ti=Ti_f, **kw_f, has_aniso=has_aniso)
+    Uto_f  = Etherm_torch(Ti=To_f, **kw_f, has_aniso=has_aniso)
+    Cv_f   = Ctherm_torch(Ti=Ti_f, **kw_f, has_aniso=has_aniso)
+    Cvo_f  = Ctherm_torch(Ti=To_f, **kw_f, has_aniso=has_aniso)
+
+    # Scatter flat results → (B, S) torch tensors
+    def _scat(arr, fill=0.0):
+        out = torch.full((B, S), fill, dtype=torch.float64, device=device)
+        out[row_idx, col_idx] = arr
+        return out
+
+    def _scat_bool(arr, fill=True):
+        out = torch.full((B, S), fill, dtype=torch.bool, device=device)
+        out[row_idx, col_idx] = arr
+        return out
+
+    V_out = apar[None, :, 5].expand(B, S).clone()
+    V_out[row_idx, col_idx] = V_f
+
+    return dict(
+        V         = V_out,
+        converged = _scat_bool(conv_f, fill=True),
+        gamma     = _scat(gs_f['gamma']),
+        q         = _scat(gs_f['q']),
+        qp        = _scat(gs_f['qp']),
+        etas      = _scat(gs_f['etas']),
+        detasdv   = _scat(gs_f['detasdv']),
+        scale     = _scat(gs_f['scale']),
+        wd1       = _scat(gs_f['wd1']),
+        wd2       = _scat(gs_f['wd2']),
+        wd3       = _scat(gs_f['wd3']),
+        ws1       = _scat(gs_f['ws1']),
+        ws2       = _scat(gs_f['ws2']),
+        ws3       = _scat(gs_f['ws3']),
+        we1       = _scat(gs_f['we1']),
+        we2       = _scat(gs_f['we2']),
+        we3       = _scat(gs_f['we3']),
+        we4       = _scat(gs_f['we4']),
+        wou       = _scat(gs_f['wou']),
+        wol       = _scat(gs_f['wol']),
+        Uth       = _scat(Uth_f),
+        Uto       = _scat(Uto_f),
+        Cv        = _scat(Cv_f),
+        Cvo       = _scat(Cvo_f),
     )

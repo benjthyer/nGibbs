@@ -1,5 +1,5 @@
 #!/bin/bash
-# prepare_simulations.sh - Run this ONCE from login node
+# prepare_simulations.sh demo - Run this from login node
 
 python $HOME/HeFESTo/nMELTS/scripts/prepare_hefesto_tree_fulladiabat.py \
     --directory $HOME/HeFESTo/DemoSimulations \

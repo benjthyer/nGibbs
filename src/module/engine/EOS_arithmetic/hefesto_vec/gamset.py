@@ -128,3 +128,72 @@ def gamset_vec(
         we1=we1, we2=we2, we3=we3, we4=we4,
         wou=wou, wol=wol,
     )
+
+
+# ---------------------------------------------------------------------------
+# Torch-native version (GPU-compatible) — identical math, torch ops
+# ---------------------------------------------------------------------------
+
+def gamset_torch(
+    wd1o, wd2o, wd3o, ws1o, ws2o, ws3o,
+    we1o, we2o, we3o, we4o, wouo, wolo,
+    gammo, qo, Got,
+    Vi, Vo,
+) -> dict:
+    """Torch equivalent of gamset_vec — accepts and returns torch tensors."""
+    import torch
+
+    x = Vi / Vo
+    f = 0.5 * (x ** (-2.0 / 3.0) - 1.0)
+
+    a  = 6.0 * gammo
+    b  = gammo * (36.0 * gammo - 18.0 * qo - 12.0)
+    bs = -2.0 * gammo - 2.0 * Got
+
+    arg      = 1.0 + a * f + 0.5 * b * f**2
+    arg_safe = torch.clamp(arg, min=1.0e-12)
+    scale    = torch.sqrt(arg_safe)
+    ratio    = 1.0 / arg_safe
+
+    gamma = (1.0 / 3.0) * 0.5 * ratio * (2.0 * f + 1.0) * (a + b * f)
+
+    safe_gamma = torch.where(gamma.abs() < 1e-30,
+                             torch.full_like(gamma, 1e-30), gamma)
+    q = ((1.0 / 9.0) * (
+        18.0 * gamma**2
+        - 6.0 * gamma
+        - 0.5 * ratio * (2.0 * f + 1.0)**2 * b
+    ) / safe_gamma)
+
+    zero_mask = (gammo == 0.0) & (qo == 0.0)
+    q = torch.where(zero_mask, qo, q)
+
+    safe_q = torch.where(q.abs() < 1e-30, torch.full_like(q, 1e-30), q)
+    qp = ((1.0 / 9.0) * (
+        36.0 * gamma**2
+        - 6.0 * gamma
+        - b * ratio**2 / (6.0 * safe_q) * (a + b * f) * (2.0 * f + 1.0)**3
+        + 2.0 * b * ratio / (3.0 * safe_q) * (2.0 * f + 1.0)**2
+    ) / safe_gamma - q)
+
+    etas    = -gamma - 0.5 * ratio * (2.0 * f + 1.0)**2 * bs
+    detasdv = (
+        -gamma * q / Vi
+        + 2.0 * bs * (1.0 + 2.0 * f)**(7.0 / 2.0) * ratio / (3.0 * Vo)
+        - bs * (1.0 + 2.0 * f)**(9.0 / 2.0) * ratio**2 / (6.0 * Vo) * (a + b * f)
+    )
+
+    wd1 = wd1o * scale;  wd2 = wd2o * scale;  wd3 = wd3o * scale
+    ws1 = ws1o * scale;  ws2 = ws2o * scale;  ws3 = ws3o * scale
+    we1 = we1o * scale;  we2 = we2o * scale
+    we3 = we3o * scale;  we4 = we4o * scale
+    wou = wouo * scale;  wol = wolo * scale
+
+    return dict(
+        gamma=gamma, q=q, qp=qp, etas=etas, detasdv=detasdv,
+        scale=scale,
+        wd1=wd1, wd2=wd2, wd3=wd3,
+        ws1=ws1, ws2=ws2, ws3=ws3,
+        we1=we1, we2=we2, we3=we3, we4=we4,
+        wou=wou, wol=wol,
+    )

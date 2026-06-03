@@ -21,8 +21,8 @@ from __future__ import annotations
 import numpy as np
 
 from .constants import Rgas
-from .dos_tables import Heat_vec, Ener_vec, Helm_vec
-
+from .dos_tables import Heat_vec, Ener_vec, Helm_vec, Heat_torch, Ener_torch, Helm_torch
+import torch
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Internal helper: compute mode weights (su, qo, aniso mask)
@@ -336,3 +336,210 @@ def Ftherm_vec(Ti,
     result = Fd + Fs + Fe + Fo
     result = np.where(Ti_arr <= 0.0, 0.0, result)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Torch-native thermal functions (GPU-compatible)
+# ---------------------------------------------------------------------------
+
+def _mode_weights_torch(fn, zu, wd1, wd2, wd3, ws1, ws2, ws3,
+                        wou, wol, we1, we2, we3, we4, qe1, qe2, qe3, qe4):
+    import torch
+    su   = fn * zu
+    wo   = (wou + wol) / 2.0
+    wdav = (wd1 + wd2 + wd3) / 3.0
+    wsav = (ws1 + ws2 + ws3) / 3.0
+    no_acoustic = (wdav == 0.0) & (wsav == 0.0)
+    su = torch.where(no_acoustic, torch.full_like(su, 1.0e15), su)
+    qe = qe1 + qe2 + qe3 + qe4
+    qo = 1.0 - 1.0 / su - qe
+    qo = torch.where(wo == 0.0, torch.zeros_like(qo), qo)
+    do_ = torch.where(wo != 0.0, (wou - wol) / wo.clamp(min=1e-30), torch.zeros_like(wo))
+    aniso_deb = wdav != (wd1 / 3.0)
+    aniso_sin = wsav != (ws1 / 3.0)
+    aniso = aniso_deb | aniso_sin
+    no_ein_opt = (qe == 0.0) & (qo == 0.0)
+    su = torch.where(no_ein_opt, torch.ones_like(su), su)
+    qo_zero = qo == 0.0
+    su_redist = torch.where(qe >= 1.0, torch.full_like(su, 1.0e15), 1.0 / (1.0 - qe).clamp(min=1e-30))
+    su = torch.where(qo_zero, su_redist, su)
+    return su, qo, do_, aniso
+
+
+def _sx(w, T):
+    """Safe x = w/T, zero where w==0."""
+    return torch.where(w == 0.0, torch.zeros_like(w), w / T)
+
+
+def _bener(w_over_T, do_, idos):
+    shape = w_over_T.shape
+    x_f   = w_over_T.reshape(-1)
+    d_f   = do_.reshape(-1) if idos == 4 else 0.0
+    return Ener_torch(x_f, idos=idos, d=d_f).reshape(shape)
+
+
+def _bheat(w_over_T, do_, idos):
+    shape = w_over_T.shape
+    x_f   = w_over_T.reshape(-1)
+    d_f   = do_.reshape(-1) if idos == 4 else 0.0
+    return Heat_torch(x_f, idos=idos, d=d_f).reshape(shape)
+
+
+def _bhelm(w_over_T, do_, idos):
+    shape = w_over_T.shape
+    x_f   = w_over_T.reshape(-1)
+    d_f   = do_.reshape(-1) if idos == 4 else 0.0
+    return Helm_torch(x_f, idos=idos, d=d_f).reshape(shape)
+
+
+def _has_aniso_from_modes(wd2, wd3, ws2, ws3) -> bool:
+    """Return True if any species has anisotropic modes (one GPU→CPU sync)."""
+    return bool((wd2.abs() + wd3.abs() + ws2.abs() + ws3.abs()).max().item() > 0)
+
+
+def Etherm_torch(Ti, fn, zu, wd1, wd2, wd3, ws1, ws2, ws3,
+                 wou, wol, we1, we2, we3, we4, qe1, qe2, qe3, qe4,
+                 has_aniso: 'bool | None' = None):
+    """Torch Etherm: vibrational internal energy (J/mol).
+
+    has_aniso : pre-computed Python bool to avoid GPU→CPU sync on every call.
+        Pass False when wd2=wd3=ws2=ws3=0 for all active species (typical).
+        None (default) falls back to a single .any() check inside the call.
+    """
+    import torch
+    Ti_t    = Ti if torch.is_tensor(Ti) else torch.as_tensor(Ti, dtype=torch.float64, device=fn.device)
+    Ti_safe = torch.where(Ti_t <= 0.0, torch.ones_like(Ti_t), Ti_t)
+    su, qo, do_, aniso = _mode_weights_torch(fn, zu, wd1, wd2, wd3, ws1, ws2, ws3,
+                                              wou, wol, we1, we2, we3, we4,
+                                              qe1, qe2, qe3, qe4)
+    # Resolve has_aniso once (Python bool → no further GPU→CPU syncs in the loop)
+    _ha = bool(aniso.any()) if has_aniso is None else has_aniso
+
+    x1 = _sx(wd1, Ti_safe)
+    ud = (1.0 / su) * torch.where(wd1 == 0.0, torch.zeros_like(x1), _bener(x1, do_, 1))
+    if _ha:
+        x2 = _sx(wd2, Ti_safe);  x3 = _sx(wd3, Ti_safe)
+        e2 = torch.where(wd2 == 0.0, torch.zeros_like(x2), _bener(x2, do_, 1))
+        e3 = torch.where(wd3 == 0.0, torch.zeros_like(x3), _bener(x3, do_, 1))
+        ud = torch.where(aniso, ud / 3.0 + (e2 + e3) / (3.0 * su), ud)
+    Ud = 3.0 * fn * Rgas * Ti_safe * ud + (9.0 / 8.0) * fn * Rgas * wd1
+
+    xs1 = _sx(ws1, Ti_safe)
+    us = (1.0 / su) * torch.where(ws1 == 0.0, torch.zeros_like(xs1), _bener(xs1, do_, 3))
+    if _ha:
+        xs2 = _sx(ws2, Ti_safe);  xs3 = _sx(ws3, Ti_safe)
+        s2  = torch.where(ws2 == 0.0, torch.zeros_like(xs2), _bener(xs2, do_, 3))
+        s3  = torch.where(ws3 == 0.0, torch.zeros_like(xs3), _bener(xs3, do_, 3))
+        us  = torch.where(aniso, us / 3.0 + (s2 + s3) / (3.0 * su), us)
+    Us = 3.0 * fn * Rgas * Ti_safe * us
+
+    xe1 = _sx(we1, Ti_safe);  xe2 = _sx(we2, Ti_safe)
+    xe3 = _sx(we3, Ti_safe);  xe4 = _sx(we4, Ti_safe)
+    ue  = (qe1 * torch.where(we1 == 0.0, torch.zeros_like(xe1), _bener(xe1, do_, 2))
+         + qe2 * torch.where(we2 == 0.0, torch.zeros_like(xe2), _bener(xe2, do_, 2))
+         + qe3 * torch.where(we3 == 0.0, torch.zeros_like(xe3), _bener(xe3, do_, 2))
+         + qe4 * torch.where(we4 == 0.0, torch.zeros_like(xe4), _bener(xe4, do_, 2)))
+    Ue = 3.0 * fn * Rgas * Ti_safe * ue
+
+    wo  = (wou + wol) / 2.0
+    xo  = _sx(wo, Ti_safe)
+    uo  = qo * torch.where(wo == 0.0, torch.zeros_like(xo), _bener(xo, do_, 4))
+    Uo  = 3.0 * fn * Rgas * Ti_safe * uo
+
+    return torch.where(Ti_t <= 0.0, torch.zeros_like(Ud), Ud + Us + Ue + Uo)
+
+
+def Ctherm_torch(Ti, fn, zu, wd1, wd2, wd3, ws1, ws2, ws3,
+                 wou, wol, we1, we2, we3, we4, qe1, qe2, qe3, qe4,
+                 has_aniso: 'bool | None' = None):
+    """Torch Ctherm: isochoric heat capacity (J/mol/K).
+
+    has_aniso : see Etherm_torch.
+    """
+    import torch
+    Ti_t    = Ti if torch.is_tensor(Ti) else torch.as_tensor(Ti, dtype=torch.float64, device=fn.device)
+    Ti_safe = torch.where(Ti_t <= 0.0, torch.ones_like(Ti_t), Ti_t)
+    su, qo, do_, aniso = _mode_weights_torch(fn, zu, wd1, wd2, wd3, ws1, ws2, ws3,
+                                              wou, wol, we1, we2, we3, we4,
+                                              qe1, qe2, qe3, qe4)
+    _ha = bool(aniso.any()) if has_aniso is None else has_aniso
+
+    x1  = _sx(wd1, Ti_safe)
+    Cd  = (1.0 / su) * torch.where(wd1 == 0.0, torch.zeros_like(x1), _bheat(x1, do_, 1))
+    if _ha:
+        x2 = _sx(wd2, Ti_safe);  x3 = _sx(wd3, Ti_safe)
+        h2 = torch.where(wd2 == 0.0, torch.zeros_like(x2), _bheat(x2, do_, 1))
+        h3 = torch.where(wd3 == 0.0, torch.zeros_like(x3), _bheat(x3, do_, 1))
+        Cd = torch.where(aniso, Cd / 3.0 + (h2 + h3) / (3.0 * su), Cd)
+
+    xs1 = _sx(ws1, Ti_safe)
+    Cs  = (1.0 / su) * torch.where(ws1 == 0.0, torch.zeros_like(xs1), _bheat(xs1, do_, 3))
+    if _ha:
+        xs2 = _sx(ws2, Ti_safe);  xs3 = _sx(ws3, Ti_safe)
+        hs2 = torch.where(ws2 == 0.0, torch.zeros_like(xs2), _bheat(xs2, do_, 3))
+        hs3 = torch.where(ws3 == 0.0, torch.zeros_like(xs3), _bheat(xs3, do_, 3))
+        Cs  = torch.where(aniso, Cs / 3.0 + (hs2 + hs3) / (3.0 * su), Cs)
+
+    xe1 = _sx(we1, Ti_safe);  xe2 = _sx(we2, Ti_safe)
+    xe3 = _sx(we3, Ti_safe);  xe4 = _sx(we4, Ti_safe)
+    Ce  = (qe1 * torch.where(we1 == 0.0, torch.zeros_like(xe1), _bheat(xe1, do_, 2))
+         + qe2 * torch.where(we2 == 0.0, torch.zeros_like(xe2), _bheat(xe2, do_, 2))
+         + qe3 * torch.where(we3 == 0.0, torch.zeros_like(xe3), _bheat(xe3, do_, 2))
+         + qe4 * torch.where(we4 == 0.0, torch.zeros_like(xe4), _bheat(xe4, do_, 2)))
+
+    wo  = (wou + wol) / 2.0
+    xo  = _sx(wo, Ti_safe)
+    Co  = qo * torch.where(wo == 0.0, torch.zeros_like(xo), _bheat(xo, do_, 4))
+
+    result = 3.0 * fn * Rgas * (Cd + Cs + Ce + Co)
+    return torch.where(Ti_t <= 0.0, torch.zeros_like(result), result)
+
+
+def Ftherm_torch(Ti, fn, zu, wd1, wd2, wd3, ws1, ws2, ws3,
+                 wou, wol, we1, we2, we3, we4, qe1, qe2, qe3, qe4,
+                 has_aniso: 'bool | None' = None):
+    """Torch Ftherm: vibrational Helmholtz free energy (J/mol).
+
+    has_aniso : see Etherm_torch.
+    """
+    import torch
+    Ti_t    = Ti if torch.is_tensor(Ti) else torch.as_tensor(Ti, dtype=torch.float64, device=fn.device)
+    Ti_safe = torch.where(Ti_t <= 0.0, torch.ones_like(Ti_t), Ti_t)
+    su, qo, do_, aniso = _mode_weights_torch(fn, zu, wd1, wd2, wd3, ws1, ws2, ws3,
+                                              wou, wol, we1, we2, we3, we4,
+                                              qe1, qe2, qe3, qe4)
+    _ha = bool(aniso.any()) if has_aniso is None else has_aniso
+
+    x1   = _sx(wd1, Ti_safe)
+    Fd_n = (1.0 / su) * torch.where(wd1 == 0.0, torch.zeros_like(x1), _bhelm(x1, do_, 1))
+    if _ha:
+        x2 = _sx(wd2, Ti_safe);  x3 = _sx(wd3, Ti_safe)
+        h2 = torch.where(wd2 == 0.0, torch.zeros_like(x2), _bhelm(x2, do_, 1))
+        h3 = torch.where(wd3 == 0.0, torch.zeros_like(x3), _bhelm(x3, do_, 1))
+        Fd_n = torch.where(aniso, Fd_n / 3.0 + (h2 + h3) / (3.0 * su), Fd_n)
+    Fd = 3.0 * fn * Rgas * Ti_safe * Fd_n + (9.0 / 8.0) * fn * Rgas * wd1
+
+    xs1  = _sx(ws1, Ti_safe)
+    Fs_n = (1.0 / su) * torch.where(ws1 == 0.0, torch.zeros_like(xs1), _bhelm(xs1, do_, 3))
+    if _ha:
+        xs2 = _sx(ws2, Ti_safe);  xs3 = _sx(ws3, Ti_safe)
+        hs2 = torch.where(ws2 == 0.0, torch.zeros_like(xs2), _bhelm(xs2, do_, 3))
+        hs3 = torch.where(ws3 == 0.0, torch.zeros_like(xs3), _bhelm(xs3, do_, 3))
+        Fs_n = torch.where(aniso, Fs_n / 3.0 + (hs2 + hs3) / (3.0 * su), Fs_n)
+    Fs = 3.0 * fn * Rgas * Ti_safe * Fs_n
+
+    xe1 = _sx(we1, Ti_safe);  xe2 = _sx(we2, Ti_safe)
+    xe3 = _sx(we3, Ti_safe);  xe4 = _sx(we4, Ti_safe)
+    Fe_n = (qe1 * torch.where(we1 == 0.0, torch.zeros_like(xe1), _bhelm(xe1, do_, 2))
+          + qe2 * torch.where(we2 == 0.0, torch.zeros_like(xe2), _bhelm(xe2, do_, 2))
+          + qe3 * torch.where(we3 == 0.0, torch.zeros_like(xe3), _bhelm(xe3, do_, 2))
+          + qe4 * torch.where(we4 == 0.0, torch.zeros_like(xe4), _bhelm(xe4, do_, 2)))
+    Fe = 3.0 * fn * Rgas * Ti_safe * Fe_n
+
+    wo   = (wou + wol) / 2.0
+    xo   = _sx(wo, Ti_safe)
+    Fo_n = qo * torch.where(wo == 0.0, torch.zeros_like(xo), _bhelm(xo, do_, 4))
+    Fo   = 3.0 * fn * Rgas * Ti_safe * Fo_n
+
+    result = Fd + Fs + Fe + Fo
+    return torch.where(Ti_t <= 0.0, torch.zeros_like(result), result)

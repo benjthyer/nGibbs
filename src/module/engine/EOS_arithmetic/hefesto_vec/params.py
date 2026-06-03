@@ -71,7 +71,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 
@@ -103,6 +103,11 @@ class HeFESToParams:
 
     # Convenience: species name → 0-indexed index
     spec_index: Dict[str, int] = field(default_factory=dict)
+
+    # Site occupancy data for mixing entropy (from chemical formulas).
+    # site_data[ispec] = list of (element_str, stoich_int) per non-O site position.
+    # Indexed identically to snames / apar rows.
+    site_data: List[List[Tuple[str, int]]] = field(default_factory=list)
 
 
 def load_control(control_path: str, param_dir_override: str | None = None) -> HeFESToParams:
@@ -212,6 +217,7 @@ def load_control(control_path: str, param_dir_override: str | None = None) -> He
     # Default: C12' = 2.0 (set by readin.f before reading file)
     apar[:, 41] = 2.0   # 0-indexed col 41 = 1-indexed col 42
 
+    formulas: List[str] = []
     for ispec, sname in enumerate(snames):
         fpath = os.path.join(param_dir, sname)
         if not os.path.isfile(fpath):
@@ -219,7 +225,8 @@ def load_control(control_path: str, param_dir_override: str | None = None) -> He
                 f"Parameter file not found: {fpath!r}\n"
                 f"(species '{sname}', index {ispec})"
             )
-        _read_param_file(fpath, ispec, apar)
+        formula_str = _read_param_file(fpath, ispec, apar)
+        formulas.append(formula_str)
 
     # ── Apply unit conversions (matching parset.f) ───────────────────────────
     # Fo: kJ/mol → J/mol
@@ -243,6 +250,9 @@ def load_control(control_path: str, param_dir_override: str | None = None) -> He
     # ── Build species name → index dict ──────────────────────────────────────
     spec_index = {name: i for i, name in enumerate(snames)}
 
+    # ── Parse formulas into per-site occupancy data ───────────────────────────
+    site_data = [_parse_formula(f) for f in formulas]
+
     return HeFESToParams(
         ityp=ityp, ivtyp=ivtyp, ittyp=ittyp, iltyp=iltyp,
         nspec=nspec,
@@ -253,21 +263,71 @@ def load_control(control_path: str, param_dir_override: str | None = None) -> He
         phase_iltyp=phase_iltyp,
         lphase=np.asarray(lphase, dtype=np.int32),
         spec_index=spec_index,
+        site_data=site_data,
     )
 
 
-def _read_param_file(fpath: str, ispec: int, apar: np.ndarray) -> None:
+def _parse_formula(formula_str: str) -> List[List[Tuple[str, int]]]:
+    """Parse a HeFESTo chemical formula into per-site component lists.
+
+    Each site is a list of (element, stoich) pairs.  Single-component sites
+    have one entry; multi-component sites (parenthesised groups) have several.
+
+    Examples
+    --------
+    'Mg_1Si_1O_3'           → [[(Mg,1)], [(Si,1)]]
+    'Mg_2Mg_2O_4'           → [[(Mg,2)], [(Mg,2)]]
+    '(Na_2Mg_1)Si_1Si_3O_12'→ [[(Na,2),(Mg,1)], [(Si,1)], [(Si,3)]]
+    'Ca_1Al_1(Si_1Al_1)O_6' → [[(Ca,1)], [(Al,1)], [(Si,1),(Al,1)]]
+
+    Parenthesised groups pack multiple components onto a single site,
+    matching the HeFESTo Fortran convention used in cformula.f.
+    Oxygen-containing sites are excluded.
+    """
+    sites: List[List[Tuple[str, int]]] = []
+    i = 0
+    s = formula_str.strip()
+    while i < len(s):
+        if s[i] == '(':
+            # Parenthesised multi-component site
+            j = s.index(')', i)
+            comps = [(el, int(n))
+                     for el, n in re.findall(r'([A-Z][a-z]*)_(\d+)', s[i+1:j])
+                     if el != 'O']
+            if comps:
+                sites.append(comps)
+            i = j + 1
+        elif s[i].isupper():
+            # Single-component site: El_N
+            m = re.match(r'([A-Z][a-z]*)_(\d+)', s[i:])
+            if m:
+                el, n = m.group(1), int(m.group(2))
+                if el != 'O':
+                    sites.append([(el, n)])
+                i += m.end()
+            else:
+                i += 1
+        else:
+            i += 1
+    return sites
+
+
+def _read_param_file(fpath: str, ispec: int, apar: np.ndarray) -> str:
     """Read up to 43 numeric values from a HeFESTo parameter file into apar.
 
     The file format has one numeric value per line, possibly preceded by
     whitespace and followed by a text label.  Lines that cannot be parsed as
     a float are silently skipped (this matches Fortran's ``read(1,*,...) err=``
     behaviour).
+
+    Returns the first-line formula string (e.g. 'Mg_1Si_1O_3').
     """
     values: List[float] = []
+    formula_str = ''
     with open(fpath, 'r') as fh:
-        # Skip the first line (chemical formula / mineral name)
-        fh.readline()
+        # First line is the chemical formula (and mineral name after whitespace)
+        first_line = fh.readline()
+        formula_str = first_line.split()[0] if first_line.split() else ''
         for line in fh:
             line = line.strip()
             if not line:
@@ -282,6 +342,8 @@ def _read_param_file(fpath: str, ispec: int, apar: np.ndarray) -> None:
     npar = min(len(values), 43)
     for i, v in enumerate(values[:npar]):
         apar[ispec, i] = v
+
+    return formula_str
 
 
 # ─────────────────────────────────────────────────────────────────────────────

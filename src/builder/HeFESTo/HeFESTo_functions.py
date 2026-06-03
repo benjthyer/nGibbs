@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 import sys
 import torch
+import numpy as np
+rng = np.random.default_rng()
 
 src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
@@ -43,7 +45,6 @@ try:
         extract_bulk_properties_from_simulation_dir,
     )
 except ImportError:
-    try:
         from src.module.utils.file_utils import (
             save_fixed_width_table,
             PHASE_ABBREVIATION_OVERRIDES,
@@ -59,13 +60,12 @@ except ImportError:
             load_fort99_componentMoles,
             extract_bulk_properties_from_simulation_dir,
         )
-    except ImportError:
-        def save_fixed_width_table(data, out_path=None):  # type: ignore[misc]
-            pass
 
 
 import numpy as np
 import pandas as pd
+
+from src.module.utils.math_utils import get_S, get_T
 
 from module.config.constants import (
     COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO,
@@ -79,7 +79,23 @@ _SIMULATION_DIR_PATTERN = re.compile(r'^(?:Simulation(\d+)|model_(\d{6}))$', re.
 
 EnsembleLocation = None
 
+def make_PT_path(S, P, func, out_path=None):
+    """Generate an ad.in pressure-temperature path file for HeFESTo."""
+    AdIn = np.zeros((len(P), 3))  # Middle column unused
+    AdIn[:, 0] = P
+    AdIn[:, 2] = func(S=S, P=P) + np.random.normal(0, 5, size=len(P))
+    save_fixed_width_table(AdIn, out_path=out_path)
 
+def make_PT_path_martian(S, P, func, P_lit, cold_temp = 240, out_path=None):
+    """Generate an ad.in pressure-temperature path file for HeFESTo."""
+    AdIn = np.zeros((len(P), 3))  # Middle column unused
+    AdIn[:, 0] = P
+    AdIn[:, 2] = func(S=S, P=P) 
+    # Overwrite linear conductive regime
+    conductive_mask = P <= P_lit
+    AdIn[conductive_mask, 2] = cold_temp + (AdIn[conductive_mask, 2] - cold_temp) * (AdIn[conductive_mask, 0] / P_lit)
+    AdIn[:, 2] = AdIn[:, 2] + np.random.normal(0, 5, size=len(P))
+    save_fixed_width_table(AdIn, out_path=out_path)
 
 
 def _clean_workspace(workspace_dir: str) -> None:
@@ -453,15 +469,6 @@ def _normalize_total_moles(element_moles: Dict[str, float], target_total_moles: 
     return {key: value * scale for key, value in element_moles.items()}
 
 
-def get_S(T, Ca):
-    """Get Entropy as a function of mantle potential temperature and Molar Ca (24 molar basis!)"""
-    S = 0.732261764 - 0.0220453381 * Ca + 0.00147915640 * T - 0.0160980560 * Ca**2 - 2.16492530e-07 * T**2
-    return S
-
-def get_T(S, P):
-    """Get Temperature as a function of Entropy, Pressure, and Mantle Potential Temperature"""
-    T = 6029.33080527 * S - 787.844288209  * S**2 + 10.3970768783 * P - 0.0186356282034 * P**2 - 8587.97619083
-    return T
 
 def prepare_HeFESTo_tree_fulladiabat(directory: Path, GEOROC_DIR: Path, control_path: Path, N: int) -> None:
     """
@@ -547,6 +554,100 @@ def prepare_HeFESTo_tree_fulladiabat(directory: Path, GEOROC_DIR: Path, control_
             func=get_T,
             out_path=sim_dir / 'ad.in',
         )
+
+def prepare_HeFESTo_tree_Mars(directory: Path, GEOROC_DIR: Path, control_path: Path, N: int) -> None:
+    """
+    Prepare the directory structure and files needed to run HeFESTo simulations for Martian Conditions (suitable for MCMC work of Ji Ching Chen) 
+    This includes changing template files according to randomly chosen compositions and generating ad.in files for each simulation based on a 
+    range of random mantle potential temperatures and conductive-regime lithosphere thicknesses. 
+
+
+    ----------
+    directory : Path
+        The directory where the HeFESTo input files will be generated.
+    GEOROC_DIR : Path
+        The directory containing the GEOROC data file.
+    control_path : Path
+        The path to the control file.
+    N : int
+        The number of simulations to run.
+    """
+    
+    directory = Path(directory)
+    GEOROC_DIR = Path(GEOROC_DIR)
+    control_path = Path(control_path)
+    if not control_path.exists() or not control_path.is_file():
+        raise FileNotFoundError(f'Control template not found: {control_path}')
+    directory.mkdir(parents=True, exist_ok=True)
+
+    batch_dir = _next_available_batch_dir(directory, 1)
+    batch_dir.mkdir(parents=True, exist_ok=False)
+    simulations_in_batch = 0
+    batch_number = int(batch_dir.name.removeprefix('Batch'))
+
+    # Example: Generate ad.in files for a range of mantle potential temperatures and calcium contents
+    #Mps = 273 + 1200 + np.random.uniform(0, 1, N) * (1650 - 1200)  #  mantle potential temperatures
+    Ss = np.random.uniform(1.75, 2.9, N) 
+    P_lit = np.random.uniform(1.5, 9, N) # GPa, conductive regime lithosphere thicknesses
+    target_total_moles = 24.0
+
+    georoc_df = pd.read_csv(GEOROC_DIR)
+    mgo_col = 'MgO'
+    with open(control_path, 'r', encoding='utf-8', errors='ignore') as handle:
+        template_lines = [line.rstrip('\n') for line in handle]
+    ultramafic_df = georoc_df[pd.to_numeric(georoc_df[mgo_col], errors='coerce').fillna(0.0) > 20.0]
+    mafic_df = georoc_df[(pd.to_numeric(georoc_df[mgo_col], errors='coerce').fillna(0.0) > 5.5) & (pd.to_numeric(georoc_df[mgo_col], errors='coerce').fillna(0.0) <= 20.0)]
+    UMN = int(N*(3/5))
+    subset = pd.concat([ultramafic_df.sample(n=UMN, replace=True), mafic_df.sample(n=N-UMN, replace=True)]).sample(frac=1).reset_index(drop=True) # Multiply every element value by a random number between 0.95 and 1.05
+    reduced_N = int(N*(4/5))
+
+    fe3_fet_grid = np.append(np.linspace(0.0, 0.05, reduced_N), np.linspace(0.05, 0.10, int(N - reduced_N)))
+    rng.shuffle(fe3_fet_grid)
+    element_keys = np.array(['Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O'])
+    P0s = np.random.uniform(0, 0.5, size=N)
+    run_code = [[float(P0), float(P0 + 29.5), 60, 0, 0, 0, -1, 0, 0, 0, 0] for P0 in P0s] # ad.in files made downstream
+    element_rows: List[List[float]] = []
+    wts: List[str] = []
+
+    for sim_idx, (_, row) in enumerate(subset.iterrows()):
+        if simulations_in_batch >= 1000:
+            batch_number += 1
+            batch_dir = _next_available_batch_dir(directory, batch_number)
+            batch_dir.mkdir(parents=True, exist_ok=False)
+            simulations_in_batch = 0
+
+        sim_dir = batch_dir / f'Simulation{simulations_in_batch + 1}'
+        sim_dir.mkdir(parents=True, exist_ok=True)
+        simulations_in_batch += 1
+
+        ratio = float(fe3_fet_grid[sim_idx])
+        base_oxide_wt = _build_oxide_wt_from_row(row)
+        speciated_wt = _speciate_iron_and_normalize(base_oxide_wt, ratio)
+        wt_debug = ', '.join(f'{key}={value:.4f}' for key, value in speciated_wt.items())
+        print(f'Sim {sim_idx+1} Fe3/FeT={ratio:.4f} -> {wt_debug}')
+        wts.append(wt_debug)
+
+        element_moles = _oxide_wt_to_element_moles(speciated_wt)
+        element_moles = _normalize_total_moles(element_moles, target_total_moles)
+        element_rows.append([element_moles[key] for key in element_keys])
+
+        control_copy_path = sim_dir / 'control'
+        shutil.copy2(control_path, control_copy_path)
+        updated_control_lines = _build_control_lines(
+            template_lines=template_lines,
+            element_values=element_moles,
+            run_code=run_code[sim_idx],
+        )
+        with open(control_copy_path, 'w', encoding='utf-8') as handle:
+            handle.write('\n'.join(updated_control_lines) + '\n')
+
+        make_PT_path_martian( # built ad.in file
+            P=np.linspace(run_code[sim_idx][0], run_code[sim_idx][1], run_code[sim_idx][2] + 2),
+            S=Ss[sim_idx],
+            P_lit=P_lit[sim_idx],
+            func=get_T,
+            out_path=sim_dir / 'ad.in',
+            )
 
 def prepare_HeFESTo_tree_from_phase_changes(directory: Path, phase_path: Path, CONTROL_DIR: Path) -> None:
     """
@@ -1498,10 +1599,5 @@ def extract_bulk_properties_from_simulation_dir(
     return result
 
 
-def make_PT_path(S, P, func, out_path=None):
-    """Generate an ad.in pressure-temperature path file for HeFESTo."""
-    AdIn = np.zeros((len(P), 3))  # Middle column unused
-    AdIn[:, 0] = P
-    AdIn[:, 2] = func(S=S, P=P) + np.random.normal(0, 5, size=len(P))
-    save_fixed_width_table(AdIn, out_path=out_path)
+
 

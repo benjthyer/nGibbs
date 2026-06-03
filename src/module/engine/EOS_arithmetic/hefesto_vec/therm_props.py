@@ -20,7 +20,7 @@ from __future__ import annotations
 import numpy as np
 
 from .constants import Rgas
-from .pressure  import cold_bulk_modulus_vec, cold_pressure_vec
+from .pressure  import cold_bulk_modulus_vec, cold_pressure_vec, cold_bulk_modulus_torch, cold_pressure_torch
 
 
 # ---------------------------------------------------------------------------
@@ -357,3 +357,222 @@ def _apply_landau(K, Ks, Gsh, alp, Cp, Cv, rho, V, Pi,
     S_landau = np.where(active_corr, slan, 0.0)
 
     return K_out, Ks_out, Gsh_out, alp_out, Cp_out, Cv_out, rho_out, V_out, S_landau
+
+
+# ---------------------------------------------------------------------------
+# Torch-native thermodynamic property kernel
+# ---------------------------------------------------------------------------
+
+def stishtran_torch(Pi, Ti, Gsh, is_st):
+    """Torch equivalent of stishtran_vec."""
+    import torch
+    if not is_st.any():
+        return Gsh
+    Pcs  = 51.6 + 11.1 * (Ti - 300.0) / 1000.0
+    Pc   = Pcs + 50.7
+    Cso  = 128.0 * Pc / Pcs.clamp(min=1e-10)
+    dord = (Pc - Pi).abs().clamp(min=1e-10) * torch.sign(Pc - Pi + 1e-60)
+    Cs_ord = Cso - Cso * (Pc - Pcs) / dord
+    ddis   = (Pc + 2.0 * Pi - 3.0 * Pcs).abs().clamp(min=1e-10) * torch.sign(Pc + 2.0*Pi - 3.0*Pcs + 1e-60)
+    Cs_dis = Cso - Cso * (Pc - Pcs) / ddis
+    Cs     = torch.where(Pi < Pcs, Cs_ord, Cs_dis)
+    Gb     = Gsh.clamp(min=1e-10)
+    Cs_s   = Cs.abs().clamp(min=1e-10) * torch.sign(Cs + 1e-60)
+    Gsh_new = (0.5 * (13.0/15.0*Gb + 2.0/15.0*Cs)
+               + 0.5 / (13.0/15.0/Gb + 2.0/15.0/Cs_s))
+    return torch.where(is_st, Gsh_new, Gsh)
+
+
+def _apply_landau_torch(K, Ks, Gsh, alp, Cp, Cv, rho, V, Pi,
+                        Tc0_arr, Smax, Vmax, Ti, gamma, has_landau,
+                        etas_therm_num=None):
+    """Torch equivalent of _apply_landau."""
+    import torch
+    safe_Smax = Smax.clamp(min=1e-30)
+    Tc   = Tc0_arr + Vmax / (1.0e-3 * safe_Smax) * Pi
+    Tc   = torch.minimum(Tc, 10.0 * Tc0_arr)
+    safe_Tc0 = Tc0_arr.clamp(min=1e-30)
+    safe_Tc  = Tc.clamp(min=1e-30)
+
+    # Hillert branch
+    is_mag  = (Tc0_arr - 845.5).abs() <= 1.0
+    is_fe   = ((Smax - 9.46028).abs() <= 1e-5) & ((Tc0_arr - 1043.01).abs() <= 1e-5)
+    is_hillert = is_mag | is_fe
+    p_h  = 0.40
+    denom_h = 518.0/1125.0 + 11692.0/15975.0 * (1.0/p_h - 1.0)
+    afe  = 79.0 / (140.0*p_h) / denom_h
+    bfe  = 474.0/497.0 * (1.0/p_h - 1.0) / denom_h
+    cfe  = 1.0 / denom_h
+    t    = Ti / safe_Tc
+    t_ord = t <= 1.0
+    ts   = t.clamp(min=1e-30)
+    dgdt_o  = -bfe * (t**2/2.0 + t**8/15.0 + t**14/40.0)
+    d2g_o   = -bfe * (t + 8.0*t**7/15.0 + 14.0*t**13/40.0)
+    gfunc_o = -bfe * (t**3/6.0 + t**9/135.0 + t**15/600.0)
+    dgdt_d  = (cfe*(ts**(-6)/2.0 + ts**(-16)/21.0 + ts**(-26)/60.0) - afe/ts**2)
+    d2g_d   = (-cfe*(3.0*ts**(-7) + 16.0*ts**(-17)/21.0 + 26.0*ts**(-27)/60.0) + 2.0*afe/ts**3)
+    gfunc_d = (-cfe*(ts**(-5)/10.0 + ts**(-15)/315.0 + ts**(-25)/1500.0) - 1.0 + afe/ts)
+    dgdt_h  = torch.where(t_ord, dgdt_o, dgdt_d)
+    d2g_h   = torch.where(t_ord, d2g_o, d2g_d)
+    gfunc_h = torch.where(t_ord, gfunc_o, gfunc_d)
+    cplan_h = -Smax * (2.0*t*dgdt_h + t**2*d2g_h)
+    slan_h  = -Smax * (gfunc_h + t*dgdt_h)
+
+    # Standard landauqr branch
+    ordered = Ti <= Tc
+    Q4  = torch.where(ordered, torch.clamp((Tc - Ti) / safe_Tc0, min=0.0),
+                      torch.zeros_like(Ti))
+    Q   = Q4 ** 0.25
+    Q2  = Q**2
+    sQ2 = Q2.clamp(min=1e-30)
+    vlan_std   = -Vmax * (Q2 - 1.0)
+    cplan_std  = torch.where(ordered, Smax * Ti / (2.0 * safe_Tc0 * sQ2),
+                             torch.zeros_like(Ti))
+    alplan_std = torch.where(ordered, Vmax / V / (2.0 * safe_Tc0 * sQ2),
+                             torch.zeros_like(Ti))
+    betlan_std = torch.where(ordered,
+                             Vmax / V * Vmax / (1.0e-3 * safe_Smax) / (2.0 * safe_Tc0 * sQ2),
+                             torch.zeros_like(Ti))
+    slan_std   = -Smax * (Q2 - 1.0)
+
+    cplan  = torch.where(is_hillert, cplan_h,  cplan_std)
+    alplan = torch.where(is_hillert, torch.zeros_like(alplan_std), alplan_std)
+    betlan = torch.where(is_hillert, torch.zeros_like(betlan_std), betlan_std)
+    vlan   = torch.where(is_hillert, torch.zeros_like(vlan_std),   vlan_std)
+    slan   = torch.where(is_hillert, slan_h, slan_std)
+
+    V_new  = torch.where(V + vlan > 0.0, V + vlan, V)
+    sK     = K.clamp(min=1e-10)
+    K_new  = V_new / V / (1.0 / sK + betlan)
+    alp_new = V / V_new * (alp + alplan)
+    Cp_new  = Cp + cplan
+    Cv_new  = Cp_new - 1.0e3 * Ti * V_new * alp_new**2 * K_new
+    Ks_new  = K_new * (1.0 + alp_new * gamma * Ti)
+
+    active_corr = has_landau & (Smax > 0.0)
+    K_out   = torch.where(active_corr, K_new,   K)
+    Ks_out  = torch.where(active_corr, Ks_new,  Ks)
+    alp_out = torch.where(active_corr, alp_new, alp)
+    Cp_out  = torch.where(active_corr, Cp_new,  Cp)
+    Cv_out  = torch.where(active_corr, Cv_new,  Cv)
+    V_out   = torch.where(active_corr, V_new,   V)
+    rho_out = rho * V / V_out.clamp(min=1e-30)
+
+    if etas_therm_num is not None:
+        has_vlan = active_corr & (vlan.abs() > 1e-30)
+        sV_out   = V_out.clamp(min=1e-30)
+        gsh_fix  = etas_therm_num * (1.0 / V - 1.0 / sV_out)
+        Gsh_out  = torch.where(has_vlan, Gsh + gsh_fix, Gsh)
+    else:
+        Gsh_out = Gsh
+
+    S_landau = torch.where(active_corr, slan, torch.zeros_like(slan))
+    return K_out, Ks_out, Gsh_out, alp_out, Cp_out, Cv_out, rho_out, V_out, S_landau
+
+
+def compute_therm_props_torch(V, Ti, To, Pi, gamma, q, qp, etas, detasdv,
+                               Uth, Uto, Cv, Cvo, apar_t,
+                               iltyp_arr, *, ivtyp=1, ittyp=1,
+                               is_stishovite=None):
+    """Torch equivalent of compute_therm_props — apar_t is a (S, NPARP) torch tensor."""
+    import torch
+
+    def p(col):
+        return apar_t[None, :, col]   # (1, S)
+
+    fn   = p(0);  wm  = p(2)
+    Vo   = p(5)
+    Ko   = p(6);  Kop = p(7);  Kopp = p(8)
+    wd1  = p(9)
+    be   = p(27); ge  = p(28)
+    izp  = p(33)
+    Go   = p(34); Gop = p(35); Got = p(36)
+    Tc_p = p(37); Smax = p(38); Vmax = p(39)
+    a5   = p(42)
+    ibv  = p(31).long()
+
+    f    = 0.5 * ((V / Vo) ** (-2.0 / 3.0) - 1.0)
+    Kc   = cold_bulk_modulus_torch(V, Vo, Ko, Kop, Kopp, a5, ibv=ibv)
+    pc   = cold_pressure_torch(V, Vo, Ko, Kop, Kopp, a5, ibv=ibv)
+
+    ezp  = torch.where(izp.abs() == 1,
+                       torch.sign(izp.float()) * (9.0/8.0)*fn*Rgas*wd1,
+                       torch.zeros_like(V))
+    pzp  = torch.where(izp.abs() == 1,
+                       torch.sign(izp.float()) * 1.0e-3*(9.0/8.0)*fn*Rgas*wd1*gamma/V,
+                       torch.zeros_like(V))
+
+    ph   = 1.0e-3 * (gamma / V) * (Uth - Uto)
+    Kth  = ((gamma + 1.0 - q) * (ph + pzp)
+            - 1.0e-3 * (gamma**2 / V) * (Ti * Cv - To * Cvo))
+
+    beta  = be * (V / Vo) ** ge
+    Cvel  = beta * Ti
+    Cvelo = beta * To
+    pel   = 1.0e-3 * 0.5 * ge * beta * (Ti**2 - To**2) / V.clamp(min=1e-30)
+    Kel   = pel * (1.0 - ge)
+
+    gamma_eff = torch.where(Ti > 0.0,
+                            (gamma * Cv + ge * Cvel) / (Cv + Cvel).clamp(min=1e-30),
+                            gamma)
+    Cv_tot  = Cv  + Cvel
+    Cvo_tot = Cvo + Cvelo
+
+    K    = Kc + Kth + Kel
+    alp  = 1.0e-3 * gamma_eff * Cv_tot / (V * K).clamp(min=1e-30)
+    agT  = alp * gamma_eff * Ti
+    Cp   = Cv_tot * (1.0 + gamma_eff**2 * Cv_tot * Ti / (1.0e3 * V * K).clamp(min=1e-30))
+    Ks   = K * (1.0 + agT)
+
+    if ivtyp == 1:
+        b0  = Go;  b1 = 3.0*Ko*Gop - 5.0*Go
+        b2  = 6.0*Ko*Gop - 24.0*Ko - 14.0*Go + 4.5*Ko*Kop
+        Gsh = (1.0 + 2.0*f)**2.5 * (b0 + b1*f + b2*f**2)
+    else:
+        b0  = Go;  b1 = 3.0*Ko*Gop - 5.0*Go
+        Gsh = (1.0 + 2.0*f)**2.5 * (b0 + b1*f)
+
+    if is_stishovite is not None and is_stishovite.any():
+        is_st = is_stishovite.unsqueeze(0)   # (1, S)
+        Gsh   = stishtran_torch(Pi, Ti, Gsh, is_st)
+
+    if ittyp == 1:
+        etas_therm_num = 1.0e-3 * etas * (Uth - Uto + ezp)
+        Gsh = Gsh - etas_therm_num / V.clamp(min=1e-30)
+    elif ittyp == 2:
+        etas_therm_num = None
+        Gsh = Gsh - 1.0e-3 * Got / Vo * (Uth - Uto)
+    elif ittyp == 3:
+        etas_therm_num = 1.0e-3 * Got * (Uth - Uto)
+        Gsh = Gsh - etas_therm_num / V.clamp(min=1e-30)
+    elif ittyp == 4:
+        gamma0 = apar_t[None, :, 25];  q0 = apar_t[None, :, 26]
+        sg0    = torch.where(gamma0 != 0.0, gamma0, torch.ones_like(gamma0))
+        sq0    = torch.where(q0 != 0.0,    q0,    torch.ones_like(q0))
+        etas_therm_num = 1.0e-3 * etas * (gamma / sg0) * (q / sq0) * (Uth - Uto)
+        Gsh = Gsh - etas_therm_num / V.clamp(min=1e-30)
+    else:
+        etas_therm_num = None
+
+    rho = wm / V.clamp(min=1e-30)
+
+    iltyp_b  = iltyp_arr.unsqueeze(0)  # (1, S)
+    has_landau = (iltyp_b == 1) & (Tc_p > 0.0)
+
+    if has_landau.any():
+        K, Ks, Gsh, alp, Cp, Cv_tot, rho, V_corrected, S_landau = _apply_landau_torch(
+            K, Ks, Gsh, alp, Cp, Cv_tot, rho, V, Pi,
+            Tc_p, Smax, Vmax, Ti, gamma_eff, has_landau,
+            etas_therm_num=etas_therm_num,
+        )
+    else:
+        V_corrected = V
+        S_landau    = torch.zeros_like(V)
+
+    return dict(
+        K=K, Ks=Ks, Gsh=Gsh, alp=alp, Cp=Cp, Cv=Cv_tot,
+        Kc=Kc, Kth=Kth, Kel=Kel, ph=ph, pzp=pzp, ezp=ezp,
+        rho=rho, V_corrected=V_corrected,
+        f=f, gamma_eff=gamma_eff,
+        S_landau=S_landau,
+    )

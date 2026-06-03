@@ -45,6 +45,8 @@ Unit notes:
 from __future__ import annotations
 import numpy as np
 
+from .constants import Rgas
+
 
 def vrh_average(
     X,             # (B, S) mole amounts / fractions
@@ -59,6 +61,7 @@ def vrh_average(
     Ti,            # (B,)   temperature (K)
     phase_members, # list of lists: phase_members[iph] = [0-based ispec, ...]
     active,        # (B, S) bool mask
+    site_data=None, # list indexed by species: [(element, stoich), ...] per site
 ):
     """Two-level Voigt-Reuss-Hill matching physub.f.
 
@@ -82,10 +85,123 @@ def vrh_average(
     rho = wmagg / safe_volagg
 
     # Aggregate entropy: S_agg = sum(n_s * S_s) / wmagg  [J/g/K]
-    # (physub.f: entagg = entagg + n(ispec)*sspeca(ispec); output: entagg/wmagg)
+    # (physub.f: entagg += n(ispec)*sspeca(ispec); output: entagg/wmagg)
+    # sspeca = sspeco + smixi (func.f:92), where smixi = -R*ln(x_s_in_phase)
+    # is the ideal mixing entropy contribution from solid-solution phases.
     entagg = (X_a * S).sum(axis=1)
+
+    # Multi-site ideal mixing entropy matching cp.f / func.f:
+    #   smixi_s = R * sum_kst[ stoich_s_kst * ln(n_kst_total / n_element_on_kst) ]
+    # where components sharing the same element on the same site are grouped together.
+    # This correctly handles:
+    #   - Stoichiometric weighting (fo: Mg_2 → factor 2; py: Mg_3 → factor 3)
+    #   - Multi-site phases (pv: A-site Mg/Fe/Al + B-site Si/Al)
+    #   - Repeated sites (pe: Mg_2Mg_2O_4 → two identical sites, each contributing)
+    entagg_mix = np.zeros(B, dtype=np.float64)
+
+    use_sites = site_data is not None
+    for ph_idx, members in enumerate(phase_members):
+        if len(members) < 2:
+            continue
+        idx = np.array(members, dtype=np.int64)
+        X_ph = np.where(active[:, idx], X[:, idx], 0.0)   # (B, m)
+
+        if use_sites:
+            # site_data[s] = List[List[(el,q)]] — each entry is one crystallographic
+            # site with one or more (element, stoich) pairs.  Parenthesised formula
+            # groups (e.g. (Na_2Mg_1) in namj, (Si_1Al_1) in cats) share a site.
+            member_sites = [site_data[s] for s in members]
+            n_sites = max((len(sp) for sp in member_sites), default=0)
+            m = len(members)
+
+            # Two layers of iastate-equivalent ordering (matching readin.f logic):
+            #
+            # Layer 1 — same-formula ordering (all sites):
+            #   Species with identical site_data are different quantum states of the
+            #   same compound (wu/wuls = FeO HS/LS, hepv/hlpv = Fe2O3-pv HS/LS).
+            #   The Fortran sets iastate=TRUE for them at every site.
+            #
+            # Layer 2 — iron co-occupancy ordering (per site):
+            #   readin.f: if two DIFFERENT-formula species both have Fe on site k →
+            #   iastate=TRUE (they're treated as distinct iron species on that site).
+            #   This isolates Fe²⁺ species (e.g. fepv, which has Fe+Si) from Fe³⁺
+            #   species (hepv, hlpv, fapv, all Fe+non-Si) at the perovskite A-site,
+            #   and separates wu from mag in the mw phase, etc.
+            #
+            # Layer 2 is applied per-site inside the kst loop below.
+            formula_keys = [str(sp_sites) for sp_sites in member_sites]
+            # global_excl[i] = frozenset of j excluded at every site (same formula)
+            global_excl = [
+                frozenset(j for j in range(m)
+                          if formula_keys[j] == formula_keys[i] and j != i)
+                for i in range(m)
+            ]
+
+            for kst in range(n_sites):
+                # spec_comps[i] = [(el,q), ...] for species i at site kst.
+                spec_comps = []
+                for sp_sites in member_sites:
+                    if kst < len(sp_sites):
+                        spec_comps.append(sp_sites[kst])
+                    else:
+                        spec_comps.append([])
+
+                # Layer 2: iron co-occupancy — build per-site extra exclusions.
+                # If species i and j (different formulas) both have Fe at this site,
+                # add j to i's exclusion set (and vice versa).
+                has_fe = [any(el == 'Fe' for el, _ in comps) for comps in spec_comps]
+                site_excl = [set(global_excl[i]) for i in range(m)]
+                for i in range(m):
+                    for j in range(m):
+                        if i == j or j in global_excl[i]:
+                            continue
+                        if has_fe[i] and has_fe[j]:
+                            site_excl[i].add(j)
+
+                # n_kst_total = sum_s( sum_{c in s} q_c * X_s ) — total atoms on site
+                nkp = np.zeros(B, dtype=np.float64)
+                for i, comps in enumerate(spec_comps):
+                    q_total = sum(q for _, q in comps)
+                    nkp += q_total * X_ph[:, i]
+                safe_nkp = np.where(nkp > 1.0e-30, nkp, 1.0e-30)
+
+                # For each species i compute its own nikp excluding ordered partners.
+                for i, comps_i in enumerate(spec_comps):
+                    if not comps_i:
+                        continue
+
+                    nikp_i: dict = {}
+                    for j, comps_j in enumerate(spec_comps):
+                        if j in site_excl[i]:
+                            continue
+                        for el, q in comps_j:
+                            if el not in nikp_i:
+                                nikp_i[el] = np.zeros(B, dtype=np.float64)
+                            nikp_i[el] += q * X_ph[:, j]
+
+                    if len(nikp_i) < 2:
+                        continue
+
+                    contrib = np.zeros(B, dtype=np.float64)
+                    for el, q in comps_i:
+                        if el not in nikp_i:
+                            continue
+                        safe_nikp = np.where(
+                            nikp_i[el] > 1.0e-30, nikp_i[el], 1.0e-30
+                        )
+                        contrib += q * np.log(safe_nkp / safe_nikp)
+                    entagg_mix += X_ph[:, i] * Rgas * contrib
+
+        else:
+            # Fallback: simple single-site ideal mixing (no stoich weighting)
+            n_ph = X_ph.sum(axis=1, keepdims=True)
+            safe_n_ph = np.where(n_ph > 1.0e-30, n_ph, 1.0e-30)
+            x_site = X_ph / safe_n_ph
+            log_x = np.where(x_site > 1.0e-30, np.log(x_site), 0.0)
+            entagg_mix += (X_ph * (-Rgas * log_x)).sum(axis=1)
+
     safe_wmagg = np.where(wmagg > 1.0e-30, wmagg, 1.0e-30)
-    S_agg = entagg / safe_wmagg
+    S_agg = (entagg + entagg_mix) / safe_wmagg
 
     # Inter-phase accumulators
     baggv     = np.zeros(B)
@@ -201,6 +317,193 @@ def vrh_average(
     Vsh = 0.5 * (Vsv + Vsr)
     Vph = 0.5 * (Vpv + Vpr)
     Vbh = 0.5 * (Vbv + Vbr)
+
+    return dict(
+        rho=rho,
+        Kh=Kh, Gh=Gh,
+        Kv=Kv, Kr=Kr, Gv=Gv, Gr=Gr,
+        Vp=Vph, Vs=Vsh, Vb=Vbh,
+        Vpv=Vpv, Vpr=Vpr, Vsv=Vsv, Vsr=Vsr,
+        Ks_phases=Ks_phases, G_phases=G_phases, vol_phases=vol_phases,
+        S=S_agg,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Torch-native VRH averaging (GPU-compatible)
+# ---------------------------------------------------------------------------
+
+def vrh_average_torch(
+    X,              # (B, S) torch tensor
+    V,              # (B, S)
+    K,              # (B, S)
+    Ks,             # (B, S)
+    Gsh,            # (B, S)
+    alp,            # (B, S)
+    Cp,             # (B, S)
+    S,              # (B, S) per-species molar entropy (J/mol/K)
+    wm,             # (S,)   molar mass (g/mol) — torch tensor
+    Ti,             # (B,)   temperature (K) — torch tensor
+    phase_members,  # list of lists (Python ints, not tensors)
+    active,         # (B, S) bool torch tensor
+    site_data=None,
+) -> dict:
+    """Torch equivalent of vrh_average."""
+    import torch
+
+    device = X.device
+    B, Sp  = X.shape
+    wm2d   = wm.unsqueeze(0)                     # (1, S)
+
+    X_a     = torch.where(active, X, torch.zeros_like(X))
+    wmagg   = (X_a * wm2d).sum(dim=1)            # (B,)
+    volagg  = (X_a * V).sum(dim=1)               # (B,)
+    sv      = volagg.clamp(min=1e-30)
+    rho     = wmagg / sv
+
+    entagg  = (X_a * S).sum(dim=1)               # (B,)
+    entagg_mix = torch.zeros(B, dtype=torch.float64, device=device)
+
+    use_sites = site_data is not None
+    for ph_idx, members in enumerate(phase_members):
+        if len(members) < 2:
+            continue
+        idx  = torch.tensor(members, dtype=torch.long, device=device)
+        X_ph = torch.where(active[:, idx], X[:, idx], torch.zeros(B, len(members), dtype=X.dtype, device=device))
+
+        if use_sites:
+            member_sites = [site_data[s] for s in members]
+            n_sites = max((len(sp) for sp in member_sites), default=0)
+            m       = len(members)
+            formula_keys = [str(sp) for sp in member_sites]
+            global_excl  = [
+                frozenset(j for j in range(m)
+                          if formula_keys[j] == formula_keys[i] and j != i)
+                for i in range(m)
+            ]
+            for kst in range(n_sites):
+                spec_comps = []
+                for sp_sites in member_sites:
+                    spec_comps.append(sp_sites[kst] if kst < len(sp_sites) else [])
+                has_fe    = [any(el == 'Fe' for el, _ in comps) for comps in spec_comps]
+                site_excl = [set(global_excl[i]) for i in range(m)]
+                for i in range(m):
+                    for j in range(m):
+                        if i == j or j in global_excl[i]:
+                            continue
+                        if has_fe[i] and has_fe[j]:
+                            site_excl[i].add(j)
+                nkp = torch.zeros(B, dtype=torch.float64, device=device)
+                for i, comps in enumerate(spec_comps):
+                    q_tot = sum(q for _, q in comps)
+                    nkp  += q_tot * X_ph[:, i]
+                snkp = nkp.clamp(min=1e-30)
+                for i, comps_i in enumerate(spec_comps):
+                    if not comps_i:
+                        continue
+                    nikp_i: dict = {}
+                    for j, comps_j in enumerate(spec_comps):
+                        if j in site_excl[i]:
+                            continue
+                        for el, q in comps_j:
+                            if el not in nikp_i:
+                                nikp_i[el] = torch.zeros(B, dtype=torch.float64, device=device)
+                            nikp_i[el] = nikp_i[el] + q * X_ph[:, j]
+                    if len(nikp_i) < 2:
+                        continue
+                    contrib = torch.zeros(B, dtype=torch.float64, device=device)
+                    for el, q in comps_i:
+                        if el not in nikp_i:
+                            continue
+                        sn = nikp_i[el].clamp(min=1e-30)
+                        contrib = contrib + q * torch.log(snkp / sn)
+                    entagg_mix = entagg_mix + X_ph[:, i] * Rgas * contrib
+        else:
+            n_ph   = X_ph.sum(dim=1, keepdim=True).clamp(min=1e-30)
+            x_site = X_ph / n_ph
+            log_x  = torch.where(x_site > 1e-30, torch.log(x_site), torch.zeros_like(x_site))
+            entagg_mix = entagg_mix + (X_ph * (-Rgas * log_x)).sum(dim=1)
+
+    swmagg = wmagg.clamp(min=1e-30)
+    S_agg  = (entagg + entagg_mix) / swmagg
+
+    baggv     = torch.zeros(B, dtype=torch.float64, device=device)
+    baggr     = torch.zeros(B, dtype=torch.float64, device=device)
+    gaggv     = torch.zeros(B, dtype=torch.float64, device=device)
+    gaggr     = torch.zeros(B, dtype=torch.float64, device=device)
+    volagg_ph = torch.zeros(B, dtype=torch.float64, device=device)
+
+    Ks_phases  = [];  G_phases = [];  vol_phases = []
+
+    for members in phase_members:
+        if not members:
+            continue
+        idx   = torch.tensor(members, dtype=torch.long, device=device)
+        act_ph = active[:, idx]
+        X_ph   = torch.where(act_ph, X[:, idx], torch.zeros(B, len(members), dtype=X.dtype, device=device))
+        V_ph   = V[:, idx];    K_ph  = K[:, idx]
+        G_ph   = Gsh[:, idx];  alp_ph = alp[:, idx]
+        Cp_ph  = Cp[:, idx];   wm_ph  = wm[idx]
+
+        nV      = X_ph * V_ph
+        volph   = nV.sum(dim=1)
+        ph_act  = volph > 1e-30
+        svolph  = volph.clamp(min=1e-30)
+
+        sK_p    = torch.where(act_ph & (K_ph > 1e-10), K_ph,
+                              torch.full_like(K_ph, 1e30))
+        buktph  = (nV / sK_p).sum(dim=1)
+        KT_ph   = torch.where(ph_act & (buktph > 1e-30), svolph / buktph,
+                              torch.zeros_like(volph))
+
+        sG_p    = torch.where(act_ph & (G_ph > 1e-10), G_ph,
+                              torch.full_like(G_ph, 1e30))
+        gshph   = (nV / sG_p).sum(dim=1)
+        G_phase = torch.where(ph_act & (gshph > 1e-30), svolph / gshph,
+                              torch.zeros_like(volph))
+
+        alp_phase = (nV * alp_ph).sum(dim=1) / svolph
+        wmph      = (X_ph * wm_ph.unsqueeze(0)).sum(dim=1)
+        swmph     = wmph.clamp(min=1e-30)
+        cpph      = (X_ph * Cp_ph).sum(dim=1)
+        cpphtot   = cpph / swmph
+        correction = Ti * svolph * alp_phase**2 * KT_ph / swmph * 1000.0
+        cvphtot    = cpphtot - correction
+        scv        = cvphtot.clamp(min=1e-10)
+        gamphtot   = svolph * alp_phase * KT_ph / (scv * swmph) * 1000.0
+        Ks_phase   = KT_ph * (1.0 + alp_phase * gamphtot * Ti)
+        Ks_phase   = torch.where(ph_act, Ks_phase, torch.zeros_like(Ks_phase))
+        G_phase    = torch.where(ph_act, G_phase,  torch.zeros_like(G_phase))
+
+        sKs_p  = torch.where(ph_act & (Ks_phase > 1e-10), Ks_phase, torch.full_like(Ks_phase, 1e30))
+        sGp    = torch.where(ph_act & (G_phase  > 1e-10), G_phase,  torch.full_like(G_phase,  1e30))
+
+        baggv     = baggv + torch.where(ph_act, volph * Ks_phase, torch.zeros_like(volph))
+        baggr     = baggr + torch.where(ph_act, volph / sKs_p,    torch.zeros_like(volph))
+        gaggv     = gaggv + torch.where(ph_act, volph * G_phase,  torch.zeros_like(volph))
+        gaggr     = gaggr + torch.where(ph_act, volph / sGp,      torch.zeros_like(volph))
+        volagg_ph = volagg_ph + torch.where(ph_act, volph,        torch.zeros_like(volph))
+
+        Ks_phases.append(Ks_phase);  G_phases.append(G_phase);  vol_phases.append(volph)
+
+    sva  = volagg_ph.clamp(min=1e-30)
+    Kv   = baggv / sva
+    Kr   = torch.where(baggr > 1e-30, sva / baggr, torch.zeros_like(baggr))
+    Gv   = gaggv / sva
+    Gr   = torch.where(gaggr > 1e-30, sva / gaggr, torch.zeros_like(gaggr))
+    Kh   = 0.5 * (Kv + Kr)
+    Gh   = 0.5 * (Gv + Gr)
+
+    srho = rho.clamp(min=1e-10)
+    Vsv  = torch.sqrt(torch.clamp(Gv / srho, min=0.0))
+    Vsr  = torch.sqrt(torch.clamp(Gr / srho, min=0.0))
+    Vpv  = torch.sqrt(torch.clamp((Kv + 4.0/3.0*Gv) / srho, min=0.0))
+    Vpr  = torch.sqrt(torch.clamp((Kr + 4.0/3.0*Gr) / srho, min=0.0))
+    Vbv  = torch.sqrt(torch.clamp(Kv / srho, min=0.0))
+    Vbr  = torch.sqrt(torch.clamp(Kr / srho, min=0.0))
+    Vsh  = 0.5 * (Vsv + Vsr)
+    Vph  = 0.5 * (Vpv + Vpr)
+    Vbh  = 0.5 * (Vbv + Vbr)
 
     return dict(
         rho=rho,

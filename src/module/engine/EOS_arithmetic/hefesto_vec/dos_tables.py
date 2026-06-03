@@ -361,3 +361,210 @@ def _helm_table_lookup(xa, ya, x, xamin, xamax, idos):
 def load_tables(npz_path=None):
     """Pre-load DOS tables (optional; loaded automatically on first use)."""
     _ensure_loaded(npz_path)
+
+
+# ---------------------------------------------------------------------------
+# Torch-native DOS table functions (GPU-compatible)
+# ---------------------------------------------------------------------------
+
+_tables_torch: dict = {}   # str(device) -> dict of torch tensors
+
+
+def _ensure_loaded_torch(device) -> dict:
+    import torch
+    key = str(device)
+    if key in _tables_torch:
+        return _tables_torch[key]
+    _ensure_loaded()
+    t = _tables
+    tt = {}
+    for k, v in t.items():
+        if isinstance(v, np.ndarray):
+            tt[k] = torch.tensor(v, dtype=torch.float64, device=device)
+        else:
+            tt[k] = float(v)
+    _tables_torch[key] = tt
+    return tt
+
+
+def _find_klo_torch(xa: 'torch.Tensor', x: 'torch.Tensor', n: int) -> 'torch.Tensor':
+    h   = xa[1] - xa[0]
+    xa0 = xa[0]
+    jlo = ((x - xa0) / h).floor().long().clamp(0, n - 1)   # no bare torch.* needed
+    return (jlo - 1).clamp(0, n - 4)
+
+
+def _neville4_torch(xa: 'torch.Tensor', ya: 'torch.Tensor',
+                    x: 'torch.Tensor', klo: 'torch.Tensor') -> 'torch.Tensor':
+    h   = xa[1] - xa[0]
+    xa0 = xa[0]
+    offsets = klo.new_tensor([0, 1, 2, 3])     # same device & dtype (long) as klo
+    idx  = klo.unsqueeze(1) + offsets          # (M, 4)
+    ya4  = ya[idx]                              # (M, 4)
+    u    = (x - (xa0 + klo.to(dtype=x.dtype) * h)) / h
+    u1   = u - 1.0;  u2 = u - 2.0;  u3 = u - 3.0
+    l0   = -u1 * u2 * u3 / 6.0
+    l1   =  u  * u2 * u3 / 2.0
+    l2   = -u  * u1 * u3 / 2.0
+    l3   =  u  * u1 * u2 / 6.0
+    return ya4[:, 0]*l0 + ya4[:, 1]*l1 + ya4[:, 2]*l2 + ya4[:, 3]*l3
+
+
+def _interp_torch(xa: 'torch.Tensor', ya: 'torch.Tensor',
+                  x: 'torch.Tensor') -> 'torch.Tensor':
+    """Interpolate ya on uniform grid xa at positions x (clamped internally)."""
+    n     = xa.shape[0]
+    x_cl  = x.clamp(xa[0].item(), xa[-1].item())
+    klo   = _find_klo_torch(xa, x_cl, n)
+    return _neville4_torch(xa, ya, x_cl, klo)
+
+
+def Heat_torch(x: 'torch.Tensor', idos: int, d=0.0) -> 'torch.Tensor':
+    """Cv/(3NkB) — torch vectorised. idos: 1=Debye 2=Einstein 3=Sin 4=Optic 5=Classic."""
+    import torch
+
+    if idos == 5:
+        return torch.ones_like(x)
+
+    # ── Einstein: exact closed-form, no table needed ──────────────────────────
+    # C_Ein/3NkB = (x/2 / sinh(x/2))^2   [numerically stable for all x ≥ 0]
+    if idos == 2:
+        hx = (x / 2.0).clamp(min=1e-15)
+        return (hx / torch.sinh(hx)) ** 2
+
+    # ── Optic: finite-diff average of Einstein values at x*(1 ± d/2) ─────────
+    # Both Einstein evaluations are now purely arithmetic — no table reads.
+    if idos == 4:
+        d_t  = torch.as_tensor(d, dtype=x.dtype, device=x.device).expand_as(x)
+        xu   = x * (1.0 + d_t / 2.0);  xl = x * (1.0 - d_t / 2.0)
+        hxu  = (xu / 2.0).clamp(min=1e-15)
+        hxl  = (xl / 2.0).clamp(min=1e-15)
+        yu   = (hxu / torch.sinh(hxu)) ** 2
+        yl   = (hxl / torch.sinh(hxl)) ** 2
+        den  = (xu - xl).abs().clamp(min=1e-30) * torch.sign(xu - xl + 1e-60)
+        return ((xu * yu - xl * yl) / den).clamp(min=0.0)
+
+    # ── Debye (idos=1) and Sin (idos=3): table lookup ────────────────────────
+    tt    = _ensure_loaded_torch(x.device)
+    xa    = tt['xa'];  xamin = tt['xamin'];  xamax = tt['xamax']
+    ya    = tt['deb1'] if idos == 1 else tt['sin1']
+    y_min = tt['deb1_min'] if idos == 1 else tt['sin1_min']
+
+    ri    = _interp_torch(xa, ya, x)
+    xs    = x.clamp(min=1e-30)
+    if idos == 1:
+        ra = (12.0 * math.pi**4 / 15.0) / xs**3
+    else:
+        ra = (12.0*math.pi**4/15.0)/xs**3 * _SFAC + _ASIN*_BSIN*(_BSIN-1.0)*xs**(1.0-_BSIN)
+    rb = 1.0 - (1.0 - y_min) / xamin**2 * x**2
+    return torch.where((x >= xamin) & (x <= xamax), ri,
+                       torch.where(x > xamax, ra, rb))
+
+
+def Ener_torch(x: 'torch.Tensor', idos: int, d=0.0) -> 'torch.Tensor':
+    """U/(3NkBT) — torch vectorised."""
+    import torch
+
+    if idos == 5:
+        return torch.ones_like(x)
+
+    # ── Einstein: exact closed-form  U/3NkBT = x / (e^x - 1) ────────────────
+    if idos == 2:
+        xs = x.clamp(min=1e-15)
+        return xs / torch.expm1(xs)
+
+    # ── Optic: finite-diff average of Einstein at x*(1 ± d/2) ───────────────
+    if idos == 4:
+        d_t  = torch.as_tensor(d, dtype=x.dtype, device=x.device).expand_as(x)
+        xu   = x * (1.0 + d_t / 2.0);  xl = x * (1.0 - d_t / 2.0)
+        xu_s = xu.clamp(min=1e-15);    xl_s = xl.clamp(min=1e-15)
+        yu   = xu_s / torch.expm1(xu_s)
+        yl   = xl_s / torch.expm1(xl_s)
+        den  = (xu - xl).abs().clamp(min=1e-30) * torch.sign(xu - xl + 1e-60)
+        return ((xu * yu - xl * yl) / den).clamp(min=0.0)
+
+    # ── Debye (idos=1) and Sin (idos=3): table lookup ────────────────────────
+    tt    = _ensure_loaded_torch(x.device)
+    xa    = tt['xa'];  xamin = tt['xamin'];  xamax = tt['xamax']
+    ya    = tt['deb2'] if idos == 1 else tt['sin2']
+    y_min = tt['deb2_min'] if idos == 1 else tt['sin2_min']
+
+    ri    = _interp_torch(xa, ya, x)
+    xs    = x.clamp(min=1e-30)
+    if idos == 1:
+        ra = (math.pi**4 / 5.0) / xs**3
+    else:
+        ra = (math.pi**4/5.0)/xs**3 * _SFAC + _ASIN*(_BSIN-1.0)*xs**(1.0-_BSIN)
+    rb = 1.0 - (1.0 - y_min) / xamin * x
+    return torch.where((x >= xamin) & (x <= xamax), ri,
+                       torch.where(x > xamax, ra, rb))
+
+
+def Helm_torch(x: 'torch.Tensor', idos: int, d=0.0) -> 'torch.Tensor':
+    """F/(3NkBT) — torch vectorised."""
+    import torch
+    tt   = _ensure_loaded_torch(x.device)
+    xa   = tt['xa'];  xamin = tt['xamin'];  xamax = tt['xamax']
+
+    if idos == 5:
+        return torch.log(x.clamp(min=1e-30)) - 1.0 / 3.0
+
+    if idos == 2:
+        xs = x.clamp(min=1e-30)
+        r  = torch.log1p(-torch.exp(-xs))
+        return torch.where(x > xamax, -torch.exp(-xs), r)
+
+    if idos == 4:
+        d_t   = torch.as_tensor(d, dtype=x.dtype, device=x.device).expand_as(x)
+        narrow = d_t <= 0.4
+
+        # narrow branch: Taylor expansion
+        xn = x.clamp(min=1e-30)
+        u  = torch.exp(-xn.clamp(max=30.0))
+        u  = u.clamp(max=1.0 - 1e-10)
+        v  = u / (1.0 - u)
+        fein = torch.log1p(-u)
+        dx   = xn * d_t / 2.0
+        c2   = -2.0*v - 2.0*v**2
+        c4   = -2.0*v - 14.0*v**2 - 24.0*v**3 - 12.0*v**4
+        r_narrow = fein + c2*dx**2/12.0 + c4*dx**4/240.0
+
+        # wide branch
+        xu   = x * (1.0 + d_t / 2.0);  xl = x * (1.0 - d_t / 2.0)
+        ya_o = tt['opt3']
+        yu_r = _interp_torch(xa, ya_o, xu)
+        yl_r = _interp_torch(xa, ya_o, xl)
+        xu_s = xu.clamp(min=1e-30);    xl_s = xl.clamp(min=1e-30)
+        om2  = float(tt['opt2_min'])
+        # add log(1-exp(-x)) where interior
+        log_xu = torch.where((xu >= xamin) & (xu <= xamax),
+                             torch.log1p(-torch.exp(-xu_s)), torch.zeros_like(xu))
+        log_xl = torch.where((xl >= xamin) & (xl <= xamax),
+                             torch.log1p(-torch.exp(-xl_s)), torch.zeros_like(xl))
+        yu = yu_r + log_xu
+        yl = yl_r + log_xl
+        yu = torch.where(xu < xamin,
+                         torch.log1p(-torch.exp(-xu_s)) - (1.0 - (1.0-om2)/xamin*xu), yu)
+        yl = torch.where(xl < xamin,
+                         torch.log1p(-torch.exp(-xl_s)) - (1.0 - (1.0-om2)/xamin*xl), yl)
+        yu = torch.where(xu > xamax, -(math.pi**2/6.0)/xu_s, yu)
+        yl = torch.where(xl > xamax, -(math.pi**2/6.0)/xl_s, yl)
+        yu = torch.where(xu == 0.0, torch.zeros_like(yu), yu)
+        yl = torch.where(xl == 0.0, torch.zeros_like(yl), yl)
+        den  = (xu - xl).abs().clamp(min=1e-30) * torch.sign(xu - xl + 1e-60)
+        r_wide = (xu * yu - xl * yl) / den
+        return torch.where(narrow, r_narrow, r_wide)
+
+    # idos 1 or 3
+    ya    = tt['deb3'] if idos == 1 else tt['sin3']
+    y2min = float(tt['deb2_min'] if idos == 1 else tt['sin2_min'])
+    xs    = x.clamp(min=1e-30)
+    ri    = _interp_torch(xa, ya, x) + torch.log1p(-torch.exp(-xs))
+    if idos == 1:
+        ra = -(math.pi**4/15.0) / xs**3
+        rb = torch.log(xs) - 4.0/3.0 + 1.0 - (1.0 - y2min)/xamin * x
+    else:
+        ra = -(math.pi**4/15.0)/xs**3 * _SFAC - _ASIN * xs**(1.0 - _BSIN)
+        rb = torch.log(xs) - 4.0/3.0 + 1.0 - (1.0 - y2min)/xamin * x + _CSIN
+    return torch.where((x >= xamin) & (x <= xamax), ri,
+                       torch.where(x > xamax, ra, rb))
