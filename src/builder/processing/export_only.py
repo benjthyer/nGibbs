@@ -18,7 +18,7 @@ if src_path not in sys.path:
 
 from builder.processing.BigMetaTable import BigMetaTable
 from builder.processing.MLexporter import resampling_to_datasets
-from module.utils.file_utils import get_baseline_files, clear_new_files
+from ngibbs.utils.file_utils import get_baseline_files, clear_new_files
 
 
 def _normalize_base_path(input_path: str) -> str:

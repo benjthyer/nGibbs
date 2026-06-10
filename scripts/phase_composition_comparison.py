@@ -26,9 +26,9 @@ base_path = str(Path(__file__).parent.parent)
 if base_path not in sys.path:
     sys.path.insert(0, base_path)
 
-from src.module.engine.API import HeFESToEmulatorCPU
-from src.module.utils.math_utils import make_ternary, grid_sample, mix_compositions
-from src.module.utils.file_utils import load_fort99_componentMoles, extract_bulk_properties_from_simulation_dir
+from src.ngibbs.engine.API import HeFESToEmulatorCPU
+from src.ngibbs.utils.math_utils import make_ternary, grid_sample, mix_compositions
+from src.ngibbs.utils.file_utils import load_fort99_componentMoles, extract_bulk_properties_from_simulation_dir
 
 
 # ── Phase configuration ────────────────────────────────────────────────────────

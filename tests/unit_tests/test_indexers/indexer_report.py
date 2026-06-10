@@ -21,7 +21,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.builder.indexer import DatasetIndexer, generate_column_headers
-from src.module.config.constants import COMPONENTS_IN_PHASES, COMPOSITIONAL_COMPONENTS_IN_PHASES
+from src.ngibbs.config.constants import COMPONENTS_IN_PHASES, COMPOSITIONAL_COMPONENTS_IN_PHASES
 from tests.test_utils import setup_test_logging
 
 

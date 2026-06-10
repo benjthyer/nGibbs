@@ -34,10 +34,10 @@ SRC_PATH = REPO_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from module.engine.NN import VariableGeometryFCNNRegressor, rebuild_MELTS_model
-from module.engine.emulator import NN_MELTS
-from module.utils.file_utils import load_ml_bundle
-from module.utils.math_utils import Normalizer, get_T as reference_adiabat
+from ngibbs.engine.NN import VariableGeometryFCNNRegressor, rebuild_MELTS_model
+from ngibbs.engine.emulator import NN_MELTS
+from ngibbs.utils.file_utils import load_ml_bundle
+from ngibbs.utils.math_utils import Normalizer, get_T as reference_adiabat
 
 ADAPTIVE_DROPOUT_MAX = 0.50
 ADAPTIVE_DROPOUT_UP = 0.01

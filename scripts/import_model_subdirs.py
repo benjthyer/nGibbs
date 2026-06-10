@@ -27,7 +27,7 @@ if str(SRC_DIR) not in sys.path:
 
 from builder.HeFESTo.HeFESTo_functions import import_HeFESTo_components  # noqa: E402
 from builder.indexer import DatasetIndexer, generate_column_headers_hefesto  # noqa: E402
-from module.config.constants import COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO  # noqa: E402
+from ngibbs.config.constants import COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO  # noqa: E402
 
 
 _SIM_DIR_PATTERN = re.compile(r'^model_\d{6}$', flags=re.IGNORECASE)

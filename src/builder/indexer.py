@@ -25,7 +25,7 @@ if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
 # Import defaults from constants for melts-liquid label generation and oxide indexing
-from module.config.constants import (
+from ngibbs.config.constants import (
     COMPONENTS_IN_PHASES,
     COMPONENTS_IN_PHASES_HEFESTO,
     COMPOSITIONAL_COMPONENTS_IN_PHASES,
@@ -33,7 +33,7 @@ from module.config.constants import (
     default_Elkeys,
     REQUIRED_ELEMENTS,
 )
-from module.config.ml_indexer import MLIndexer
+from ngibbs.config.ml_indexer import MLIndexer
 
 # Element to oxide mapping dictionary
 ELEMENT_TO_OXIDE = {
@@ -242,7 +242,7 @@ class DatasetIndexer:
         
 
         # Exclude components whose oxides fall outside the active Oxides list
-        projections_dir = Path(__file__).resolve().parent.parent / 'module' / 'config' / 'projections'
+        projections_dir = Path(__file__).resolve().parent.parent / 'ngibbs' / 'config' / 'projections'
         comp_to_ox_path = projections_dir / 'compToOxV2.csv'
         if self.OXYGEN == 'open':
             ox_to_el_path = projections_dir / 'OxToElV2.csv'

@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use this software in your research, please cite it using the metadata below."
+type: software
+title: "nGibbs"
+abstract: >
+  Neural network emulators of MELTS, HeFESTo, and other free energy solvers
+  for silicate multi-component systems. Provides fast, differentiable
+  approximations of thermodynamic phase equilibria for use in geodynamic
+  and petrological modelling workflows.
+authors:
+  - family-names: Thyer
+    given-names: Ben J.
+    email: benjthyer@gmail.com
+version: "0.1.0"
+date-released: "2026-06-09"
+license: AGPL-3.0-or-later
+repository-code: "https://github.com/YOUR_USERNAME/nGibbs"  # TODO: update with your GitHub URL
+keywords:
+  - thermodynamics
+  - petrology
+  - machine learning
+  - neural network emulator
+  - MELTS
+  - HeFESTo
+  - geodynamics

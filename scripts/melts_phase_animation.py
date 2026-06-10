@@ -44,7 +44,7 @@ def _draw_stack(ax, x_vals: np.ndarray, phase_frame: np.ndarray,
     title       : axes title for this frame
     x_name      : x-axis label
     """
-    from src.module.config.constants import ptt_to_short
+    from src.ngibbs.config.constants import ptt_to_short
     x_vals = np.asarray(x_vals, dtype=np.float32).ravel()
     phase_frame = np.asarray(phase_frame, dtype=np.float32)
     phase_names = [ptt_to_short[n].lstrip('_') if n in ptt_to_short else n for n in phase_names]
@@ -251,8 +251,8 @@ def prepare_melts_phase_data(
     x_name        : stripped x-axis label (e.g. 'P(GPa)')
     y_name        : stripped y-axis label (e.g. 'T(K)')
     """
-    from src.module.engine.API import MELTS102EmulatorCPU
-    from src.module.config.constants import ptt_to_short, ptt_longs
+    from src.ngibbs.engine.API import MELTS102EmulatorCPU
+    from src.ngibbs.config.constants import ptt_to_short, ptt_longs
 
     features = np.asarray(features, dtype=np.float32)
 
@@ -329,7 +329,7 @@ def prepare_melts_phase_data(
 # ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
-    from src.module.utils.math_utils import grid_sample
+    from src.ngibbs.utils.math_utils import grid_sample
 
     # MORB-like fixed composition
     input_dict = {

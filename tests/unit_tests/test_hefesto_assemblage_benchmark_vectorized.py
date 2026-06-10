@@ -30,8 +30,8 @@ src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
-from src.module.engine.API import HeFESToEmulatorCPU, HeFESToEmulatorGPU
-from src.module.engine.EOS_arithmetic.hefesto_vec import load_control
+from src.ngibbs.engine.API import HeFESToEmulatorCPU, HeFESToEmulatorGPU
+from src.ngibbs.engine.EOS_arithmetic.hefesto_vec import load_control
 
 
 def load_hefesto_module():

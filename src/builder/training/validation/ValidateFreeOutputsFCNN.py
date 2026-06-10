@@ -33,9 +33,9 @@ SRC_PATH = REPO_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from module.engine.NN import VariableGeometryFCNNRegressor, rebuild_MELTS_model
-from module.engine.emulator import NN_MELTS
-from module.utils.file_utils import load_ml_bundle
+from ngibbs.engine.NN import VariableGeometryFCNNRegressor, rebuild_MELTS_model
+from ngibbs.engine.emulator import NN_MELTS
+from ngibbs.utils.file_utils import load_ml_bundle
 
 
 def _sanitize_name(name: str) -> str:

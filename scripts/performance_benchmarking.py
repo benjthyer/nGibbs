@@ -18,25 +18,25 @@ except NameError:
     # Running in Jupyter notebook context
     repo_root = Path.cwd().parent
 
-# Add both src and src/nMELTS to path
+# Add both src and src/ngibbs to path
 src_root = repo_root / "src"
-nmelts_root = src_root / "module"
+ngibbs_root = src_root / "ngibbs"
 
 if str(src_root) not in sys.path:
     sys.path.insert(0, str(src_root))
-if str(nmelts_root) not in sys.path:
-    sys.path.insert(0, str(nmelts_root))
+if str(ngibbs_root) not in sys.path:
+    sys.path.insert(0, str(ngibbs_root))
 
 # Import utilities and API
-from module.utils.math_utils import grid_sample, grid_sample_explicit
-from module.engine.API import HeFESToAPI, HeFESToEmulatorCPU, HeFESToEmulatorGPU
-from module.config.constants import HEFESTO_ABBREVIATION_TO_SHORT_NAMES
+from ngibbs.utils.math_utils import grid_sample, grid_sample_explicit
+from ngibbs.engine.API import HeFESToAPI, HeFESToEmulatorCPU, HeFESToEmulatorGPU
+from ngibbs.config.constants import HEFESTO_ABBREVIATION_TO_SHORT_NAMES
 REV_HEFESTO_ABBREVIATION_TO_SHORT_NAMES = {v: k for k, v in HEFESTO_ABBREVIATION_TO_SHORT_NAMES.items()}
 
 
 print("Imports successful!")
 print(f"Repository root: {repo_root}")
-print(f"nMELTS root: {nmelts_root}")
+print(f"ngibbs root: {ngibbs_root}")
 
 # Check emulator availability
 if HeFESToEmulatorCPU is None:
@@ -80,10 +80,19 @@ NN_emulator = []
 GPU_properties = []
 CPU_properties = []
 NN_properties = []
+skip = np.zeros_like(batch_sizes, dtype=bool)
+batch_sizes = np.array(batch_sizes)
 
 try:
     # first GPU
-    for batch_size in batch_sizes:
+    for i, batch_size in enumerate(batch_sizes):
+      
+        if batch_size < 8000:  # GPU isn't active on smaller batches, so skip for clarity
+            GPU_emulator.append(0)
+            GPU_properties.append(0)
+            skip[i] = True
+            continue
+
         print(f'GPU: {batch_size}')
         input_array, headers = example_array(batch_size)
 
@@ -118,6 +127,10 @@ try:
         CPU_properties.append(time.time() - begin_properties)
 
 finally:
+    GPU_properties = np.array(GPU_properties)
+    CPU_properties = np.array(CPU_properties)
+    GPU_emulator = np.array(GPU_emulator)
+    CPU_emulator = np.array(CPU_emulator)
     print(f"GPU properties: {GPU_properties}")
     print(f"CPU properties: {CPU_properties}")
     print(f"GPU emulator: {GPU_emulator}")
@@ -130,9 +143,9 @@ pd.DataFrame({'Batch Size': batch_sizes, 'GPU Emulator': GPU_emulator, 'CPU Emul
 plt.loglog(batch_sizes, batch_sizes, label='Sequential HeFESTo', color = 'gray', linestyle='-', alpha=0.5)
 plt.loglog(batch_sizes, batch_sizes*0.8, label='Sequential HeFESTo on Four Cores', color = 'lightgray', linestyle='-', alpha=0.5)
 
-plt.loglog(batch_sizes, GPU_emulator, label='GPU Emulator', color = 'forestgreen', linestyle='-')
+plt.loglog(batch_sizes[~skip], GPU_emulator[~skip], label='GPU Emulator', color = 'forestgreen', linestyle='-')
 plt.loglog(batch_sizes, CPU_emulator, label='CPU Emulator', color = 'darkorange', linestyle='-')
-plt.loglog(batch_sizes, GPU_properties, label='GPU Properties', color = 'forestgreen', linestyle='--')
+plt.loglog(batch_sizes[~skip], GPU_properties[~skip], label='GPU Properties', color = 'forestgreen', linestyle='--')
 plt.loglog(batch_sizes, CPU_properties, label='CPU Properties', color = 'darkorange', linestyle='--')
 #plt.loglog(batch_sizes, NN_emulator, label='NN Emulator', color = 'teal', linestyle='-')
 #plt.loglog(batch_sizes, NN_properties, label='NN Properties', color = 'teal', linestyle='--')
@@ -145,9 +158,9 @@ plt.legend()
 plt.savefig('performance_results.png', dpi=300)
 plt.show()
 
-plt.plot(batch_sizes, np.array(batch_sizes)/np.array(GPU_emulator), label='GPU Emulator', color = 'forestgreen', linestyle='-')
+plt.plot(batch_sizes[~skip], np.array(batch_sizes[~skip])/np.array(GPU_emulator[~skip]), label='GPU Emulator', color = 'forestgreen', linestyle='-')
 plt.plot(batch_sizes, np.array(batch_sizes)/np.array(CPU_emulator), label='CPU Emulator', color = 'darkorange', linestyle='-')
-plt.plot(batch_sizes, np.array(batch_sizes)/np.array(GPU_properties), label='GPU Properties', color = 'forestgreen', linestyle='--')
+plt.plot(batch_sizes[~skip], np.array(batch_sizes[~skip])/np.array(GPU_properties[~skip]), label='GPU Properties', color = 'forestgreen', linestyle='--')
 plt.plot(batch_sizes, np.array(batch_sizes)/np.array(CPU_properties), label='CPU Properties', color = 'darkorange', linestyle='--')
 #plt.plot(batch_sizes, np.array(batch_sizes)/np.array(NN_emulator), label='NN Emulator', color = 'teal', linestyle='-')
 #plt.plot(batch_sizes, np.array(batch_sizes)/np.array(NN_properties), label='NN Properties', color = 'teal', linestyle='--')
@@ -156,13 +169,14 @@ plt.ylabel('Assemblages per second')
 plt.grid(True)
 plt.title('Emulator Performance Comparison: Assemblages per Second')
 plt.legend()
+plt.savefig('per_second_performance_results.png', dpi=300)
 plt.show()
 
 properties_rate = batch_sizes*(10/4000) #seconds
 
-plt.loglog(batch_sizes, GPU_emulator/batch_sizes, label='GPU Emulator speedup', color = 'forestgreen', linestyle='-')
+plt.loglog(batch_sizes[~skip], GPU_emulator[~skip]/batch_sizes[~skip], label='GPU Emulator speedup', color = 'forestgreen', linestyle='-')
 plt.loglog(batch_sizes, CPU_emulator/batch_sizes, label='CPU Emulator speedup', color = 'darkorange', linestyle='-')
-plt.loglog(batch_sizes, GPU_properties/properties_rate, label='Properties GPU speedup', color = 'forestgreen', linestyle='--')
+plt.loglog(batch_sizes[~skip], GPU_properties[~skip]/properties_rate[~skip], label='Properties GPU speedup', color = 'forestgreen', linestyle='--')
 plt.loglog(batch_sizes, CPU_properties/properties_rate, label='Properties CPU speedup', color = 'darkorange', linestyle='--')
 #plt.loglog(batch_sizes, NN_emulator, label='NN Emulator', color = 'teal', linestyle='-')
 #plt.loglog(batch_sizes, NN_properties, label='NN Properties', color = 'teal', linestyle='--')

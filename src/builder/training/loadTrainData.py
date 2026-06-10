@@ -18,10 +18,10 @@ if src_path not in sys.path:
 
 
 from builder.training.torchDataClass import TensorDatasetFour, TensorDatasetFive
-from module.config.ml_indexer import MLIndexer
+from ngibbs.config.ml_indexer import MLIndexer
 from recipes.settings import external_base
-from module.utils.file_utils import load_ml_bundle, MLDataBundle
-from module.utils.math_utils import Normalizer
+from ngibbs.utils.file_utils import load_ml_bundle, MLDataBundle
+from ngibbs.utils.math_utils import Normalizer
 from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
 
 

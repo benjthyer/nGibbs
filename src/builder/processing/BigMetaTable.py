@@ -25,9 +25,9 @@ if src_path not in sys.path:
 
 # Import from refactored modules
 from builder.indexer import DatasetIndexer
-from module.utils.string_utils import pull_number
-from module.utils.math_utils import blur_binary_boundaries
-from module.utils.file_utils import move_file
+from ngibbs.utils.string_utils import pull_number
+from ngibbs.utils.math_utils import blur_binary_boundaries
+from ngibbs.utils.file_utils import move_file
 
 
 def strip_filename_suffixes(filename, suffixes=None):

@@ -37,7 +37,7 @@ Workspace/
 Legacy/
 *Legacy/
 /data/
-!/src/module/engine/data/
+!/src/ngibbs/engine/data/
 temp_models/
 
 alphamelts-app-2.3.1-linux/
@@ -165,6 +165,10 @@ dmypy.json
 *.swp
 *.swo
 *~
+
+#Packaging
+Packaging nGibbs for Integration into PetThermoTools
+build
 
 
 # Temporary files

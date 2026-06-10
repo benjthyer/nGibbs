@@ -27,7 +27,7 @@ if top_path not in sys.path:
 # Import DatasetIndexer type for type hints
 from typing import Optional
 from builder.indexer import DatasetIndexer
-from module.config.ml_indexer import MLIndexer, load_ml_indexer_from_state
+from ngibbs.config.ml_indexer import MLIndexer, load_ml_indexer_from_state
 
 
 def _normalize_bulk_oxide_bounds(bounds):
