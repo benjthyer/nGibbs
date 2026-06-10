@@ -1,0 +1,8 @@
+
+! <><> alphaMELTS 2.3 run by elbenzer <><> 
+! Time started: Jun 9 2026 at 20:29 
+
+! Command line: (none) 
+
+! alphaMELTS menu input used: 
+

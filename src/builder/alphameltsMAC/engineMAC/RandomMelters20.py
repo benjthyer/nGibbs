@@ -23,12 +23,12 @@ if str(SRC_DIR) not in sys.path:
 from . import alphamelts_functions
 
 # Import utility functions
-from nMELTS.utils.string_utils import pull_number, random_char
-from nMELTS.utils.file_utils import count_csv_rows, count_file_lines
+from ngibbs.utils.string_utils import pull_number, random_char
+from ngibbs.utils.file_utils import count_csv_rows, count_file_lines
 
 # Import indexer and header generation
 from builder.indexer import DatasetIndexer, verify_csv_headers_match
-from config.settings import internal_scratch_dir
+from recipes.settings import internal_scratch_dir
 
 # Set up paths
 EnsembleLocation = str(internal_scratch_dir())

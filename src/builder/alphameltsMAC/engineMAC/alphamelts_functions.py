@@ -28,7 +28,7 @@ from .melts_file_builder import (
     #pull_number
 )
 
-from nMELTS.utils.string_utils import pull_number
+from ngibbs.utils.string_utils import pull_number
 #from ...nMELTS.config.indexer import DatasetIndexer
 
 # You Need GNU parallel to run this! https://build.opensuse.org/package/show/home:tange/parallel
@@ -439,7 +439,10 @@ def import_MELTS_components(EnsembleLocation, batchname, indexer, fO2Arr=None,
                                     faultIDs.append(folderNo)"""
                             else:
                                 try:
-                                    meltsobj[rowsfill, indexer.MELTS_indices[phasename][fillname]] = table[:, melt_dict[fillname]]
+                                    if fillname == 'sanidine' and phasename == 'plagioclase':# Handle plag idiosyncracy
+                                        meltsobj[rowsfill, indexer.MELTS_indices[phasename][fillname]] = table[:, melt_dict['highsanidine']]
+                                    else:
+                                        meltsobj[rowsfill, indexer.MELTS_indices[phasename][fillname]] = table[:, melt_dict[fillname]]
                                 except Exception as e:
                                     print(f"Simulation{folderNo}: Failed to populate component '{fillname}' for {phasename}. "
                                           f"rowsfill shape: {np.shape(rowsfill)}, meltsobj shape: {np.shape(meltsobj)}, "

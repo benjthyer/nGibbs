@@ -1,5 +1,5 @@
-"""Note: This script is for generating training data and will not be exported to users in the release.
-Mac version: uses builder/alphameltsMAC instead of builder/alphamelts."""
+"""Note: This script is for generating training data with BJT's old MAC:
+uses builder/alphameltsMAC instead of builder/alphamelts."""
 
 import sys
 import os
@@ -34,7 +34,7 @@ os.makedirs(EnsembleLocation, exist_ok=True)
 
 
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-input_date = 'May23'
+input_date = 'June9'
 
 input_ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
 MELTSmodels = ['120']#, '102'] # MELTS models to run. To add: MAGEmin
@@ -42,13 +42,13 @@ FXes = ['Batch']#, 'FxCryst']
 Prange = None # Auto if None, for lithosphere/aesthenospere (p)
 
 total_to_run = int(300) # How many total simulations to run
-ultramafics_to_run = int(total_to_run * 0.1)
+ultramafics_to_run = int(total_to_run * 0.15)
 mafics_to_run = int(total_to_run * 0.4)
-full_to_run = int(total_to_run * 0.5)
+full_to_run = int(total_to_run * 0.45)
 
 startTs = [1800]#, 1800]
 delta = -4
-input_liquid_fractions = [101]#, 100] # Make above 100 to allow for superliquidus
+input_liquid_fractions = [102]#, 100] # Make above 100 to allow for superliquidus
 simcycle = 50 # How many simulations to run per iteration
 
 
