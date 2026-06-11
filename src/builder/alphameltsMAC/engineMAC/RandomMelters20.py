@@ -76,7 +76,7 @@ def _validate_existing_files(dataname, sim_metadata_name, indexer):
             print(f"Verified: CSV ({csv_rows} rows) and text file ({txt_lines} lines) have matching counts.")
 
 
-def _process_compositions(compositions, col_dict, simcycle, MELTSModel, zeroOxides = ['MnO', 'NiO']):
+def _process_compositions(compositions, col_dict, simcycle, MELTSModel, zeroOxides = ['MnO', 'NiO'], Water = True):
     """
     Process and normalize compositions, setting constraints on various oxides.
 
@@ -100,17 +100,18 @@ def _process_compositions(compositions, col_dict, simcycle, MELTSModel, zeroOxid
     """
     # Zero water up front
     compositions[:, col_dict['H2O']] = 0
-    
-    remaining_idx = np.arange(simcycle)
-    # Randomly set some compositions to anhydrous
-    hydrous = np.random.choice(remaining_idx, size=int(simcycle/2), replace = False)
-    compositions[hydrous, col_dict['H2O']] = np.abs(np.random.normal(size = len(hydrous), scale = 0.25))
-    out_mask = np.ones(simcycle)
-    out_mask[hydrous] = 0
-    remaining_idx = remaining_idx[out_mask.astype(bool)]
-    soaked = np.random.choice(remaining_idx, size = int(simcycle/6), replace = False)
-    compositions[soaked, col_dict['H2O']] = np.random.uniform(size = len(soaked), high = 5)
-    
+    if Water:
+        remaining_idx = np.arange(simcycle)
+        # Randomly set some compositions to anhydrous
+        hydrous = np.random.choice(remaining_idx, size=int(simcycle/2), replace = False)
+        compositions[hydrous, col_dict['H2O']] = np.abs(np.random.normal(size = len(hydrous), scale = 0.5))
+        out_mask = np.ones(simcycle)
+        out_mask[hydrous] = 0
+        remaining_idx = remaining_idx[out_mask.astype(bool)]
+        soaked = np.random.choice(remaining_idx, size = int(simcycle/3), replace = False)
+        compositions[soaked, col_dict['H2O']] = np.random.uniform(size = len(soaked), high = 5)
+    else:
+        print("Water is set to False. All compositions will have 0 wt% H2O.")    
     
     # Cap H2O at 5%
     #too_wet = compositions[:, col_dict['H2O']] > 5
@@ -271,7 +272,7 @@ def alphaMELTScompress(output_file, MELTSModel, GEOROC, col_dict, indexer, iterc
 
 def alphaMELTScooling(output_file, MELTSModel, GEOROC, col_dict, indexer, itercode='a1', simcycle=50, fxtal=False, 
                       ExFailures=False, zeroOxides = ['MnO', 'NiO'], startT=1925, max_liquid_fraction=100, end=700, 
-                      Prange = None, delta = -1):
+                      Prange = None, delta = -1, Oxygen = 'Closed', Water = True):
     """
     Perform ensemble MELTS cooling calculations with random compositions.
     
@@ -301,6 +302,14 @@ def alphaMELTScooling(output_file, MELTSModel, GEOROC, col_dict, indexer, iterco
         Maximum allowed liquid fraction for the simulation. 100 Still subsamples superliquidus
     end : int, default=700
         End temperature in Celsius
+    Prange : list, default=None
+        Pressure range in bars
+    delta : int, default=-1
+        Temperature change per simulation
+    Oxygen : str, default='Closed'
+        Oxygen fugacity condition ('Closed' or 'Open')
+    Water : bool, default=True
+        Whether to include water in the simulation
     """
 
     iterLetter = itercode[0]
@@ -357,26 +366,34 @@ def alphaMELTScooling(output_file, MELTSModel, GEOROC, col_dict, indexer, iterco
         out_array = np.zeros((length, np.shape(conditions)[1] + 3))
         out_array[:, 0] = np.random.uniform(*Prange, size=length)  # Pressure in bars
         out_array[:, 1] = startT + 20 + np.arange(length)  # Temperature in K (starting high, decreasing)
-        ferric_to_ferrous = 0.8998084799181955 #wt ratio conserving Fe atoms
-        R = np.linspace(0,0.15,100) # Proportion of total FeO wt to Fe2O3
-        P = (np.exp(-20*R))#)+(0.5/7)) #Empiracally fit elsewhere, arbitrary
-        P = P/P.sum() 
-        R_chosen = np.random.choice(R, size=length, replace=True, p=P)
-        ferric = conditions[:,col_dict['FeO']]*R_chosen*(1/ferric_to_ferrous)
-        conditions[:,col_dict['FeO']] = conditions[:,col_dict['FeO']]*(1-R_chosen)
-        total = (np.sum(conditions, axis = 1) + ferric).reshape(-1,1) # Renormalize to new wt%
-        #print(total.shape)
-        conditions = conditions*(100/total)
-        #print(conditions.shape)
-        #print(ferric.shape)
-        ferric = ferric*(100/total.flatten())
-        #print(ferric.shape)
-        #out_array[:, 2] = np.random.uniform(-5, 5, size=length)  # fO2 offset from FMQ
-        out_array[:, 2] = ferric
+        if Oxygen.lower() == 'closed':
+            ferric_to_ferrous = 0.8998084799181955 #wt ratio conserving Fe atoms
+            R = np.linspace(0,0.15,100) # Proportion of total FeO wt to Fe2O3
+            P = (np.exp(-20*R))#)+(0.5/7)) #Empiracally fit elsewhere, arbitrary
+            P = P/P.sum() 
+            R_chosen = np.random.choice(R, size=length, replace=True, p=P)
+            ferric = conditions[:,col_dict['FeO']]*R_chosen*(1/ferric_to_ferrous)
+            conditions[:,col_dict['FeO']] = conditions[:,col_dict['FeO']]*(1-R_chosen)
+            total = (np.sum(conditions, axis = 1) + ferric).reshape(-1,1) # Renormalize to new wt%
+            #print(total.shape)
+            conditions = conditions*(100/total)
+            #print(conditions.shape)
+            #print(ferric.shape)
+            ferric = ferric*(100/total.flatten())
+            #print(ferric.shape)
+            out_array[:, 2] = ferric
+        elif Oxygen.lower() == 'open':
+            # Open system with respect to oxygen, set fO2 to random values
+            out_array[:, 2] = np.random.uniform(-5, 5, size=length)  # fO2 offset from FMQ
+        else:           
+            raise ValueError(f"Oxygen condition '{Oxygen}' not recognized. Use 'closed' or 'open'")
         out_array[:, 3:] = conditions
         return out_array
     
-    keys = np.array(["Pressure", "Temperature", 'Fe2O3'] + list(col_dict.keys()))
+    if Oxygen.lower() == 'closed':
+        keys = np.array(["Pressure", "Temperature", 'Fe2O3'] + list(col_dict.keys()))
+    elif Oxygen.lower() == 'open':
+        keys = np.array(["Pressure", "Temperature", 'fO2'] + list(col_dict.keys()))
     
     for j in range(start_iter, iter):
         # Select random compositions
@@ -385,7 +402,7 @@ def alphaMELTScooling(output_file, MELTSModel, GEOROC, col_dict, indexer, iterco
         indices = GEOROC[choices, 0]
         
         # Process and normalize compositions
-        compositions = _process_compositions(compositions, col_dict, simcycle, MELTSModel, zeroOxides=zeroOxides)
+        compositions = _process_compositions(compositions, col_dict, simcycle, MELTSModel, zeroOxides=zeroOxides, Water=Water)
         
         # Initialize PTX conditions
         in_array = np.round(PTF_initialize(compositions, length=simcycle), 2)

@@ -104,6 +104,8 @@ coverage.xml
 .pytest_cache/
 __pycache__/
 *debug_outputs/
+.DS_Store
+*.DS_Store
 
 # Jupyter Notebook
 .ipynb_checkpoints

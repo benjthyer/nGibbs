@@ -50,6 +50,9 @@ MELTSmodels = ['120']#, '102'] # MELTS models to run. To add: MAGEmin
 FXes = ['Batch']#, 'FxCryst']
 Prange = None # Auto if None, for lithosphere/aesthenospere (p)
 
+Oxygen = 'Closed' # 'Closed' or 'Open' system with respect to oxygen. Buffered or constant oxygen?
+Water = True # Whether to include water in the simulations (set H2O to zero if False)
+
 total_to_run = int(300) # How many total simulations to run
 ultramafics_to_run = int(total_to_run * 0.1)
 mafics_to_run = int(total_to_run * 0.4)
@@ -150,10 +153,10 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
                 col_dict[k] = i
 
             # Run full GEOROC training dataset
-            args = {'MELTSModel':MELTSModel, 'GEOROC':GEOROC, 'col_dict':col_dict, 'indexer':indexer, 
-                    'itercode':f'a{full_to_run}', 'simcycle':simcycle, 'fxtal': (fractionate == 'FxCryst'), 
-                    'startT': startT, 'max_liquid_fraction': max_liquid_fraction, 'zeroOxides': ZeroOxides, 
-                    'Prange': Prange, 'delta': delta}
+            args = {'MELTSModel':MELTSModel, 'GEOROC':GEOROC, 'col_dict':col_dict, 'indexer':indexer,
+                    'itercode':f'a{full_to_run}', 'simcycle':simcycle, 'fxtal': (fractionate == 'FxCryst'),
+                    'startT': startT, 'max_liquid_fraction': max_liquid_fraction, 'zeroOxides': ZeroOxides,
+                    'Prange': Prange, 'delta': delta, 'Oxygen': Oxygen, 'Water': Water}
             
             if full_to_run != 0:
                 MELTER(output_file=Trainfilename, **args)

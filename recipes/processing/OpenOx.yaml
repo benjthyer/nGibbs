@@ -6,12 +6,12 @@
 # ============================================================================
 dataset: #EXPECTED FILENAME: "nMELTS/data/MELTStables/{MELTSModel}/{'MELTS' if MELTSModel in ['102', '110', '120', 'p'] else ''}{MELTSModel}_<Train/Valid>set{Date}{Mode}"
   MELTSModel: '120'          # MELTS model version: '102', '110', '120', 'p'. Affects which directory dataproducts are read from and written to
-  Date: 'May23NoCr'               # Date identifier for dataset naming
+  Date: 'May23Cr'               # Date identifier for dataset naming
   Mode: 'BatchCooling'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
-outname: 120OpenOx_NoCr     # Base name for output folder (without extension). Auto-Generated if blank
+outname: 120OpenOx_Cr      # Base name for output folder (without extension). Auto-Generated if blank
 
 
 
@@ -20,12 +20,14 @@ outname: 120OpenOx_NoCr     # Base name for output folder (without extension). A
 # ============================================================================
 featureNames: # Non-chemical features to include in the dataset
   - 'Pressure(System_main)'
-  - 'S(System_main)'
+  - 'Temperature(System_main)' 
+  - 'logfO2-QFM(System_main)'
+
+  #- 'S(System_main)'
   #- 'S(System_main)' # Isentropic 
   
 
 freeOutputs: # Non-chemical labels to predict. These are used for training the saturation predictor and as auxiliary outputs for the encoder.
-  - 'Temperature(System_main)' 
   #- 'T(K)(System_main)'
   #- 'VS(km/s)(System_main)'
   #- 'VP(km/s)(System_main)'
@@ -36,7 +38,6 @@ freeOutputs: # Non-chemical labels to predict. These are used for training the s
   #- 'Cp(System_main)' #
   #- 'rhos(System_main)' # Solid Density g/cc
   #- 'rhol(System_main)' # Liquid density g/cc
-  #- 'logfO2-QFM(System_main)'
 
 # ============================================================================
 # PREPROCESSING OPTIONS
@@ -68,7 +69,7 @@ upsampling:
       n_resamples: 10
       multiplier_bounds: [0.9, 1.1]
     leucite:
-      n_resamples: 2
+      n_resamples: 1
       multiplier_bounds: [0.9, 1.1]
     analcime:
       n_resamples: 3
@@ -92,7 +93,7 @@ upsampling:
         n_resamples: 10
         multiplier_bounds: [0.99, 1.01]
       leucite:
-        n_resamples: 2
+        n_resamples: 1
         multiplier_bounds: [0.99, 1.01]
       analcime:
         n_resamples: 3

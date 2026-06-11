@@ -14,12 +14,12 @@ authors:
 version: "0.1.0"
 date-released: "2026-06-09"
 license: AGPL-3.0-or-later
-repository-code: "https://github.com/YOUR_USERNAME/nGibbs"  # TODO: update with your GitHub URL
+repository-code: "https://github.com/benjthyer/nGibbs" 
 keywords:
   - thermodynamics
   - petrology
   - machine learning
-  - neural network emulator
+  - neural networks
   - MELTS
   - HeFESTo
   - geodynamics

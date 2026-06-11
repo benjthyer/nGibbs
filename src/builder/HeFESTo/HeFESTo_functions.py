@@ -1,8 +1,27 @@
 """
-HeFESTo workspace parser utilities.
+HeFESTo workspace parser and simulation management utilities.
 
-Parses SimulationN folders and compiles HeFESTo outputs into one CSV table
-matching a DatasetIndexer header layout.
+This module provides three groups of functionality:
+
+1. **Simulation tree preparation** – Sample bulk compositions from GEOROC/PetDB,
+   speciate iron, convert oxides to element moles, and write per-simulation
+   ``control`` + ``ad.in`` files into BatchNNNN/SimulationN directory trees
+   ready for SLURM submission on the HPC cluster.
+
+2. **Forward simulation wrapper** – ``forward_HeFESTo`` creates a SimulationN
+   directory tree from a pre-built input array and runs all simulations via GNU
+   parallel (intended for small local ensembles).
+
+3. **Result import** – ``import_HeFESTo_components`` walks a workspace directory
+   tree of completed SimulationN folders, parses fort.56/61/68/99 output files,
+   and appends rows to a master CSV table compatible with DatasetIndexer.
+
+Typical HPC workflow::
+
+    prepare_HeFESTo_tree_fulladiabat(directory, georoc_dir, control_path, N=5000)
+    # → submit with scripts/run_many_sbatches.py
+    # → after completion:
+    import_HeFESTo_components(workspace_dir, indexer, dataname='out.csv')
 """
 
 import os
@@ -80,14 +99,54 @@ _SIMULATION_DIR_PATTERN = re.compile(r'^(?:Simulation(\d+)|model_(\d{6}))$', re.
 EnsembleLocation = None
 
 def make_PT_path(S, P, func, out_path=None):
-    """Generate an ad.in pressure-temperature path file for HeFESTo."""
+    """Generate an ``ad.in`` pressure–temperature path file for HeFESTo.
+
+    Writes a fixed-width three-column table (P, unused, T) where T is the
+    isentropic temperature at each pressure point, with a small amount of
+    Gaussian noise added to improve training coverage.
+
+    Parameters
+    ----------
+    S : float
+        Specific entropy in J/g/K used to compute the isentrope.
+    P : array-like
+        Pressure values in GPa along the path.
+    func : callable
+        Temperature function with signature ``func(S, P) -> T`` (K).
+        Typically ``get_T`` from ``ngibbs.utils.math_utils``.
+    out_path : str or Path, optional
+        Output file path. If ``None`` the table is not written to disk.
+    """
     AdIn = np.zeros((len(P), 3))  # Middle column unused
     AdIn[:, 0] = P
     AdIn[:, 2] = func(S=S, P=P) + np.random.normal(0, 5, size=len(P))
     save_fixed_width_table(AdIn, out_path=out_path)
 
 def make_PT_path_martian(S, P, func, P_lit, cold_temp = 240, out_path=None):
-    """Generate an ad.in pressure-temperature path file for HeFESTo."""
+    """Generate an ``ad.in`` pressure–temperature path file for Martian conditions.
+
+    Like ``make_PT_path`` but overlays a conductive lithosphere: pressures
+    below ``P_lit`` are replaced with a linear temperature profile that
+    rises from ``cold_temp`` at the surface to the adiabat temperature at
+    the lithosphere base. Gaussian noise is added to all points.
+
+    Parameters
+    ----------
+    S : float
+        Specific entropy in J/g/K for the adiabatic mantle.
+    P : array-like
+        Pressure values in GPa along the path.
+    func : callable
+        Adiabatic temperature function ``func(S, P) -> T`` (K).
+    P_lit : float
+        Lithosphere base pressure in GPa. Points with P ≤ P_lit are
+        replaced with the conductive profile.
+    cold_temp : float, default=240
+        Surface temperature in K used as the cold-end anchor of the
+        conductive regime.
+    out_path : str or Path, optional
+        Output file path. If ``None`` the table is not written to disk.
+    """
     AdIn = np.zeros((len(P), 3))  # Middle column unused
     AdIn[:, 0] = P
     AdIn[:, 2] = func(S=S, P=P) 
@@ -376,6 +435,23 @@ def _copy_template_tree(template_dir: str, destination_dir: str) -> None:
             shutil.copy2(src, dst)
 
 def _build_oxide_wt_from_row(row: pd.Series) -> Dict[str, float]:
+    """Extract oxide weight-percent values from a GEOROC/PetDB DataFrame row.
+
+    Missing or NaN values for SiO2, MgO, and FeO are replaced with random
+    plausible values so that all simulations have a valid starting composition.
+    An auxiliary key ``'Fe_total_moles'`` is included for downstream iron
+    speciation. Other oxides (CaO, Al2O3, Na2O, Cr2O3) default to 0.
+
+    Parameters
+    ----------
+    row : pd.Series
+        A single row from a GEOROC/PetDB composition table.
+
+    Returns
+    -------
+    dict
+        Oxide wt% values keyed by oxide name, plus ``'Fe_total_moles'``.
+    """
     oxide_cols = {
         'SiO2': 'SiO2',
         'MgO': 'MgO',
@@ -407,6 +483,29 @@ def _build_oxide_wt_from_row(row: pd.Series) -> Dict[str, float]:
     return wt
 
 def _speciate_iron_and_normalize(oxide_wt: Dict[str, float], fe3_fet: float) -> Dict[str, float]:
+    """Distribute total iron between Fe²⁺ and Fe³⁺, then renormalize to 100 wt%.
+
+    Takes the ``'Fe_total_moles'`` from ``oxide_wt`` and splits it according
+    to the requested Fe³⁺ fraction. FeO and Fe₂O₃ masses are recalculated
+    from the resulting Fe²⁺ and Fe³⁺ moles. Minor oxides (CaO, Al₂O₃, Na₂O,
+    Cr₂O₃) receive a small epsilon floor so they are never exactly zero in
+    the HeFESTo control file.
+
+    Parameters
+    ----------
+    oxide_wt : dict
+        Output from ``_build_oxide_wt_from_row``, containing raw oxide wt%
+        values and the ``'Fe_total_moles'`` auxiliary key.
+    fe3_fet : float
+        Target Fe³⁺/Fetotal molar ratio in [0, 0.1]. Values outside this
+        range are clipped.
+
+    Returns
+    -------
+    dict
+        Renormalized oxide wt% values (sum ≈ 100) keyed by oxide name.
+        Includes both ``'FeO'`` and ``'Fe2O3'``.
+    """
     fe_total_moles = float(oxide_wt['Fe_total_moles'])
     fe3_fet = float(np.clip(fe3_fet, 0.0, 0.1))
 
@@ -436,6 +535,26 @@ def _speciate_iron_and_normalize(oxide_wt: Dict[str, float], fe3_fet: float) -> 
 
 
 def _oxide_wt_to_element_moles(oxide_wt_norm: Dict[str, float]) -> Dict[str, float]:
+    """Convert normalized oxide wt% to element mole counts.
+
+    Converts the 8-oxide system (SiO₂, MgO, FeO, Fe₂O₃, CaO, Al₂O₃, Na₂O,
+    Cr₂O₃) to element moles (Si, Mg, Fe, Ca, Al, Na, Cr, O) using the
+    stoichiometric molar mass of each oxide. Total iron is expressed as a
+    single Fe mole count (Fe²⁺ + Fe³⁺ combined); oxygen is computed from
+    the full oxide stoichiometry.
+
+    These element moles are the direct input to HeFESTo ``control`` files.
+
+    Parameters
+    ----------
+    oxide_wt_norm : dict
+        Renormalized oxide wt% values from ``_speciate_iron_and_normalize``.
+
+    Returns
+    -------
+    dict
+        Element moles keyed by element symbol (Si, Mg, Fe, Ca, Al, Na, Cr, O).
+    """
     n_sio2 = oxide_wt_norm['SiO2'] / OXIDE_MOLAR_MASSES['SiO2']
     n_mgo = oxide_wt_norm['MgO'] / OXIDE_MOLAR_MASSES['MgO']
     n_feo = oxide_wt_norm['FeO'] / OXIDE_MOLAR_MASSES['FeO']
@@ -461,6 +580,24 @@ def _oxide_wt_to_element_moles(oxide_wt_norm: Dict[str, float]) -> Dict[str, flo
 
 
 def _normalize_total_moles(element_moles: Dict[str, float], target_total_moles: float) -> Dict[str, float]:
+    """Scale element mole counts so the total sum equals ``target_total_moles``.
+
+    HeFESTo control files expect element quantities on a fixed total-moles
+    scale (typically 24 moles for mantle compositions). This function applies
+    a uniform scale factor to bring the raw mole counts to that target.
+
+    Parameters
+    ----------
+    element_moles : dict
+        Unnormalized element moles, e.g. from ``_oxide_wt_to_element_moles``.
+    target_total_moles : float
+        Desired sum of all element moles in the output (e.g. 24.0).
+
+    Returns
+    -------
+    dict
+        Rescaled element moles with the same keys as ``element_moles``.
+    """
     total_moles = float(sum(element_moles.values()))
     if total_moles <= 0.0:
         raise ValueError('Cannot normalize element moles with non-positive total')
@@ -471,18 +608,29 @@ def _normalize_total_moles(element_moles: Dict[str, float], target_total_moles: 
 
 
 def prepare_HeFESTo_tree_fulladiabat(directory: Path, GEOROC_DIR: Path, control_path: Path, N: int) -> None:
-    """
-    Prepare the directory structure and files needed to run HeFESTo simulations. This includes changing template files according to randomly chosen compositions and
-    generating ad.in files for each simulation based on a range of random mantle potential temperatures and calcium contents,
+    """Prepare a BatchNNNN/SimulationN directory tree for HeFESTo isentrope runs.
+
+    Samples N bulk compositions from the GEOROC/PetDB database (filtering for
+    MgO > 20 wt% to target mantle-relevant peridotites), speciates iron across
+    a Fe³⁺/Fetotal grid from 0 to 10%, converts oxide wt% to element moles
+    (normalized to 24 total moles), and writes per-simulation ``control`` and
+    ``ad.in`` files. Simulations are grouped into batches of 1000 in
+    ``BatchNNNN/`` subdirectories for SLURM array job submission.
+
+    The P–T path in each ``ad.in`` file is an isentrope computed from a random
+    mantle potential temperature (Tp ∈ [1473, 1923] K) using ``get_S`` and
+    ``get_T``, with small Gaussian noise (σ = 5 K) added for coverage diversity.
+
+    Parameters
     ----------
     directory : Path
-        The directory where the HeFESTo input files will be generated.
+        Root directory under which ``BatchNNNN/`` subdirectories are created.
     GEOROC_DIR : Path
-        The directory containing the GEOROC data file.
+        Path to a GEOROC/PetDB CSV file with oxide wt% columns.
     control_path : Path
-        The path to the control file.
+        Path to a HeFESTo control template file (e.g. ``shallowHeFESTo``).
     N : int
-        The number of simulations to run.
+        Total number of simulations to generate.
     """
     
     directory = Path(directory)
@@ -556,21 +704,32 @@ def prepare_HeFESTo_tree_fulladiabat(directory: Path, GEOROC_DIR: Path, control_
         )
 
 def prepare_HeFESTo_tree_Mars(directory: Path, GEOROC_DIR: Path, control_path: Path, N: int) -> None:
-    """
-    Prepare the directory structure and files needed to run HeFESTo simulations for Martian Conditions (suitable for MCMC work of Ji Ching Chen) 
-    This includes changing template files according to randomly chosen compositions and generating ad.in files for each simulation based on a 
-    range of random mantle potential temperatures and conductive-regime lithosphere thicknesses. 
+    """Prepare a BatchNNNN/SimulationN directory tree for Martian HeFESTo runs.
 
+    Variant of ``prepare_HeFESTo_tree_fulladiabat`` tuned for Mars mantle
+    conditions. Key differences:
 
+    - Pressure range is 0–30 GPa (upper mantle / transition zone only).
+    - Compositions are a 3:2 blend of ultramafic (MgO > 20 wt%) and mafic
+      (5.5 < MgO ≤ 20 wt%) GEOROC samples to cover both depleted and enriched
+      Martian mantle end-members.
+    - Entropy is drawn uniformly from [1.75, 2.9] J/g/K instead of being
+      derived from a potential-temperature regression.
+    - Each ``ad.in`` file includes a conductive lithosphere overlay: for
+      pressures below a randomly sampled lithosphere base pressure (P_lit ∈
+      [1.5, 9] GPa), temperature increases linearly from a cold surface
+      anchor rather than following the mantle adiabat.
+
+    Parameters
     ----------
     directory : Path
-        The directory where the HeFESTo input files will be generated.
+        Root directory under which ``BatchNNNN/`` subdirectories are created.
     GEOROC_DIR : Path
-        The directory containing the GEOROC data file.
+        Path to a GEOROC/PetDB CSV file with oxide wt% columns.
     control_path : Path
-        The path to the control file.
+        Path to a HeFESTo control template file.
     N : int
-        The number of simulations to run.
+        Total number of simulations to generate.
     """
     
     directory = Path(directory)
@@ -865,24 +1024,34 @@ def load_fort99_component_moles_and_labels(sim_dir: str, indexer) -> Tuple[np.nd
     return VC, P
 
 
-def load_fort99_componentMoles(sim_dir: str, indexer) -> Tuple[np.ndarray, np.ndarray]:
-    """Load fort.99 components into an extensive component-moles array and
-    compute intensive (VC) and molar (P) phase labels using an ml_indexer.
+def load_fort99_componentMoles(sim_dir: str, indexer) -> np.ndarray:
+    """Load fort.99 components into an extensive component-moles array.
+
+    Parses the whitespace-delimited fort.99 file, resolves each column's
+    abbreviation to a canonical component name via the indexer, and returns
+    the component moles as a dense array aligned to ``indexer.label_names``.
+    Components not present in the indexer are silently skipped.
+
+    This is the lower-level companion to ``load_fort99_component_moles_and_labels``:
+    it returns only the raw mole array without computing phase-label projections.
+    The result can be passed directly to
+    ``HeFESToEmulatorCPU.get_property_hefesto_vectorized_from_assemblage``.
 
     Parameters
     ----------
     sim_dir : str
-        Directory containing a `fort.99` file.
+        Directory containing a ``fort.99`` file.
     indexer : object
-        ml_indexer providing `label_names` (component labels) and
-        `phaseToCompMap` (2D array-like with shape [n_phases, n_components]).
+        ml_indexer providing ``label_names`` (list of component names) used to
+        align fort.99 columns to the correct output positions.
 
     Returns
     -------
-    VC : np.ndarray
-        Intensive phase labels with shape (n_rows, n_phases). Contains component proportions that sum to 1 across each phase
-    P : np.ndarray
-        Molar phase labels (phase moles) with shape (n_rows, n_phases).
+    component_moles : np.ndarray
+        Array of shape ``(n_rows, n_components)`` where ``n_components`` is
+        ``len(indexer.label_names)``. Each row corresponds to one P–T step
+        in the simulation; each column is the molar abundance of the
+        corresponding component.
     """
     sim_dir = Path(sim_dir)
     fort99_path = sim_dir / 'fort.99'
