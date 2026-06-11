@@ -34,28 +34,34 @@ os.makedirs(EnsembleLocation, exist_ok=True)
 
 
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-input_date = 'June9'
+input_date = 'June10'
 
 input_ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
-MELTSmodels = ['120']#, '102'] # MELTS models to run. To add: MAGEmin
+MELTSmodels = ['102','120','p']#, '102'] # MELTS models to run. To add: MAGEmin
 FXes = ['Batch']#, 'FxCryst']
 Prange = None # Auto if None, for lithosphere/aesthenospere (p)
 
 
-Oxygen = 'closed' # 'closed' or 'open' system with respect to oxygen. Buffered or constant oxygen?
+Oxygen = 'open' # 'closed' or 'open' system with respect to oxygen. Buffered or constant oxygen?
 
 total_to_run = int(300) # How many total simulations to run
-ultramafics_to_run = int(total_to_run * 0.15)
-mafics_to_run = int(total_to_run * 0.3)
-full_to_run = int(total_to_run * 0.55)
 
-startTs = [1800]#, 1800]
+
+startTs = [1800, 1800, 1800]#, 1800]
 delta = -4
-input_liquid_fractions = [102]#, 100] # Make above 100 to allow for superliquidus
+input_liquid_fractions = [102, 102, 102]#, 100] # Make above 100 to allow for superliquidus
 simcycle = 50 # How many simulations to run per iteration
 
 
 for N, MELTSModel in enumerate(MELTSmodels):
+    if MELTSModel == 'p':
+        ultramafics_to_run = int(total_to_run * 0.4)
+        mafics_to_run = int(total_to_run * 0.4)
+        full_to_run = int(total_to_run * 0.2)
+    else:
+        ultramafics_to_run = int(total_to_run * 0.15)
+        mafics_to_run = int(total_to_run * 0.3)
+        full_to_run = int(total_to_run * 0.55)
     for C, Tag in enumerate(['NoCr', 'Cr']):
         ZeroOxides = input_ZeroOxides.copy()
         if Tag == 'NoCr':
