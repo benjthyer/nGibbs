@@ -76,11 +76,14 @@ def _validate_existing_files(dataname, sim_metadata_name, indexer):
             print(f"Verified: CSV ({csv_rows} rows) and text file ({txt_lines} lines) have matching counts.")
 
 
-def _process_compositions(compositions, col_dict, simcycle, MELTSModel, zeroOxides = ['MnO', 'NiO'], Water = True):
+def _process_compositions(compositions, col_dict, simcycle, MELTSModel, zeroOxides = ['MnO', 'NiO']):
     """
     Process and normalize compositions, setting constraints on various oxides.
 
-    FOR NOW, SETS MnO and NiO to zero across the board, Assigns 1/2 of sims with water contents with sigma = 0.25, 1/3 anhydrous, 1/6 uniform dist up to 5%
+    Water handling is implicit per model:
+      p   → all anhydrous
+      102 → half gaussian-hydrous (sigma=0.5), half anhydrous
+      110/120 → half gaussian-hydrous, ~1/6 soaked (uniform 0-5 wt%), ~1/3 anhydrous
 
     Parameters
     ----------
@@ -92,8 +95,6 @@ def _process_compositions(compositions, col_dict, simcycle, MELTSModel, zeroOxid
         Number of simulations in this cycle
     MELTSModel : str
         MELTS model version ('p', '102', '110', '120')
-    Water : bool, default=True
-        Whether to include water in the simulations
 
     Returns
     -------
@@ -102,22 +103,19 @@ def _process_compositions(compositions, col_dict, simcycle, MELTSModel, zeroOxid
     """
     # Zero water up front
     compositions[:, col_dict['H2O']] = 0
-    if Water:
+    if MELTSModel in ('110', '120'):
         remaining_idx = np.arange(simcycle)
-        # Randomly set some compositions to anhydrous
-        hydrous = np.random.choice(remaining_idx, size=int(simcycle/2), replace = False)
-        compositions[hydrous, col_dict['H2O']] = np.abs(np.random.normal(size = len(hydrous), scale = 0.5))
+        hydrous = np.random.choice(remaining_idx, size=int(simcycle/2), replace=False)
+        compositions[hydrous, col_dict['H2O']] = np.abs(np.random.normal(size=len(hydrous), scale=0.5))
         out_mask = np.ones(simcycle)
         out_mask[hydrous] = 0
         remaining_idx = remaining_idx[out_mask.astype(bool)]
-        soaked = np.random.choice(remaining_idx, size = int(simcycle/3), replace = False)
-        compositions[soaked, col_dict['H2O']] = np.random.uniform(size = len(soaked), high = 5)
-    else:
-        print("Water is set to False. All compositions will have 0 wt% H2O.")
-
-    # Cap H2O at 5%
-    #too_wet = compositions[:, col_dict['H2O']] > 5
-    #compositions[too_wet, col_dict['H2O']] = 5
+        soaked = np.random.choice(remaining_idx, size=int(simcycle/3), replace=False)
+        compositions[soaked, col_dict['H2O']] = np.random.uniform(size=len(soaked), high=5)
+    elif MELTSModel == '102':
+        hydrous = np.random.choice(np.arange(simcycle), size=int(simcycle/2), replace=False)
+        compositions[hydrous, col_dict['H2O']] = np.abs(np.random.normal(size=len(hydrous), scale=0.5))
+    # 'p': all anhydrous — already zeroed above
 
     # Set zeroOxides to zero
     for oxide in zeroOxides:
@@ -271,7 +269,7 @@ def alphaMELTScompress(output_file, MELTSModel, GEOROC, col_dict, indexer, iterc
 
 def alphaMELTScooling(output_file, MELTSModel, GEOROC, col_dict, indexer, itercode='a1', simcycle=50, fxtal=False,
                       ExFailures=False, zeroOxides = ['MnO', 'NiO'], startT=1925, max_liquid_fraction=100, end=700,
-                      Prange = None, delta = -1, Oxygen = 'Closed', Water = True):
+                      Prange = None, delta = -1, Oxygen = 'Closed'):
     """
     Perform ensemble MELTS cooling calculations with random compositions.
 
@@ -303,8 +301,6 @@ def alphaMELTScooling(output_file, MELTSModel, GEOROC, col_dict, indexer, iterco
         End temperature in Celsius
     Oxygen : str, default='Closed'
         Oxygen fugacity condition ('Closed' or 'Open')
-    Water : bool, default=True
-        Whether to include water in the simulation
     """
 
     iterLetter = itercode[0]
@@ -392,7 +388,7 @@ def alphaMELTScooling(output_file, MELTSModel, GEOROC, col_dict, indexer, iterco
         indices = GEOROC[choices, 0]
 
         # Process and normalize compositions
-        compositions = _process_compositions(compositions, col_dict, simcycle, MELTSModel, zeroOxides=zeroOxides, Water=Water)
+        compositions = _process_compositions(compositions, col_dict, simcycle, MELTSModel, zeroOxides=zeroOxides)
         
         # Initialize PTX conditions
         in_array = np.round(PTF_initialize(compositions, length=simcycle), 2)
