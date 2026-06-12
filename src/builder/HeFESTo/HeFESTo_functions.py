@@ -910,10 +910,12 @@ def prepare_HeFESTo_tree_from_phase_changes(directory: Path, phase_path: Path, C
         sim_dir.mkdir(parents=True, exist_ok=True)
         simulations_in_batch += 1
         # Define Appropriate Template
-        if float(window_df['P(GPa)(System_main)'].min()) < 23:
-                control_template_path = CONTROL_DIR / 'shallowHeFESTo'
+        if CONTROL_DIR.is_file() or CONTROL_DIR.name in ('shallowHeFESTo', 'deepHeFESTo'):
+            control_template_path = CONTROL_DIR
+        elif float(window_df['P(GPa)(System_main)'].min()) < 23:
+            control_template_path = CONTROL_DIR / 'shallowHeFESTo'
         else:
-                control_template_path = CONTROL_DIR / 'deepHeFESTo'
+            control_template_path = CONTROL_DIR / 'deepHeFESTo'
 
         control_path = sim_dir / 'control'
         shutil.copy2(control_template_path, control_path)
