@@ -33,9 +33,14 @@ from time import time
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 import sys
-import torch
 import numpy as np
 rng = np.random.default_rng()
+    
+try: 
+    import torch
+except ImportError:
+    print("PyTorch is not installed. Some functions may not be available")
+    pass
 
 src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
