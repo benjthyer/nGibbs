@@ -561,6 +561,7 @@ Inputs are a 2D array of (pressure, temperature, oxide wt%) rows, with matching 
 |---|---|
 | `'Pressure(System_main)'` | Pressure in bar, MELTS | 
 | `'Temperature(System_main)'` | Temperature in °C, MELTS | 
+| `'S(System_main)'` | Entropy in , MELTS | 
 | `'logfO2-QFM(System_main)'` | Oxygen fugacity in log offset from FMQ buffer. Only FMQ accepted. Optional: triggers open-system mode 
 | `'SiO2'`, `'TiO2'`, `'Al2O3'`, `'FeO'`, `'Fe2O3'`, `'MgO'`, `'CaO'`, `'Na2O'`, `'K2O'`, `'P2O5'`, `'H2O'` | Oxide weight percents (sum to 100) |
 | `'Cr2O3'` | Optional; triggers Cr-bearing model (see below) |
