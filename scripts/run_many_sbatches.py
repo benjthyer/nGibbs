@@ -27,7 +27,7 @@ def get_queued_jobs_count() -> int:
     """Get the current number of queued/running jobs for this user."""
     try:
         result = subprocess.run(
-            ["squeue", "-u", os.environ["USER"], "-h"],
+            ["squeue", "-u", os.environ["USER"], "-h", "-r"],
             capture_output=True,
             text=True,
             check=True
