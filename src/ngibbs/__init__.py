@@ -7,7 +7,7 @@ try:
     if torch.cuda.is_available():
         from .engine.API import MELTS102EmulatorGPU, HeFESToEmulatorGPU
 
-except ImportError:
+except:
     print("PyTorch is not installed. Please install PyTorch to use nGibbs emulators.")
     pass
 
