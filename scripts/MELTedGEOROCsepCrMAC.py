@@ -20,6 +20,7 @@ from builder.indexer import generate_column_headers, DatasetIndexer
 import numpy as np
 import pandas as pd
 import shutil
+import time
 
 
 DATA_DIR = REPO_ROOT / 'data'
@@ -32,9 +33,10 @@ GEOROC_DIR = os.path.join(REPO_ROOT, 'data', 'MELTStables', 'GEOROC')
 
 os.makedirs(EnsembleLocation, exist_ok=True)
 
-
+#print('Sleeping for 40 hours!')
+#time.sleep(3600 * 40) # 40 hours!!
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-input_date = 'June10'
+input_date = 'June10closed'
 
 input_ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
 MELTSmodels = ['102','120','p']#, '102'] # MELTS models to run. To add: MAGEmin
@@ -42,7 +44,7 @@ FXes = ['Batch']#, 'FxCryst']
 Prange = None # Auto if None, for lithosphere/aesthenospere (p)
 
 
-Oxygen = 'open' # 'closed' or 'open' system with respect to oxygen. Buffered or constant oxygen?
+Oxygen = 'closed' # 'closed' or 'open' system with respect to oxygen. Buffered or constant oxygen?
 
 total_to_run = int(300) # How many total simulations to run
 

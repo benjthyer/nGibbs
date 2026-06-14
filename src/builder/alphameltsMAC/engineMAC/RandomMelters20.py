@@ -364,25 +364,22 @@ def alphaMELTScooling(output_file, MELTSModel, GEOROC, col_dict, indexer, iterco
         out_array = np.zeros((length, np.shape(conditions)[1] + 3))
         out_array[:, 0] = np.random.uniform(*Prange, size=length)  # Pressure in bars
         out_array[:, 1] = startT + 20 + np.arange(length)  # Temperature in K (starting high, decreasing)
+        logfo2 = np.random.uniform(-5, 5, size=length) # log fO2 delta QFM
+        
         if Oxygen.lower() == 'closed':
             ferric_to_ferrous = 0.8998084799181955 #wt ratio conserving Fe atoms
-            R = np.linspace(0,0.15,100) # Proportion of total FeO wt to Fe2O3
-            P = (np.exp(-20*R))#)+(0.5/7)) #Empiracally fit elsewhere, arbitrary
-            P = P/P.sum() 
-            R_chosen = np.random.choice(R, size=length, replace=True, p=P)
+            logR = (logfo2*0.2)-1
+            R32 = 10**logR
+            R_chosen = R32/(R32+1) #Fe3 / FeT Molar
             ferric = conditions[:,col_dict['FeO']]*R_chosen*(1/ferric_to_ferrous)
             conditions[:,col_dict['FeO']] = conditions[:,col_dict['FeO']]*(1-R_chosen)
             total = (np.sum(conditions, axis = 1) + ferric).reshape(-1,1) # Renormalize to new wt%
-            #print(total.shape)
             conditions = conditions*(100/total)
-            #print(conditions.shape)
-            #print(ferric.shape)
             ferric = ferric*(100/total.flatten())
-            #print(ferric.shape)
             out_array[:, 2] = ferric
         elif Oxygen.lower() == 'open':
             # Open system with respect to oxygen, set fO2 to random values
-            out_array[:, 2] = np.random.uniform(-5, 5, size=length)  # fO2 offset from FMQ
+            out_array[:, 2] = logfo2  # fO2 offset from FMQ
         else:           
             raise ValueError(f"Oxygen condition '{Oxygen}' not recognized. Use 'closed' or 'open'")
         out_array[:, 3:] = conditions
