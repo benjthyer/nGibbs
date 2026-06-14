@@ -1,6 +1,6 @@
-# nGibbs: Neural Network Emulators for Silicate Thermodynamics
+# nGibbs: Neural Network Emulators for Free Energy Minimizing Silicate Phase Equilibria
 
-A collection of fast neural network emulators for MELTS, HeFESTo, and related free-energy codes for silicate multi-component systems. nGibbs replaces computationally expensive thermodynamic simulations with GPU-accelerated neural network predictions that are orders of magnitude faster.
+A collection of fast neural network emulators for MELTS, HeFESTo, and related free-energy codes for silicate multi-component systems. nGibbs substitutes for computationally expensive thermodynamic simulations with GPU-accelerated neural network predictions that are orders of magnitude faster.
 
 ---
 
@@ -49,7 +49,15 @@ from ngibbs import MELTS102EmulatorCPU, HeFESToEmulatorCPU
 - Phase compositions in a reduced component space
 - Phase masses and mole fractions
 - Molar abundances of phases
-- Key thermodynamic properties: temperature, entropy, density, seismic velocities, elastic moduli
+
+From these quanitites, key thermodynamic properties can be directly computed:
+- temperature (estimated for isentropic models using a neural network)
+- entropy (directly calculated for isothermal models)
+- density
+- seismic velocities
+- elastic moduli
+- heat capacities
+- seismic attenuation quality factors
 
 **Key Features:**
 
@@ -92,8 +100,9 @@ from ngibbs import MELTS102EmulatorCPU, HeFESToEmulatorCPU
 
 - **Model Training**
   - Training loop implementation ([src/builder/training/trainer.py](src/builder/training/trainer.py))
-  - Hyperparameter optimization via Optuna ([src/builder/training/tuners.py](src/builder/training/tuners.py))
+  - Hyperparameter optimization ([src/builder/training/tuners.py](src/builder/training/tuners.py))
   - YAML-driven sequential train/tune episodes ([src/builder/training/main.py](src/builder/training/main.py))
+      - Tune with OneCycleLR episodes often used to get quality models: injects stochasity to escape local minima
 
 - **HeFESTo EOS Arithmetic Engine** ([src/ngibbs/engine/EOS_arithmetic/](src/ngibbs/engine/EOS_arithmetic/))
   - Full Python translation of HeFESTo's physub thermodynamic routines
@@ -117,7 +126,8 @@ from ngibbs import MELTS102EmulatorCPU, HeFESToEmulatorCPU
 - **Trained Models**
   - Geodynamically-relevant isentropic low-melt-fraction pMELTS emulator (w/ and w/o Cr)
   - General (any melt fraction) emulators for MELTS 1.0, 1.2, and pMELTS
-  - HeFESTo models
+  - phMELTS (Will require some handling of water in NAMs...)
+  - HeFESTo models for Earth and Mars
 
 - **fO2-Buffered MELTS Emulator**
   - Infrastructure for open-oxygen (buffered fO2) emulators is already in place (the `OXYGEN='open'` flag in `DatasetIndexer` and the model-selection routing in the API)
@@ -549,12 +559,16 @@ Inputs are a 2D array of (pressure, temperature, oxide wt%) rows, with matching 
 
 | Header | Description |
 |---|---|
-| `'Pressure(System_main)'` | Pressure in bar, MELTS |  `'P(GPa)(System_main)'` | Pressure in GPa, HeFESTo |
-| `'Temperature(System_main)'` | Temperature in °C, MELTS | `'T(K)(System_main)'` | Temperature in °K, HeFESTo |
+| `'Pressure(System_main)'` | Pressure in bar, MELTS | 
+| `'Temperature(System_main)'` | Temperature in °C, MELTS | 
+| `'S(System_main)'` | Entropy in , MELTS | 
+| `'logfO2-QFM(System_main)'` | Oxygen fugacity in log offset from FMQ buffer. Only FMQ accepted. Optional: triggers open-system mode 
 | `'SiO2'`, `'TiO2'`, `'Al2O3'`, `'FeO'`, `'Fe2O3'`, `'MgO'`, `'CaO'`, `'Na2O'`, `'K2O'`, `'P2O5'`, `'H2O'` | Oxide weight percents (sum to 100) |
 | `'Cr2O3'` | Optional; triggers Cr-bearing model (see below) |
 
-##### `ForwardMB()` — Predict Phase Assemblages
+
+##### `ForwardMB()` — Predict Phase Assemblages with "Mass Balance": Mass is forced to be conserved in post processing. 
+*For (the significantly faster) Neural Network alone without forced mass balance, use ForwardNN with the same arguments and structure.*
 
 ```python
 import numpy as np
@@ -835,12 +849,6 @@ tune1:
   lr: 1e-4
   n_trials: 50   # Optuna trials
 ```
-
-### Project Notes
-
-Copilot agents operating in this repository follow strict structure and changelog rules. See [`.github/copilot-instructions.md`](.github/copilot-instructions.md).
-
----
 
 ## License
 

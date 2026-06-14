@@ -33,9 +33,14 @@ from time import time
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 import sys
-import torch
 import numpy as np
 rng = np.random.default_rng()
+    
+try: 
+    import torch
+except ImportError:
+    print("PyTorch is not installed. Some functions may not be available")
+    pass
 
 src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
@@ -122,7 +127,7 @@ def make_PT_path(S, P, func, out_path=None):
     AdIn[:, 2] = func(S=S, P=P) + np.random.normal(0, 5, size=len(P))
     save_fixed_width_table(AdIn, out_path=out_path)
 
-def make_PT_path_martian(S, P, func, P_lit, cold_temp = 240, out_path=None):
+def make_PT_path_martian(S, P, func, P_lit, cold_temp = 220, out_path=None):
     """Generate an ``ad.in`` pressure–temperature path file for Martian conditions.
 
     Like ``make_PT_path`` but overlays a conductive lithosphere: pressures
@@ -141,7 +146,7 @@ def make_PT_path_martian(S, P, func, P_lit, cold_temp = 240, out_path=None):
     P_lit : float
         Lithosphere base pressure in GPa. Points with P ≤ P_lit are
         replaced with the conductive profile.
-    cold_temp : float, default=240
+    cold_temp : float, default=220
         Surface temperature in K used as the cold-end anchor of the
         conductive regime.
     out_path : str or Path, optional
@@ -760,7 +765,7 @@ def prepare_HeFESTo_tree_Mars(directory: Path, GEOROC_DIR: Path, control_path: P
     subset = pd.concat([ultramafic_df.sample(n=UMN, replace=True), mafic_df.sample(n=N-UMN, replace=True)]).sample(frac=1).reset_index(drop=True) # Multiply every element value by a random number between 0.95 and 1.05
     reduced_N = int(N*(4/5))
 
-    fe3_fet_grid = np.append(np.linspace(0.0, 0.05, reduced_N), np.linspace(0.05, 0.10, int(N - reduced_N)))
+    fe3_fet_grid = np.append(np.linspace(0.0, 0.05, reduced_N), np.linspace(0.05, 0.20, int(N - reduced_N)))
     rng.shuffle(fe3_fet_grid)
     element_keys = np.array(['Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O'])
     P0s = np.random.uniform(0, 0.5, size=N)
@@ -905,10 +910,12 @@ def prepare_HeFESTo_tree_from_phase_changes(directory: Path, phase_path: Path, C
         sim_dir.mkdir(parents=True, exist_ok=True)
         simulations_in_batch += 1
         # Define Appropriate Template
-        if float(window_df['P(GPa)(System_main)'].min()) < 23:
-                control_template_path = CONTROL_DIR / 'shallowHeFESTo'
+        if CONTROL_DIR.is_file() or CONTROL_DIR.name in ('shallowHeFESTo', 'deepHeFESTo'):
+            control_template_path = CONTROL_DIR
+        elif float(window_df['P(GPa)(System_main)'].min()) < 23:
+            control_template_path = CONTROL_DIR / 'shallowHeFESTo'
         else:
-                control_template_path = CONTROL_DIR / 'deepHeFESTo'
+            control_template_path = CONTROL_DIR / 'deepHeFESTo'
 
         control_path = sim_dir / 'control'
         shutil.copy2(control_template_path, control_path)

@@ -1,10 +1,15 @@
-"""nGibbs - Neural network emulators for MELTS and HeFESTo thermodynamic modeling.
+#nGibbs - Neural network emulators for MELTS and HeFESTo thermodynamic modeling.
+#Importing models here
 
-Typical usage::
+try:
+    import torch
+    from .engine.API import MELTS102EmulatorCPU, HeFESToEmulatorCPU
+    if torch.cuda.is_available():
+        from .engine.API import MELTS102EmulatorGPU, HeFESToEmulatorGPU
 
-    from ngibbs import MELTS102EmulatorCPU, HeFESToEmulatorCPU
+except ImportError:
+    print("PyTorch is not installed. Please install PyTorch to use nGibbs emulators.")
+    pass
 
-GPU variants are available if CUDA is detected at import time::
 
-    from ngibbs import MELTS102EmulatorGPU, HeFESToEmulatorGPU
-"""
+

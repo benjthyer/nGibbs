@@ -11,8 +11,8 @@ emptyfile.txt
 *tbl.txt
 
 # Debugging Temps
-src/nMELTS/config/projections/compToOxV2_cationcharge.xlsx
-src/nMELTS/config/projections/PxSp_Comp_TransformV2_old.csv/
+src/ngibbs/config/projections/compToOxV2_cationcharge.xlsx
+src/ngibbs/config/projections/PxSp_Comp_TransformV2_old.csv/
 
 #alphamelts installations
 src/alphamelts/engine/alphamelts-app-2.3.1-linux/alphamelts2/ # Users will not need this.
@@ -179,4 +179,6 @@ build
 *.log
 *temp_models/
 src/builder/training/temp_models/
-C:/Git_Repositories/nMELTS/src/builder/training/temp_models
+C:/Git_Repositories/nGibbs/src/builder/training/temp_models
+
+copilot-instructions.md

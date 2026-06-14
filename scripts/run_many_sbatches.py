@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 
@@ -27,7 +28,7 @@ def get_queued_jobs_count() -> int:
     """Get the current number of queued/running jobs for this user."""
     try:
         result = subprocess.run(
-            ["squeue", "-u", os.environ["USER"], "-h"],
+            ["squeue", "-u", os.environ["USER"], "-h", "-r"],
             capture_output=True,
             text=True,
             check=True
@@ -70,6 +71,19 @@ $HOME/HeFESTo/HeFESToRepository/main
     slurm_script.chmod(0o755)  # Make executable
     
     return slurm_script
+
+
+def load_checkpoint(base_dir: Path) -> set[str]:
+    """Return set of already-submitted directory names from submitted_jobs.log."""
+    log_path = base_dir / "submitted_jobs.log"
+    if not log_path.exists():
+        return set()
+    submitted = set()
+    with log_path.open() as f:
+        for line in f:
+            if "  job=" in line:
+                submitted.add(line.split("  job=")[0].strip())
+    return submitted
 
 
 def submit_job(sim_dir: Path, slurm_script: Path) -> str | None:
@@ -128,7 +142,19 @@ def submit_jobs_with_queue_monitoring(
     if not sim_dirs:
         print(f"No directories with Simulation* folders found in {base_dir}")
         sys.exit(1)
-    
+
+    # Checkpoint: skip already-submitted directories
+    already_submitted = load_checkpoint(base_dir)
+    if already_submitted:
+        skipped = [(d, n) for d, n in sim_dirs if d.name in already_submitted]
+        sim_dirs  = [(d, n) for d, n in sim_dirs if d.name not in already_submitted]
+        print(f"Checkpoint found ({base_dir / 'submitted_jobs.log'}):")
+        print(f"  Skipping {len(skipped)} already-submitted director{'y' if len(skipped)==1 else 'ies'}: "
+              + ", ".join(d.name for d, _ in skipped))
+        if not sim_dirs:
+            print("All directories already submitted. Nothing to do.")
+            return
+
     # Calculate total simulations
     total_sims = sum(n for _, n in sim_dirs)
     
@@ -156,10 +182,16 @@ def submit_jobs_with_queue_monitoring(
         for sim_dir, slurm_script, n_sims in pending_jobs:
             print(f"Would submit: {sim_dir.name} ({n_sims} tasks)")
         return
-    
+
+    log_path = base_dir / "submitted_jobs.log"
+
+    # Write a run-start header to the log (append so prior runs are preserved)
+    with log_path.open("a") as log_f:
+        log_f.write(f"# Run started {datetime.now().isoformat()}\n")
+
     # Submit jobs iteratively
     submitted_jobs = []
-    
+
     while pending_jobs:
         # Check current queue status
         current_queued = get_queued_jobs_count()
@@ -181,6 +213,8 @@ def submit_jobs_with_queue_monitoring(
                     current_queued += n_sims
                     submitted_this_round += 1
                     print(f"✓ Job {job_id}")
+                    with log_path.open("a") as log_f:
+                        log_f.write(f"{sim_dir.name}  job={job_id}  tasks={n_sims}\n")
                 else:
                     print("✗ Failed")
                     # Don't increment current_queued on failure
@@ -216,6 +250,8 @@ def submit_jobs_with_queue_monitoring(
     print("Monitor with: squeue -u $USER")
     print(f"Cancel all with: scancel -u $USER")
     print("=" * 70)
+
+    print(f"Log: {log_path}")
 
 
 if __name__ == "__main__":
