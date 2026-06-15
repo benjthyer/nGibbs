@@ -162,6 +162,27 @@ def make_PT_path_martian(S, P, func, P_lit, cold_temp = 220, out_path=None):
     save_fixed_width_table(AdIn, out_path=out_path)
 
 
+def get_T_mars(P, S, *, Si, Mg, Fe, Ca, Al, Na, Cr, O):
+    """T from S, P, and normalized bulk element moles (Mars-tuned quadratic regression).
+
+    Coefficients from T_from_S_X_coefs_R2_0p99289.txt, fit to Mars profile data
+    (S in [1.75, 2.9] J/g/K, P < 25 GPa, R²=0.9929).
+    """
+    return (
+        -319705.389611
+        + -678.005070948  * S   + 412.900722827   * S**2
+        +   16.0934481886 * P   +  -0.0963057104055 * P**2
+        +  14973.408716   * Si  +  -22.2950018292  * Si**2
+        +  14667.3918412  * Mg  +    2.38116843179 * Mg**2
+        +  14772.686899   * Fe  +   -3.92513688062 * Fe**2
+        +  14754.7430937  * Ca  +   -2.60176031648 * Ca**2
+        +  14667.2225605  * Al  +   25.4363265815  * Al**2
+        +  14517.5621792  * Na  +  114.182091497   * Na**2
+        +  14777.8386046  * Cr  +   33.5281068808  * Cr**2
+        +  10174.4941707  * O   +  154.364289153   * O**2
+    )
+
+
 def _clean_workspace(workspace_dir: str) -> None:
     if os.path.exists(workspace_dir):
         for item in os.listdir(workspace_dir):
@@ -512,7 +533,7 @@ def _speciate_iron_and_normalize(oxide_wt: Dict[str, float], fe3_fet: float) -> 
         Includes both ``'FeO'`` and ``'Fe2O3'``.
     """
     fe_total_moles = float(oxide_wt['Fe_total_moles'])
-    fe3_fet = float(np.clip(fe3_fet, 0.0, 0.1))
+    fe3_fet = float(fe3_fet)
 
     fe3_moles = fe_total_moles * fe3_fet
     fe2_moles = fe_total_moles - fe3_moles
@@ -660,9 +681,11 @@ def prepare_HeFESTo_tree_fulladiabat(directory: Path, GEOROC_DIR: Path, control_
         template_lines = [line.rstrip('\n') for line in handle]
     mafic_df = georoc_df[pd.to_numeric(georoc_df[mgo_col], errors='coerce').fillna(0.0) > 20.0]
     subset = mafic_df.sample(n=N, replace=True) # Multiply every element value by a random number between 0.95 and 1.05
-    reduced_N = int(N*(4/5))
+    logfo2 = np.random.uniform(-5, 5, N) # logfO2 relative to FMQ
+    logfe3_fe2 = (0.2*logfo2) - 1
+    fe3_fe2 = 10**logfe3_fe2
+    fe3_fet_grid = fe3_fe2 / (1 + fe3_fe2) # Convert to Fe3+/Fetotal
 
-    fe3_fet_grid = np.append(np.linspace(0.0, 0.05, reduced_N), np.linspace(0.05, 0.10, int(N - reduced_N)))
     element_keys = np.array(['Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O'])
     P0s = np.random.uniform(0, 1, size=N)
     run_code = [[float(P0), float(P0 + 139), 138, 0, 0, 0, -1, 0, 0, 0, 0] for P0 in P0s] # ad.in files made downstream
@@ -763,13 +786,13 @@ def prepare_HeFESTo_tree_Mars(directory: Path, GEOROC_DIR: Path, control_path: P
     mafic_df = georoc_df[(pd.to_numeric(georoc_df[mgo_col], errors='coerce').fillna(0.0) > 5.5) & (pd.to_numeric(georoc_df[mgo_col], errors='coerce').fillna(0.0) <= 20.0)]
     UMN = int(N*(3/5))
     subset = pd.concat([ultramafic_df.sample(n=UMN, replace=True), mafic_df.sample(n=N-UMN, replace=True)]).sample(frac=1).reset_index(drop=True) # Multiply every element value by a random number between 0.95 and 1.05
-    reduced_N = int(N*(4/5))
-
-    fe3_fet_grid = np.append(np.linspace(0.0, 0.05, reduced_N), np.linspace(0.05, 0.20, int(N - reduced_N)))
-    rng.shuffle(fe3_fet_grid)
+    logfo2 = np.random.uniform(-5, 5, N) # logfO2 relative to FMQ
+    logfe3_fe2 = (0.2*logfo2) - 1
+    fe3_fe2 = 10**logfe3_fe2
+    fe3_fet_grid = fe3_fe2 / (1 + fe3_fe2) # Convert to Fe3+/Fetotal
     element_keys = np.array(['Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O'])
     P0s = np.random.uniform(0, 0.5, size=N)
-    run_code = [[float(P0), float(P0 + 29.5), 60, 0, 0, 0, -1, 0, 0, 0, 0] for P0 in P0s] # ad.in files made downstream
+    run_code = [[float(P0), float(P0 + 25.5), 50, 0, 0, 0, -1, 0, 0, 0, 0] for P0 in P0s] # ad.in files made downstream
     element_rows: List[List[float]] = []
     wts: List[str] = []
 
@@ -809,7 +832,7 @@ def prepare_HeFESTo_tree_Mars(directory: Path, GEOROC_DIR: Path, control_path: P
             P=np.linspace(run_code[sim_idx][0], run_code[sim_idx][1], run_code[sim_idx][2] + 2),
             S=Ss[sim_idx],
             P_lit=P_lit[sim_idx],
-            func=get_T,
+            func=lambda S, P, _e=element_moles: get_T_mars(S=S, P=P, **_e),
             out_path=sim_dir / 'ad.in',
             )
 

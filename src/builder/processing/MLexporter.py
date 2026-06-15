@@ -750,12 +750,12 @@ def generate_dataset_stats(dataset_name, ml_indexer, output_dir=None):
         for i, oxide in enumerate(oxide_names):
             if i < oxide_wt_pct.shape[1]:
                 oxide_col = oxide_wt_pct[:, i]
-                min_val = np.min(oxide_col)
-                max_val = np.max(oxide_col)
+                min_val = np.nanmin(oxide_col)
+                max_val = np.nanmax(oxide_col)
                 f.write(f"{oxide:>10} {min_val:12.4f} {max_val:12.4f}\n")
-        
+
         f.write("\n")
-        
+
         # 4. Condition bounds (P, T, fO2)
         f.write("-" * 80 + "\n")
         f.write("CONDITION BOUNDS\n")
@@ -764,12 +764,12 @@ def generate_dataset_stats(dataset_name, ml_indexer, output_dir=None):
         condition_names = ml_indexer.featureNames #['Pressure (bars)', 'Temperature (°C)', 'logfO2-QFM']
         f.write(f"{'Condition':>20} {'Min':>15} {'Max':>15}\n")
         f.write("-" * 55 + "\n")
-        
+
         for i, cond_name in enumerate(condition_names):
             if i < n_conditions:
                 cond_col = features[:, i]
-                min_val = np.min(cond_col)
-                max_val = np.max(cond_col)
+                min_val = np.nanmin(cond_col)
+                max_val = np.nanmax(cond_col)
                 f.write(f"{cond_name:>20} {min_val:15.2f} {max_val:15.2f}\n")
         
         f.write("\n")

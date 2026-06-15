@@ -6,12 +6,12 @@
 # ============================================================================
 dataset: #EXPECTED FILENAME: "nMELTS/data/MELTStables/{MELTSModel}/{'MELTS' if MELTSModel in ['102', '110', '120', 'p'] else ''}{MELTSModel}_<Train/Valid>set{Date}{Mode}"
   MELTSModel: 'HeFESTo'          # MELTS model version: '102', '110', '120', 'p'. Affects which directory dataproducts are read from and written to
-  Date: '041026'               # Date identifier for dataset naming
-  Mode: '_low_noise_adiabats'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
+  Date: '061426'               # Date identifier for dataset naming
+  Mode: 'mars_profiles'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
-outname: 'HeFESTo_041026_NPT_low_noise_adiabats'                  # Base name for output folder (without extension). Auto-Generated if blank
+outname: 'HeFESTo_Mars_Profiles_NPT'                  # Base name for output folder (without extension). Auto-Generated if blank
 
 
 # ============================================================================
@@ -27,9 +27,9 @@ featureNames: # Non-chemical features to include in the dataset
 freeOutputs: # Non-chemical labels to predict. These are used for training the saturation predictor and as auxiliary outputs for the encoder.
   #- 'Temperature(System_main)' 
   - 'S(J/g/K)(System_main)'
-  - 'T(K)(System_main)'
-  - 'VS(km/s)(System_main)'
-  - 'VP(km/s)(System_main)'
+  #- 'T(K)(System_main)'
+  #- 'VS(km/s)(System_main)'
+  #- 'VP(km/s)(System_main)'
   #- 'dVdP*10^6(System_main)' # COMPRESSIBILITY
   #- 'dVdT*10^6(System_main)' # THERMAL EXPANSION
   #- 'H(System_main)'

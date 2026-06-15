@@ -70,9 +70,13 @@ def main() -> None:
         print(f"ERROR: {exc}")
         sys.exit(1)
 
-    assert os.path.exists(f"{table_a_name}.csv") and os.path.exists(f"{table_a_name}.txt"), f"Table A files not found for base {table_a_name}"
-    assert os.path.exists(f"{table_b_name}.csv") and os.path.exists(f"{table_b_name}.txt"), f"Table B files not found for base {table_b_name}"
-
+    assert os.path.exists(f"{table_a_name}.csv") 
+    if not os.path.exists(f"{table_a_name}.txt"):
+        print(f"[WARNING] Table A text metadata not found for base {table_a_name}")
+    assert os.path.exists(f"{table_b_name}.csv") 
+    if not os.path.exists(f"{table_b_name}.txt"):
+        print(f"[WARNING] Table B text metadata not found for base {table_b_name}")
+   
     print(f"Loading table A: {table_a_name}")
     table_a = BigMetaTable(table_a_name)
     print(f"Loading table B: {table_b_name}")

@@ -593,15 +593,18 @@ class DatasetIndexer:
                 if component in self.EXCLUDED_COMPONENTS_BY_PHASE.get(phase, set()):
                     continue
                 
-                # Skip state variables (they may legitimately be zero). But look at mass: we need a way to catch pure phases. 
-                if component in self.STATE_VARIABLES and 'mass' not in component.lower():
+                # Skip state variables (they may legitimately be zero), except mass/moles columns
+                # which indicate phase abundance (catching both MELTS 'mass (gm)' and
+                # HeFESTo 'total (moles)' as dead-phase sentinels).
+                is_abundance_col = 'mass' in component.lower() or 'moles' in component.lower()
+                if component in self.STATE_VARIABLES and not is_abundance_col:
                     continue
-                
+
                 # Check if this component's sum is zero
                 if column_sums[col_idx] <= tolerance:
-                    if 'mass' in component.lower():
-                        self.EXCLUDED_PHASES.add(phase) # Exclude phases if their mass is zero
-                        newly_excluded.append(f"{phase} (mass zero)")
+                    if is_abundance_col:
+                        self.EXCLUDED_PHASES.add(phase) # Exclude phases if their mass/moles is zero
+                        newly_excluded.append(f"{phase} (abundance zero)")
                     else:
                         self.EXCLUDED_COMPONENTS_BY_PHASE.setdefault(phase, set()).add(component)
                         newly_excluded.append(f"{component}({phase})")

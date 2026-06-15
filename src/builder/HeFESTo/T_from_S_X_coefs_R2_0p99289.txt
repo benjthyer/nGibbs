@@ -1,0 +1,29 @@
+Temperature regression: T = f(S, bulk composition elements)
+CSV: data\MELTStables\HeFESTo\HeFESTo_Trainset061426mars_profiles.csv
+Rows used: 2606722
+R^2: 0.992890374661
+
+Model: T = b0 + b_S*S + b_S^2*S^2 + b_P*P + b_P^2*P^2 + b_Si*Si + b_Si^2*Si^2 + b_Mg*Mg + b_Mg^2*Mg^2 + b_Fe*Fe + b_Fe^2*Fe^2 + b_Ca*Ca + b_Ca^2*Ca^2 + b_Al*Al + b_Al^2*Al^2 + b_Na*Na + b_Na^2*Na^2 + b_Cr*Cr + b_Cr^2*Cr^2 + b_O*O + b_O^2*O^2
+
+Coefficients:
+  b0  (intercept) = -319705.389611
+  b_S          = -678.005070948
+  b_S^2        = 412.900722827
+  b_P          = 16.0934481886
+  b_P^2        = -0.0963057104055
+  b_Si         = 14973.408716
+  b_Si^2       = -22.2950018292
+  b_Mg         = 14667.3918412
+  b_Mg^2       = 2.38116843179
+  b_Fe         = 14772.686899
+  b_Fe^2       = -3.92513688062
+  b_Ca         = 14754.7430937
+  b_Ca^2       = -2.60176031648
+  b_Al         = 14667.2225605
+  b_Al^2       = 25.4363265815
+  b_Na         = 14517.5621792
+  b_Na^2       = 114.182091497
+  b_Cr         = 14777.8386046
+  b_Cr^2       = 33.5281068808
+  b_O          = 10174.4941707
+  b_O^2        = 154.364289153
