@@ -681,11 +681,11 @@ def prepare_HeFESTo_tree_fulladiabat(directory: Path, GEOROC_DIR: Path, control_
         template_lines = [line.rstrip('\n') for line in handle]
     mafic_df = georoc_df[pd.to_numeric(georoc_df[mgo_col], errors='coerce').fillna(0.0) > 20.0]
     subset = mafic_df.sample(n=N, replace=True) # Multiply every element value by a random number between 0.95 and 1.05
-    logfo2 = np.random.uniform(-5, 5, N) # logfO2 relative to FMQ
+    logfo2 = np.random.uniform(-6, 3, N) # logfO2 relative to FMQ
     logfe3_fe2 = (0.2*logfo2) - 1
     fe3_fe2 = 10**logfe3_fe2
-    fe3_fet_grid = fe3_fe2 / (1 + fe3_fe2) # Convert to Fe3+/Fetotal
-
+    rand0 = 1 #np.random.choice([0, 1], size=N, p=[0.1, 0.9]) # Randomly assign some simulations to have 0 Fe3+/FeT
+    fe3_fet_grid = rand0 * fe3_fe2 / (1 + fe3_fe2) # Convert to Fe3+/Fetotal
     element_keys = np.array(['Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O'])
     P0s = np.random.uniform(0, 1, size=N)
     run_code = [[float(P0), float(P0 + 139), 138, 0, 0, 0, -1, 0, 0, 0, 0] for P0 in P0s] # ad.in files made downstream
@@ -786,10 +786,11 @@ def prepare_HeFESTo_tree_Mars(directory: Path, GEOROC_DIR: Path, control_path: P
     mafic_df = georoc_df[(pd.to_numeric(georoc_df[mgo_col], errors='coerce').fillna(0.0) > 5.5) & (pd.to_numeric(georoc_df[mgo_col], errors='coerce').fillna(0.0) <= 20.0)]
     UMN = int(N*(3/5))
     subset = pd.concat([ultramafic_df.sample(n=UMN, replace=True), mafic_df.sample(n=N-UMN, replace=True)]).sample(frac=1).reset_index(drop=True) # Multiply every element value by a random number between 0.95 and 1.05
-    logfo2 = np.random.uniform(-5, 5, N) # logfO2 relative to FMQ
+    logfo2 = np.random.uniform(-6, 3, N) # logfO2 relative to FMQ
     logfe3_fe2 = (0.2*logfo2) - 1
     fe3_fe2 = 10**logfe3_fe2
-    fe3_fet_grid = fe3_fe2 / (1 + fe3_fe2) # Convert to Fe3+/Fetotal
+    rand0 = 1#np.random.choice([0, 1], size=N, p=[0.1, 0.9]) # Randomly assign some simulations to have 0 Fe3+/FeT
+    fe3_fet_grid = rand0 *fe3_fe2 / (1 + fe3_fe2) # Convert to Fe3+/Fetotal
     element_keys = np.array(['Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O'])
     P0s = np.random.uniform(0, 0.5, size=N)
     run_code = [[float(P0), float(P0 + 25.5), 50, 0, 0, 0, -1, 0, 0, 0, 0] for P0 in P0s] # ad.in files made downstream
