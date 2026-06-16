@@ -24,8 +24,13 @@ import pandas as pd
 #import warnings
 #warnings.filterwarnings("ignore", category=UserWarning)
 import shutil
+import argparse
 
-    
+parser = argparse.ArgumentParser()
+parser.add_argument('--no-training', action='store_true', help='Skip training dataset generation')
+parser.add_argument('--no-validation', action='store_true', help='Skip validation dataset generation')
+parsed_args = parser.parse_args()
+
 DATA_DIR = REPO_ROOT / 'data'
 
 alphaMELTSLocation = os.path.join(REPO_ROOT, 'src', 'builder', 'alphamelts', 'engine', 'alphamelts-app-2.3.1-linux', 'alphamelts_linux')
@@ -176,34 +181,40 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
             valid_args = {**shared_kwargs, 'GEOROC':GEOROC_valid, 'col_dict':col_dict_valid, 'itercode':f'a{int(full_to_run//4)}'}
 
             if full_to_run != 0:
-                MELTER(output_file=Trainfilename, **args)
+                if not parsed_args.no_training:
+                    MELTER(output_file=Trainfilename, **args)
 
                 # Run full GEOROC validation dataset
-                MELTER(output_file=Validfilename, **valid_args)
+                if not parsed_args.no_validation:
+                    MELTER(output_file=Validfilename, **valid_args)
 
             if ultramafics_to_run != 0:
                 ultramafics = GEOROC[:,col_dict['MgO']+1]>=25 # MgO above 25
                 ultramafics_valid = GEOROC_valid[:,col_dict_valid['MgO']+1]>=25
 
-                args['GEOROC'] = GEOROC[ultramafics]
-                args['itercode'] = f'u{ultramafics_to_run}'
-                MELTER(output_file=Trainfilename, **args)
+                if not parsed_args.no_training:
+                    args['GEOROC'] = GEOROC[ultramafics]
+                    args['itercode'] = f'u{ultramafics_to_run}'
+                    MELTER(output_file=Trainfilename, **args)
 
-                valid_args['GEOROC'] = GEOROC_valid[ultramafics_valid]
-                valid_args['itercode'] = f'u{int(ultramafics_to_run//4)}'
-                MELTER(output_file=Validfilename, **valid_args)
+                if not parsed_args.no_validation:
+                    valid_args['GEOROC'] = GEOROC_valid[ultramafics_valid]
+                    valid_args['itercode'] = f'u{int(ultramafics_to_run//4)}'
+                    MELTER(output_file=Validfilename, **valid_args)
 
             if mafics_to_run != 0:
                 mafics = GEOROC[:,col_dict['MgO']+1]>=5 # MgO above 5
                 mafics_valid = GEOROC_valid[:,col_dict_valid['MgO']+1]>=5
 
-                args['GEOROC'] = GEOROC[mafics]
-                args['itercode'] = f'm{mafics_to_run}'
-                MELTER(output_file=Trainfilename, **args)
+                if not parsed_args.no_training:
+                    args['GEOROC'] = GEOROC[mafics]
+                    args['itercode'] = f'm{mafics_to_run}'
+                    MELTER(output_file=Trainfilename, **args)
 
-                valid_args['GEOROC'] = GEOROC_valid[mafics_valid]
-                valid_args['itercode'] = f'm{int(mafics_to_run//4)}'
-                MELTER(output_file=Validfilename, **valid_args)
+                if not parsed_args.no_validation:
+                    valid_args['GEOROC'] = GEOROC_valid[mafics_valid]
+                    valid_args['itercode'] = f'm{int(mafics_to_run//4)}'
+                    MELTER(output_file=Validfilename, **valid_args)
 
 
 
