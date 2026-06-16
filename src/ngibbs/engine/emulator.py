@@ -769,10 +769,10 @@ class NN_MELTS:
         phaseOxMolar = torch.einsum("bcp,co->bpo", phaseComps, compToOx)
         if 'Fe3' not in self.Elkeys: # Only apply iron speciation if ferric iron is not already included in the model! HeFESTo always has Fe3+ as a component
             liqWithFerric = self.Iron_Speciator(
-                oxides=phaseOxMolar[:, self.ml_indexer.comp_phaseDict['melts-liquid']].to(self.dev),
+                oxides=phaseOxMolar[:, self.ml_indexer.comp_phasedict['melts-liquid']].to(self.dev),
                 Normedfeatures=features.to(self.dev)
             )
-            phaseOxMolar[:, self.ml_indexer.comp_phaseDict['melts-liquid']] = liqWithFerric
+            phaseOxMolar[:, self.ml_indexer.comp_phasedict['melts-liquid']] = liqWithFerric
 
         phaseOxMass = torch.einsum("bpo,oo->bpo", phaseOxMolar, MM)
 

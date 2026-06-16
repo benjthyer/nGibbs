@@ -65,10 +65,24 @@ def _deep_update(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any
     return base
 
 
-def _resolve_train_roots() -> List[Path]:
+_MODEL_PREFIXES = ['HeFESTo', '102', '110', '120', 'p']
+
+
+def _infer_model_subdir(tarname: str) -> Optional[str]:
+    for prefix in _MODEL_PREFIXES:
+        if tarname.startswith(prefix):
+            return prefix
+    return None
+
+
+def _resolve_train_roots(tarname: str = '') -> List[Path]:
     roots: List[Path] = []
-    internal_root = settings.INT_DATA_DIR / settings.TRAIN_PATH
-    roots.append(internal_root)
+    subdir = _infer_model_subdir(tarname)
+    if subdir:
+        roots.append(settings.INT_DATA_DIR / settings.TRAIN_PATH / subdir)
+        if settings.external_base:
+            roots.append(Path(settings.external_base) / settings.TRAIN_PATH / subdir)
+    roots.append(settings.INT_DATA_DIR / settings.TRAIN_PATH)
     if settings.external_base:
         roots.append(Path(settings.external_base) / settings.TRAIN_PATH)
     return roots
@@ -328,7 +342,7 @@ def main() -> None:
 
     # Load data
     only_vp = config["only_vp"]
-    roots = _resolve_train_roots()
+    roots = _resolve_train_roots(tarname)
     train_bundle = _resolve_bundle_path(f"{tarname}_Train", roots)
     test_bundle = _resolve_bundle_path(f"{tarname}_Test", roots)
     bundle_yaml_text, stats_text = _read_bundle_metadata(train_bundle)

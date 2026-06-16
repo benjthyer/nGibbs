@@ -33,28 +33,7 @@ from ngibbs.config.constants import (
     default_Elkeys,
     REQUIRED_ELEMENTS,
 )
-from ngibbs.config.ml_indexer import MLIndexer
-
-# Element to oxide mapping dictionary
-ELEMENT_TO_OXIDE = {
-    'Si': 'SiO2',
-    'Ti': 'TiO2',
-    'Al': 'Al2O3',
-    'Fe': 'FeO',  # FeO also represents FeOT, Fe2O3 is added separately 
-    'Mg': 'MgO',
-    'Ca': 'CaO',
-    'Na': 'Na2O',
-    'K': 'K2O',
-    'P': 'P2O5',
-    'H': 'H2O',
-    'Cr': 'Cr2O3',
-    'Mn': 'MnO',
-    'Ni': 'NiO',
-    'Fe3': 'Fe2O3' # Closed oxygen, added for completeness
-}
-
-# Reverse mapping: oxide to element
-OXIDE_TO_ELEMENT = {oxide: element for element, oxide in ELEMENT_TO_OXIDE.items()}
+from ngibbs.config.ml_indexer import MLIndexer, ELEMENT_TO_OXIDE, OXIDE_TO_ELEMENT
 
 # ============================================================================
 #  Phase-to-Components/Attributes Dictionary

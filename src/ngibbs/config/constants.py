@@ -39,9 +39,9 @@ TYPE_CONVERSION_MAP = {
 # Required elements (must always be present)
 REQUIRED_ELEMENTS = {'Si','Ti', 'Al', 'Fe', 'Mg', 'Ca', 'Na'}
 
-default_WRkeys = ['SiO2', 'TiO2', 'Al2O3', 'FeO', 'MgO', 'CaO', 'Na2O', 'K2O', 'P2O5', 'H2O', 'Cr2O3', 'MnO', 'NiO']
+default_WRkeys = ['SiO2', 'TiO2', 'Al2O3', 'FeO', 'MgO', 'CaO', 'Na2O', 'K2O', 'P2O5', 'H2O', 'Cr2O3', 'MnO', 'NiO', 'CO2']
 default_Oxides = default_WRkeys + ['Fe2O3']
-default_Elkeys = ['Si', 'Ti', 'Al', 'Fe', 'Mg', 'Ca', 'Na', 'K', 'P', 'H', 'Cr', 'Mn', 'Ni']
+default_Elkeys = ['Si', 'Ti', 'Al', 'Fe', 'Mg', 'Ca', 'Na', 'K', 'P', 'H', 'Cr', 'Mn', 'Ni', 'C']
 all_Elkeys = default_Elkeys #+['Mn', 'Ni']
 all_Oxides = default_Oxides #+ ['MnO', 'NiO']
 
@@ -62,6 +62,7 @@ OXIDE_MOLAR_MASSES: Dict[str, float] = {
     'MnO': 70.9374,
     'NiO': 74.6928,
     'CoO': 74.9326,
+    'CO2': 44.0095,
 }
 
 
@@ -93,6 +94,7 @@ COMPOSITIONAL_COMPONENTS_IN_PHASES: Dict[str, List[str]] = { # Will need to be e
     'alloy-solid': ['Fe-metal', 'Ni-metal'],
     'alloy-liquid': ['Fe-liquid', 'Ni-liquid'], # Definitely called this in pMELTS... Possible that components are 'Fe-metal' etc for others? 
     'analcime': ['leucite', 'analcime', 'na-leucite'],
+    'fluid': ['H2O', 'CO2'],  # No chemical components, only state variables
     'apatite': [],  # No chemical components, only state variables
     'whitlockite': [],  # No chemical components, only state variables
     'quartz': [],  # No chemical components, only state variables
@@ -100,12 +102,11 @@ COMPOSITIONAL_COMPONENTS_IN_PHASES: Dict[str, List[str]] = { # Will need to be e
     'cristobalite': [],  # No chemical components, only state variables
     'amphibole': [],  # No chemical components, only state variables
     'muscovite': [],  # No chemical components, only state variables
-    'fluid': [],  # No chemical components, only state variables
     'water': [],  # No chemical components, only state variables
     'melts-liquid': ['liq mass (gm)', 
                      'wt% SiO2', 'wt% TiO2', 'wt% Al2O3', 'wt% FeO', 'wt% MgO', 
                      'wt% CaO', 'wt% Na2O', 'wt% K2O', 'wt% P2O5','wt% H2O', 'wt% Cr2O3',
-                     'wt% MnO', 'wt% NiO', 'wt% Fe2O3',
+                     'wt% MnO', 'wt% NiO', 'wt% Fe2O3', 'wt% CO2',
                      'liq rho (gm/cc)',
                      'liq vis (log 10 poise)',
                      'liq H (kJ)',

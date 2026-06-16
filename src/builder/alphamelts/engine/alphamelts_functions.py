@@ -28,6 +28,7 @@ from .melts_file_builder import (
 )
 
 from ngibbs.utils.string_utils import pull_number
+from ngibbs.config.constants import OXIDE_MOLAR_MASSES
 #from ...nMELTS.config.indexer import DatasetIndexer
 
 # You Need GNU parallel to run this! https://build.opensuse.org/package/show/home:tange/parallel
@@ -378,6 +379,9 @@ def import_MELTS_components(EnsembleLocation, batchname, indexer, fO2Arr=None,
                                 except:
                                     fault = True
                                     faultIDs.append(folderNo)"""
+                            elif (phasename == 'fluid') and (fillname in indexer.Oxides):
+                                # Handle fluid components which are reported as wt% in the fluid phase: Will need to be renormed to 1
+                                meltsobj[rowsfill, indexer.MELTS_indices[phasename][fillname]] = table[:, melt_dict[f"wt% {fillname}"]]/OXIDE_MOLAR_MASSES[fillname]
                             else:
                                 try:
                                     meltsobj[rowsfill, indexer.MELTS_indices[phasename][fillname]] = table[:, melt_dict[fillname]]
@@ -421,6 +425,13 @@ def import_MELTS_components(EnsembleLocation, batchname, indexer, fO2Arr=None,
         workbase = workbase[liquid_mask]
         metadata = [metadata[i] for i in range(len(metadata)) if liquid_mask[i]]
         print(f"Filtered to {len(metadata)} rows with liquid mass <= {max_liquid_fraction}")
+
+    # Renormalize (now molar) fluid components to sum to 1
+    fluidOxides = [key for key in indexer.MELTS_indices['fluid'].keys() if key in indexer.Oxides]
+    fluidIDX = np.array([indexer.MELTS_indices['fluid'][ox] for ox in fluidOxides])
+    fluid_sums = np.sum(workbase[:, fluidIDX], axis=1)
+    nonzero_fluid_mask = fluid_sums > 0
+    workbase[np.ix_(nonzero_fluid_mask, fluidIDX)] = workbase[np.ix_(nonzero_fluid_mask, fluidIDX)] / fluid_sums[nonzero_fluid_mask].reshape(-1, 1)
 
     # Assertion: Less than half of simulations should fail
     unique_faults = len(np.unique(faultIDs))

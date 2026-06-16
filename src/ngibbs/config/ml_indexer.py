@@ -27,6 +27,20 @@ except ImportError:
     TORCH_AVAILABLE = False
 
 
+def _load_element_oxide_mappings() -> tuple:
+    """Derive element<->oxide mappings from OxToElV2_ferric.csv (diagonal matrix)."""
+    csv_path = Path(__file__).parent / 'projections' / 'OxToElV2_ferric.csv'
+    df = pd.read_csv(csv_path, index_col=0)
+    oxides = list(df.index)
+    elements = list(df.columns)
+    element_to_oxide = {elements[i]: oxides[i] for i in range(len(elements))}
+    oxide_to_element = {oxides[i]: elements[i] for i in range(len(oxides))}
+    return element_to_oxide, oxide_to_element
+
+
+ELEMENT_TO_OXIDE, OXIDE_TO_ELEMENT = _load_element_oxide_mappings()
+
+
 class MLIndexer:
     """
     ML-ready indexer that builds transformation matrices and mappings from either:
@@ -199,19 +213,11 @@ class MLIndexer:
         else:
             self.Elkeys = default_Elkeys.copy()"""
 
-        # Map elements to their oxide formulas
-        element_to_oxide = {
-            'Si': 'SiO2', 'Ti': 'TiO2', 'Al': 'Al2O3', 'Fe': 'FeO',
-            'Mg': 'MgO', 'Ca': 'CaO', 'Na': 'Na2O', 'K': 'K2O',
-            'P': 'P2O5', 'H': 'H2O', 'Cr': 'Cr2O3', 'Mn': 'MnO', 'Ni': 'NiO',
-            'Fe3' : 'Fe2O3' # Closed oxygen 
-        }
-
         # Build WRkeys (oxides without Fe2O3) deterministically from Elkeys
         self.WRkeys = []
         for el in self.Elkeys:
-            if el in element_to_oxide:
-                ox = element_to_oxide[el]
+            if el in ELEMENT_TO_OXIDE:
+                ox = ELEMENT_TO_OXIDE[el]
                 if ox not in self.WRkeys:
                     self.WRkeys.append(ox)
 

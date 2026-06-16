@@ -5,7 +5,7 @@ Load environment
 source HeFESTo/Benv/bin/activate
 
 prepare HeFESTo sims NOT IN $HOME BUT IN /resnick/groups/asimowgroup/thyer !! 
-I have 50 GB  storage, ths folder has 2TB. 
+I have 50 GB  storage, this folder has 2TB. 
 
 python $HOME/HeFESTo/nGibbs/scripts/prepare_hefesto_tree_fulladiabat.py     
     --directory /resnick/groups/asimowgroup/thyer/HeFESTo/Training061126_temp/

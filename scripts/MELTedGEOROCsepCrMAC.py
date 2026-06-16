@@ -84,6 +84,9 @@ for N, MELTSModel in enumerate(MELTSmodels):
                 allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclase','k-feldspar','garnet',
                     'nepheline','leucite','biotite','rhm-oxide','apatite','whitlockite','quartz','tridymite',
                     'muscovite','fluid','liquid', 'hornblende', 'alloy-solid','alloy-liquid']
+            if MELTSModel != '120':
+                if 'CO2' not in ZeroOxides:
+                    ZeroOxides.append('CO2')
 
             # Generate headers and create indexer for this set of phases
             headers = generate_column_headers(allowed_phases, mode=MELTSModel, zeroOxides=ZeroOxides)
@@ -108,50 +111,66 @@ for N, MELTSModel in enumerate(MELTSmodels):
             elif calctype == 'Compression':
                 MELTER = RM.alphaMELTScompress
 
-            GEOROC = np.genfromtxt(GEOROC_DIR + '/GEOROC_PETDB_UNFILTERED_WHOLEROCK_TRAIN.csv', delimiter=',',skip_header=1)
-
+            #GEOROC = np.genfromtxt(GEOROC_DIR + '/GEOROC_PETDB_UNFILTERED_WHOLEROCK_TRAIN.csv', delimiter=',',skip_header=1)
+            GEOtab = pd.read_csv(GEOROC_DIR + '/GEOROC_PETDB_UNFILTERED_WHOLEROCK_TRAIN.csv')
+            if MELTSModel == '120':
+                GEOtab['CO2'] = 0 # Add CO2 column with zeros since MELTS 120 requires it, even though GEOROC has no CO2 data. Will be filled in later by random melter.
+            GEOROC = GEOtab.to_numpy()
             # Define keys for input compositions (oxides)
-            keys = np.array(pd.read_csv(GEOROC_DIR + '/GEOROC_PETDB_UNFILTERED_WHOLEROCK_TRAIN.csv').columns)[1:]
+            keys = np.array(GEOtab.columns)[1:]
 
             # Create col_dict mapping keys to indices
             col_dict = {}
             for i, k in enumerate(keys):
                 col_dict[k] = i
 
-            # Run full GEOROC training dataset
-            args = {'MELTSModel':MELTSModel, 'GEOROC':GEOROC, 'col_dict':col_dict, 'indexer':indexer,
-                    'itercode':f'a{full_to_run}', 'simcycle':simcycle, 'fxtal': (fractionate == 'FxCryst'),
-                    'startT': startT, 'max_liquid_fraction': max_liquid_fraction, 'zeroOxides': ZeroOxides,
+            GEOtab_valid = pd.read_csv(GEOROC_DIR + '/GEOROC_PETDB_UNFILTERED_WHOLEROCK_VALIDATION.csv')
+            if MELTSModel == '120':
+                GEOtab_valid['CO2'] = 0
+            GEOROC_valid = GEOtab_valid.to_numpy()
+            keys_valid = np.array(GEOtab_valid.columns)[1:]
+            col_dict_valid = {}
+            for i, k in enumerate(keys_valid):
+                col_dict_valid[k] = i
+
+            shared_kwargs = {'MELTSModel':MELTSModel, 'indexer':indexer, 'simcycle':simcycle,
+                    'fxtal': (fractionate == 'FxCryst'), 'startT': startT,
+                    'max_liquid_fraction': max_liquid_fraction, 'zeroOxides': ZeroOxides,
                     'Prange': Prange, 'delta': delta, 'Oxygen': Oxygen}
+
+            # Run full GEOROC training dataset
+            args = {**shared_kwargs, 'GEOROC':GEOROC, 'col_dict':col_dict, 'itercode':f'a{full_to_run}'}
+            valid_args = {**shared_kwargs, 'GEOROC':GEOROC_valid, 'col_dict':col_dict_valid, 'itercode':f'a{int(full_to_run//4)}'}
 
             if full_to_run != 0:
                 MELTER(output_file=Trainfilename, **args)
 
                 # Run full GEOROC validation dataset
-                args['itercode'] = f'a{int(full_to_run//4)}'
-                MELTER(output_file=Validfilename, **args)
+                MELTER(output_file=Validfilename, **valid_args)
 
             if ultramafics_to_run != 0:
                 ultramafics = GEOROC[:,col_dict['MgO']+1]>=25 # MgO above 25
+                ultramafics_valid = GEOROC_valid[:,col_dict_valid['MgO']+1]>=25
 
                 args['GEOROC'] = GEOROC[ultramafics]
                 args['itercode'] = f'u{ultramafics_to_run}'
-
                 MELTER(output_file=Trainfilename, **args)
 
-                args['itercode'] = f'u{int(ultramafics_to_run//4)}'
-                MELTER(output_file=Validfilename, **args)
+                valid_args['GEOROC'] = GEOROC_valid[ultramafics_valid]
+                valid_args['itercode'] = f'u{int(ultramafics_to_run//4)}'
+                MELTER(output_file=Validfilename, **valid_args)
 
             if mafics_to_run != 0:
                 mafics = GEOROC[:,col_dict['MgO']+1]>=5 # MgO above 5
+                mafics_valid = GEOROC_valid[:,col_dict_valid['MgO']+1]>=5
 
                 args['GEOROC'] = GEOROC[mafics]
                 args['itercode'] = f'm{mafics_to_run}'
-
                 MELTER(output_file=Trainfilename, **args)
 
-                args['itercode'] = f'm{int(mafics_to_run//4)}'
-                MELTER(output_file=Validfilename, **args)
+                valid_args['GEOROC'] = GEOROC_valid[mafics_valid]
+                valid_args['itercode'] = f'm{int(mafics_to_run//4)}'
+                MELTER(output_file=Validfilename, **valid_args)
 
 
             # Clean up progress files upon completion

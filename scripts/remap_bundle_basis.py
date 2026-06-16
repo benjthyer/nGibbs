@@ -49,7 +49,7 @@ for _p in [str(_repo_root), str(_repo_root / 'src')]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from nMELTS.config.ml_indexer import load_ml_indexer_from_state
+from ngibbs.config.ml_indexer import load_ml_indexer_from_state
 
 
 def _norm(name: str) -> str:

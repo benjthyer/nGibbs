@@ -63,6 +63,64 @@ aliases = { #
 }
 
 
+def _check_ngibbs_update():
+    """
+    Check whether a newer nGibbs release is available on PyPI.
+
+    Returns
+    -------
+    tuple[str | None, str | None, bool]
+        (installed_version, latest_version, update_available)
+        Any element may be None if it could not be determined.
+    """
+    import importlib.metadata
+    import urllib.request
+    import json as _json
+
+    try:
+        installed = importlib.metadata.version('nGibbs')
+    except Exception:
+        installed = None
+
+    latest = None
+    try:
+        with urllib.request.urlopen('https://pypi.org/pypi/nGibbs/json', timeout=3) as resp:
+            data = _json.loads(resp.read())
+        latest = data['info']['version']
+    except Exception:
+        pass
+
+    update_available = installed is not None and latest is not None and installed != latest
+    return installed, latest, update_available
+
+
+def _model_unavailable_error(label: str, path: str) -> RuntimeError:
+    """Build a descriptive RuntimeError for a model whose file was not found at load time."""
+    installed, latest, update_available = _check_ngibbs_update()
+
+    lines = [
+        f"The '{label}' emulator model is not available.",
+        f"  Expected file: {path}",
+        "",
+    ]
+    if update_available:
+        lines += [
+            f"A newer version of nGibbs ({latest}) is available "
+            f"(you have {installed}). This model may be included in the update:",
+            "    pip install --upgrade nGibbs",
+        ]
+    else:
+        if installed:
+            lines.append(
+                f"You are running nGibbs {installed}, which appears to be the latest version."
+            )
+        lines += [
+            "If you believe this model should be included, please open an issue at:",
+            "    https://github.com/benjthyer/nGibbs/issues/new",
+        ]
+    return RuntimeError("\n".join(lines))
+
+
 class InputParser:
     """
     Parser for input composition data.
@@ -406,6 +464,7 @@ class EmulatorAPI:
         temperature_model_path: Optional[Union[str, Path]] = None,
         device: str = 'cpu',
         verbose: bool = False,
+        openox_model_path: Optional[Union[str, Path]] = None,
     ):
         """
         Initialize the emulator API with neural network models.
@@ -422,6 +481,10 @@ class EmulatorAPI:
             Torch device ('cpu' or 'cuda')
         verbose : bool, default=False
             Print initialization messages
+        openox_model_path : str or Path, optional
+            Path to open oxygen (fO2-buffered) emulator checkpoint. When
+            provided, inputs containing 'logfO2-QFM(System_main)' are
+            routed to this model instead of the isothermal emulator.
         """
         if verbose:
             print("[INFO] Initializing EmulatorAPI...")
@@ -433,6 +496,7 @@ class EmulatorAPI:
         self._iso_path  = str(isothermal_model_path)
         self._isen_path = str(isentropic_model_path)
         self._temp_path = str(temperature_model_path) if temperature_model_path is not None else None
+        self._open_path = str(openox_model_path) if openox_model_path is not None else None
 
         if verbose:
             print(f"  Loading isothermal emulator: {isothermal_model_path}")
@@ -442,12 +506,21 @@ class EmulatorAPI:
             print(f"  Loading isentropic emulator: {isentropic_model_path}")
         self.isentropic_emulator = self._load_emulator(isentropic_model_path, device)
 
+        if openox_model_path is not None:
+            if verbose:
+                print(f"  Loading open oxygen emulator: {openox_model_path}")
+            self.open_emulator = self._load_emulator(openox_model_path, device)
+        else:
+            self.open_emulator = None
+
         if temperature_model_path is not None:
             if verbose:
                 print(f"  Loading temperature FCNN: {temperature_model_path}")
             self._setup_temperature_model(temperature_model_path)
 
-        self.parser = InputParser(self.isothermal_emulator)
+        # Use first available emulator to build the composition parser
+        _parser_src = self.isothermal_emulator or self.isentropic_emulator or self.open_emulator
+        self.parser = InputParser(_parser_src) if _parser_src is not None else None
 
         # _cpu_api is populated here for direct EmulatorAPI instances; for
         # subclasses the __init_subclass__ wrapper calls _clone_as_cpu after
@@ -493,6 +566,7 @@ class EmulatorAPI:
         return EmulatorAPI(
             self._iso_path, self._isen_path, self._temp_path,
             device='cpu', verbose=False,
+            openox_model_path=self._open_path,
         )
 
     def _get_cpu_func(self, func):
@@ -545,13 +619,20 @@ class EmulatorAPI:
         )
 
     @staticmethod
-    def _load_emulator(model_path: Union[str, Path], device: str) -> NN_MELTS:
-        """Load and wrap a checkpoint as NN_MELTS emulator."""
+    def _load_emulator(model_path: Union[str, Path], device: str) -> Optional[NN_MELTS]:
+        """Load and wrap a checkpoint as NN_MELTS emulator, or return None with a warning."""
+        import warnings
         from engine.NN import rebuild_MELTS_model
 
         model_path = Path(model_path)
         if not model_path.exists():
-            raise FileNotFoundError(f"Model not found: {model_path}")
+            warnings.warn(
+                f"Model file not found: {model_path}. "
+                "This model will be unavailable; calling any method that uses it will raise a RuntimeError.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return None
 
         model = rebuild_MELTS_model(str(model_path))
         return NN_MELTS(model, cuda=(device == 'cuda'))
@@ -642,6 +723,11 @@ class EmulatorAPI:
         properties_dict : dict[str, np.ndarray], shape (n_S, n_P) per key
             Only returned when `properties` is not None.
         """
+        if self.isothermal_emulator is None:
+            raise _model_unavailable_error('isothermal', self._iso_path)
+        if self.isentropic_emulator is None:
+            raise _model_unavailable_error('isentropic', self._isen_path)
+
         features_arr = np.asarray(features, dtype=np.float32)
         if features_arr.ndim != 2:
             raise ValueError(f"features must be 2D, got shape {features_arr.shape}")
@@ -938,17 +1024,38 @@ class EmulatorAPI:
 
         has_temperature = 'T(K)(System_main)' in headers or 'Temperature(System_main)' in headers
         has_entropy = 'S(J/g/K)(System_main)' in headers or 'S(System_main)' in headers
+        has_logfO2 = 'logfO2-QFM(System_main)' in headers
+
         if has_temperature and has_entropy:
             raise ValueError(
                 "Input headers cannot include both temperature and entropy features"
             )
+        if has_logfO2 and has_entropy:
+            raise ValueError(
+                "Input headers cannot include both logfO2-QFM and entropy features: "
+                "an open-system isentropic model is non-physical and not supported."
+            )
 
-        if has_entropy:
+        if has_logfO2:
+            if self.open_emulator is None:
+                raise _model_unavailable_error('open oxygen (fO2-buffered)', self._open_path or '<not specified>')
+            emulator = self.open_emulator
+        elif has_entropy:
+            if self.isentropic_emulator is None:
+                raise _model_unavailable_error('isentropic', self._isen_path)
             emulator = self.isentropic_emulator
         elif has_temperature:
+            if self.isothermal_emulator is None:
+                raise _model_unavailable_error('isothermal', self._iso_path)
             emulator = self.isothermal_emulator
         else:
             raise ValueError("Input headers must include either temperature or entropy features: T(K)(System_main) / 'Temperature(System_main)' or S(J/g/K)(System_main) / 'S(System_main)'.\n You have: {}".format(headers))
+
+        if self.parser is None:
+            raise RuntimeError(
+                "No emulator models could be loaded — all specified model files were missing. "
+                "Check the warnings printed at initialization for details."
+            )
 
         parsed_table, headers_out, comp_space = self.parser.parse_composition(
             values, headers, composition_space
@@ -963,11 +1070,18 @@ class EmulatorAPI:
             return_type='torch'
         )
 
-        non_chem_features = len(self.isentropic_emulator.ml_indexer.featureNames) # The emulator type doesn't matter: But they both need to agree on open or closed oxygen systematics
+        non_chem_features = len(emulator.ml_indexer.featureNames)
         chem_sum = reordered[:,non_chem_features:].sum(dim=1)
         reordered[:,non_chem_features:] = reordered[:,non_chem_features:] / chem_sum.unsqueeze(1)
 
-        return reordered.to(self.device), 'isentropic' if has_entropy else 'isothermal'
+        if has_logfO2:
+            modeltype = 'openox'
+        elif has_entropy:
+            modeltype = 'isentropic'
+        else:
+            modeltype = 'isothermal'
+
+        return reordered.to(self.device), modeltype
 
 
 
@@ -1026,8 +1140,12 @@ class EmulatorAPI:
             emulator = self.isothermal_emulator
         elif modeltype == 'isentropic':
             emulator = self.isentropic_emulator
+        elif modeltype == 'openox':
+            if 'temperature' in outputs:
+                raise ValueError("'temperature' output was passed for an open oxygen model... Did you mean to use an isentropic model?")
+            emulator = self.open_emulator
         else:
-            raise ValueError(f"parser determined model is not recognized: {modeltype} must be 'isothermal' or 'isentropic'")
+            raise ValueError(f"parser determined model is not recognized: {modeltype} must be 'isothermal', 'isentropic', or 'openox'")
 
         if 'temperature' in outputs:
             if 'chem_out' not in outputs:
@@ -1047,7 +1165,7 @@ class EmulatorAPI:
                 outputs = list(outputs) + ['phase_tables']
                 # print("[INFO] Adding 'phase_tables' to outputs for ptt_out formatting.")
             outputs.remove('ptt_out') # ptt_out not recognized by lower level funcs.
-        else:            
+        else:
             get_ptt_tables = False
 
         results = self._staged_forward(
@@ -1064,7 +1182,7 @@ class EmulatorAPI:
             results['temperature'] = self.get_T(torch.concatenate([features, results['phase_moles'].to(self.device), results['chem_out'].to(self.device)], dim=1), normalize_features=normalize_features)
 
         if get_ptt_tables:
-            results['ptt_out'] = self.make_ptt_out(features, results['phase_tables'][0], results['phase_tables'][1], isentropic=(modeltype=='isentropic'))
+            results['ptt_out'] = self.make_ptt_out(features, results['phase_tables'][0], results['phase_tables'][1], isentropic=(modeltype=='isentropic'), openox=(modeltype=='openox'))
 
         return results
 
@@ -1117,8 +1235,12 @@ class EmulatorAPI:
             emulator = self.isothermal_emulator
         elif modeltype == 'isentropic':
             emulator = self.isentropic_emulator
+        elif modeltype == 'openox':
+            if 'temperature' in outputs:
+                raise ValueError("'temperature' output was passed for an open oxygen model... Did you mean to use an isentropic model?")
+            emulator = self.open_emulator
         else:
-            raise ValueError(f"parser determined model is not recognized: {modeltype} must be 'isothermal' or 'isentropic'")
+            raise ValueError(f"parser determined model is not recognized: {modeltype} must be 'isothermal', 'isentropic', or 'openox'")
 
         if 'temperature' in outputs:
             if 'chem_out' not in outputs:
@@ -1138,7 +1260,7 @@ class EmulatorAPI:
                 outputs = list(outputs) + ['phase_tables']
                 # print("[INFO] Adding 'phase_tables' to outputs for ptt_out formatting.")
             outputs.remove('ptt_out') # ptt_out not recognized by lower level funcs.
-        else:            
+        else:
             get_ptt_tables = False
 
         results = self._staged_forward(
@@ -1154,7 +1276,7 @@ class EmulatorAPI:
             results['temperature'] = self.get_T(torch.concatenate([features, results['phase_moles'].to(self.device), results['chem_out'].to(self.device)], dim=1), normalize_features=normalize_features)
 
         if get_ptt_tables:
-            results['ptt_out'] = self.make_ptt_out(features, results['phase_tables'][0], results['phase_tables'][1], isentropic=(modeltype=='isentropic'))
+            results['ptt_out'] = self.make_ptt_out(features, results['phase_tables'][0], results['phase_tables'][1], isentropic=(modeltype=='isentropic'), openox=(modeltype=='openox'))
 
         return results
 
@@ -1206,11 +1328,11 @@ class EmulatorAPI:
 
         return output_denorm if T_ref is None else T_ref + output_denorm
     
-    def make_ptt_out(self, features, phaseOxWt, phaseMassNorm, isentropic=None):
+    def make_ptt_out(self, features, phaseOxWt, phaseMassNorm, isentropic=None, openox=False):
         """
         Create output in format of ptt pandas tables. This should only be used internally.
         [TODO]: Calculate thermodynamic properties for bulk and each phase to include in output tables.
-        
+
         Parameters
         ----------
         features : torch.Tensor
@@ -1221,25 +1343,31 @@ class EmulatorAPI:
             Phase mass fractions, 2nd output of make_phase_tables
         isentropic : bool, optional
             Whether the input features are isentropic
+        openox : bool, default=False
+            Whether the input features are from an open oxygen (fO2-buffered) model
 
         Returns
         -------
         dict
             of pandas DataFrames matching ptt format for each phase
         """
-    
+
+        if openox:
+            indexer = self.open_emulator.ml_indexer
+        elif isentropic:
+            indexer = self.isentropic_emulator.ml_indexer
+        else:
+            indexer = self.isothermal_emulator.ml_indexer
 
         output = {} # Initialize dict of Pandas outputs
-        P_bar = features[:, self.isentropic_emulator.ml_indexer.featureNames.index('Pressure(System_main)')].detach().cpu().numpy()
+        P_bar = features[:, indexer.featureNames.index('Pressure(System_main)')].detach().cpu().numpy()
 
-        indexer = self.isentropic_emulator.ml_indexer if isentropic else self.isothermal_emulator.ml_indexer # get appropriate indexer
-
-        if not isentropic: # Isothermal models
+        if isentropic: # Isentropic models - we have entropy but not temperature as input features.
+            T_C = np.full((features.size(0),), fill_value=np.nan)
+            s = features[:, indexer.featureNames.index('S(System_main)')].detach().cpu().numpy()
+        else: # Isothermal and open oxygen models have T as input
             T_C = features[:, indexer.featureNames.index('Temperature(System_main)')].detach().cpu().numpy()
             s = np.full((features.size(0),), fill_value=np.nan)
-        else: # Isentropic models - we have entropy but not temperature as input features.
-            T_C = np.full((features.size(0),), fill_value=np.nan) 
-            s = features[:, indexer.featureNames.index('S(System_main)')].detach().cpu().numpy()
 
         output['Conditions'] = pd.DataFrame([P_bar, T_C, s], index=['P_bar', 'T_C', 's']).T
 
@@ -1572,11 +1700,19 @@ class MELTSAPI:
         isentropic_Cr_model_path: Union[str, Path],
         temperature_NoCr_model_path: Optional[Union[str, Path]] = None,
         temperature_Cr_model_path: Optional[Union[str, Path]] = None,
+        openox_NoCr_model_path: Optional[Union[str, Path]] = None,
+        openox_Cr_model_path: Optional[Union[str, Path]] = None,
         device: str = 'cpu',
         verbose: bool = False,
     ):
         """
         Initialize MELTS API, building NoCr and Cr sub-APIs.
+
+        Each sub-API holds up to three emulators: isothermal (closed, T input),
+        isentropic (closed, S input), and open oxygen (fO2-buffered, T + logfO2
+        input). Routing between Cr and NoCr is done by inspecting composition
+        headers; routing between the three emulator types is done by inspecting
+        thermodynamic condition headers.
 
         Parameters
         ----------
@@ -1592,6 +1728,11 @@ class MELTSAPI:
             Path to temperature FCNN checkpoint (NoCr)
         temperature_Cr_model_path : str or Path, optional
             Path to temperature FCNN checkpoint (Cr)
+        openox_NoCr_model_path : str or Path, optional
+            Path to open oxygen (fO2-buffered) emulator checkpoint (NoCr).
+            Required to use inputs containing 'logfO2-QFM(System_main)'.
+        openox_Cr_model_path : str or Path, optional
+            Path to open oxygen (fO2-buffered) emulator checkpoint (Cr).
         device : str, default='cpu'
             Torch device ('cpu' or 'cuda')
         verbose : bool, default=False
@@ -1605,6 +1746,7 @@ class MELTSAPI:
             temperature_NoCr_model_path,
             device,
             verbose,
+            openox_model_path=openox_NoCr_model_path,
         )
         if verbose:
             print("[INFO] Initializing MELTSAPI (Cr)...")
@@ -1614,6 +1756,7 @@ class MELTSAPI:
             temperature_Cr_model_path,
             device,
             verbose,
+            openox_model_path=openox_Cr_model_path,
         )
         self.device = torch.device(device)
         self.verbose = verbose
@@ -1657,7 +1800,7 @@ class MELTSAPI:
 
 # Initialize APIs for best models.
 
-# Model paths - resolved relative to this file's location
+# HeFESTo Model paths - resolved relative to this file's location
 _this_file_dir = Path(__file__).parent
 _models_dir = _this_file_dir / "TrainedModels" / "HeFESTo_Adiabats"
 
@@ -1667,6 +1810,8 @@ adiabat_TfromS_path = _models_dir / "T_from_S_HeFESTo_UMadiabats.pt"
 # print(f"[INFO] Looking for HeFESTo model at: {adiabat_NPT_path}")
 
 MELTS102_dir = _this_file_dir / "TrainedModels" / "MELTS102"
+MELTS120_dir = _this_file_dir / "TrainedModels" / "MELTS120"
+
 
 
 
@@ -1690,6 +1835,18 @@ MELTS102EmulatorCPU = MELTSAPI(
     isothermal_Cr_model_path = str(MELTS102_dir / "Isothermal_Cr.tar"),
     isentropic_NoCr_model_path = str(MELTS102_dir / "Isentropic_NoCr.tar"),
     isentropic_Cr_model_path = str(MELTS102_dir / "Isentropic_Cr.tar"),
+    openOx_NoCr_model_path = str(MELTS102_dir / "OpenOx_NoCr.tar"),
+    openOx_Cr_model_path = str(MELTS102_dir / "OpenOx_Cr.tar"),
+    device='cpu'
+)
+
+MELTS120EmulatorCPU = MELTSAPI(
+    isothermal_NoCr_model_path = str(MELTS120_dir / "Isothermal_NoCr.tar"),
+    isothermal_Cr_model_path = str(MELTS120_dir / "Isothermal_Cr.tar"),
+    isentropic_NoCr_model_path = str(MELTS120_dir / "Isentropic_NoCr.tar"),
+    isentropic_Cr_model_path = str(MELTS120_dir / "Isentropic_Cr.tar"),
+    openOx_NoCr_model_path = str(MELTS120_dir / "OpenOx_NoCr.tar"),
+    openOx_Cr_model_path = str(MELTS120_dir / "OpenOx_Cr.tar"),
     device='cpu'
 )
 
@@ -1706,6 +1863,8 @@ if torch.cuda.is_available():
     isothermal_Cr_model_path = str(MELTS102_dir / "Isothermal_Cr.tar"),
     isentropic_NoCr_model_path = str(MELTS102_dir / "Isentropic_NoCr.tar"),
     isentropic_Cr_model_path = str(MELTS102_dir / "Isentropic_Cr.tar"),
+    openOx_NoCr_model_path = str(MELTS102_dir / "OpenOx_NoCr.tar"),
+    openOx_Cr_model_path = str(MELTS102_dir / "OpenOx_Cr.tar"),
     device='cuda'
     )
 

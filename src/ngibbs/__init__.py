@@ -1,6 +1,6 @@
 #nGibbs - Neural network emulators for MELTS and HeFESTo thermodynamic modeling.
 #Importing models here
-
+"""
 try:
     import torch
     from .engine.API import MELTS102EmulatorCPU, HeFESToEmulatorCPU
@@ -8,8 +8,5 @@ try:
         from .engine.API import MELTS102EmulatorGPU, HeFESToEmulatorGPU
 
 except:
-    print("PyTorch is not installed. Please install PyTorch to use nGibbs emulators.")
-    pass
-
-
-
+    print('PyTorch is not installed. Please install PyTorch to use nGibbs emulators.')
+    pass"""

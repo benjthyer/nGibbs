@@ -112,14 +112,27 @@ def _process_compositions(compositions, col_dict, simcycle, MELTSModel, zeroOxid
         remaining_idx = remaining_idx[out_mask.astype(bool)]
         soaked = np.random.choice(remaining_idx, size=int(simcycle/3), replace=False)
         compositions[soaked, col_dict['H2O']] = np.random.uniform(size=len(soaked), high=5)
-    elif MELTSModel == '102':
-        hydrous = np.random.choice(np.arange(simcycle), size=int(simcycle/2), replace=False)
-        compositions[hydrous, col_dict['H2O']] = np.abs(np.random.normal(size=len(hydrous), scale=0.5))
+    if (MELTSModel == '120') and ('CO2' not in zeroOxides):
+        # No CO2 in GEOROC, append it to the end of the compositions
+        allWet = np.unique(np.append(hydrous, soaked))[0]
+        co2_hydrous = np.random.choice(allWet, size=int(simcycle/3), replace=False)
+        CO2_arr = np.zeros((simcycle, 1))
+        CO2_arr[co2_hydrous] = np.random.uniform(size=len(co2_hydrous), high=0.5).reshape(-1, 1)
+        random_draws = np.random.uniform(high=1, size = allWet.shape[0])
+        co2_soaked = allWet[random_draws < 0.1]
+        if len(co2_soaked) > 0:
+            CO2_arr[co2_soaked] = np.random.uniform(size=len(co2_soaked), high=1).reshape(-1, 1)
+        #compositions = np.append(compositions, CO2_arr, axis=1)
+        compositions[:,col_dict['CO2']] = CO2_arr[:, 0].flatten()
+
     # 'p': all anhydrous — already zeroed above
     
     # Set zeroOxides to zero
     for oxide in zeroOxides:
-        compositions[:, col_dict[oxide]] = 0
+        try:
+            compositions[:, col_dict[oxide]] = 0
+        except KeyError:
+            print(f"No '{oxide}' in compositions to zero out.")
     
     # For pMELTS, randomly cancel out poorly handled volatiles. Consider excluding these oxides altogether from pMELTS.
     if MELTSModel == 'p':
