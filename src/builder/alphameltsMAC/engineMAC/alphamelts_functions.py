@@ -365,8 +365,8 @@ def import_MELTS_components(EnsembleLocation, batchname, indexer, fO2Arr=None,
                                                              'Phase_mass_tbl.txt', 'Phase_main_tbl.txt',
                                                              'Liquid_comp_tbl.txt']: #'Bulk_comp_tbl.txt'
                     phasename = tablename.split('tbl')[0][:-1]
-                    if phasename in ['orthoamphibole', 'clinoamphibole', 'hornblende']:
-                        phasename = 'amphibole'
+                    """if phasename in ['orthoamphibole', 'clinoamphibole', 'hornblende']:
+                        phasename = 'amphibole'"""
 
                     if phasename == 'alkali-feldspar': #Handle alter-egos
                         phasename = 'k-feldspar'
