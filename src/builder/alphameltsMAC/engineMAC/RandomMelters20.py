@@ -106,12 +106,14 @@ def _process_compositions(compositions, col_dict, simcycle, MELTSModel, zeroOxid
     if MELTSModel in ('110', '120'):
         remaining_idx = np.arange(simcycle)
         hydrous = np.random.choice(remaining_idx, size=int(simcycle/2), replace=False)
-        compositions[hydrous, col_dict['H2O']] = np.abs(np.random.normal(size=len(hydrous), scale=0.5))
+        if 'H2O' not in zeroOxides:
+            compositions[hydrous, col_dict['H2O']] = np.abs(np.random.normal(size=len(hydrous), scale=0.5))
         out_mask = np.ones(simcycle)
         out_mask[hydrous] = 0
         remaining_idx = remaining_idx[out_mask.astype(bool)]
         soaked = np.random.choice(remaining_idx, size=int(simcycle/3), replace=False)
-        compositions[soaked, col_dict['H2O']] = np.random.uniform(size=len(soaked), high=5)
+        if 'H2O' not in zeroOxides:
+            compositions[soaked, col_dict['H2O']] = np.random.uniform(size=len(soaked), high=5)
     if (MELTSModel == '120') and ('CO2' not in zeroOxides):
         # No CO2 in GEOROC, append it to the end of the compositions
         allWet = np.unique(np.append(hydrous, soaked))[0]
@@ -124,6 +126,9 @@ def _process_compositions(compositions, col_dict, simcycle, MELTSModel, zeroOxid
             CO2_arr[co2_soaked] = np.random.uniform(size=len(co2_soaked), high=1).reshape(-1, 1)
         #compositions = np.append(compositions, CO2_arr, axis=1)
         compositions[:,col_dict['CO2']] = CO2_arr[:, 0].flatten()
+    if (MELTSModel == '102') and ('H2O' not in zeroOxides):
+        hydrous = np.random.choice(np.arange(simcycle), size=int(simcycle/2), replace=False)
+        compositions[hydrous, col_dict['H2O']] = np.abs(np.random.normal(size=len(hydrous), scale=0.5))
 
     # 'p': all anhydrous — already zeroed above
     
@@ -143,6 +148,9 @@ def _process_compositions(compositions, col_dict, simcycle, MELTSModel, zeroOxid
     # Set small Cr2O3 to zero (mostly for felsic compositions)
     smallCr2O = compositions[:, col_dict['Cr2O3']] < 0.01
     compositions[smallCr2O, col_dict['Cr2O3']] = 0
+
+    # Add Noise: 
+    compositions *= np.random.normal(loc=1.0, scale=0.05, size=compositions.shape) # Add 5% noise to all oxides
     
     # Normalize to 100%
     compositions = 100 * compositions / (np.sum(compositions, axis=1))[:, np.newaxis]
