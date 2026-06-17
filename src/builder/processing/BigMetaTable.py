@@ -1662,7 +1662,281 @@ class BigMetaTable():
                     mole_fraction_oxides * 
                     phase_multipliers * 
                     total_liquid_moles
-                ) @ OxToEl                                          
+                ) @ OxToEl
+
+    def recover_untracked_phases(self):
+        """
+        Recover graphite mass and hornblende composition from the bulk-composition
+        residual for rows whose metadata lists only 'amphibole' and/or 'graphite'
+        as untracked phases.  (MELTS labels the hornblende group 'amphibole' in its
+        metadata output; the table phase is 'hornblende'.)  Rows with any other
+        phase annotation are skipped.
+
+        Recovery order (graphite always first):
+          1. Graphite  : residual CO2 moles → graphite grams (12.011 g/mol C)
+          2. Hornblende: NNLS fit of residual oxide moles to
+                         [pargasite, ferropargasite, magnesiohastingsite]
+
+        Hornblende results are written in-place to the existing
+        ``mass (gm)(hornblende)``, ``pargasite(hornblende)``, etc. columns.
+        A new ``mass (gm)(graphite)`` column is appended (if absent).
+        Metadata text file is NOT modified.  Working CSV is re-saved.
+        """
+        from scipy.optimize import nnls as _nnls
+        from ngibbs.config.constants import OXIDE_MOLAR_MASSES
+
+        # Metadata uses 'amphibole' as MELTS' catch-all; table phase is 'hornblende'
+        ALLOWED_META_PHASES = {'amphibole', 'graphite'}
+        HORN_ENDMEMBERS     = ['pargasite', 'ferropargasite', 'magnesiohastingsite']
+
+        # ------------------------------------------------------------------ #
+        # 1. Classify rows from metadata                                       #
+        # ------------------------------------------------------------------ #
+        n_rows         = self.table.shape[0]
+        has_graphite   = np.zeros(n_rows, dtype=bool)
+        has_hornblende = np.zeros(n_rows, dtype=bool)
+        do_recovery    = np.zeros(n_rows, dtype=bool)
+
+        for i, meta in enumerate(self.metadata):
+            tokens      = str(meta).strip().split()
+            phase_names = set()
+            for tok in tokens:
+                name = tok.split(':')[0].strip().lower()
+                if not name.lstrip('-').replace('.', '', 1).isdigit():
+                    phase_names.add(name)
+            if not phase_names:
+                continue
+            if phase_names - ALLOWED_META_PHASES:
+                continue                           # unrecognised phase → skip
+            has_graphite[i]   = 'graphite'  in phase_names
+            has_hornblende[i] = 'amphibole' in phase_names   # metadata token
+            do_recovery[i]    = True
+
+        target_idx = np.where(do_recovery)[0]
+        if len(target_idx) == 0:
+            print("[RECOVER] No rows with recoverable untracked phases found.")
+            return
+
+        # ------------------------------------------------------------------ #
+        # 1b. Guard: skip rows that already have non-zero recovered data.     #
+        #     If the graphite column does not yet exist, always attempt.      #
+        # ------------------------------------------------------------------ #
+        horn_cols_guard     = self.indexer.MELTS_indices.get('hornblende', {})
+        horn_mass_col_guard = horn_cols_guard.get('mass (gm)')
+        if horn_mass_col_guard is not None:
+            existing_horn = self.table[target_idx, horn_mass_col_guard].astype(np.float64)
+            already_h     = existing_horn != 0
+            n_skip_h      = int((has_hornblende[target_idx] & already_h).sum())
+            if n_skip_h:
+                print(f"[RECOVER] Skipping {n_skip_h} hornblende rows already non-zero.")
+            has_hornblende[target_idx[already_h]] = False
+
+        g_hdr_guard = 'mass (gm)(graphite)'
+        if g_hdr_guard in self.header:
+            g_col_guard = self.header.index(g_hdr_guard)
+            existing_g  = self.table[target_idx, g_col_guard].astype(np.float64)
+            already_g   = existing_g != 0
+            n_skip_g    = int((has_graphite[target_idx] & already_g).sum())
+            if n_skip_g:
+                print(f"[RECOVER] Skipping {n_skip_g} graphite rows already non-zero.")
+            has_graphite[target_idx[already_g]] = False
+        # If graphite column doesn't exist yet, all g-flagged rows proceed.
+
+        do_recovery = has_graphite | has_hornblende
+        target_idx  = np.where(do_recovery)[0]
+        if len(target_idx) == 0:
+            print("[RECOVER] All target rows already recovered; nothing to do.")
+            return
+
+        n_target = len(target_idx)
+        g_mask   = has_graphite[target_idx]
+        h_mask   = has_hornblende[target_idx]
+        print(f"[RECOVER] {n_target} target rows to recover — "
+              f"{g_mask.sum()} graphite, {h_mask.sum()} hornblende")
+
+        # ------------------------------------------------------------------ #
+        # 2. Oxide helpers                                                     #
+        # ------------------------------------------------------------------ #
+        ml     = self.indexer.ml_indexer
+        Oxides = self.indexer.Oxides
+        n_ox   = len(Oxides)
+        ox_idx = {ox: i for i, ox in enumerate(Oxides)}
+        MM_ox  = np.array([OXIDE_MOLAR_MASSES[ox] for ox in Oxides], dtype=np.float64)
+
+        compToOx_df = self.indexer.compToOx_df
+        horn_stoich = np.zeros((3, n_ox), dtype=np.float64)
+        for j, em in enumerate(HORN_ENDMEMBERS):
+            key = f"{em} : hornblende"
+            if key not in compToOx_df.index:
+                raise KeyError(f"[RECOVER] '{key}' not found in compToOx projection CSV.")
+            for k, ox in enumerate(Oxides):
+                if ox in compToOx_df.columns:
+                    horn_stoich[j, k] = float(compToOx_df.loc[key, ox])
+
+        horn_MM = horn_stoich @ MM_ox   # molar mass per hornblende endmember (3,)
+
+        co2_col = ox_idx.get('CO2', -1)
+        if co2_col < 0:
+            print("[RECOVER] CO2 not in active oxide list — graphite recovery disabled.")
+            has_graphite[:] = False
+            g_mask = has_graphite[target_idx]
+
+        # ------------------------------------------------------------------ #
+        # 3. Actual bulk oxide moles                                           #
+        # ------------------------------------------------------------------ #
+        bulk_cols = self.indexer.MELTS_indices.get('Bulk_comp', {})
+        if 'mass' in bulk_cols:
+            sys_mass = self.table[target_idx, bulk_cols['mass']].astype(np.float64)
+        else:
+            sys_mass = np.full(n_target, 100.0, dtype=np.float64)
+            print("[RECOVER] No 'mass(Bulk_comp)' column — assuming 100 g system mass.")
+
+        actual_ox_moles = np.zeros((n_target, n_ox), dtype=np.float64)
+        for k, ox in enumerate(Oxides):
+            if ox in bulk_cols:
+                wt_pct = self.table[target_idx, bulk_cols[ox]].astype(np.float64)
+                actual_ox_moles[:, k] = (wt_pct / 100.0) * sys_mass / MM_ox[k]
+
+        # ------------------------------------------------------------------ #
+        # 4. Tracked-phase oxide moles (hornblende & graphite excluded)       #
+        # ------------------------------------------------------------------ #
+        SKIP = self.indexer.EXCLUDED_PHASES | {'hornblende', 'amphibole', 'graphite'}
+        tracked_ox_moles = np.zeros((n_target, n_ox), dtype=np.float64)
+
+        for phase in ml.all_phases:
+            if phase in SKIP:
+                continue
+            phase_cols = self.indexer.MELTS_indices.get(phase, {})
+
+            # ---- Liquid ---------------------------------------------------
+            if phase == 'melts-liquid':
+                liq_col = phase_cols.get('liq mass (gm)')
+                if liq_col is None:
+                    continue
+                liq_mass = self.table[target_idx, liq_col].astype(np.float64)
+                for k, ox in enumerate(Oxides):
+                    wt_col = phase_cols.get(f'wt% {ox}')
+                    if wt_col is not None:
+                        ox_g = (self.table[target_idx, wt_col].astype(np.float64)
+                                / 100.0) * liq_mass
+                        tracked_ox_moles[:, k] += ox_g / MM_ox[k]
+                continue
+
+            # ---- Solid phases ---------------------------------------------
+            mass_col = phase_cols.get('mass (gm)', phase_cols.get('total (moles)'))
+            if mass_col is None:
+                continue
+            phase_mass = self.table[target_idx, mass_col].astype(np.float64)
+            if np.all(phase_mass == 0):
+                continue
+
+            phase_label_inds = ml.label_indices.get(phase)
+            if phase_label_inds is None:
+                continue
+
+            comp_names = [ml.label_names[i] for i in phase_label_inds]
+            if len(phase_label_inds) == 1:
+                comp_fracs = np.ones((n_target, 1), dtype=np.float64)
+            else:
+                comp_fracs = np.zeros((n_target, len(phase_label_inds)), dtype=np.float64)
+                for j, cname in enumerate(comp_names):
+                    ccol = phase_cols.get(cname)
+                    if ccol is not None:
+                        comp_fracs[:, j] = self.table[target_idx, ccol].astype(np.float64)
+
+            sub_compToOx   = ml.compToOxLoad[phase_label_inds, :].astype(np.float64)
+            phase_ox_fracs = comp_fracs @ sub_compToOx
+            phase_MM_row   = phase_ox_fracs @ MM_ox
+            phase_moles    = np.where(phase_MM_row > 0, phase_mass / phase_MM_row, 0.0)
+            tracked_ox_moles += phase_moles[:, np.newaxis] * phase_ox_fracs
+
+        # ------------------------------------------------------------------ #
+        # 5. Residual                                                          #
+        # ------------------------------------------------------------------ #
+        residual = actual_ox_moles - tracked_ox_moles
+
+        # ------------------------------------------------------------------ #
+        # 6. Graphite recovery (CO2 residual, 1 : 1 molar)                    #
+        # ------------------------------------------------------------------ #
+        graphite_mass_arr = np.zeros(n_target, dtype=np.float64)
+        if co2_col >= 0 and g_mask.any():
+            co2_res = residual[g_mask, co2_col]
+            g_moles = np.maximum(0.0, co2_res)
+            graphite_mass_arr[g_mask] = g_moles * 12.011
+            residual[g_mask, co2_col] -= g_moles
+
+        # ------------------------------------------------------------------ #
+        # 7. Hornblende NNLS per row                                           #
+        # ------------------------------------------------------------------ #
+        horn_comp_fracs_arr = np.zeros((n_target, 3), dtype=np.float64)
+        horn_mass_arr       = np.zeros(n_target,      dtype=np.float64)
+        A_horn = horn_stoich.T          # (n_ox, 3)
+
+        for i in tqdm(np.where(h_mask)[0], desc="[RECOVER] Hornblende NNLS", leave=False):
+            x, _ = _nnls(A_horn, residual[i])
+            horn_mass_arr[i] = float(x @ horn_MM)
+            tot = x.sum()
+            if tot > 0:
+                horn_comp_fracs_arr[i] = x / tot
+
+        # ------------------------------------------------------------------ #
+        # 8. Write hornblende into existing 'hornblende' table columns         #
+        # ------------------------------------------------------------------ #
+        horn_cols = self.indexer.MELTS_indices.get('hornblende', {})
+        if not horn_cols:
+            print("[RECOVER] Warning: 'hornblende' not found in MELTS_indices — "
+                  "hornblende data will not be written.")
+        else:
+            rows_h        = target_idx[h_mask]
+            horn_mass_col = horn_cols.get('mass (gm)')
+            if horn_mass_col is not None:
+                self.table[rows_h, horn_mass_col] = horn_mass_arr[h_mask].astype(np.float32)
+            for j, em in enumerate(HORN_ENDMEMBERS):
+                col = horn_cols.get(em)
+                if col is not None:
+                    self.table[rows_h, col] = horn_comp_fracs_arr[h_mask, j].astype(np.float32)
+            self.table.flush()
+            print(f"[RECOVER] Wrote hornblende → {h_mask.sum()} rows "
+                  f"(total mass = {horn_mass_arr[h_mask].sum():.3f} g).")
+
+        # ------------------------------------------------------------------ #
+        # 9. Graphite: fill existing column or append new one                  #
+        # ------------------------------------------------------------------ #
+        g_hdr = 'mass (gm)(graphite)'
+        if g_mask.any():
+            rows_g = target_idx[g_mask]
+            if g_hdr in self.header:
+                g_col = self.header.index(g_hdr)
+                self.table[rows_g, g_col] = graphite_mass_arr[g_mask].astype(np.float32)
+                self.table.flush()
+            else:
+                self.table.flush()
+                new_col          = np.zeros(n_rows, dtype=np.float32)
+                new_col[rows_g]  = graphite_mass_arr[g_mask].astype(np.float32)
+                old_ncols        = self.table.shape[1]
+                tmp_path         = self.memmap_file.replace('.npy', '_graphite_expand.npy')
+                new_mm = np.lib.format.open_memmap(
+                    tmp_path, mode='w+', dtype=self.table.dtype,
+                    shape=(n_rows, old_ncols + 1))
+                new_mm[:, :old_ncols] = self.table
+                new_mm[:, old_ncols]  = new_col
+                new_mm.flush()
+                del new_mm, self.table
+                gc.collect()
+                os.replace(tmp_path, self.memmap_file)
+                self.table = np.load(self.memmap_file, mmap_mode='r+')
+                self.header.append(g_hdr)
+                self.indexer = DatasetIndexer(self.header, MODEL = self.Model, OXYGEN = self.OXYGEN) # Reinistall Indexer
+                print(f"[RECOVER] Appended '{g_hdr}' column.")
+            print(f"[RECOVER] Wrote graphite → {g_mask.sum()} rows "
+                  f"(total mass = {graphite_mass_arr[g_mask].sum():.3f} g).")
+
+        # ------------------------------------------------------------------ #
+        # 10. Re-save working CSV                                              #
+        # ------------------------------------------------------------------ #
+        print("[RECOVER] Saving updated CSV …")
+        self.save_csv_streaming(name=self.filename)
+        print("[RECOVER] Done.")
 
 
 def merge_big_meta_tables(tables, new_filename, chunk_size=100_000, clear_old_tables = False):

@@ -1,4 +1,4 @@
-tarname: '102Isothermal_NoCr'       #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
+tarname: '102Isentropic_Cr'       #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
     
 warm_start: None #'102Isothermal_NoCr_tune5' #pGeoDynamicsIsentropicNoCrApr20_train1 #None #pGeoDynamicsIsothemalNoCrMar11_train6 #None #pGeoDynPTNoCrBinaries #None # 102CrMoleLinear
 
@@ -246,87 +246,6 @@ train6: # Increase number for another layer of training
   epochs: 70
   learning_rate: 5E-4
   early_stopping_patience: 20
-  scheduler:
-    type: CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
-    args:
-      T_max: 10 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
-  max_N: null # none, 0 and inf all mean 'no limit'
-  #DictFilePath: pGeoDynPTCrFull
-  loss_config:
-    binary:
-      weight: 1
-    chemistry:
-      type: symmetric_rel_l2
-      weight: 100
-    moles:
-      type: huber
-      weight: 50
-    bulk:
-      type: symmetric_rel_l2
-      weight: 1000
-  which_heads_to_freeze: [] # ['encoder', 'sat_head'] #['encoder', 'sat_head', 'middleBrain', 'chem_heads']
-
-
-tune7:
-  #best_loss: 7.45870
-  strategy: lower # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
-  sweep: true
-  batch_size: 1024 
-  epochs: 15
-  learning_rate: 5E-4
-  early_stopping_patience: 2
-  max_N: 5E5
-  tune_params: # These go in the specified order
-    lowWD: [0, 1e-4, 1e-3, 1e-2]
-    noise: [0, 0.1, 0.05, 0.01]
-
-train7: # Increase number for another layer of training
-  strategy: lower # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
-  batch_size: 1024 
-  epochs: 70
-  learning_rate: 5E-4
-  early_stopping_patience: 25
-  scheduler:
-    type: CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
-    args:
-      T_max: 10 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
-
-
-
-tune8: # No dropout for models with bulk loss (breaks it for some reason), so let's investigate other regularization options
-  strategy: upper # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
-  batch_size: 1024 
-  epochs: 7
-  learning_rate: 5E-4
-  early_stopping_patience: 4
-  max_N: 5E5
-  tune_params:
-    lowWD: [0, 1e-6, 1e-5, 1e-4, 1e-3]
-    highWD: [0, 1e-4, 1e-3, 1e-2]
-    noise: [0, 0.005, 0.01, 0.02, 0.05]
-
-  loss_config:
-    binary:
-      weight: 0
-    chemistry:
-      type: symmetric_rel_l2
-      weight: 100
-    moles:
-      type: huber
-      weight: 50
-    bulk:
-      type: symmetric_rel_l2
-      weight: 1000
-  which_heads_to_freeze: ['encoder', 'sat_head']
-
-  
-train8: # Increase number for another layer of training
-  strategy: finetune # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
-  batch_size: 1024 
-  lowWD: 0 # No WD for frozen layers
-  epochs: 50
-  learning_rate: 5E-4
-  early_stopping_patience: 25
   scheduler:
     type: CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
     args:

@@ -102,7 +102,7 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
             else:
                 allowed_phases = ['olivine','orthopyroxene','clinopyroxene','spinel','plagioclase','k-feldspar','garnet',
                     'nepheline','leucite','biotite','rhm-oxide','apatite','whitlockite','quartz','tridymite',#'cristobalite',
-                    'muscovite','fluid','liquid', 'hornblende', 'alloy-solid','alloy-liquid']
+                    'muscovite','fluid','liquid', 'hornblende', 'alloy-solid','alloy-liquid', 'graphite']
             if MELTSModel != '120':
                 if 'CO2' not in ZeroOxides:
                     ZeroOxides.append('CO2')

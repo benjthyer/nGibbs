@@ -48,8 +48,9 @@ from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
 
 
 
-def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsample=None, 
-                   preprocessed=None, subset=None, use_external=None, balance_function=None):
+def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsample=None,
+                   preprocessed=None, subset=None, use_external=None, balance_function=None,
+                   skip_train=False):
     """
     Process MELTS data for machine learning.
     
@@ -238,135 +239,146 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         # Process training data
         read_dir = str(external_base) if use_external else None
 
-        TrainMELTS = BigMetaTable(TrainName, read_dir=read_dir, Model=MODEL, OXYGEN=OXYGEN) # Assume closed system for training data
-        if excluded_oxides_cfg:
-            print(f"Applying configured oxide exclusions at table load: {excluded_oxides_cfg}")
-            TrainMELTS.exclude_oxides(excluded_oxides_cfg)
-        header = TrainMELTS.header  # Capture header for indexer construction
-        pre_filter = TrainMELTS.table.shape[0]
+        saved_ml_indexer = None  # populated when skip_train=True
+        if not skip_train:
+            TrainMELTS = BigMetaTable(TrainName, read_dir=read_dir, Model=MODEL, OXYGEN=OXYGEN) # Assume closed system for training data
+            if excluded_oxides_cfg:
+                print(f"Applying configured oxide exclusions at table load: {excluded_oxides_cfg}")
+                TrainMELTS.exclude_oxides(excluded_oxides_cfg)
+            header = TrainMELTS.header  # Capture header for indexer construction
+            pre_filter = TrainMELTS.table.shape[0]
 
-        TrainMELTS.filter_inconsistent_phase_data()  
+            TrainMELTS.filter_inconsistent_phase_data()
 
-        assert TrainMELTS.table.shape[0] > pre_filter*0.97, "More than 3% of the dataset has inconsistent phase data! (Zero mass but non-zero other properties)."
+            assert TrainMELTS.table.shape[0] > pre_filter*0.97, "More than 3% of the dataset has inconsistent phase data! (Zero mass but non-zero other properties)."
 
-        if not preprocessed:
-            if preproc_cfg['separate_analcime']:
-                TrainMELTS.separate_analcime()
-            if preproc_cfg['separate_feldspar']:
-                TrainMELTS.separate_k_feldspar()
-            if preproc_cfg['filter_full_metadata']:
-                TrainMELTS.filter_full_metadata()
-            #TrainMELTS.filter_legal() Deprecated. Filtering handled in deep_filtering step and metadata filtering
+            if not preprocessed:
+                if preproc_cfg.get('recover_untracked_phases', False):
+                    TrainMELTS.recover_untracked_phases()
+                if preproc_cfg['separate_analcime']:
+                    TrainMELTS.separate_analcime()
+                if preproc_cfg['separate_feldspar']:
+                    TrainMELTS.separate_k_feldspar()
+                if preproc_cfg['filter_full_metadata']:
+                    TrainMELTS.filter_full_metadata()
+                #TrainMELTS.filter_legal() Deprecated. Filtering handled in deep_filtering step and metadata filtering
 
-            # Diagnostic: Check which phases have non-zero abundance after filtering
-            if upsample:
-                print("\n################ Phase Abundance After Filtering ####################")
-                phase_list = TrainMELTS.indexer.ml_indexer.all_phases
-                for phase in phase_list:
-                    if phase in TrainMELTS.indexer.MELTS_indices:
-                        col_idx = TrainMELTS.indexer.MELTS_indices[phase].get('mass (gm)')
-                        if col_idx is not None:
-                            non_zero_count = np.sum(TrainMELTS.table[:, col_idx] > 0)
-                            total_pct = 100 * non_zero_count / len(TrainMELTS.table)
-                            print(f"{phase:20} {non_zero_count:>10,} samples ({total_pct:>6.2f}%)")
-                print("########################################################################\n")
-            
-            if upsample:
-                # Resample configured phases from YAML (excluding test_set_phases)
-                for phase_name, phase_config in upsample_cfg['phases'].items():
-                    if phase_name == 'test_set_phases':
-                        continue  # Skip test set configuration
-                    
-                    if phase_name in TrainMELTS.indexer.MELTS_indices:
-                        try:
-                            TrainMELTS.resample_rare_phase(
-                                TrainMELTS.indexer.MELTS_indices[phase_name]['mass (gm)'],
-                                multiplier_bounds=phase_config['multiplier_bounds'],
-                                n_resamples=phase_config['n_resamples'],
-                                overwrite=True
-                            )
-                        except KeyError as e:
-                            print(f"Warning: Phase '{phase_name}' not found in MELTS_indices: {e}")
-                    else:
-                        print(f"Warning: Phase '{phase_name}' not available in current MELTS model")
+                # Diagnostic: Check which phases have non-zero abundance after filtering
+                if upsample:
+                    print("\n################ Phase Abundance After Filtering ####################")
+                    phase_list = TrainMELTS.indexer.ml_indexer.all_phases
+                    for phase in phase_list:
+                        if phase in TrainMELTS.indexer.MELTS_indices:
+                            col_idx = TrainMELTS.indexer.MELTS_indices[phase].get('mass (gm)')
+                            if col_idx is not None:
+                                non_zero_count = np.sum(TrainMELTS.table[:, col_idx] > 0)
+                                total_pct = 100 * non_zero_count / len(TrainMELTS.table)
+                                print(f"{phase:20} {non_zero_count:>10,} samples ({total_pct:>6.2f}%)")
+                    print("########################################################################\n")
 
-            if balance_function is not None:
-                balance_function(TrainMELTS)
-            #else:
-                #filters.balance_lowF(TrainMELTS)
+                if upsample:
+                    # Resample configured phases from YAML (excluding test_set_phases)
+                    for phase_name, phase_config in upsample_cfg['phases'].items():
+                        if phase_name == 'test_set_phases':
+                            continue  # Skip test set configuration
 
-            # Exclude exceptionally low-abundance phases, these won't be learned well and may add noise to training. Configured in YAML.
-            if min_phase_cfg != 0:
-                TrainMELTS.filter_min_phase_proportion(min_proportion=min_phase_cfg) # Remove samples where any phase is below the minimum proportion threshold after upsampling
+                        if phase_name in TrainMELTS.indexer.MELTS_indices:
+                            try:
+                                TrainMELTS.resample_rare_phase(
+                                    TrainMELTS.indexer.MELTS_indices[phase_name]['mass (gm)'],
+                                    multiplier_bounds=phase_config['multiplier_bounds'],
+                                    n_resamples=phase_config['n_resamples'],
+                                    overwrite=True
+                                )
+                            except KeyError as e:
+                                print(f"Warning: Phase '{phase_name}' not found in MELTS_indices: {e}")
+                        else:
+                            print(f"Warning: Phase '{phase_name}' not available in current MELTS model")
 
-            #TrainMELTS.save(name=f"{TrainName}Filtered", save_csv=False)
+                if balance_function is not None:
+                    balance_function(TrainMELTS)
 
-        TrainMELTS.indexer.table_update(
-            TrainMELTS.table,
-            excluded_oxides=excluded_oxides_cfg
-        )
+                # Exclude exceptionally low-abundance phases, these won't be learned well and may add noise to training. Configured in YAML.
+                if min_phase_cfg != 0:
+                    TrainMELTS.filter_min_phase_proportion(min_proportion=min_phase_cfg) # Remove samples where any phase is below the minimum proportion threshold after upsampling
 
-        TrainMELTS.filename = TrainName
-        train_bundle = train_dir / get_bundle_name('Train')
-
-
-        if upsample:
-            train_bundle_path = resampling_to_datasets(
-                TrainMELTS,
-                resampling_cfg['train_bounds'],
-                config_path=config_path,
-                bundle_name=train_bundle, #get_bundle_name(TrainName, 'Train'),
-                **resampling_kwargs,
+            TrainMELTS.indexer.table_update(
+                TrainMELTS.table,
+                excluded_oxides=excluded_oxides_cfg
             )
+
+            TrainMELTS.filename = TrainName
+            train_bundle = train_dir / get_bundle_name('Train')
+
+            if upsample:
+                train_bundle_path = resampling_to_datasets(
+                    TrainMELTS,
+                    resampling_cfg['train_bounds'],
+                    config_path=config_path,
+                    bundle_name=train_bundle,
+                    **resampling_kwargs,
+                )
+            else:
+                train_bundle_path = resampling_to_datasets(
+                    TrainMELTS,
+                    [[1, 1]],
+                    config_path=config_path,
+                    bundle_name=train_bundle,
+                    **resampling_kwargs,
+                )
+                train_bundle_path = ensure_bundle_in_train_dir(train_bundle_path)
+
+            TrainIndexer = deepcopy(TrainMELTS.indexer)  # Capture indexer for consistency with validation/test dataset
+
+            del TrainMELTS.table
+            del TrainMELTS
+            gc.collect()
+
+            # Clear intermediate memory maps
+            delete_files_with_keyword(str(INTERNAL_DIR), keyword='working', dry_run=False)
+            delete_files_with_keyword(str(INTERNAL_DIR), keyword='temp', dry_run=False)
+
+            if filter_cfg['enabled']:
+                deep_filter(
+                    str(train_bundle_path),
+                    Oxide_Lower_Bounds=filter_cfg['oxide_lower_bounds'] or None,
+                    Oxide_Upper_Bounds=filter_cfg['oxide_upper_bounds'] or None,
+                    Component_Upper_Bounds=filter_cfg['component_upper_bounds'] or None,
+                    Component_Lower_Bounds=filter_cfg.get('component_lower_bounds', []),
+                    Bulk_Oxide_Bounds=filter_cfg.get('bulk_oxide_bounds') or None,
+                    batch_size=filter_cfg['batch_size']
+                )
+
+            bundle_insanity_filter(train_bundle_path, bulk_tol_frac=5E-3)
+
         else:
-            train_bundle_path = resampling_to_datasets(
-                TrainMELTS,
-                [[1, 1]],
-                config_path=config_path,
-                bundle_name=train_bundle,
-                **resampling_kwargs,
-            )
-
-            train_bundle_path = ensure_bundle_in_train_dir(train_bundle_path)
-
-        TrainIndexer = deepcopy(TrainMELTS.indexer)  # Capture indexer for consistency with validation/test dataset
-
-        del TrainMELTS.table
-        del TrainMELTS
-        gc.collect()
-
-        # Clear intermediate memory maps
-        delete_files_with_keyword(str(INTERNAL_DIR), keyword='working', dry_run=False)
-        delete_files_with_keyword(str(INTERNAL_DIR), keyword='temp', dry_run=False)
-
-        # Rename processed data
-        """if not preprocessed:
-            os.rename(TrainName + 'Filtered.npy', TrainName + '_processed.npy')
-            os.rename(TrainName + 'Filtered.txt', TrainName + '_processed.txt')"""
-
-        if filter_cfg['enabled']:
-            deep_filter(
-                str(train_bundle_path),
-                Oxide_Lower_Bounds=filter_cfg['oxide_lower_bounds'] or None,
-                Oxide_Upper_Bounds=filter_cfg['oxide_upper_bounds'] or None,
-                Component_Upper_Bounds=filter_cfg['component_upper_bounds'] or None,
-                Component_Lower_Bounds=filter_cfg.get('component_lower_bounds', []),
-                Bulk_Oxide_Bounds=filter_cfg.get('bulk_oxide_bounds') or None,
-                batch_size=filter_cfg['batch_size']
-            )
-
-        #sanity_check_bundle(train_bundle, bulk_tol_frac=5E-3)  # Verify training bundle integrity before proceeding
-
-
-        bundle_insanity_filter(train_bundle_path, bulk_tol_frac=5E-3)
+            # Load pre-built training artifacts; skip the full training pipeline.
+            header = open(TrainName + '.csv').readline().strip().split(',')
+            from ngibbs.config.ml_indexer import load_ml_indexer_from_state
+            saved_ml_indexer = load_ml_indexer_from_state(TrainName + 'ml_indexer')
+            train_bundle_path = train_dir / get_bundle_name('Train')
+            if not Path(train_bundle_path).exists():
+                raise FileNotFoundError(
+                    f"--skip-train requires a pre-built training bundle at: {train_bundle_path}")
+            TrainIndexer = None
+            print(f"[SKIP-TRAIN] Loaded header ({len(header)} cols) and ml_indexer "
+                  f"from {TrainName}ml_indexer/")
 
 
         # Process validation and test data
         ValidMELTS = BigMetaTable(ValidName, read_dir=read_dir, Model=MODEL, OXYGEN=OXYGEN)
-        assert ValidMELTS.header == header, "Validation dataset header does not match training dataset header!" #(This is assummed in later steps, but maybe doesn't need to be?)
+        try:
+            assert ValidMELTS.header == header, "Validation dataset header does not match training dataset header! Trying without last training column." #(This is assummed in later steps, but maybe doesn't need to be?)
+        except AssertionError as e:
+            assert ValidMELTS.header == header[:-1], "Validation dataset header does not match training dataset header!" #(This is assummed in later steps, but maybe doesn't need to be?)
 
-        ValidMELTS.indexer = TrainIndexer  # Assign identical indexer for consistency with training dataset
-        ValidMELTS.indexer.ml_indexer = TrainIndexer.ml_indexer  # Ensure ml_indexer is also consistent, this is used in filtering and upsampling steps
+        if skip_train:
+            if excluded_oxides_cfg:
+                ValidMELTS.exclude_oxides(excluded_oxides_cfg)
+            ValidMELTS.indexer.ml_indexer = saved_ml_indexer
+        else:
+            ValidMELTS.indexer = TrainIndexer  # Assign identical indexer for consistency with training dataset
+            ValidMELTS.indexer.ml_indexer = TrainIndexer.ml_indexer
 
 
 
@@ -377,6 +389,8 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         assert ValidMELTS.table.shape[0] > pre_filter*0.97, "More than 3% of the Validation dataset has inconsistent phase data! (Zero mass but non-zero other properties)."
 
         if not preprocessed:
+            if preproc_cfg.get('recover_untracked_phases', False):
+                ValidMELTS.recover_untracked_phases()
             if preproc_cfg['separate_analcime']:
                 ValidMELTS.separate_analcime()
             if preproc_cfg['separate_feldspar']:
@@ -387,10 +401,14 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
             #ValidMELTS.filter_legal() Deprecated. Filtering handled in deep_filtering step and metadata filtering
 
             ValidMELTS, TestMELTS = ValidMELTS.split(0.30) # Future: make configurable. 
-            TestMELTS.indexer = TrainIndexer  # Assign identical indexer for consistency with training dataset 
-            TestMELTS.indexer.ml_indexer = TrainIndexer.ml_indexer # Ensure ml_indexer is also consistent, this is used in filtering and upsampling steps
-            ValidMELTS.indexer = TrainIndexer  # ValidMELTS is reinitialized; must transfer indexer again after split. (The split method should make children inherit parent's idx!)
-            ValidMELTS.indexer.ml_indexer = TrainIndexer.ml_indexer 
+            if skip_train:
+                TestMELTS.indexer.ml_indexer  = saved_ml_indexer
+                ValidMELTS.indexer.ml_indexer = saved_ml_indexer
+            else:
+                TestMELTS.indexer = TrainIndexer  # Assign identical indexer for consistency with training dataset
+                TestMELTS.indexer.ml_indexer = TrainIndexer.ml_indexer
+                ValidMELTS.indexer = TrainIndexer  # ValidMELTS is reinitialized; must transfer indexer again after split.
+                ValidMELTS.indexer.ml_indexer = TrainIndexer.ml_indexer
             if upsample:
                 # Resample configured test set phases from YAML
                 test_phases = upsample_cfg['phases'].get('test_set_phases', {})
@@ -623,7 +641,10 @@ Examples:
     parser.add_argument('--balance-function', type=str, default=None,
                         choices=['none', 'balance_lowF', 'balance_geodynamics', 'balance_superliquidus'],
                         help='Balance function to apply')
-    
+    parser.add_argument('--skip-train', dest='skip_train', action='store_true', default=False,
+                        help='Skip training-set processing; load header and ml_indexer from the '
+                             'pre-built training bundle instead (requires an existing bundle)')
+
     args = parser.parse_args()
     
     # Convert balance function string to actual function
@@ -648,5 +669,6 @@ Examples:
         preprocessed=args.preprocessed if args.preprocessed else None,
         subset=args.subset if args.subset else None,
         use_external=args.use_external if args.use_external else None,
-        balance_function=balance_func
+        balance_function=balance_func,
+        skip_train=args.skip_train,
     )

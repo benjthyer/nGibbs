@@ -83,6 +83,15 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             return comp, phase
         raise ValueError(f"Feature entry must be 'Component(Phase)' or [component, phase], got: {entry}")
 
+    def _is_ratio_entry(entry):
+        """Return True if entry uses ' / ' division syntax."""
+        return isinstance(entry, str) and ' / ' in entry
+
+    def _split_ratio(entry):
+        """Split 'A(P1) / B(P2)' into the two half-strings."""
+        parts = entry.split(' / ', 1)
+        return parts[0].strip(), parts[1].strip()
+
     if sampleNo > 1:
         allowed_pairs = {
             ('Pressure', 'System_main'),
@@ -90,11 +99,19 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             ('logfO2-QFM', 'System_main'),
         }
         for FN in featureNames:
-            comp, phase = _parse_feature_entry(FN)
-            if ((comp, phase) not in allowed_pairs) and (resample_bounds != [[1,1]]):
-                raise NotImplementedError(
-                    f"(Feature {comp}({phase})) Extensive features not implemented for resampling; only PTfO2 allowed"
-                )
+            if _is_ratio_entry(FN):
+                for part in _split_ratio(FN):
+                    comp, phase = _parse_feature_entry(part)
+                    if ((comp, phase) not in allowed_pairs) and (resample_bounds != [[1, 1]]):
+                        raise NotImplementedError(
+                            f"(Feature {comp}({phase}) in ratio) Extensive features not implemented for resampling; only PTfO2 allowed"
+                        )
+            else:
+                comp, phase = _parse_feature_entry(FN)
+                if ((comp, phase) not in allowed_pairs) and (resample_bounds != [[1,1]]):
+                    raise NotImplementedError(
+                        f"(Feature {comp}({phase})) Extensive features not implemented for resampling; only PTfO2 allowed"
+                    )
         print(f"Resampling dataset {sampleNo} times with bounds: {resample_bounds}")
 
 
@@ -124,11 +141,18 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     Elkeys = indexer.ml_indexer.Elkeys
 
     # Parse feature names (as [component, phase]) to column indices in MELTS table
-    def _feature_to_index(pair) -> int:
-        comp, phase = _parse_feature_entry(pair)
+    def _simple_feature_to_index(entry) -> int:
+        comp, phase = _parse_feature_entry(entry)
         if phase not in component_indices or comp not in component_indices[phase]:
             raise KeyError(f"Feature {comp}({phase}) not found in MELTS_indices.")
         return component_indices[phase][comp]
+
+    def _feature_to_index(entry):
+        """Return int for simple features, (int, int) for 'A(P) / B(P)' ratio features."""
+        if _is_ratio_entry(entry):
+            num_str, den_str = _split_ratio(entry)
+            return (_simple_feature_to_index(num_str), _simple_feature_to_index(den_str))
+        return _simple_feature_to_index(entry)
 
     feature_indices = [ _feature_to_index(n) for n in featureNames ]
     feature_offset = len(featureNames)
@@ -314,10 +338,15 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             
             # --- Free outputs (if any): replicate values from original table across resamples
             if freeOutputs is not None and len(free_output_indices) > 0:
-                sl = np.s_[i*num_rows:(i+1)*num_rows, :len(free_output_indices)]
-                self.freeOutputs[sl] = self.table[:, free_output_indices]
+                sl_rows = slice(i*num_rows, (i+1)*num_rows)
+                for k, fidx in enumerate(free_output_indices):
+                    if isinstance(fidx, tuple):
+                        num_col = self.table[:, fidx[0]].astype(np.float64)
+                        den_col = self.table[:, fidx[1]].astype(np.float64)
+                        self.freeOutputs[sl_rows, k] = np.where(den_col != 0, num_col / den_col, 0.0).astype(np.float32)
+                    else:
+                        self.freeOutputs[sl_rows, k] = self.table[:, fidx]
                 self.freeOutputs.flush()
-                del sl
 
             # --- Features (bulk chemistry in elements normalized to 1)
             sl = np.s_[i*num_rows:(i+1)*num_rows, feature_offset:]
@@ -330,10 +359,15 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             del sl
 
             # --- Features (selected input variables from table by featureNames)
-            sl = np.s_[i*num_rows:(i+1)*num_rows, :feature_offset]
-            self.features[sl] = self.table[:, feature_indices]
+            sl_rows = slice(i*num_rows, (i+1)*num_rows)
+            for k, fidx in enumerate(feature_indices):
+                if isinstance(fidx, tuple):
+                    num_col = self.table[:, fidx[0]].astype(np.float64)
+                    den_col = self.table[:, fidx[1]].astype(np.float64)
+                    self.features[sl_rows, k] = np.where(den_col != 0, num_col / den_col, 0.0).astype(np.float32)
+                else:
+                    self.features[sl_rows, k] = self.table[:, fidx]
             self.features.flush()
-            del sl
 
             # --- Molar labels
             sl = np.s_[i*num_rows:(i+1)*num_rows]

@@ -395,13 +395,17 @@ def run_comparison(
     for model_path in model_paths:
         print(f"\n[{model_path.name}] evaluating ...", flush=True)
         t0 = time.time()
-        phase_recs, oxide_recs = _evaluate_model(
-            model_path, bundle, subset, use_cuda, normalize_features, batch_size
-        )
-        elapsed = time.time() - t0
-        all_phase_records.extend(phase_recs)
-        all_oxide_records.extend(oxide_recs)
-        print(f"  finished in {elapsed:.1f}s")
+        try:
+            phase_recs, oxide_recs = _evaluate_model(
+                model_path, bundle, subset, use_cuda, normalize_features, batch_size
+            )
+            elapsed = time.time() - t0
+            all_phase_records.extend(phase_recs)
+            all_oxide_records.extend(oxide_recs)
+            print(f"  finished in {elapsed:.1f}s")
+        except Exception as e:
+            print(f"  ERROR evaluating {model_path.name}: {e}. Skipping.") # Singular matrix lstsq fail for early models
+            continue
 
     # ---- Save CSVs ----
     # phase_metrics.csv: union of all keys (different phases have different oxide columns)

@@ -103,6 +103,7 @@ COMPOSITIONAL_COMPONENTS_IN_PHASES: Dict[str, List[str]] = { # Will need to be e
     'amphibole': [],  # No chemical components, only state variables
     'muscovite': [],  # No chemical components, only state variables
     'water': [],  # No chemical components, only state variables
+    'graphite': [],  # No chemical components, only state variables
     'melts-liquid': ['liq mass (gm)', 
                      'wt% SiO2', 'wt% TiO2', 'wt% Al2O3', 'wt% FeO', 'wt% MgO', 
                      'wt% CaO', 'wt% Na2O', 'wt% K2O', 'wt% P2O5','wt% H2O', 'wt% Cr2O3',
@@ -365,6 +366,7 @@ active_oxide_lists = {
     'biotite': ['SiO2','FeO','MgO'],
     'rhm-oxide': ['MgO', 'FeO', 'Fe2O3', 'TiO2'],
     'analcime': ['SiO2', 'Na2O', 'K2O', 'H2O'],
+    'hornblende': ['FeO', 'MgO', 'CaO', 'Na2O', 'K2O', 'H2O'],
     'melts-liquid': default_Oxides
         }
 

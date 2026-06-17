@@ -491,6 +491,7 @@ class EmulatorAPI:
 
         self.device = torch.device(device)
         self.verbose = verbose
+        self.modelType = self.__class__.__name__
 
         # Store paths so _clone_as_cpu can rebuild this instance on another device
         self._iso_path  = str(isothermal_model_path)
@@ -1313,11 +1314,12 @@ class EmulatorAPI:
         if p_idx is not None and s_idx is not None:
             P_raw = features[:, p_idx].detach().cpu().numpy().astype(np.float64)
             S_raw = features[:, s_idx].detach().cpu().numpy().astype(np.float64)
-            T_ref = torch.tensor(
-                np.asarray(_reference_adiabat(P_raw, S_raw), dtype=np.float32),
-                dtype=torch.float32,
-                device=self.device,
-            )
+            if self.modelType == "MELTSAPI":
+                P_raw = P_raw / 10000.0  # bars → GPa
+            T_ref_K = np.asarray(_reference_adiabat(P_raw, S_raw), dtype=np.float32)
+            if self.modelType == "MELTSAPI":
+                T_ref_K = T_ref_K - 273.15  # K → Celsius
+            T_ref = torch.tensor(T_ref_K, dtype=torch.float32, device=self.device)
         else:
             T_ref = None
 
@@ -1760,6 +1762,8 @@ class MELTSAPI:
         )
         self.device = torch.device(device)
         self.verbose = verbose
+        self.nocr.modelType = "MELTSAPI"
+        self.cr.modelType = "MELTSAPI"
         if verbose:
             print("[INFO] MELTSAPI initialized successfully.")
 

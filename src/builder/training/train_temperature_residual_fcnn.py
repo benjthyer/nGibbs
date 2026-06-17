@@ -179,11 +179,22 @@ def _compute_residuals(
     features_raw: np.ndarray,
     p_idx: int,
     s_idx: int,
+    is_melts: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Compute T_residual = T_true - reference_adiabat(P, S). Returns (residuals, T_ref)."""
+    """Compute T_residual = T_true - reference_adiabat(P, S). Returns (residuals, T_ref).
+
+    When is_melts=True, P is expected in bars and T in Celsius. P is converted to GPa
+    before the adiabat call; the returned T_ref is in Celsius (K - 273.15) so the
+    residual and all downstream targets remain in Celsius.
+    """
     P = features_raw[:, p_idx].astype(np.float64)
-    S = features_raw[:, s_idx].astype(np.float64)
-    T_ref = np.asarray(reference_adiabat(P, S), dtype=np.float32)
+    if is_melts:
+        P = P / 10000.0  # bars → GPa
+        S = 2.5
+    else:
+        S = features_raw[:, s_idx].astype(np.float64)
+    T_ref_K = np.asarray(reference_adiabat(P, S), dtype=np.float32)
+    T_ref = (T_ref_K - 273.15) if is_melts else T_ref_K
     residuals = (T_true.reshape(-1) - T_ref).astype(np.float32)
     return residuals, T_ref
 
@@ -342,6 +353,7 @@ def _save_checkpoint(
     input_kind: str,
     metrics: Dict,
     history: Dict,
+    is_melts: bool = False,
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -358,6 +370,7 @@ def _save_checkpoint(
             "target_range": y_range,
             "target_min_range": _normalizer_pairs(y_min, y_range),
             "input_kind": input_kind,
+            "is_melts": is_melts,
             "metrics": metrics,
             "history": history,
         },
@@ -408,6 +421,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"])
     parser.add_argument("--skip-1", action="store_true", help="Skip model 1 (emulator-predicted path)")
+    parser.add_argument("--isMELTS", action="store_true", help="Bundle uses MELTS units (P in bars, T in Celsius). Converts P bars→GPa before the reference adiabat call and converts the reference result K→Celsius so residuals and targets are in Celsius.")
     parser.add_argument(
         "--out-dir",
         type=Path,
@@ -465,9 +479,9 @@ def main() -> None:
     T_test_true = np.asarray(test_bundle.free_outputs[:, temp_output_idx], dtype=np.float32)
     T_valid_true = np.asarray(valid_bundle.free_outputs[:, temp_output_idx], dtype=np.float32)
 
-    T_train_residuals, T_train_ref = _compute_residuals(T_train_true, train_feats, p_idx, s_idx)
-    T_test_residuals, T_test_ref = _compute_residuals(T_test_true, test_feats, p_idx, s_idx)
-    T_valid_residuals, T_valid_ref = _compute_residuals(T_valid_true, valid_feats, p_idx, s_idx)
+    T_train_residuals, T_train_ref = _compute_residuals(T_train_true, train_feats, p_idx, s_idx, is_melts=args.isMELTS)
+    T_test_residuals, T_test_ref = _compute_residuals(T_test_true, test_feats, p_idx, s_idx, is_melts=args.isMELTS)
+    T_valid_residuals, T_valid_ref = _compute_residuals(T_valid_true, valid_feats, p_idx, s_idx, is_melts=args.isMELTS)
 
     print(
         f"Train residuals (K): min={T_train_residuals.min():.1f}, "
@@ -519,7 +533,7 @@ def main() -> None:
 
     def _make_saver(out_path, x_min_, x_range_, kind, metrics_ref):
         def saver(m, hist):
-            _save_checkpoint(out_path, m, args.temperature_label, p_idx, s_idx, x_min_, x_range_, y_min, y_range, kind, metrics_ref, hist)
+            _save_checkpoint(out_path, m, args.temperature_label, p_idx, s_idx, x_min_, x_range_, y_min, y_range, kind, metrics_ref, hist, is_melts=args.isMELTS)
         return saver
 
     # Train model 1 (emulator-predicted path)
@@ -569,11 +583,11 @@ def main() -> None:
     model1_out_str = "Not Trained!"
     if not args.skip_1 and history_emulator is not None:
         model1_out = args.out_dir / f"temperature_residual_emulator_path_{bundle_basename}.pt"
-        _save_checkpoint(model1_out, model_emulator, args.temperature_label, p_idx, s_idx, x1_emul_min, x1_emul_range, y_min, y_range, "emulator_path", metrics["emulator_path"], history_emulator)
+        _save_checkpoint(model1_out, model_emulator, args.temperature_label, p_idx, s_idx, x1_emul_min, x1_emul_range, y_min, y_range, "emulator_path", metrics["emulator_path"], history_emulator, is_melts=args.isMELTS)
         model1_out_str = str(model1_out)
 
     model2_out = args.out_dir / f"temperature_residual_gt_path_{bundle_basename}.pt"
-    _save_checkpoint(model2_out, model_gt, args.temperature_label, p_idx, s_idx, x2_min, x2_range, y_min, y_range, "gt_path", metrics["gt_path"], history_gt)
+    _save_checkpoint(model2_out, model_gt, args.temperature_label, p_idx, s_idx, x2_min, x2_range, y_min, y_range, "gt_path", metrics["gt_path"], history_gt, is_melts=args.isMELTS)
 
     metrics_path = args.out_dir / f"temperature_residual_metrics_{bundle_basename}.json"
     with open(metrics_path, "w", encoding="utf-8") as f:
@@ -584,6 +598,7 @@ def main() -> None:
                 "s_feature_idx": s_idx,
                 "p_feature_name": P_FEATURE_NAME,
                 "s_feature_name": S_FEATURE_NAME,
+                "is_melts": args.isMELTS,
                 "hidden_dims": hidden_dims,
                 "bundle_paths": {k: str(v) for k, v in bundle_paths.items()},
                 "normalizers": {

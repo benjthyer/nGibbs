@@ -1,0 +1,3 @@
+	NPT	NPS	S->T	Open
+NoCr	Train6 	Train6	X	Train5 (Retrain NPS with Specific Entropy)
+Cr	Train5	Train5	X	Train5 (Retrain NPS with Specific Entropy)
