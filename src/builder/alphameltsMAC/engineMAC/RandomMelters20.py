@@ -116,7 +116,7 @@ def _process_compositions(compositions, col_dict, simcycle, MELTSModel, zeroOxid
             compositions[soaked, col_dict['H2O']] = np.random.uniform(size=len(soaked), high=5)
     if (MELTSModel == '120') and ('CO2' not in zeroOxides):
         # No CO2 in GEOROC, append it to the end of the compositions
-        allWet = np.unique(np.append(hydrous, soaked))[0]
+        allWet = np.unique(np.append(hydrous, soaked))
         co2_hydrous = np.random.choice(allWet, size=int(simcycle/3), replace=False)
         CO2_arr = np.zeros((simcycle, 1))
         CO2_arr[co2_hydrous] = np.random.uniform(size=len(co2_hydrous), high=0.5).reshape(-1, 1)
