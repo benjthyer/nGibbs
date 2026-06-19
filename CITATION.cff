@@ -15,10 +15,10 @@ version: "0.1.0"
 date-released: "2026-06-09"
 license: AGPL-3.0
 repository-code: "https://github.com/benjthyer/nGibbs"
-doi: "10.5281/zenodo.XXXXXXX"  # TODO: fill in concept DOI after first Zenodo release
+doi: "10.5281/zenodo.20766922" 
 identifiers:
   - type: doi
-    value: "10.5281/zenodo.XXXXXXX"  # TODO: concept DOI (replace XXXXXXX, never changes)
+    value: "10.5281/zenodo.20766922" 
     description: "Concept DOI — always resolves to the latest version"
 keywords:
   - thermodynamics
