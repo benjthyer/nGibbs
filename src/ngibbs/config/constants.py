@@ -38,6 +38,8 @@ TYPE_CONVERSION_MAP = {
 
 # Required elements (must always be present)
 REQUIRED_ELEMENTS = {'Si','Ti', 'Al', 'Fe', 'Mg', 'Ca', 'Na'}
+ALLOWED_MELTS_OXIDES = {'SiO2', 'TiO2', 'Al2O3', 'FeO', 'Fe2O3', 'MgO', 'CaO', 'Na2O', 'K2O', 'P2O5', 'H2O', 'Cr2O3', 'CO2'}
+REQUIRED_MELTS_OXIDES = {'SiO2', 'TiO2', 'Al2O3', 'FeO', 'MgO', 'CaO', 'Na2O'}
 
 default_WRkeys = ['SiO2', 'TiO2', 'Al2O3', 'FeO', 'MgO', 'CaO', 'Na2O', 'K2O', 'P2O5', 'H2O', 'Cr2O3', 'MnO', 'NiO', 'CO2']
 default_Oxides = default_WRkeys + ['Fe2O3']

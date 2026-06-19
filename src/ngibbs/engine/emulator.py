@@ -131,7 +131,7 @@ class NN_MELTS:
             print("Warning: No normalizer state found in ml_indexer. Using identity normalization.")"""
 
     def reorder_input_table(self, table, headers=None, composition_space='elements',
-                            strict=True, fill_value=0.0, return_type='same'):
+                            strict=False, fill_value=0.0, return_type='same'):
         """
         Reorder input table columns into NN_MELTS feature order.
 
@@ -235,6 +235,8 @@ class NN_MELTS:
             return reordered
 
         if out_key == 'torch':
+            if isinstance(reordered, torch.Tensor):
+                return reordered.clone().detach().to(dtype=torch.float32, device=self.dev)
             return torch.tensor(reordered, dtype=torch.float32, device=self.dev)
 
         if out_key == 'dataframe':

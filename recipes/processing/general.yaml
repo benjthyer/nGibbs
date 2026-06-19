@@ -6,12 +6,12 @@
 # ============================================================================
 dataset: #EXPECTED FILENAME: "nMELTS/data/MELTStables/{MELTSModel}/{'MELTS' if MELTSModel in ['102', '110', '120', 'p'] else ''}{MELTSModel}_<Train/Valid>set{Date}{Mode}"
   MELTSModel: '120'          # MELTS model version: '102', '110', '120', 'p'. Affects which directory dataproducts are read from and written to
-  Date: 'June17closedNoCr'               # Date identifier for dataset naming
+  Date: 'June17closedCr'               # Date identifier for dataset naming
   Mode: 'BatchCooling'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
-outname: 120Isentropic_NoCr     # Base name for output folder (without extension). Auto-Generated if blank
+outname: 120Isothermal_Cr     # Base name for output folder (without extension). Auto-Generated if blank
 
 
 
@@ -20,14 +20,14 @@ outname: 120Isentropic_NoCr     # Base name for output folder (without extension
 # ============================================================================
 featureNames: # Non-chemical features to include in the dataset
   - 'Pressure(System_main)'
-  - 'S(System_main) / mass(System_main)' # Specific entropy (J/g-K)
+  - 'Temperature(System_main)'
+
   #- 'S(System_main)' # Isentropic 
   
 
 freeOutputs: # Non-chemical labels to predict. These are used for training the saturation predictor and as auxiliary outputs for the encoder.
   #- 'Temperature(System_main)' 
-  
-  - 'Temperature(System_main)'
+  - 'S(System_main) / mass(System_main)' # Specific entropy (J/g-K)
   #- 'T(K)(System_main)'
   #- 'VS(km/s)(System_main)'
   #- 'VP(km/s)(System_main)'
@@ -45,8 +45,8 @@ freeOutputs: # Non-chemical labels to predict. These are used for training the s
 # ============================================================================
 preprocessing:
   preprocessed: false        # Skip preprocessing if data already preprocessed
-  recover_untracked_phases: true  # Recover hornblende + graphite from bulk-comp residual (metadata tokens 'amphibole'/'graphite')
-  filter_full_metadata: false # OFF IF ABOVE IS ON. Filter out rows with unrecognised phase annotations in metadata
+  recover_untracked_phases: false  # Recover hornblende + graphite from bulk-comp residual (metadata tokens 'amphibole'/'graphite')
+  filter_full_metadata: true # OFF IF ABOVE IS ON. Filter out rows with unrecognised phase annotations in metadata
   filter_legal: false        # Deprecated
   separate_analcime: false   # Separate analcime phase during preprocessing
   separate_feldspar: true    # Separate k-feldspar and plagioclase during preprocessing (Generally do this, MELTS sometimes classifies K-rich feldspar as plagioclase)
@@ -63,7 +63,7 @@ min_phase_proportion: 0.02    # Minimum phase proportion (0-1) for a sample to b
 # and 'multiplier_bounds' ([lower, upper] bounds for perturbation).
 # Examples of additional phases: alloy-solid, apatite, cristobalite, etc.
 
-
+# DO NOT DO / BE CAREFUL WITH ISENTROPIC SIMS AND RESAMPLING
 upsampling:
   enabled: true              # Enable rare phase upsampling
   phases:

@@ -42,10 +42,10 @@ GEOROC_DIR = os.path.join(REPO_ROOT, 'data', 'MELTStables', 'GEOROC')
 
 os.makedirs(EnsembleLocation, exist_ok=True)
 
-
-"""print("Waiting")
+"""sleepytime = 3600 * 4
+print("Waiting for " + str(np.round(sleepytime/3600, 2)) + " hours before starting dataset generation ")
 import time
-time.sleep(8000)"""
+time.sleep(sleepytime)"""
 
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
 input_date = 'June17closed'
@@ -62,7 +62,7 @@ total_to_run = int(300) # How many total simulations to run
 startTs = [1800, 1800]#, 1800]
 delta = -4
 input_liquid_fractions = [102, 102]#, 100] # Make above 100 to allow for superliquidus
-simcycle = 40 # How many simulations to run per iteration
+simcycle = 50 # How many simulations to run per iteration
 
 #storage_directory = f'/mnt/d/Workspace/{MELTSModel}Datasets/'
 
@@ -82,7 +82,7 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
         mafics_to_run = int(total_to_run * 0.3)
         full_to_run = int(total_to_run * 0.55)
 
-    for C, Tag in enumerate(['NoCr', 'Cr']):
+    for C, Tag in enumerate(['Cr']): ###################################################################
         ZeroOxides = input_ZeroOxides.copy()
         if Tag == 'NoCr':
             ZeroOxides.append('Cr2O3')

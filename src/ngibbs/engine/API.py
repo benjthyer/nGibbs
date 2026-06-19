@@ -501,23 +501,25 @@ class EmulatorAPI:
 
         if verbose:
             print(f"  Loading isothermal emulator: {isothermal_model_path}")
-        self.isothermal_emulator = self._load_emulator(isothermal_model_path, device)
+        self.isothermal_emulator = self._load_emulator(isothermal_model_path, device, verbose)
 
         if verbose:
             print(f"  Loading isentropic emulator: {isentropic_model_path}")
-        self.isentropic_emulator = self._load_emulator(isentropic_model_path, device)
+        self.isentropic_emulator = self._load_emulator(isentropic_model_path, device, verbose)
 
         if openox_model_path is not None:
             if verbose:
                 print(f"  Loading open oxygen emulator: {openox_model_path}")
-            self.open_emulator = self._load_emulator(openox_model_path, device)
+            self.open_emulator = self._load_emulator(openox_model_path, device, verbose)
         else:
             self.open_emulator = None
 
         if temperature_model_path is not None:
             if verbose:
                 print(f"  Loading temperature FCNN: {temperature_model_path}")
-            self._setup_temperature_model(temperature_model_path)
+            self._setup_temperature_model(temperature_model_path, verbose)
+        elif verbose:
+            print("  No temperature model provided; temperature predictions will be unavailable.")
 
         # Use first available emulator to build the composition parser
         _parser_src = self.isothermal_emulator or self.isentropic_emulator or self.open_emulator
@@ -620,25 +622,24 @@ class EmulatorAPI:
         )
 
     @staticmethod
-    def _load_emulator(model_path: Union[str, Path], device: str) -> Optional[NN_MELTS]:
+    def _load_emulator(model_path: Union[str, Path], device: str, verbose: bool = True) -> Optional[NN_MELTS]:
         """Load and wrap a checkpoint as NN_MELTS emulator, or return None with a warning."""
         import warnings
         from engine.NN import rebuild_MELTS_model
 
         model_path = Path(model_path)
         if not model_path.exists():
-            warnings.warn(
-                f"Model file not found: {model_path}. "
-                "This model will be unavailable; calling any method that uses it will raise a RuntimeError.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
+            if verbose: 
+                print(
+                f"[nGibbs] Model file not found: {model_path}. "
+                "This model will be unavailable."
+                )
             return None
 
         model = rebuild_MELTS_model(str(model_path))
         return NN_MELTS(model, cuda=(device == 'cuda'))
 
-    def _setup_temperature_model(self, checkpoint_path: Union[str, Path]) -> None:
+    def _setup_temperature_model(self, checkpoint_path: Union[str, Path], verbose: bool = False) -> None:
         """Load temperature FCNN and setup normalizers."""
         checkpoint_path = Path(checkpoint_path)
         if not checkpoint_path.exists():
@@ -1333,7 +1334,7 @@ class EmulatorAPI:
     def make_ptt_out(self, features, phaseOxWt, phaseMassNorm, isentropic=None, openox=False):
         """
         Create output in format of ptt pandas tables. This should only be used internally.
-        [TODO]: Calculate thermodynamic properties for bulk and each phase to include in output tables.
+        Future dev? Integrate thermodynamic properties calcs already done in ptt. Only once an independent parallel pythonic method implemented
 
         Parameters
         ----------
@@ -1419,14 +1420,14 @@ class EmulatorAPI:
                 Fe2 = outTable[:, ptt_oxide_indexer['FeO']]/oxide_molar_masses['FeO']
                 Fe3 = outTable[:, ptt_oxide_indexer['Fe2O3']]/oxide_molar_masses['Fe2O3']*2
                 Fet = Fe2 + Fe3
-                outTable[:, ptt_oxide_indexer['Fe3Fet']] = Fe3/Fet
+                outTable[:, ptt_oxide_indexer['Fe3Fet']] = np.where(Fet > 0, Fe3 / np.where(Fet > 0, Fet, 1.0), 0.0)
                 outTable[:, ptt_oxide_indexer['FeOt']] = Fet * oxide_molar_masses['FeO']
 
                 output[ptt_long] = pd.DataFrame(outTable, columns=colnames)
 
             mass_array[:,i] = phaseMassNorm[:, internalPhaseCol].detach().cpu().numpy()
             mass_cols.append(ptt_long)
-            all_mass_cols.append(ptt_short)
+            all_mass_cols.append('mass_g' + ptt_short)
         all_mass_cols = list(output['Conditions'].columns) + all_mass_cols # Combine condition and mass column names for "All" table
 
         output['mass_g'] = pd.DataFrame(mass_array, columns=mass_cols) # Finally, mass table. 
@@ -1835,22 +1836,22 @@ HeFESToEmulatorCPU = HeFESToAPI(
 )
 
 MELTS102EmulatorCPU = MELTSAPI(
-    isothermal_NoCr_model_path = str(MELTS102_dir / "Isothermal_NoCr.tar"),
-    isothermal_Cr_model_path = str(MELTS102_dir / "Isothermal_Cr.tar"),
-    isentropic_NoCr_model_path = str(MELTS102_dir / "Isentropic_NoCr.tar"),
-    isentropic_Cr_model_path = str(MELTS102_dir / "Isentropic_Cr.tar"),
-    openOx_NoCr_model_path = str(MELTS102_dir / "OpenOx_NoCr.tar"),
-    openOx_Cr_model_path = str(MELTS102_dir / "OpenOx_Cr.tar"),
+    isothermal_NoCr_model_path = str(MELTS102_dir / "102Isothermal_NoCr.tar"),
+    isothermal_Cr_model_path = str(MELTS102_dir / "102Isothermal_Cr.tar"),
+    isentropic_NoCr_model_path = str(MELTS102_dir / "102Isentropic_NoCr.tar"),
+    isentropic_Cr_model_path = str(MELTS102_dir / "102Isentropic_Cr.tar"),
+    openox_NoCr_model_path = str(MELTS102_dir / "102OpenOx_NoCr.tar"),
+    openox_Cr_model_path = str(MELTS102_dir / "102OpenOx_Cr.tar"),
     device='cpu'
 )
 
 MELTS120EmulatorCPU = MELTSAPI(
-    isothermal_NoCr_model_path = str(MELTS120_dir / "Isothermal_NoCr.tar"),
-    isothermal_Cr_model_path = str(MELTS120_dir / "Isothermal_Cr.tar"),
-    isentropic_NoCr_model_path = str(MELTS120_dir / "Isentropic_NoCr.tar"),
-    isentropic_Cr_model_path = str(MELTS120_dir / "Isentropic_Cr.tar"),
-    openOx_NoCr_model_path = str(MELTS120_dir / "OpenOx_NoCr.tar"),
-    openOx_Cr_model_path = str(MELTS120_dir / "OpenOx_Cr.tar"),
+    isothermal_NoCr_model_path = str(MELTS120_dir / "120Isothermal_NoCr.tar"),
+    isothermal_Cr_model_path = str(MELTS120_dir / "120Isothermal_Cr.tar"),
+    isentropic_NoCr_model_path = str(MELTS120_dir / "120Isentropic_NoCr.tar"),
+    isentropic_Cr_model_path = str(MELTS120_dir / "120Isentropic_Cr.tar"),
+    openox_NoCr_model_path = str(MELTS120_dir / "120OpenOx_NoCr.tar"),
+    openox_Cr_model_path = str(MELTS120_dir / "120OpenOx_Cr.tar"),
     device='cpu'
 )
 
@@ -1863,18 +1864,22 @@ if torch.cuda.is_available():
     )
 
     MELTS102EmulatorGPU = MELTSAPI(
-    isothermal_NoCr_model_path = str(MELTS102_dir / "Isothermal_NoCr.tar"),
-    isothermal_Cr_model_path = str(MELTS102_dir / "Isothermal_Cr.tar"),
-    isentropic_NoCr_model_path = str(MELTS102_dir / "Isentropic_NoCr.tar"),
-    isentropic_Cr_model_path = str(MELTS102_dir / "Isentropic_Cr.tar"),
-    openOx_NoCr_model_path = str(MELTS102_dir / "OpenOx_NoCr.tar"),
-    openOx_Cr_model_path = str(MELTS102_dir / "OpenOx_Cr.tar"),
+    isothermal_NoCr_model_path = str(MELTS102_dir / "102Isothermal_NoCr.tar"),
+    isothermal_Cr_model_path = str(MELTS102_dir / "102Isothermal_Cr.tar"),
+    isentropic_NoCr_model_path = str(MELTS102_dir / "102Isentropic_NoCr.tar"),
+    isentropic_Cr_model_path = str(MELTS102_dir / "102Isentropic_Cr.tar"),
+    openox_NoCr_model_path = str(MELTS102_dir / "102OpenOx_NoCr.tar"),
+    openox_Cr_model_path = str(MELTS102_dir / "102OpenOx_Cr.tar"),
     device='cuda'
     )
 
-if __name__ == "__main__": # For testing API loading...
-    print("Available APIs:")
-    print(f"HeFESToEmulatorCPU: {HeFESToEmulatorCPU}")
-    print(f"HeFESToEmulatorGPU: {HeFESToEmulatorGPU}")
-    print(f"MELTS102EmulatorCPU: {MELTS102EmulatorCPU}")
-    print(f"MELTS102EmulatorGPU: {MELTS102EmulatorGPU}")
+    MELTS120EmulatorGPU = MELTSAPI(
+    isothermal_NoCr_model_path = str(MELTS120_dir / "120Isothermal_NoCr.tar"),
+    isothermal_Cr_model_path = str(MELTS120_dir / "120Isothermal_Cr.tar"),
+    isentropic_NoCr_model_path = str(MELTS120_dir / "120Isentropic_NoCr.tar"),
+    isentropic_Cr_model_path = str(MELTS120_dir / "120Isentropic_Cr.tar"),
+    openox_NoCr_model_path = str(MELTS120_dir / "120OpenOx_NoCr.tar"),
+    openox_Cr_model_path = str(MELTS120_dir / "120OpenOx_Cr.tar"),
+    device='cuda'
+)
+

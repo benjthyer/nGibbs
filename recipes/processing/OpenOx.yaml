@@ -6,7 +6,7 @@
 # ============================================================================
 dataset: #EXPECTED FILENAME: "nMELTS/data/MELTStables/{MELTSModel}/{'MELTS' if MELTSModel in ['102', '110', '120', 'p'] else ''}{MELTSModel}_<Train/Valid>set{Date}{Mode}"
   MELTSModel: '120'          # MELTS model version: '102', '110', '120', 'p'. Affects which directory dataproducts are read from and written to
-  Date: 'June10OpenNoCr'               # Date identifier for dataset naming
+  Date: 'June17OpenNoCr'               # Date identifier for dataset naming
   Mode: 'BatchCooling'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
@@ -44,7 +44,8 @@ freeOutputs: # Non-chemical labels to predict. These are used for training the s
 # ============================================================================
 preprocessing:
   preprocessed: false        # Skip preprocessing if data already preprocessed
-  filter_full_metadata: true # Filter by persence of notes in metadata, corresponding to phases that are not recognized.
+  recover_untracked_phases: True  # Recover hornblende + graphite from bulk-comp residual (metadata tokens 'amphibole'/'graphite')
+  filter_full_metadata: False # Filter by persence of notes in metadata, corresponding to phases that are not recognized.
   filter_legal: false        # Deprecated 
   separate_analcime: false   # Separate analcime phase during preprocessing 
   separate_feldspar: true    # Separate k-feldspar and plagioclase during preprocessing (Generally do this, MELTS sometimes classifies K-rich feldspar as plagioclase)
@@ -62,7 +63,7 @@ min_phase_proportion: 0.02    # Minimum phase proportion (0-1) for a sample to b
 # Examples of additional phases: alloy-solid, apatite, cristobalite, etc.
 
 
-upsampling:
+upsampling: # DO NOT DO / BE CAREFUL WITH ISENTROPIC SIMS AND RESAMPLING
   enabled: true              # Enable rare phase upsampling
   phases:
     nepheline:
