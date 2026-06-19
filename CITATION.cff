@@ -11,8 +11,8 @@ authors:
   - family-names: Thyer
     given-names: Ben J.
     email: benjthyer@gmail.com
-version: "0.1.0"
-date-released: "2026-06-09"
+version: "0.1.0b1"
+date-released: "2026-06-19"
 license: AGPL-3.0
 repository-code: "https://github.com/benjthyer/nGibbs"
 doi: "10.5281/zenodo.20766922" 
