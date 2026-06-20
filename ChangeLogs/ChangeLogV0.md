@@ -1,8 +1,8 @@
 _____________________ Unreleased _______________________
 
 2026-06-20: Fixed publish workflow non-fast-forward push failures.
-- Checkout now tracks `main` during release publish workflow runs.
 - Publish workflow rebases on latest `origin/main` before pushing.
+- Rebase failures now stop with a clear, explicit workflow error.
 
 2026-06-20: Fixed PyPI publish workflow release versioning.
 - Exported RELEASE_VERSION from release tag name without leading "v".
