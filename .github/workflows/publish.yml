@@ -19,8 +19,10 @@ jobs:
 
       - name: Build
         run: |
+          TAG="${{ github.event.release.tag_name }}"
+          VERSION="${TAG#v}"  # strip leading 'v' (v0.1.0b3 -> 0.1.0b3)
           pip install build setuptools-scm
-          python -m build
+          SETUPTOOLS_SCM_PRETEND_VERSION="${VERSION}" python -m build
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
