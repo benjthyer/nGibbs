@@ -42,7 +42,8 @@ jobs:
           git diff --cached --quiet || git commit -m "chore: update version files for ${{ github.event.release.tag_name }} [skip ci]"
           git fetch origin main
           if ! git rebase origin/main; then
-            echo "Rebase onto origin/main failed; manual conflict resolution required."
+            echo "Rebase failed for release ${{ github.event.release.tag_name }}."
+            echo "Resolve conflicts from this run's logs, then rerun publish."
             git rebase --abort
             exit 1
           fi
