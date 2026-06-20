@@ -1,5 +1,9 @@
 _____________________ Unreleased _______________________
 
+2026-06-20: Fixed publish workflow non-fast-forward push failures.
+- Publish workflow rebases on latest `origin/main` before pushing.
+- Rebase failures now stop with a clear, explicit workflow error.
+
 2026-06-20: Fixed PyPI publish workflow release versioning.
 - Exported RELEASE_VERSION from release tag name without leading "v".
 - Build and setuptools_scm steps now set SETUPTOOLS_SCM_PRETEND_VERSION.
