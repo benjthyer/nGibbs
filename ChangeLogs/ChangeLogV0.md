@@ -1,5 +1,10 @@
 _____________________ Unreleased _______________________
 
+2026-06-20: Fixed PyPI publish workflow release versioning.
+- Exported RELEASE_VERSION from release tag name without leading "v".
+- Build and setuptools_scm steps now set SETUPTOOLS_SCM_PRETEND_VERSION.
+- Prevents local-version suffixes rejected by PyPI uploads.
+
 2026-05-26: Made EOS benchmark script path handling Windows-safe.
 - benchmark_test.py now uses absolute script-relative paths.
 - BENCHMARK, control, params, and DOS table paths no longer use CWD.
