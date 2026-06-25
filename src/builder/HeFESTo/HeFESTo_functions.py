@@ -99,6 +99,7 @@ from ngibbs.config.constants import (
 )
 
 _SIMULATION_DIR_PATTERN = re.compile(r'^(?:Simulation(\d+)|model_(\d{6}))$', re.IGNORECASE)
+_T_COEF_LINE = re.compile(r'^\s*(b[^\s(=]+)\s*(?:\([^)]*\))?\s*=\s*([+-]?\d[\d.eE+-]*)')
 
 
 EnsembleLocation = None
@@ -126,6 +127,9 @@ def make_PT_path(S, P, func, out_path=None):
     AdIn[:, 0] = P
     AdIn[:, 2] = func(S=S, P=P) + np.random.normal(0, 5, size=len(P))
     save_fixed_width_table(AdIn, out_path=out_path)
+
+def get_T_mars_simple(S, P):
+    return 723.717303134 + -694.269778182 * S + 419.656745453 * S**2 + 13.9481733773 * P + -0.0816921679556 * P**2
 
 def make_PT_path_martian(S, P, func, P_lit, cold_temp = 220, out_path=None):
     """Generate an ``ad.in`` pressure–temperature path file for Martian conditions.
@@ -162,26 +166,77 @@ def make_PT_path_martian(S, P, func, P_lit, cold_temp = 220, out_path=None):
     save_fixed_width_table(AdIn, out_path=out_path)
 
 
-def get_T_mars(P, S, *, Si, Mg, Fe, Ca, Al, Na, Cr, O):
-    """T from S, P, and normalized bulk element moles (Mars-tuned quadratic regression).
 
-    Coefficients from T_from_S_X_coefs_R2_0p99289.txt, fit to Mars profile data
-    (S in [1.75, 2.9] J/g/K, P < 25 GPa, R²=0.9929).
+def make_T_from_coef_file(coef_path: str):
+    """Build a T(P, S, *, Si, Mg, Fe, Ca, Al, Na, Cr, O) function from a regression file.
+
+    The coefficient file is read once when this factory is called; the returned
+    function captures the values in its closure and performs no file I/O at
+    call time.  The expected file format is::
+
+        b0  (intercept) = <float>
+        b_S             = <float>
+        b_S^2           = <float>
+        b_P             = <float>
+        b_P^2           = <float>
+        b_Si            = <float>
+        b_Si^2          = <float>
+        ... (Mg, Fe, Ca, Al, Na, Cr, O)
+
+    The returned function has the same signature as ``get_T_mars``.
+
+    Parameters
+    ----------
+    coef_path : str or Path
+        Path to the coefficient text file.
+
+    Returns
+    -------
+    callable
+        ``get_T(P, S, *, Si, Mg, Fe, Ca, Al, Na, Cr, O) -> float | np.ndarray``
     """
-    return (
-        -319705.389611
-        + -678.005070948  * S   + 412.900722827   * S**2
-        +   16.0934481886 * P   +  -0.0963057104055 * P**2
-        +  14973.408716   * Si  +  -22.2950018292  * Si**2
-        +  14667.3918412  * Mg  +    2.38116843179 * Mg**2
-        +  14772.686899   * Fe  +   -3.92513688062 * Fe**2
-        +  14754.7430937  * Ca  +   -2.60176031648 * Ca**2
-        +  14667.2225605  * Al  +   25.4363265815  * Al**2
-        +  14517.5621792  * Na  +  114.182091497   * Na**2
-        +  14777.8386046  * Cr  +   33.5281068808  * Cr**2
-        +  10174.4941707  * O   +  154.364289153   * O**2
-    )
+    raw: Dict[str, float] = {}
+    with open(coef_path, 'r', encoding='utf-8') as fh:
+        for line in fh:
+            m = _T_COEF_LINE.match(line)
+            if m:
+                raw[m.group(1)] = float(m.group(2))
 
+    def _get(key: str) -> float:
+        if key not in raw:
+            raise KeyError(f"Coefficient '{key}' not found in {coef_path}")
+        return raw[key]
+
+    b0   = _get('b0')
+    bS,  bS2  = _get('b_S'),  _get('b_S^2')
+    bP,  bP2  = _get('b_P'),  _get('b_P^2')
+    bSi, bSi2 = _get('b_Si'), _get('b_Si^2')
+    bMg, bMg2 = _get('b_Mg'), _get('b_Mg^2')
+    bFe, bFe2 = _get('b_Fe'), _get('b_Fe^2')
+    bCa, bCa2 = _get('b_Ca'), _get('b_Ca^2')
+    bAl, bAl2 = _get('b_Al'), _get('b_Al^2')
+    bNa, bNa2 = _get('b_Na'), _get('b_Na^2')
+    bCr, bCr2 = _get('b_Cr'), _get('b_Cr^2')
+    bO,  bO2  = _get('b_O'),  _get('b_O^2')
+
+    def get_T(P, S, *, Si, Mg, Fe, Ca, Al, Na, Cr, O):
+        return (
+            b0
+            + bS  * S  + bS2  * S**2
+            + bP  * P  + bP2  * P**2
+            + bSi * Si + bSi2 * Si**2
+            + bMg * Mg + bMg2 * Mg**2
+            + bFe * Fe + bFe2 * Fe**2
+            + bCa * Ca + bCa2 * Ca**2
+            + bAl * Al + bAl2 * Al**2
+            + bNa * Na + bNa2 * Na**2
+            + bCr * Cr + bCr2 * Cr**2
+            + bO  * O  + bO2  * O**2
+        )
+
+    return get_T
+
+get_T_mars = make_T_from_coef_file("src/builder/HeFESTo/T_from_S_X_coefs_R2_0p99456.txt")
 
 def _clean_workspace(workspace_dir: str) -> None:
     if os.path.exists(workspace_dir):
@@ -738,9 +793,11 @@ def prepare_HeFESTo_tree_Mars(directory: Path, GEOROC_DIR: Path, control_path: P
     conditions. Key differences:
 
     - Pressure range is 0–30 GPa (upper mantle / transition zone only).
-    - Compositions are a 3:2 blend of ultramafic (MgO > 20 wt%) and mafic
-      (5.5 < MgO ≤ 20 wt%) GEOROC samples to cover both depleted and enriched
-      Martian mantle end-members.
+    - Compositions are drawn as 20% pure mafic (5.5 < MgO ≤ 20 wt%), 20% pure
+      ultramafic (MgO > 20 wt%), and 60% linear mixtures of a mafic and an
+      ultramafic end-member with mafic fraction α ~ U(0.1, 0.9). After oxide
+      conversion, compositions are normalized to total moles = 1, a random Fe
+      addition Δfe ~ U(0, 0.2) is applied, then renormalized to 24 total moles.
     - Entropy is drawn uniformly from [1.75, 2.9] J/g/K instead of being
       derived from a potential-temperature regression.
     - Each ``ad.in`` file includes a conductive lithosphere overlay: for
@@ -759,7 +816,7 @@ def prepare_HeFESTo_tree_Mars(directory: Path, GEOROC_DIR: Path, control_path: P
     N : int
         Total number of simulations to generate.
     """
-    
+
     directory = Path(directory)
     GEOROC_DIR = Path(GEOROC_DIR)
     control_path = Path(control_path)
@@ -772,32 +829,50 @@ def prepare_HeFESTo_tree_Mars(directory: Path, GEOROC_DIR: Path, control_path: P
     simulations_in_batch = 0
     batch_number = int(batch_dir.name.removeprefix('Batch'))
 
-    # Example: Generate ad.in files for a range of mantle potential temperatures and calcium contents
-    #Mps = 273 + 1200 + np.random.uniform(0, 1, N) * (1650 - 1200)  #  mantle potential temperatures
-    Ss = np.random.uniform(1.75, 2.9, N) 
-    P_lit = np.random.uniform(1.5, 9, N) # GPa, conductive regime lithosphere thicknesses
+    Ss = np.random.uniform(1.75, 2.85, N) # NOTE: THIS DOESN'T SEEM TO BE CALIBRATED CORRECTLY? PLOT YOUR PT PATHS!!!
+    P_lit = np.random.uniform(1.5, 9, N)  # GPa, conductive regime lithosphere thicknesses
     target_total_moles = 24.0
 
     georoc_df = pd.read_csv(GEOROC_DIR)
     mgo_col = 'MgO'
     with open(control_path, 'r', encoding='utf-8', errors='ignore') as handle:
         template_lines = [line.rstrip('\n') for line in handle]
-    ultramafic_df = georoc_df[pd.to_numeric(georoc_df[mgo_col], errors='coerce').fillna(0.0) > 20.0]
-    mafic_df = georoc_df[(pd.to_numeric(georoc_df[mgo_col], errors='coerce').fillna(0.0) > 5.5) & (pd.to_numeric(georoc_df[mgo_col], errors='coerce').fillna(0.0) <= 20.0)]
-    UMN = int(N*(3/5))
-    subset = pd.concat([ultramafic_df.sample(n=UMN, replace=True), mafic_df.sample(n=N-UMN, replace=True)]).sample(frac=1).reset_index(drop=True) # Multiply every element value by a random number between 0.95 and 1.05
-    logfo2 = np.random.uniform(-6, 3, N) # logfO2 relative to FMQ
-    logfe3_fe2 = (0.2*logfo2) - 1
-    fe3_fe2 = 10**logfe3_fe2
-    rand0 = 1#np.random.choice([0, 1], size=N, p=[0.1, 0.9]) # Randomly assign some simulations to have 0 Fe3+/FeT
-    fe3_fet_grid = rand0 *fe3_fe2 / (1 + fe3_fe2) # Convert to Fe3+/Fetotal
+
+    mgo_numeric = pd.to_numeric(georoc_df[mgo_col], errors='coerce').fillna(0.0)
+    ultramafic_df = georoc_df[mgo_numeric > 20.0]
+    mafic_df = georoc_df[(mgo_numeric > 5.5) & (mgo_numeric <= 20.0)]
+
+    # Composition split: 20% mafic, 20% ultramafic, 60% mixtures
+    N_mafic = int(round(N * 0.2))
+    N_ultra = int(round(N * 0.2))
+    N_mix = N - N_mafic - N_ultra
+
+    mafic_pure = mafic_df.sample(n=N_mafic, replace=True).reset_index(drop=True)
+    ultra_pure = ultramafic_df.sample(n=N_ultra, replace=True).reset_index(drop=True)
+    mix_mafic = mafic_df.sample(n=N_mix, replace=True).reset_index(drop=True)
+    mix_ultra = ultramafic_df.sample(n=N_mix, replace=True).reset_index(drop=True)
+    mix_alphas = np.random.uniform(0.1, 0.9, N_mix)  # mafic fraction in mixture
+
+    # Build spec list: (row_a, row_b_or_None, alpha_or_None)
+    specs: List[Tuple] = (
+        [(row, None, None) for _, row in mafic_pure.iterrows()] +
+        [(row, None, None) for _, row in ultra_pure.iterrows()] +
+        [(mix_mafic.iloc[i], mix_ultra.iloc[i], mix_alphas[i]) for i in range(N_mix)]
+    )
+    order = rng.permutation(N)
+    specs = [specs[i] for i in order]
+
+    logfo2 = np.random.uniform(-6, 3, N)  # logfO2 relative to FMQ
+    logfe3_fe2 = (0.2 * logfo2) - 1
+    fe3_fe2 = 10 ** logfe3_fe2
+    fe3_fet_grid = fe3_fe2 / (1 + fe3_fe2)  # Convert to Fe3+/Fetotal
     element_keys = np.array(['Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O'])
     P0s = np.random.uniform(0, 0.5, size=N)
-    run_code = [[float(P0), float(P0 + 25.5), 50, 0, 0, 0, -1, 0, 0, 0, 0] for P0 in P0s] # ad.in files made downstream
+    run_code = [[float(P0), float(P0 + 25.5), 50, 0, 0, 0, -1, 0, 0, 0, 0] for P0 in P0s]  # ad.in files made downstream
     element_rows: List[List[float]] = []
     wts: List[str] = []
 
-    for sim_idx, (_, row) in enumerate(subset.iterrows()):
+    for sim_idx, spec in enumerate(specs):
         if simulations_in_batch >= 1000:
             batch_number += 1
             batch_dir = _next_available_batch_dir(directory, batch_number)
@@ -809,14 +884,38 @@ def prepare_HeFESTo_tree_Mars(directory: Path, GEOROC_DIR: Path, control_path: P
         simulations_in_batch += 1
 
         ratio = float(fe3_fet_grid[sim_idx])
-        base_oxide_wt = _build_oxide_wt_from_row(row)
-        speciated_wt = _speciate_iron_and_normalize(base_oxide_wt, ratio)
-        wt_debug = ', '.join(f'{key}={value:.4f}' for key, value in speciated_wt.items())
+        row_a, row_b, alpha = spec
+
+        if row_b is None:
+            # Pure mafic or pure ultramafic
+            base_oxide_wt = _build_oxide_wt_from_row(row_a)
+            speciated_wt = _speciate_iron_and_normalize(base_oxide_wt, ratio)
+            element_moles = _oxide_wt_to_element_moles(speciated_wt)
+        else:
+            # Linear mixture: alpha = mafic fraction, (1-alpha) = ultramafic fraction
+            mafic_oxide = _build_oxide_wt_from_row(row_a)
+            ultra_oxide = _build_oxide_wt_from_row(row_b)
+            mafic_spec = _speciate_iron_and_normalize(mafic_oxide, ratio)
+            ultra_spec = _speciate_iron_and_normalize(ultra_oxide, ratio)
+            mafic_moles = _oxide_wt_to_element_moles(mafic_spec)
+            ultra_moles = _oxide_wt_to_element_moles(ultra_spec)
+            element_moles = {
+                key: float(alpha) * mafic_moles[key] + (1.0 - float(alpha)) * ultra_moles[key]
+                for key in mafic_moles
+            }
+
+        # Normalize to total moles = 1, add Fe, then renormalize to target
+        element_moles = _normalize_total_moles(element_moles, 1.0)
+        element_moles['Fe'] = element_moles.get('Fe', 0.0) + float(np.random.uniform(0.0, 0.1))
+        element_moles['Cr'] = element_moles.get('Cr', 0.0) + float(np.random.uniform(0.0, 0.01))
+        element_moles['Ca'] = element_moles.get('Ca', 0.0) - (float(np.random.uniform(0.0, 0.1))*(element_moles.get('Ca', 0.0)>0.1))
+        element_moles['Al'] = element_moles.get('Al', 0.0) - (float(np.random.uniform(0.0, 0.05))*(element_moles.get('Al', 0.0)>0.05))
+        element_moles = _normalize_total_moles(element_moles, target_total_moles)
+
+        wt_debug = ', '.join(f'{key}={value:.4f}' for key, value in element_moles.items())
         print(f'Sim {sim_idx+1} Fe3/FeT={ratio:.4f} -> {wt_debug}')
         wts.append(wt_debug)
 
-        element_moles = _oxide_wt_to_element_moles(speciated_wt)
-        element_moles = _normalize_total_moles(element_moles, target_total_moles)
         element_rows.append([element_moles[key] for key in element_keys])
 
         control_copy_path = sim_dir / 'control'
@@ -833,9 +932,143 @@ def prepare_HeFESTo_tree_Mars(directory: Path, GEOROC_DIR: Path, control_path: P
             P=np.linspace(run_code[sim_idx][0], run_code[sim_idx][1], run_code[sim_idx][2] + 2),
             S=Ss[sim_idx],
             P_lit=P_lit[sim_idx],
-            func=lambda S, P, _e=element_moles: get_T_mars(S=S, P=P, **_e),
+            #func=lambda S, P, _e=element_moles: get_T_mars(S=S, P=P, **_e),
+            func = get_T_mars_simple,
             out_path=sim_dir / 'ad.in',
             )
+
+def _find_all_control_files(workspace_dir: str) -> List[str]:
+    """Return sorted paths to every ``control`` file inside a SimulationN dir at any depth."""
+    paths: List[str] = []
+    for root, _dirs, files in os.walk(workspace_dir):
+        if _SIMULATION_DIR_PATTERN.match(os.path.basename(root)) and 'control' in files:
+            paths.append(os.path.join(root, 'control'))
+    return sorted(paths)
+
+
+def plot_bulk_compositions(
+    workspace_dir: str,
+    out_path: Optional[str] = None,
+    max_sims: Optional[int] = None,
+) -> pd.DataFrame:
+    """Parse bulk compositions from all control files in a workspace and plot them.
+
+    Walks ``workspace_dir`` recursively, finds every ``control`` file inside a
+    ``SimulationN`` (or ``model_NNNNNN``) subdirectory, and converts each to
+    oxide wt% and element moles via ``_parse_control_file`` +
+    ``_compute_bulk_from_elements``.  Produces a two-row matplotlib figure:
+
+    - **Row 1** – scatter plots of SiO2, FeO_T, CaO, and Al2O3 vs MgO (wt%).
+    - **Row 2** – histograms of the four major element mole counts
+      (Si, Mg, Fe, O) on the 24-mole scale used by HeFESTo.
+
+    Parameters
+    ----------
+    workspace_dir : str
+        Root directory containing ``BatchNNNN/SimulationN`` or flat
+        ``SimulationN`` subdirectories.
+    out_path : str or None, default=None
+        If given, the figure is saved here instead of displayed interactively.
+    max_sims : int or None, default=None
+        Cap on simulations to read (useful for quick previews on large trees).
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per simulation with oxide wt% columns (SiO2, MgO, FeO, Fe2O3,
+        CaO, Al2O3, Na2O, Cr2O3, FeOT_wt) and element mole columns
+        (Si_mol, Mg_mol, Fe_mol, Ca_mol, Al_mol, Na_mol, Cr_mol, O_mol).
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        raise ImportError('matplotlib is required for plot_bulk_compositions()')
+
+    control_files = _find_all_control_files(workspace_dir)
+    if max_sims is not None:
+        control_files = control_files[:int(max_sims)]
+    if not control_files:
+        raise FileNotFoundError(f'No control files found under: {workspace_dir}')
+
+    records: List[Dict[str, float]] = []
+    n_failed = 0
+    for ctrl_path in control_files:
+        try:
+            element_moles, _ = _parse_control_file(ctrl_path)
+            bulk_wt, bulk_elements, _ = _compute_bulk_from_elements(element_moles)
+            record: Dict[str, float] = {f'{k}_mol': v for k, v in bulk_elements.items()}
+            record.update(bulk_wt)
+            records.append(record)
+        except Exception:
+            n_failed += 1
+
+    if not records:
+        raise ValueError('No valid compositions could be parsed from control files.')
+    if n_failed:
+        print(f'Warning: {n_failed} control file(s) could not be parsed and were skipped.')
+
+    df = pd.DataFrame(records).fillna(0.0)
+
+    # Normalize so cation moles (excluding O) sum to 1; O is rescaled by the same factor
+    mol_cols = [c for c in df.columns if c.endswith('_mol')]
+    cation_cols = [c for c in mol_cols if c != 'O_mol']
+    cation_totals = df[cation_cols].sum(axis=1)
+    df[mol_cols] = df[mol_cols].div(cation_totals, axis=0)
+
+    # Total-iron as FeO equivalent for scatter plots
+    df['FeOT_wt'] = (
+        df['FeO']
+        + df['Fe2O3'] * (2.0 * OXIDE_MOLAR_MASSES['FeO'] / OXIDE_MOLAR_MASSES['Fe2O3'])
+    )
+
+    # ── Figure ────────────────────────────────────────────────────────────────
+    fig, axes = plt.subplots(3, 4, figsize=(16, 12))
+    fig.suptitle(
+        f'Bulk compositions  —  {len(df):,} simulations  —  {workspace_dir}',
+        fontsize=10,
+    )
+
+    # Row 0: oxide scatter plots vs MgO
+    scatter_specs = [
+        ('SiO2',    'SiO2 (wt%)'),
+        ('FeOT_wt', 'FeO_T (wt%)'),
+        ('CaO',     'CaO (wt%)'),
+        ('Al2O3',   'Al2O3 (wt%)'),
+    ]
+    mgo = df['MgO']
+    for ax, (col, ylabel) in zip(axes[0], scatter_specs):
+        ax.scatter(mgo, df[col], s=3, alpha=0.35, color='steelblue', rasterized=True)
+        ax.set_xlabel('MgO (wt%)')
+        ax.set_ylabel(ylabel)
+        ax.grid(True, linewidth=0.4, alpha=0.5)
+
+    # Rows 1–2: one histogram per element (all 8, normalized to sum=1)
+    hist_specs = [
+        ('Si_mol', 'Si (cation mol fraction)'),
+        ('Mg_mol', 'Mg (cation mol fraction)'),
+        ('Fe_mol', 'Fe (cation mol fraction)'),
+        ('Ca_mol', 'Ca (cation mol fraction)'),
+        ('Al_mol', 'Al (cation mol fraction)'),
+        ('Na_mol', 'Na (cation mol fraction)'),
+        ('Cr_mol', 'Cr (cation mol fraction)'),
+        ('O_mol',  'O (mol / cation mol)'),
+    ]
+    for ax, (col, xlabel) in zip(axes[1:].flat, hist_specs):
+        ax.hist(df[col], bins=50, color='steelblue', alpha=0.75, edgecolor='none')
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel('Count')
+        ax.grid(True, linewidth=0.4, alpha=0.5, axis='y')
+
+    fig.tight_layout()
+
+    if out_path is not None:
+        fig.savefig(out_path, dpi=150, bbox_inches='tight')
+        print(f'Figure saved to {out_path}')
+    else:
+        plt.show()
+
+    return df
+
 
 def prepare_HeFESTo_tree_from_phase_changes(directory: Path, phase_path: Path, CONTROL_DIR: Path) -> None:
     """

@@ -1,0 +1,29 @@
+Temperature regression: T = f(S, bulk composition elements)
+CSV: data\MELTStables\HeFESTo\JiChingSims.csv
+Rows used: 209533
+R^2: 0.994563719252
+
+Model: T = b0 + b_S*S + b_S^2*S^2 + b_P*P + b_P^2*P^2 + b_Si*Si + b_Si^2*Si^2 + b_Mg*Mg + b_Mg^2*Mg^2 + b_Fe*Fe + b_Fe^2*Fe^2 + b_Ca*Ca + b_Ca^2*Ca^2 + b_Al*Al + b_Al^2*Al^2 + b_Na*Na + b_Na^2*Na^2 + b_Cr*Cr + b_Cr^2*Cr^2 + b_O*O + b_O^2*O^2
+
+Coefficients:
+  b0  (intercept) = 593.680241679
+  b_S          = -558.026770511
+  b_S^2        = 390.146044385
+  b_P          = 10.3784679325
+  b_P^2        = 0.057120662751
+  b_Si         = -126938.323821
+  b_Si^2       = -0.139742790745
+  b_Mg         = -63524.7817918
+  b_Mg^2       = 4.69886111004
+  b_Fe         = -63412.2485045
+  b_Fe^2       = -2.25455500896
+  b_Ca         = -63451.8496035
+  b_Ca^2       = 10.455690423
+  b_Al         = -95254.4833063
+  b_Al^2       = 4.72020019416
+  b_Na         = -31860.7674326
+  b_Na^2       = 111.29359548
+  b_Cr         = -95159.4709589
+  b_Cr^2       = -147.426691335
+  b_O          = 63481.915449
+  b_O^2        = -0.368573665182
