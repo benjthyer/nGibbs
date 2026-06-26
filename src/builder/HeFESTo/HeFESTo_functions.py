@@ -236,7 +236,7 @@ def make_T_from_coef_file(coef_path: str):
 
     return get_T
 
-get_T_mars = make_T_from_coef_file("src/builder/HeFESTo/T_from_S_X_coefs_R2_0p99456.txt")
+#get_T_mars = make_T_from_coef_file("src/builder/HeFESTo/T_from_S_X_coefs_R2_0p99456.txt")
 
 def _clean_workspace(workspace_dir: str) -> None:
     if os.path.exists(workspace_dir):

@@ -37,7 +37,7 @@ Build HeFESTo calls for resampling
 python $HOME/HeFESTo/nGibbs/scripts/prepare_hefesto_tree_from_phase_changes.py     
     --directory /resnick/groups/asimowgroup/thyer/HeFESTo/Training061126_phasechanges/
     --phase-path /resnick/groups/asimowgroup/thyer/HeFESTo/Mars_profiles_phasechanges.csv
-    --control-path $HOME/HeFESTo/nGibbs/src/builder/alphamelts/batch/shallowHeFESTo     
+    --control-dir $HOME/HeFESTo/nGibbs/src/builder/alphamelts/batch/shallowHeFESTo     
     --n 3
 
     parser.add_argument(

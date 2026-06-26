@@ -28,7 +28,7 @@ import shutil
     
 DATA_DIR = REPO_ROOT / 'data'
 
-alphaMELTSLocation = os.path.join(REPO_ROOT, 'src', 'builder', 'alphamelts', 'engine', 'linux_alphamelts_1-9', 'run_alphamelts.command')
+alphaMELTSLocation = os.path.join(REPO_ROOT, 'src', 'builder', 'alphamelts', 'engine', 'linux_alphamelts_1_9', 'run_alphamelts.command')
 settings_location = os.path.join(REPO_ROOT, 'src', 'builder', 'alphamelts', 'batch', 'phMELTS_settings.txt')
 
 # Location to where to put the computed files.
@@ -45,7 +45,7 @@ import time
 time.sleep(8000)"""
 
 calctype = 'Decompression' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-input_date = 'Feb16UM'
+input_date = 'June25'
 
 input_ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
 MELTSmodels = ['ph']#, '102'] # MELTS models to run. To add: MAGEmin
@@ -58,7 +58,7 @@ mafics_to_run = total_to_run*(0.20) #int(total_to_run * 0.4)
 full_to_run = total_to_run*(0.10) #int(total_to_run * 0.1)
 
 input_liquid_fractions = [15]#, 100] # Make above 100 to allow for superliquidus
-simcycle = 50 # How many simulations to run per iteration
+simcycle = 8 # How many simulations to run per iteration
 
 #storage_directory = f'/mnt/d/Workspace/{MELTSModel}Datasets/'
 
