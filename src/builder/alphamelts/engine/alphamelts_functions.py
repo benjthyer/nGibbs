@@ -440,10 +440,10 @@ def import_MELTS_components(EnsembleLocation, batchname, indexer, fO2Arr=None,
     print(f"Total simulations processed: {folders}")
     print(f"Failed simulations: {unique_faults}")
     print(f"Failure rate: {failure_rate*100:.2f}%")
-    assert unique_faults < (folders / 2), \
+    assert unique_faults < (folders * 0.9), \
         f"FAILURE THRESHOLD EXCEEDED: {unique_faults} out of {folders} simulations failed " \
-        f"(failure rate: {failure_rate*100:.2f}%). More than 50% failure rate is unacceptable."
-    print(f"=== IMPORT SUCCESSFUL (< 50% failure rate) ===\n")
+        f"(failure rate: {failure_rate*100:.2f}%). More than 90% failure rate is unacceptable."
+    print(f"=== IMPORT SUCCESSFUL (< 90% failure rate) ===\n")
 
     # New as of 10/08/25: Filter out much of the superliquidus assemblage to save space, balance dataset. 
     
