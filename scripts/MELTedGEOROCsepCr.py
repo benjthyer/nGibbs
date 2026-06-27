@@ -29,11 +29,12 @@ parser.add_argument('--no-validation', action='store_true', help='Skip validatio
 parser.add_argument('--mac', action='store_true', help='Use MAC engine (alphameltsMAC) instead of Linux alphamelts')
 parsed_args = parser.parse_args()
 
+from builder.alphamelts.engine import RandomMelters as RM
+
 if parsed_args.mac:
-    from builder.alphameltsMAC.engineMAC import RandomMelters20 as RM
+    #from builder.alphameltsMAC.engineMAC import RandomMelters20 as RM
     from builder.alphameltsMAC.engineMAC import alphamelts_functions as af
 else:
-    from builder.alphamelts.engine import RandomMelters as RM
     from builder.alphamelts.engine import alphamelts_functions as af
 
 DATA_DIR = REPO_ROOT / 'data'
