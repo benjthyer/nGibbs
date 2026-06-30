@@ -1823,6 +1823,8 @@ class MELTSAPI:
 # HeFESTo Model paths - resolved relative to this file's location
 _this_file_dir = Path(__file__).parent
 _models_dir = _this_file_dir / "TrainedModels" / "HeFESTo_Adiabats"
+_HeFESTo_Mars_dir = _this_file_dir / "TrainedModels" / "HeFESTo_Mars"
+
 
 adiabat_NPT_path = _models_dir / "HeFESTo_adiabats_NPT.tar"
 adiabat_NPS_path = _models_dir / "HeFESTo_adiabats_NPS.tar"
@@ -1848,6 +1850,20 @@ HeFESToEmulatorCPU = HeFESToAPI(
     isentropic_model_path=str(adiabat_NPS_path),
     temperature_model_path=str(adiabat_TfromS_path),
     device='cpu'
+)
+
+HeFESToMarsEmulatorCPU = HeFESToAPI(
+    isothermal_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_isothermal.tar"),
+    isentropic_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_isentropic.tar"),
+    temperature_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Temp.pt"),
+    device='cpu'
+)
+
+HeFESToMarsEmulatorGPU = HeFESToAPI(
+    isothermal_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_isothermal.tar"),
+    isentropic_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_isentropic.tar"),
+    temperature_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Temp.pt"),
+    device='cuda'
 )
 
 MELTS102EmulatorCPU = MELTSAPI(
