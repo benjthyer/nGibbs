@@ -161,7 +161,7 @@ tune5: # Initialize mole heads
 
 
 train1: # Increase number for another layer of training
-  strategy: upper # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
+  strategy: finetune # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
   batch_size: 1024 
   epochs: 70
   learning_rate: 5E-4

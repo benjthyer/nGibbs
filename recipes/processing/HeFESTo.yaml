@@ -6,12 +6,12 @@
 # ============================================================================
 dataset: #EXPECTED FILENAME: "nMELTS/data/MELTStables/{MELTSModel}/{'MELTS' if MELTSModel in ['102', '110', '120', 'p'] else ''}{MELTSModel}_<Train/Valid>set{Date}{Mode}"
   MELTSModel: 'HeFESTo'          # MELTS model version: '102', '110', '120', 'p'. Affects which directory dataproducts are read from and written to
-  Date: '061426'               # Date identifier for dataset naming
-  Mode: 'mars_profiles'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
+  Date: '062426'               # Date identifier for dataset naming
+  Mode: 'Mars'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
-outname: 'HeFESTo_Mars_Profiles_NPT'                  # Base name for output folder (without extension). Auto-Generated if blank
+outname: 'HeFESTo_Mars_Profiles_NPT_noJCCValid'                  # Base name for output folder (without extension). Auto-Generated if blank
 
 
 # ============================================================================

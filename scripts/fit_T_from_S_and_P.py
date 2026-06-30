@@ -25,7 +25,7 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
 
-KEEP_RANGE = [1.75, 2.9]  # S range used for fitting
+KEEP_RANGE = [0,10] #[1.75, 2.9]  # S range used for fitting
 
 
 def _find_column(df: pd.DataFrame, *, exact: list[str], prefixes: list[str], label: str) -> str:

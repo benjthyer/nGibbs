@@ -206,7 +206,7 @@ train1: # Increase number for another layer of training
       weight: 100
     moles:
       type: huber
-      weight: 50
+      weight: 100
     bulk:
       type: symmetric_rel_l2
       weight: 0
@@ -238,10 +238,10 @@ tune6: # No dropout for models with bulk loss (breaks it for some reason), so le
       weight: 100
     moles:
       type: huber
-      weight: 50
+      weight: 100
     bulk:
       type: symmetric_rel_l2
-      weight: 1000
+      weight: 100
   which_heads_to_freeze: ['encoder', 'sat_head']
 
 
@@ -265,10 +265,10 @@ train5: # Increase number for another layer of training
       weight: 100
     moles:
       type: huber
-      weight: 50
+      weight: 100
     bulk:
       type: symmetric_rel_l2
-      weight: 1000
+      weight: 100
   which_heads_to_freeze: ['encoder', 'sat_head'] #['encoder', 'sat_head', 'middleBrain', 'chem_heads']
   binweights:
     akimotoite: 10
@@ -298,10 +298,10 @@ train6: # Increase number for another layer of training
       weight: 100
     moles:
       type: huber
-      weight: 50
+      weight: 100
     bulk:
       type: symmetric_rel_l2
-      weight: 1000
+      weight: 100
   which_heads_to_freeze: [] # ['encoder', 'sat_head'] #['encoder', 'sat_head', 'middleBrain', 'chem_heads']
   binweights:
     akimotoite: 10
@@ -312,23 +312,50 @@ train6: # Increase number for another layer of training
 
 tune7:
   #best_loss: 7.45870
-  strategy: lower # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
+  strategy: finetune # Train encoder and saturation predictor, all else frozen. 
   sweep: true
   batch_size: 1024 
   epochs: 15
+  loss_config:
+    binary:
+      weight: 0
+    chemistry:
+      type: symmetric_rel_l2
+      weight: 100
+    moles:
+      type: huber
+      weight: 100
+    bulk:
+      type: symmetric_rel_l2
+      weight: 100
   learning_rate: 5E-4
   early_stopping_patience: 2
   max_N: 5E5
+  which_heads_to_freeze: ['encoder','middleBrain'] #['encoder', 'sat_head', 'middleBrain', 'chem_heads']
   tune_params: # These go in the specified order
     lowWD: [0, 1e-4, 1e-3, 1e-2]
     noise: [0, 0.1, 0.05, 0.01]
+  
+
 
 train7: # Increase number for another layer of training
-  strategy: lower # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
+  strategy: finetune # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
   batch_size: 1024 
   epochs: 70
   learning_rate: 5E-4
   early_stopping_patience: 25
+  loss_config:
+    binary:
+      weight: 0
+    chemistry:
+      type: symmetric_rel_l2
+      weight: 100
+    moles:
+      type: huber
+      weight: 100
+    bulk:
+      type: symmetric_rel_l2
+      weight: 100
   scheduler:
     type: CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
     args:
@@ -339,10 +366,13 @@ train7: # Increase number for another layer of training
     plagioclase: 10
     spinel: 4
     stishovite: 5
+  which_heads_to_freeze: ['encoder','middleBrain']
+
 
 
 tune8: # No dropout for models with bulk loss (breaks it for some reason), so let's investigate other regularization options
   strategy: upper # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
+  sweep: true
   batch_size: 1024 
   epochs: 7
   learning_rate: 5E-4
@@ -361,10 +391,10 @@ tune8: # No dropout for models with bulk loss (breaks it for some reason), so le
       weight: 100
     moles:
       type: huber
-      weight: 50
+      weight: 100
     bulk:
       type: symmetric_rel_l2
-      weight: 1000
+      weight: 100
   which_heads_to_freeze: ['encoder', 'sat_head']
 
   
@@ -389,10 +419,10 @@ train8: # Increase number for another layer of training
       weight: 100
     moles:
       type: huber
-      weight: 50
+      weight: 100
     bulk:
       type: symmetric_rel_l2
-      weight: 1000
+      weight: 100
   which_heads_to_freeze: [] # ['encoder', 'sat_head'] #['encoder', 'sat_head', 'middleBrain', 'chem_heads']
   binweights:
     akimotoite: 10
@@ -400,3 +430,31 @@ train8: # Increase number for another layer of training
     plagioclase: 10
     spinel: 4
     stishovite: 5
+
+  
+tune9: # No dropout for models with bulk loss (breaks it for some reason), so let's investigate other regularization options
+  strategy: finetune # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
+  sweep: true
+  batch_size: 1024 
+  epochs: 7
+  learning_rate: 5E-4
+  early_stopping_patience: 4
+  max_N: 5E5
+  tune_params:
+    lowWD: [0, 1e-6, 1e-5, 1e-4, 1e-3]
+    highWD: [0, 1e-4, 1e-3, 1e-2]
+    noise: [0, 0.005, 0.01, 0.02, 0.05]
+
+  loss_config:
+    binary:
+      weight: 1
+    chemistry:
+      type: symmetric_rel_l2
+      weight: 100
+    moles:
+      type: huber
+      weight: 100
+    bulk:
+      type: symmetric_rel_l2
+      weight: 100
+  

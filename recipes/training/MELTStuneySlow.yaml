@@ -161,7 +161,7 @@ tune5: # Initialize mole heads
 
 
 train1: # Increase number for another layer of training
-  strategy: upper # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
+  strategy: finetune # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
   batch_size: 1024 
   epochs: 70
   learning_rate: 5E-4
@@ -271,18 +271,21 @@ tune7:
   #best_loss: 7.45870
   strategy: lower # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
   sweep: true
+  which_heads_to_freeze: ['middleBrain', 'chem_heads', 'mole_head']
   batch_size: 1024 
   epochs: 15
   learning_rate: 5E-4
   early_stopping_patience: 2
   max_N: 5E5
   tune_params: # These go in the specified order
+  
     lowWD: [0, 1e-4, 1e-3, 1e-2]
     noise: [0, 0.1, 0.05, 0.01]
 
 train7: # Increase number for another layer of training
   strategy: lower # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
   batch_size: 1024 
+  which_heads_to_freeze: ['middleBrain', 'chem_heads', 'mole_head']
   epochs: 70
   learning_rate: 5E-4
   early_stopping_patience: 20

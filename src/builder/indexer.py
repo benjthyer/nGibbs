@@ -555,23 +555,27 @@ class DatasetIndexer:
                 f"Column counts must match."
             )
         
-        # Calculate columnwise sums
+        # Calculate columnwise sums of absolute values (for composition columns).
+        # Abundance columns use a separate positive-value check so that tiny negative
+        # solver artifacts (HeFESTo outputs slightly negative moles for absent phases)
+        # don't make a column appear non-zero when the phase is truly absent.
         column_sums = np.sum(np.abs(data_matrix), axis=0)
-        
+        column_has_positive = np.any(data_matrix > 0, axis=0)
+
         # Track newly excluded components for reporting
         newly_excluded = []
-        
+
         # Iterate through all phases and their components
         for phase, components_dict in self.MELTS_indices.items():
             # Skip already-excluded phases
             if phase in self.EXCLUDED_PHASES:
                 continue
-            
+
             for component, col_idx in components_dict.items():
                 # Skip already-excluded components for this phase
                 if component in self.EXCLUDED_COMPONENTS_BY_PHASE.get(phase, set()):
                     continue
-                
+
                 # Skip state variables (they may legitimately be zero), except mass/moles columns
                 # which indicate phase abundance (catching both MELTS 'mass (gm)' and
                 # HeFESTo 'total (moles)' as dead-phase sentinels).
@@ -579,8 +583,18 @@ class DatasetIndexer:
                 if component in self.STATE_VARIABLES and not is_abundance_col:
                     continue
 
-                # Check if this component's sum is zero
-                if column_sums[col_idx] <= tolerance:
+                # For abundance columns in HeFESTo, use the same "> 0" presence test
+                # as filter_min_phase_proportion.  HeFESTo's solver emits tiny negative
+                # mole values for absent phases; abs-sum would make those columns appear
+                # non-zero and prevent the phase from being excluded.  MELTS keeps the
+                # abs-sum path because its stoichiometric-basis components can be
+                # legitimately negative, so "> 0" would misclassify them.
+                if is_abundance_col and self.MODEL == 'HeFESTo':
+                    is_absent = not column_has_positive[col_idx]
+                else:
+                    is_absent = column_sums[col_idx] <= tolerance
+
+                if is_absent:
                     if is_abundance_col:
                         self.EXCLUDED_PHASES.add(phase) # Exclude phases if their mass/moles is zero
                         newly_excluded.append(f"{phase} (abundance zero)")

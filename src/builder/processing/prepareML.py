@@ -299,8 +299,13 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
                     balance_function(TrainMELTS)
 
                 # Exclude exceptionally low-abundance phases, these won't be learned well and may add noise to training. Configured in YAML.
+                # Run iteratively: deleting rows for rare phases can push co-occurring borderline phases below the threshold.
                 if min_phase_cfg != 0:
-                    TrainMELTS.filter_min_phase_proportion(min_proportion=min_phase_cfg) # Remove samples where any phase is below the minimum proportion threshold after upsampling
+                    while True:
+                        before = TrainMELTS.table.shape[0]
+                        TrainMELTS.filter_min_phase_proportion(min_proportion=min_phase_cfg)
+                        if TrainMELTS.table.shape[0] == before:
+                            break
 
             TrainMELTS.indexer.table_update(
                 TrainMELTS.table,

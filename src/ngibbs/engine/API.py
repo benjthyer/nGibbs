@@ -41,6 +41,17 @@ from NN import _load_temperature_model
 from emulator import NN_MELTS
 from utils.math_utils import Normalizer, get_T as _reference_adiabat
 
+
+def _eval_adiabat_poly(P: np.ndarray, S, coefs: dict) -> np.ndarray:
+    """Evaluate T(K) = b0 + b_S*S + b_S2*S^2 + b_P*P + b_P2*P^2 (P in GPa)."""
+    return (
+        coefs["b0"]
+        + coefs["b_S"] * S
+        + coefs["b_S2"] * S ** 2
+        + coefs["b_P"] * P
+        + coefs["b_P2"] * P ** 2
+    ).astype(np.float32)
+
 aliases = { # 
     'T': 'T(K)(System_main)',
     'T(K)': 'T(K)(System_main)',
@@ -1312,12 +1323,16 @@ class EmulatorAPI:
         # Compute reference adiabat if checkpoint carries P/S indices
         p_idx = self.temperature_payload.get("p_feature_idx")
         s_idx = self.temperature_payload.get("s_feature_idx")
+        adiabat_coefs = self.temperature_payload.get("adiabat_coefs")
         if p_idx is not None and s_idx is not None:
             P_raw = features[:, p_idx].detach().cpu().numpy().astype(np.float64)
             S_raw = features[:, s_idx].detach().cpu().numpy().astype(np.float64)
             if self.modelType == "MELTSAPI":
                 P_raw = P_raw / 10000.0  # bars → GPa
-            T_ref_K = np.asarray(_reference_adiabat(P_raw, S_raw), dtype=np.float32)
+            if adiabat_coefs is not None:
+                T_ref_K = _eval_adiabat_poly(P_raw, S_raw, adiabat_coefs)
+            else:
+                T_ref_K = np.asarray(_reference_adiabat(P_raw, S_raw), dtype=np.float32)
             if self.modelType == "MELTSAPI":
                 T_ref_K = T_ref_K - 273.15  # K → Celsius
             T_ref = torch.tensor(T_ref_K, dtype=torch.float32, device=self.device)

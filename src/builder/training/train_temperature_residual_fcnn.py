@@ -174,18 +174,62 @@ def _build_extended_input_normalizer_arrays(
     return mins, ranges
 
 
+def _parse_adiabat_coefs(path: Path) -> Dict[str, float]:
+    """Parse 5-parameter polynomial coefficients from a text file.
+
+    Expected format (lines of 'key = value'):
+        b0  (intercept) = <float>
+        b_S             = <float>
+        b_S^2           = <float>
+        b_P             = <float>
+        b_P^2           = <float>
+
+    Returns dict with keys b0, b_S, b_S2, b_P, b_P2.
+    Polynomial: T(K) = b0 + b_S*S + b_S2*S^2 + b_P*P + b_P2*P^2  (P in GPa).
+    """
+    key_map = {"b0": "b0", "b_s": "b_S", "b_s^2": "b_S2", "b_p": "b_P", "b_p^2": "b_P2"}
+    coefs: Dict[str, float] = {}
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            if "=" not in line:
+                continue
+            left, _, right = line.partition("=")
+            token = left.strip().split()[0].lower()
+            if token in key_map:
+                coefs[key_map[token]] = float(right.strip())
+    missing = {"b0", "b_S", "b_S2", "b_P", "b_P2"} - set(coefs)
+    if missing:
+        raise ValueError(f"Adiabat coefficients file '{path}' is missing keys: {missing}")
+    return coefs
+
+
+def _eval_adiabat_poly(P: np.ndarray, S, coefs: Dict[str, float]) -> np.ndarray:
+    """Evaluate T(K) = b0 + b_S*S + b_S2*S^2 + b_P*P + b_P2*P^2 (P in GPa)."""
+    return (
+        coefs["b0"]
+        + coefs["b_S"] * S
+        + coefs["b_S2"] * S ** 2
+        + coefs["b_P"] * P
+        + coefs["b_P2"] * P ** 2
+    ).astype(np.float32)
+
+
 def _compute_residuals(
     T_true: np.ndarray,
     features_raw: np.ndarray,
     p_idx: int,
     s_idx: int,
     is_melts: bool = False,
+    adiabat_coefs: Optional[Dict[str, float]] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Compute T_residual = T_true - reference_adiabat(P, S). Returns (residuals, T_ref).
 
     When is_melts=True, P is expected in bars and T in Celsius. P is converted to GPa
     before the adiabat call; the returned T_ref is in Celsius (K - 273.15) so the
     residual and all downstream targets remain in Celsius.
+
+    If adiabat_coefs is provided, the reference adiabat is the stored 5-parameter
+    polynomial rather than the built-in get_T function.
     """
     P = features_raw[:, p_idx].astype(np.float64)
     if is_melts:
@@ -193,7 +237,10 @@ def _compute_residuals(
         S = 2.5
     else:
         S = features_raw[:, s_idx].astype(np.float64)
-    T_ref_K = np.asarray(reference_adiabat(P, S), dtype=np.float32)
+    if adiabat_coefs is not None:
+        T_ref_K = _eval_adiabat_poly(P, S, adiabat_coefs)
+    else:
+        T_ref_K = np.asarray(reference_adiabat(P, S), dtype=np.float32)
     T_ref = (T_ref_K - 273.15) if is_melts else T_ref_K
     residuals = (T_true.reshape(-1) - T_ref).astype(np.float32)
     return residuals, T_ref
@@ -354,6 +401,7 @@ def _save_checkpoint(
     metrics: Dict,
     history: Dict,
     is_melts: bool = False,
+    adiabat_coefs: Optional[Dict[str, float]] = None,
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -371,6 +419,7 @@ def _save_checkpoint(
             "target_min_range": _normalizer_pairs(y_min, y_range),
             "input_kind": input_kind,
             "is_melts": is_melts,
+            "adiabat_coefs": adiabat_coefs,
             "metrics": metrics,
             "history": history,
         },
@@ -428,6 +477,18 @@ def main() -> None:
         default=Path("src") / "builder" / "training" / "temp_models",
     )
     parser.add_argument("--emulator-batch-size", type=int, default=DEFAULT_EMULATOR_BATCH_SIZE)
+    parser.add_argument(
+        "--adiabat-coefs",
+        type=Path,
+        default=None,
+        help=(
+            "Path to a text file containing 5 polynomial coefficients for the reference "
+            "adiabat T(K) = b0 + b_S*S + b_S2*S^2 + b_P*P + b_P2*P^2 (P in GPa). "
+            "When provided, these coefficients are used instead of the built-in get_T "
+            "function and are stored in the output .pt checkpoint. "
+            "Example: data/MELTStables/HeFESTo/T_from_S_P_coefs_R2_0p98602.txt"
+        ),
+    )
 
     args = parser.parse_args()
     if args.emulator_batch_size <= 0:
@@ -435,6 +496,13 @@ def main() -> None:
 
     set_seed(args.seed)
     hidden_dims = _parse_hidden_dims(args.hidden_dims)
+
+    adiabat_coefs: Optional[Dict[str, float]] = None
+    if args.adiabat_coefs is not None:
+        adiabat_coefs = _parse_adiabat_coefs(args.adiabat_coefs)
+        print(f"Using custom adiabat coefficients from {args.adiabat_coefs}: {adiabat_coefs}")
+    else:
+        print("Using built-in get_T as reference adiabat (no --adiabat-coefs provided)")
 
     if args.device == "cuda" and not torch.cuda.is_available():
         print("CUDA not available; falling back to CPU")
@@ -479,9 +547,9 @@ def main() -> None:
     T_test_true = np.asarray(test_bundle.free_outputs[:, temp_output_idx], dtype=np.float32)
     T_valid_true = np.asarray(valid_bundle.free_outputs[:, temp_output_idx], dtype=np.float32)
 
-    T_train_residuals, T_train_ref = _compute_residuals(T_train_true, train_feats, p_idx, s_idx, is_melts=args.isMELTS)
-    T_test_residuals, T_test_ref = _compute_residuals(T_test_true, test_feats, p_idx, s_idx, is_melts=args.isMELTS)
-    T_valid_residuals, T_valid_ref = _compute_residuals(T_valid_true, valid_feats, p_idx, s_idx, is_melts=args.isMELTS)
+    T_train_residuals, T_train_ref = _compute_residuals(T_train_true, train_feats, p_idx, s_idx, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs)
+    T_test_residuals, T_test_ref = _compute_residuals(T_test_true, test_feats, p_idx, s_idx, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs)
+    T_valid_residuals, T_valid_ref = _compute_residuals(T_valid_true, valid_feats, p_idx, s_idx, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs)
 
     print(
         f"Train residuals (K): min={T_train_residuals.min():.1f}, "
@@ -533,7 +601,7 @@ def main() -> None:
 
     def _make_saver(out_path, x_min_, x_range_, kind, metrics_ref):
         def saver(m, hist):
-            _save_checkpoint(out_path, m, args.temperature_label, p_idx, s_idx, x_min_, x_range_, y_min, y_range, kind, metrics_ref, hist, is_melts=args.isMELTS)
+            _save_checkpoint(out_path, m, args.temperature_label, p_idx, s_idx, x_min_, x_range_, y_min, y_range, kind, metrics_ref, hist, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs)
         return saver
 
     # Train model 1 (emulator-predicted path)
@@ -583,11 +651,11 @@ def main() -> None:
     model1_out_str = "Not Trained!"
     if not args.skip_1 and history_emulator is not None:
         model1_out = args.out_dir / f"temperature_residual_emulator_path_{bundle_basename}.pt"
-        _save_checkpoint(model1_out, model_emulator, args.temperature_label, p_idx, s_idx, x1_emul_min, x1_emul_range, y_min, y_range, "emulator_path", metrics["emulator_path"], history_emulator, is_melts=args.isMELTS)
+        _save_checkpoint(model1_out, model_emulator, args.temperature_label, p_idx, s_idx, x1_emul_min, x1_emul_range, y_min, y_range, "emulator_path", metrics["emulator_path"], history_emulator, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs)
         model1_out_str = str(model1_out)
 
     model2_out = args.out_dir / f"temperature_residual_gt_path_{bundle_basename}.pt"
-    _save_checkpoint(model2_out, model_gt, args.temperature_label, p_idx, s_idx, x2_min, x2_range, y_min, y_range, "gt_path", metrics["gt_path"], history_gt, is_melts=args.isMELTS)
+    _save_checkpoint(model2_out, model_gt, args.temperature_label, p_idx, s_idx, x2_min, x2_range, y_min, y_range, "gt_path", metrics["gt_path"], history_gt, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs)
 
     metrics_path = args.out_dir / f"temperature_residual_metrics_{bundle_basename}.json"
     with open(metrics_path, "w", encoding="utf-8") as f:
