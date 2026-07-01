@@ -1,0 +1,20 @@
+{
+  "bundle": "data\\MLready\\HeFESTo\\HeFESTo_Mars_Profiles_NPS_noJCCValid_Valid.tar.gz",
+  "n_samples": 65536,
+  "temperature_label": "T(K)(System_main)",
+  "results": [
+    {
+      "checkpoint": "src\\ngibbs\\engine\\TrainedModels\\HeFESTo_Mars\\HeFESTo_Mars_Temp.pt",
+      "input_kind": "emulator_path",
+      "temperature_label": "T(K)(System_main)",
+      "n_samples": 65536,
+      "mae_residual_K": 1547.1146240234375,
+      "mse_residual_K2": 4604667.0,
+      "mae_temperature_K": 1547.1146240234375,
+      "mse_temperature_K2": 4604667.0,
+      "T_true_mean": 1171.4842529296875,
+      "T_residual_true_mean": 1547.947509765625,
+      "T_residual_true_std": 1487.5213623046875
+    }
+  ]
+}

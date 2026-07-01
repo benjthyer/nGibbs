@@ -1855,14 +1855,14 @@ HeFESToEmulatorCPU = HeFESToAPI(
 HeFESToMarsEmulatorCPU = HeFESToAPI(
     isothermal_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_isothermal.tar"),
     isentropic_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_isentropic.tar"),
-    temperature_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Temp.pt"),
+    temperature_model_path=str(_HeFESTo_Mars_dir / "best_temperature_emulator_path_HeFESTo_Mars_Profiles_NPS_noJCCValid.pt"),#"HeFESTo_Mars_Temp.pt"),
     device='cpu'
 )
 
 HeFESToMarsEmulatorGPU = HeFESToAPI(
     isothermal_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_isothermal.tar"),
     isentropic_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_isentropic.tar"),
-    temperature_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Temp.pt"),
+    temperature_model_path=str(_HeFESTo_Mars_dir / "best_temperature_emulator_path_HeFESTo_Mars_Profiles_NPS_noJCCValid.pt"),#"HeFESTo_Mars_Temp.pt"),
     device='cuda'
 )
 

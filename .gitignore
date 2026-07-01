@@ -15,10 +15,10 @@ src/ngibbs/config/projections/compToOxV2_cationcharge.xlsx
 src/ngibbs/config/projections/PxSp_Comp_TransformV2_old.csv/
 
 #alphamelts installations
-src/alphamelts/engine/alphamelts-app-2.3.1-linux/alphamelts2/ # Users will not need this.
-src/alphamelts/engine/linux_alphamelts_1_9/
-/linux_alphamelts_1_9/
-/src/builder/alphamelts/engine/linux_alphamelts_1_9/
+#src/alphamelts/engine/alphamelts-app-2.3.1-linux/alphamelts2/ # Users will not need this. (But I do)
+#src/alphamelts/engine/linux_alphamelts_1_9/
+#/linux_alphamelts_1_9/
+#/src/builder/alphamelts/engine/linux_alphamelts_1_9/
 
 # Notes to Self
 DonnieMeetMinutes.md

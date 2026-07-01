@@ -107,6 +107,17 @@ def _normalize(x: np.ndarray, x_min: np.ndarray, x_range: np.ndarray) -> np.ndar
     return ((x - x_min) / safe_range).astype(np.float32)
 
 
+def _eval_adiabat_poly(P: np.ndarray, S: np.ndarray, coefs: Dict[str, float]) -> np.ndarray:
+    """Evaluate T(K) = b0 + b_S*S + b_S2*S^2 + b_P*P + b_P2*P^2 (P in GPa)."""
+    return (
+        coefs["b0"]
+        + coefs["b_S"] * S
+        + coefs["b_S2"] * S ** 2
+        + coefs["b_P"] * P
+        + coefs["b_P2"] * P ** 2
+    ).astype(np.float32)
+
+
 def _build_emulator_augmented(
     emulator: NN_MELTS,
     features_raw: np.ndarray,
@@ -196,10 +207,24 @@ def _validate_checkpoint(
     x_min, x_range = _extract_min_range(payload, "input")
     y_min, y_range = _extract_min_range(payload, "target")
 
-    # Reference adiabat
+    # Reference adiabat (must mirror train_temperature_residual_fcnn._compute_residuals
+    # exactly, including is_melts unit handling, or the reconstructed T_pred will be
+    # systematically biased by whatever the stored/default adiabat disagrees on).
+    adiabat_coefs: Optional[Dict[str, float]] = payload.get("adiabat_coefs")
+    is_melts: bool = bool(payload.get("is_melts", False))
     P = features_raw[:, p_idx].astype(np.float64)
-    S = features_raw[:, s_idx].astype(np.float64)
-    T_ref = np.asarray(reference_adiabat(P, S), dtype=np.float32)
+    if is_melts:
+        P = P / 10000.0  # bars → GPa
+        S = np.full_like(P, 2.5)
+    else:
+        S = features_raw[:, s_idx].astype(np.float64)
+    if adiabat_coefs is not None:
+        print(f"    Using checkpoint-stored adiabat_coefs: {adiabat_coefs}")
+        T_ref = _eval_adiabat_poly(P, S, adiabat_coefs)
+    else:
+        T_ref = np.asarray(reference_adiabat(P, S), dtype=np.float32)
+    if is_melts:
+        T_ref = T_ref - 273.15  # K → Celsius
     T_residual_true = (T_true - T_ref).astype(np.float32)
 
     # Build model input

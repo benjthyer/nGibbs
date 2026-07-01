@@ -446,6 +446,36 @@ def _load_checkpoint_state_dict(checkpoint_path: Path, device: torch.device) -> 
     raise TypeError(f"Unsupported checkpoint format: {checkpoint_path}")
 
 
+def _filter_by_entropy_range(
+    bundle,
+    features: np.ndarray,
+    T_true: np.ndarray,
+    s_idx: int,
+    s_min: Optional[float],
+    s_max: Optional[float],
+    label: str,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Keep only rows with S strictly inside (s_min, s_max).
+
+    Mirrors the KEEP_RANGE convention in scripts/fit_T_from_S_and_P.py (strict
+    inequalities, either bound optional). Filters features/T_true and, to keep all
+    per-row arrays aligned, also overwrites bundle.molar_labels and bundle.labels
+    in place. No-op when both bounds are None.
+    """
+    if s_min is None and s_max is None:
+        return features, T_true
+    S = features[:, s_idx]
+    mask = np.ones(S.shape[0], dtype=bool)
+    if s_min is not None:
+        mask &= S > s_min
+    if s_max is not None:
+        mask &= S < s_max
+    print(f"  {label}: keeping {int(mask.sum())}/{mask.shape[0]} rows with S in ({s_min}, {s_max})")
+    bundle.molar_labels = np.asarray(bundle.molar_labels, dtype=np.float32)[mask]
+    bundle.labels = np.asarray(bundle.labels, dtype=np.float32)[mask]
+    return features[mask], T_true[mask]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -461,7 +491,7 @@ def main() -> None:
         help=f"Name of temperature output in bundle freeOutputs (default: {TEMPERATURE_LABEL_DEFAULT})",
     )
     parser.add_argument("--hidden-dims", nargs="+", default=["256", "128", "64"])
-    parser.add_argument("--epochs", type=int, default=80)
+    parser.add_argument("--epochs", type=int, default=150)
     parser.add_argument("--batch-size", type=int, default=2048)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-6)
@@ -487,6 +517,25 @@ def main() -> None:
             "When provided, these coefficients are used instead of the built-in get_T "
             "function and are stored in the output .pt checkpoint. "
             "Example: data/MELTStables/HeFESTo/T_from_S_P_coefs_R2_0p98602.txt"
+        ),
+    )
+    parser.add_argument(
+        "--s-min",
+        type=float,
+        default=None,
+        help=(
+            "Minimum entropy S (J/g/K), exclusive. Rows with S <= s-min are dropped from "
+            "all bundle splits before training, mirroring the KEEP_RANGE convention in "
+            "scripts/fit_T_from_S_and_P.py. Default: no lower bound."
+        ),
+    )
+    parser.add_argument(
+        "--s-max",
+        type=float,
+        default=None,
+        help=(
+            "Maximum entropy S (J/g/K), exclusive. Rows with S >= s-max are dropped. "
+            "Default: no upper bound."
         ),
     )
 
@@ -546,6 +595,12 @@ def main() -> None:
     T_train_true = np.asarray(train_bundle.free_outputs[:, temp_output_idx], dtype=np.float32)
     T_test_true = np.asarray(test_bundle.free_outputs[:, temp_output_idx], dtype=np.float32)
     T_valid_true = np.asarray(valid_bundle.free_outputs[:, temp_output_idx], dtype=np.float32)
+
+    if args.s_min is not None or args.s_max is not None:
+        print(f"Filtering bundles to S in ({args.s_min}, {args.s_max}):")
+        train_feats, T_train_true = _filter_by_entropy_range(train_bundle, train_feats, T_train_true, s_idx, args.s_min, args.s_max, "train")
+        test_feats, T_test_true = _filter_by_entropy_range(test_bundle, test_feats, T_test_true, s_idx, args.s_min, args.s_max, "test")
+        valid_feats, T_valid_true = _filter_by_entropy_range(valid_bundle, valid_feats, T_valid_true, s_idx, args.s_min, args.s_max, "valid")
 
     T_train_residuals, T_train_ref = _compute_residuals(T_train_true, train_feats, p_idx, s_idx, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs)
     T_test_residuals, T_test_ref = _compute_residuals(T_test_true, test_feats, p_idx, s_idx, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs)
@@ -667,6 +722,8 @@ def main() -> None:
                 "p_feature_name": P_FEATURE_NAME,
                 "s_feature_name": S_FEATURE_NAME,
                 "is_melts": args.isMELTS,
+                "s_min": args.s_min,
+                "s_max": args.s_max,
                 "hidden_dims": hidden_dims,
                 "bundle_paths": {k: str(v) for k, v in bundle_paths.items()},
                 "normalizers": {
