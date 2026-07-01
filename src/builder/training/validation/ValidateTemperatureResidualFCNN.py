@@ -112,13 +112,17 @@ def _eval_adiabat_poly(
     S: np.ndarray,
     coefs: Dict[str, float],
     features: Optional[np.ndarray] = None,
-    comp_indices: Optional[Dict[str, int]] = None,
+    comp_indices: Optional[Dict] = None,
 ) -> np.ndarray:
     """Evaluate the reference adiabat polynomial (P in GPa, T in K).
 
     Base: T = b0 + b_S*S + b_S2*S^2 + b_P*P + b_P2*P^2
-    Compositional extension (when features and comp_indices provided):
-        T += Σ_i  b_Xi*X_i + b_Xi2*X_i^2
+    Compositional extension (when features and comp_indices provided): each
+    element term X_i is the per-row reconstruction of the fit's total=norm
+    formula-unit composition from bundle atom fractions. comp_indices carries
+    {elem_weighted, cation_cols, norm_total}; must mirror
+    train_temperature_residual_fcnn._resolve_comp_feature_indices exactly, or the
+    reconstructed T_pred is systematically biased.
     """
     T = (
         coefs["b0"]
@@ -128,8 +132,23 @@ def _eval_adiabat_poly(
         + coefs["b_P2"] * P ** 2
     )
     if comp_indices and features is not None:
-        for elem, col_idx in comp_indices.items():
-            X = features[:, col_idx]
+        elem_weighted = comp_indices["elem_weighted"]
+        cation_cols = comp_indices["cation_cols"]
+        norm_total = comp_indices["norm_total"]
+        n = features.shape[0]
+        raw = {}
+        for elem, weighted_cols in elem_weighted.items():
+            v = np.zeros(n, dtype=np.float64)
+            for col_idx, weight in weighted_cols:
+                v += weight * features[:, col_idx]
+            raw[elem] = v
+        cation_sum = np.zeros(n, dtype=np.float64)
+        for col_idx in cation_cols:
+            cation_sum += features[:, col_idx]
+        grand_total = cation_sum + raw["O"] if "O" in raw else cation_sum
+        scale = np.where(np.abs(grand_total) < 1e-12, 0.0, norm_total / grand_total)
+        for elem, v in raw.items():
+            X = scale * v
             if f"b_{elem}" in coefs:
                 T = T + coefs[f"b_{elem}"] * X
             if f"b_{elem}2" in coefs:

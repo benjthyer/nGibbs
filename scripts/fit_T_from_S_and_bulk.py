@@ -77,15 +77,14 @@ def fit_T_from_S_and_bulk(csv_path: Path, out_dir: Path) -> None:
 
     keep_cols = [t_col, s_col, p_col] + bulk_cols
     data = df[keep_cols].dropna()
+    in_range = (data[s_col] > KEEP_RANGE[0]) & (data[s_col] < KEEP_RANGE[1]) & (data[p_col] < 25)
+    data = data[in_range]
     n = len(data)
 
-    in_range = (data[s_col] > KEEP_RANGE[0]) & (data[s_col] < KEEP_RANGE[1])  & (data[p_col] < 25)
-    
-
-    t = data[t_col].to_numpy(dtype=float)[in_range]
-    s = data[s_col].to_numpy(dtype=float)[in_range]
-    p = data[p_col].to_numpy(dtype=float)[in_range]
-    bulk = [data[c].to_numpy(dtype=float)[in_range] for c in bulk_cols]
+    t = data[t_col].to_numpy(dtype=float)
+    s = data[s_col].to_numpy(dtype=float)
+    p = data[p_col].to_numpy(dtype=float)
+    bulk = [data[c].to_numpy(dtype=float) for c in bulk_cols]
 
     feature_parts = [s, s**2, p, p**2]
     feature_names = ["S", "S^2", "P", "P^2"]

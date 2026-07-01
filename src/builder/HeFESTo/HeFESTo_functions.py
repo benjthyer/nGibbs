@@ -1213,6 +1213,104 @@ def prepare_HeFESTo_tree_from_phase_changes(directory: Path, phase_path: Path, C
         #window_df.to_csv(boundary_copy_path, index=False)
 
 
+def prepare_HeFESTo_single_composition_directory(
+    directory: Path,
+    oxide_wt: Dict[str, float],
+    p_min: float,
+    p_max: float,
+    p_steps: int,
+    t_min: float,
+    t_max: float,
+    t_steps: int,
+    CONTROL_DIR: Path,
+    fe3_fet: float = 0.0,
+    target_total_moles: float = 24.0,
+) -> None:
+    """
+    Prepare a single directory for a HeFESTo run over one bulk composition and a P-T grid.
+
+    Modeled on ``prepare_HeFESTo_tree_from_phase_changes``, but takes a single
+    caller-supplied composition and pressure/temperature range directly
+    (instead of pairs of rows from a phase-boundary CSV), and writes the
+    ``control`` file straight into ``directory`` rather than a Batch/SimulationN
+    tree.
+
+    Parameters
+    ----------
+    directory : Path
+        Destination directory for the HeFESTo run. Created if missing; an
+        existing ``control`` file inside it is overwritten.
+    oxide_wt : dict
+        Bulk composition in wt% oxides with keys ``SiO2``, ``MgO``, ``FeO``
+        (total iron as FeO), ``CaO``, ``Al2O3``, ``Na2O``, ``Cr2O3``. Iron is
+        speciated into FeO/Fe2O3 using ``fe3_fet`` before conversion to
+        element moles, matching the 8-oxide HeFESTo system used elsewhere in
+        this module.
+    p_min, p_max : float
+        Pressure range in GPa.
+    p_steps : int
+        Number of pressure steps in the grid.
+    t_min, t_max : float
+        Temperature range in K.
+    t_steps : int
+        Number of temperature steps in the grid.
+    CONTROL_DIR : Path
+        Path to a control template file, or a directory containing
+        ``shallowHeFESTo``/``deepHeFESTo`` templates (selected by ``p_min``,
+        using the same 23 GPa cutoff as ``prepare_HeFESTo_tree_from_phase_changes``).
+    fe3_fet : float, optional
+        Target Fe3+/Fetotal molar ratio used to speciate the total iron in
+        ``oxide_wt['FeO']``. Defaults to 0.0 (all iron as Fe2+).
+    target_total_moles : float, optional
+        Total element moles the composition is rescaled to (default 24.0,
+        matching the other ``prepare_HeFESTo_tree_*`` functions).
+    """
+    directory = Path(directory)
+    CONTROL_DIR = Path(CONTROL_DIR)
+
+    if not CONTROL_DIR.exists():
+        raise FileNotFoundError(f'Control template not found: {CONTROL_DIR}')
+
+    if CONTROL_DIR.is_file() or CONTROL_DIR.name in ('shallowHeFESTo', 'deepHeFESTo'):
+        control_template_path = CONTROL_DIR
+    elif p_min < 23:
+        control_template_path = CONTROL_DIR / 'shallowHeFESTo'
+    else:
+        control_template_path = CONTROL_DIR / 'deepHeFESTo'
+
+    if not control_template_path.exists():
+        raise FileNotFoundError(f'Control template not found: {control_template_path}')
+
+    directory.mkdir(parents=True, exist_ok=True)
+
+    control_path = directory / 'control'
+    shutil.copy2(control_template_path, control_path)
+
+    with open(control_path, 'r', encoding='utf-8', errors='ignore') as handle:
+        template_lines = [line.rstrip('\n') for line in handle]
+
+    base_oxide_wt = dict(oxide_wt)
+    base_oxide_wt['Fe_total_moles'] = base_oxide_wt['FeO'] / OXIDE_MOLAR_MASSES['FeO']
+
+    speciated_wt = _speciate_iron_and_normalize(base_oxide_wt, fe3_fet)
+    element_moles = _oxide_wt_to_element_moles(speciated_wt)
+    element_moles = _normalize_total_moles(element_moles, target_total_moles)
+
+    run_code = [
+        float(p_min), float(p_max), int(p_steps),
+        float(t_min), float(t_max), int(t_steps),
+        0, 0, 0, 0, 0,
+    ]
+
+    control_lines = _build_control_lines(
+        template_lines=template_lines,
+        element_values=element_moles,
+        run_code=run_code,
+    )
+
+    with open(control_path, 'w', encoding='utf-8') as handle:
+        handle.write('\n'.join(control_lines) + '\n')
+
 
 def _safe_read_ws_table(path: str, skiprows: int = 0) -> pd.DataFrame:
     return pd.read_csv(path, sep=r'\s+', engine='python', skiprows=skiprows)

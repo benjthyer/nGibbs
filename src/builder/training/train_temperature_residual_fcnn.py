@@ -49,6 +49,19 @@ TEMPERATURE_LABEL_DEFAULT = "T(K)(System_main)"
 P_FEATURE_NAME = "P(GPa)(System_main)"
 S_FEATURE_NAME = "S(J/g/K)(System_main)"
 
+# Oxygen atoms contributed per cation atom in each end-member oxide.
+# Used to compute O when "O" appears in a compositional reference adiabat.
+_OXIDE_O_PER_CATION: Dict[str, float] = {
+    "Si": 2.0, "Ti": 2.0, "Al": 1.5,
+    "Fe": 1.0, "Fe3": 1.5,   # FeO, Fe2O3
+    "Mg": 1.0, "Ca": 1.0, "Mn": 1.0, "Ni": 1.0,
+    "Na": 0.5, "K": 0.5,     # Na2O, K2O
+    "Cr": 1.5,                # Cr2O3
+    "P": 2.5,                 # P2O5
+    "H": 0.5,                 # H2O
+    "C": 2.0,                 # CO2
+}
+
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
@@ -215,46 +228,122 @@ def _is_compositional(coefs: Dict[str, float]) -> bool:
 def _resolve_comp_feature_indices(
     coefs: Dict[str, float],
     feature_names: List[str],
-) -> Dict[str, int]:
-    """Map element names from coef keys to feature column indices.
+    el_keys: List[str],
+    norm: float = 24.0,
+) -> Dict[str, object]:
+    """Build the structure needed to evaluate a compositional reference adiabat.
 
-    For each linear-term key of the form ``b_X`` (where X is not S or P), extracts
-    the element symbol X and searches ``feature_names`` for the corresponding column.
-    Matching tries exact equality first, then a prefix match that requires X to be
-    followed by a non-alpha character (e.g. "Si" matches "Si(System_main)" but not
-    "SiO2").  Raises ValueError if any element cannot be resolved.
+    The regression (see scripts/fit_T_from_S_and_bulk.py) was fit on a bulk
+    composition expressed as atoms in a formula unit whose cations + oxygen sum
+    to `norm` (default 24), with total iron as a single "Fe" column and oxygen
+    "O" derived from oxide stoichiometry.
+
+    ML-bundle features instead store per-element atom FRACTIONS (all Elkeys sum
+    to 1) with iron split across signed "Fe"/"Fe3" columns and no oxygen column.
+    The two do not translate by a fixed per-element scale: the fit's total=norm
+    convention makes the effective scale composition-dependent. So rather than
+    baking a constant into each weight, we store the raw oxide stoichiometry and
+    recompute the scale per row in _eval_adiabat_poly:
+
+      1. total Fe   = Fe + Fe3
+      2. O          = Σ_i stoich_i · frac_i     (oxide O per cation; Fe→1, Fe3→1.5, …)
+      3. grand_total = Σ cation fractions + O
+      4. scale       = norm / grand_total
+      5. X_i = scale · (raw element),  X_O = scale · O
+
+    Feature layout is [featureNames | Elkeys], so element columns start at
+    offset = len(feature_names).
+
+    Returns a dict with:
+      elem_weighted: {elem: [(col_idx, stoich_weight), ...]}  raw weights (no norm)
+                     "Fe" → Fe + Fe3 columns; "O" → every Elkeys col × oxide stoich
+      cation_cols:   [col_idx, ...] every Elkeys column (used for the cation sum)
+      norm_total:    float target sum of (cations + O)
     """
     basic_keys = {"b0", "b_S", "b_S2", "b_P", "b_P2"}
     element_names: List[str] = []
     for key in coefs:
-        if key in basic_keys or key[:-1].endswith("2") or not key.startswith("b_"):
+        if key in basic_keys or key.endswith("2") or not key.startswith("b_"):
             continue
-        elem = key[2:]  # strip "b_" prefix
+        elem = key[2:]  # strip "b_" prefix, e.g. "b_Mg" → "Mg"
         if elem not in element_names:
             element_names.append(elem)
 
-    indices: Dict[str, int] = {}
-    for elem in element_names:
-        col_idx: Optional[int] = None
-        for i, fname in enumerate(feature_names):
-            if fname == elem:
-                col_idx = i
-                break
-        if col_idx is None:
-            for i, fname in enumerate(feature_names):
-                if fname.startswith(elem) and (
-                    len(fname) == len(elem) or not fname[len(elem)].isalpha()
-                ):
-                    col_idx = i
-                    break
-        if col_idx is None:
-            raise ValueError(
-                f"Cannot find feature column for element '{elem}' in featureNames. "
-                f"Checked: {feature_names}"
-            )
-        indices[elem] = col_idx
+    offset = len(feature_names)
+    cation_cols = [offset + i for i in range(len(el_keys))]
+    elem_weighted: Dict[str, List[Tuple[int, float]]] = {}
 
-    return indices
+    for elem in element_names:
+        if elem == "Fe":
+            weighted: List[Tuple[int, float]] = []
+            for fe_key in ("Fe", "Fe3"):
+                if fe_key in el_keys:
+                    weighted.append((offset + el_keys.index(fe_key), 1.0))
+            if not weighted:
+                raise ValueError(f"No Fe/Fe3 keys found in el_keys for 'Fe': {el_keys}")
+            elem_weighted["Fe"] = weighted
+        elif elem == "O":
+            weighted = []
+            for el in el_keys:
+                if el not in _OXIDE_O_PER_CATION:
+                    raise ValueError(
+                        f"No oxide oxygen stoichiometry known for element '{el}'; "
+                        f"cannot compute O for adiabat. Known: {sorted(_OXIDE_O_PER_CATION)}"
+                    )
+                weighted.append((offset + el_keys.index(el), _OXIDE_O_PER_CATION[el]))
+            elem_weighted["O"] = weighted
+        else:
+            if elem not in el_keys:
+                raise ValueError(
+                    f"Element '{elem}' from adiabat coefs not found in ml_indexer.Elkeys: {el_keys}"
+                )
+            elem_weighted[elem] = [(offset + el_keys.index(elem), 1.0)]
+
+    return {
+        "elem_weighted": elem_weighted,
+        "cation_cols": cation_cols,
+        "norm_total": float(norm),
+    }
+
+
+def _eval_compositional_terms(
+    T,
+    coefs: Dict[str, float],
+    features: np.ndarray,
+    comp_indices: Dict[str, object],
+):
+    """Add compositional adiabat terms to base T. See _resolve_comp_feature_indices.
+
+    Reconstructs the fit's total=norm formula-unit composition from bundle atom
+    fractions (per row) before applying b_Xi*X_i + b_Xi2*X_i^2 for each element.
+    """
+    elem_weighted: Dict[str, List[Tuple[int, float]]] = comp_indices["elem_weighted"]
+    cation_cols: List[int] = comp_indices["cation_cols"]
+    norm_total: float = comp_indices["norm_total"]
+    n = features.shape[0]
+
+    # Raw (fraction-scale) quantity per polynomial element term.
+    raw: Dict[str, np.ndarray] = {}
+    for elem, weighted_cols in elem_weighted.items():
+        v = np.zeros(n, dtype=np.float64)
+        for col_idx, weight in weighted_cols:
+            v += weight * features[:, col_idx]
+        raw[elem] = v
+
+    # grand_total = Σ cation fractions (+ O when oxygen is a fitted term).
+    cation_sum = np.zeros(n, dtype=np.float64)
+    for col_idx in cation_cols:
+        cation_sum += features[:, col_idx]
+    grand_total = cation_sum + raw["O"] if "O" in raw else cation_sum
+    scale = np.where(np.abs(grand_total) < 1e-12, 0.0, norm_total / grand_total)
+
+    for elem, v in raw.items():
+        X = scale * v
+        if f"b_{elem}" in coefs:
+            T = T + coefs[f"b_{elem}"] * X
+        if f"b_{elem}2" in coefs:
+            T = T + coefs[f"b_{elem}2"] * X ** 2
+    return T
 
 
 def _eval_adiabat_poly(
@@ -262,7 +351,7 @@ def _eval_adiabat_poly(
     S,
     coefs: Dict[str, float],
     features: Optional[np.ndarray] = None,
-    comp_indices: Optional[Dict[str, int]] = None,
+    comp_indices: Optional[Dict[str, object]] = None,
 ) -> np.ndarray:
     """Evaluate the reference adiabat polynomial (P in GPa, T in K).
 
@@ -270,7 +359,9 @@ def _eval_adiabat_poly(
         T = b0 + b_S*S + b_S2*S^2 + b_P*P + b_P2*P^2
 
     Compositional extension (when features and comp_indices are provided):
-        T += Σ_i  b_Xi*X_i + b_Xi2*X_i^2   for each element X_i in comp_indices
+        T += Σ_i  b_Xi*X_i + b_Xi2*X_i^2   for each element X_i, where X_i is the
+        per-row reconstruction of the fit's total=norm composition (see
+        _resolve_comp_feature_indices / _eval_compositional_terms).
     """
     T = (
         coefs["b0"]
@@ -280,14 +371,7 @@ def _eval_adiabat_poly(
         + coefs["b_P2"] * P ** 2
     )
     if comp_indices and features is not None:
-        for elem, col_idx in comp_indices.items():
-            X = features[:, col_idx]
-            lin_key = f"b_{elem}"
-            quad_key = f"b_{elem}2"
-            if lin_key in coefs:
-                T = T + coefs[lin_key] * X
-            if quad_key in coefs:
-                T = T + coefs[quad_key] * X ** 2
+        T = _eval_compositional_terms(T, coefs, features, comp_indices)
     return np.asarray(T, dtype=np.float32)
 
 
@@ -298,7 +382,7 @@ def _compute_residuals(
     s_idx: int,
     is_melts: bool = False,
     adiabat_coefs: Optional[Dict[str, float]] = None,
-    comp_indices: Optional[Dict[str, int]] = None,
+    comp_indices: Optional[Dict[str, object]] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Compute T_residual = T_true - reference_adiabat(P, S[, X...]). Returns (residuals, T_ref).
 
@@ -485,7 +569,7 @@ def _save_checkpoint(
     history: Dict,
     is_melts: bool = False,
     adiabat_coefs: Optional[Dict[str, float]] = None,
-    comp_indices: Optional[Dict[str, int]] = None,
+    comp_indices: Optional[Dict[str, object]] = None,
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -561,6 +645,80 @@ def _filter_by_entropy_range(
     return features[mask], T_true[mask]
 
 
+def _filter_by_residual_magnitude(
+    bundle,
+    features: np.ndarray,
+    T_true: np.ndarray,
+    residuals: np.ndarray,
+    T_ref: np.ndarray,
+    max_abs: Optional[float],
+    label: str,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
+    """Drop rows whose |residual| exceeds max_abs (K).
+
+    These extreme residuals are almost always reference-adiabat extrapolation
+    blowups at compositions far outside the polynomial's fit domain (e.g. very
+    high Cr, where the large b_Cr2 quadratic term dominates). A handful of such
+    rows otherwise stretch the output normalizer's range by an order of
+    magnitude, squashing the dynamic range of all the well-behaved targets.
+
+    Keeps features/T_true/residuals/T_ref aligned and mutates
+    bundle.molar_labels/labels in place. Returns the filtered arrays plus the
+    number of rows removed. No-op (removed=0) when max_abs is None.
+    """
+    if max_abs is None:
+        return features, T_true, residuals, T_ref, 0
+    mask = np.abs(residuals) <= max_abs
+    removed = int((~mask).sum())
+    print(f"  {label}: removing {removed}/{mask.shape[0]} rows with |residual| > {max_abs} K")
+    bundle.molar_labels = np.asarray(bundle.molar_labels, dtype=np.float32)[mask]
+    bundle.labels = np.asarray(bundle.labels, dtype=np.float32)[mask]
+    return features[mask], T_true[mask], residuals[mask], T_ref[mask], removed
+
+
+def _save_residual_histogram(
+    residuals: np.ndarray,
+    out_path: Path,
+    max_abs: Optional[float] = None,
+) -> None:
+    """Best-effort residual histogram (log-y full range + linear-y central zoom).
+
+    Never raises: if matplotlib is unavailable (e.g. headless training box), it
+    just prints a note and returns. Draws the max_abs cut lines when provided so
+    the effect of --max-abs-residual is visible.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception as exc:  # pragma: no cover - environment dependent
+        print(f"Skipping residual histogram (matplotlib unavailable: {exc})")
+        return
+    r = np.asarray(residuals, dtype=np.float64).reshape(-1)
+    if r.size == 0:
+        return
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+    axes[0].hist(r, bins=300, color="steelblue")
+    axes[0].set_yscale("log")
+    axes[0].set_xlabel("residual = T_true - T_ref (K)")
+    axes[0].set_ylabel("count (log)")
+    axes[0].set_title("Full range (log-y)")
+    lim = float(max_abs) if max_abs is not None else float(np.percentile(np.abs(r), 99.9))
+    if max_abs is not None:
+        for x in (max_abs, -max_abs):
+            axes[0].axvline(x, color="red", ls="--", lw=0.9)
+    central = r[np.abs(r) <= lim]
+    axes[1].hist(central, bins=200, color="seagreen")
+    axes[1].set_xlabel(f"residual (K), |r| <= {lim:.0f}")
+    axes[1].set_ylabel("count")
+    axes[1].set_title("Central region (linear-y)")
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=110)
+    plt.close(fig)
+    print(f"Saved residual histogram -> {out_path}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -623,6 +781,32 @@ def main() -> None:
             "Default: no upper bound."
         ),
     )
+    parser.add_argument(
+        "--max-abs-residual",
+        type=float,
+        default=None,
+        help=(
+            "Drop rows whose |T_true - reference_adiabat| exceeds this many K, after "
+            "residuals are computed, across all splits. These extreme residuals are "
+            "reference-adiabat extrapolation blowups at compositions outside the fit "
+            "domain (e.g. very high Cr) and otherwise dominate the target normalizer's "
+            "dynamic range. Typical values 100-500. Default: no residual filtering."
+        ),
+    )
+    parser.add_argument(
+        "--adiabat-elem-norm",
+        type=float,
+        default=24.0,
+        help=(
+            "Target sum of (cations + oxygen) atoms in the formula unit the "
+            "compositional reference adiabat was fit against. ML bundles store cation "
+            "atom fractions (all Elkeys sum to 1) with iron split across signed Fe/Fe3 "
+            "columns and no oxygen column; at eval time oxygen is derived and the whole "
+            "composition is rescaled per row so cations+O sum to this value (default: "
+            "24.0, matching scripts/fit_T_from_S_and_bulk.py). Only used when "
+            "--adiabat-coefs is a compositional file."
+        ),
+    )
 
     args = parser.parse_args()
     if args.emulator_batch_size <= 0:
@@ -672,10 +856,13 @@ def main() -> None:
     print(f"P feature index: {p_idx} ({P_FEATURE_NAME})")
     print(f"S feature index: {s_idx} ({S_FEATURE_NAME})")
 
-    comp_indices: Optional[Dict[str, int]] = None
+    el_keys = list(getattr(train_bundle.ml_indexer, "Elkeys", []) or [])
+    comp_indices: Optional[Dict[str, object]] = None
     if adiabat_coefs is not None and _is_compositional(adiabat_coefs):
-        comp_indices = _resolve_comp_feature_indices(adiabat_coefs, feature_names)
-        print(f"Compositional reference adiabat: element→column {comp_indices}")
+        comp_indices = _resolve_comp_feature_indices(adiabat_coefs, feature_names, el_keys, norm=args.adiabat_elem_norm)
+        print(f"Compositional reference adiabat (norm={args.adiabat_elem_norm}, Elkeys={el_keys}):")
+        print(f"  elem→weighted-cols: {comp_indices['elem_weighted']}")
+        print(f"  cation cols: {comp_indices['cation_cols']}")
 
     # Extract temperature targets and compute residuals against reference adiabat
     train_feats = np.asarray(train_bundle.features, dtype=np.float32)
@@ -696,6 +883,24 @@ def main() -> None:
     T_test_residuals, T_test_ref = _compute_residuals(T_test_true, test_feats, p_idx, s_idx, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices)
     T_valid_residuals, T_valid_ref = _compute_residuals(T_valid_true, valid_feats, p_idx, s_idx, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices)
 
+    # Histogram of the raw (pre-filter) train residuals so the extrapolation tail
+    # and the effect of --max-abs-residual are visible.
+    _save_residual_histogram(
+        T_train_residuals,
+        args.out_dir / f"residual_histogram_{args.bundle_stem.name}.png",
+        max_abs=args.max_abs_residual,
+    )
+
+    if args.max_abs_residual is not None:
+        print(f"Filtering rows with |residual| > {args.max_abs_residual} K:")
+        train_feats, T_train_true, T_train_residuals, T_train_ref, n_tr = _filter_by_residual_magnitude(
+            train_bundle, train_feats, T_train_true, T_train_residuals, T_train_ref, args.max_abs_residual, "train")
+        test_feats, T_test_true, T_test_residuals, T_test_ref, n_te = _filter_by_residual_magnitude(
+            test_bundle, test_feats, T_test_true, T_test_residuals, T_test_ref, args.max_abs_residual, "test")
+        valid_feats, T_valid_true, T_valid_residuals, T_valid_ref, n_va = _filter_by_residual_magnitude(
+            valid_bundle, valid_feats, T_valid_true, T_valid_residuals, T_valid_ref, args.max_abs_residual, "valid")
+        print(f"  total removed: {n_tr + n_te + n_va}")
+
     print(
         f"Train residuals (K): min={T_train_residuals.min():.1f}, "
         f"max={T_train_residuals.max():.1f}, mean={T_train_residuals.mean():.1f}"
@@ -712,7 +917,6 @@ def main() -> None:
 
     y_train_norm = _apply_normalizer(T_train_residuals.reshape(-1, 1), output_normalizer)
     y_test_norm = _apply_normalizer(T_test_residuals.reshape(-1, 1), output_normalizer)
-    y_valid_norm = _apply_normalizer(T_valid_residuals.reshape(-1, 1), output_normalizer)
 
     # Build model 1 inputs: normalized features + emulator-predicted moles + emulator-predicted intensive
     x1_train_base = _apply_normalizer(train_feats, feature_normalizer)

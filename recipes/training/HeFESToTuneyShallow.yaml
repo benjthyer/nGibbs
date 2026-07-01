@@ -3,6 +3,187 @@ tarname: HeFESTo_Mars_Profiles_NPS_NoJCCValid   #(Suffix: '_Train', '_Test', '_V
 warm_start: HeFESTo_Mars_Profiles_NPS_NoJCCValid_tune5 #pGeoDynamicsIsentropicNoCrApr20_train1 #None #pGeoDynamicsIsothemalNoCrMar11_train6 #None #pGeoDynPTNoCrBinaries #None # 102CrMoleLinear
 
 
+  
+encoderLayerUp: 1
+encoderLayerDown: 0
+middleLayerUp: 2
+middleLayerDown: 0
+low_regularization: 0.2batchnormdropout0.5
+high_regularization: 0.15batchnormdropout0.5
+activation_leak: 0.05
+lowWD: 1E-3
+highWD: 1E-4
+noise: 0.01 # 2%
+description: ""
+
+tune1: # find best encoder geometry 
+  #best_loss: 7.45870
+  strategy: lower # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
+  batch_size: 1024 
+  epochs: 5
+  #learning_rate: 1E-3
+  scheduler:
+  type: OneCycleLR #CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
+  args:
+    #T_max: 10 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
+    max_lr: 1E-3
+    epochs: 6
+    steps_per_epoch: 1960
+  early_stopping_patience: 2
+  #max_N: 5E5
+  tune_params: # These go in the specified order
+    encoderLayer: [[1,0], [1,1], [2,2], [3,2], [2,0], [2,1]]
+  binweights:
+    wadsleyite: 2
+    coesite: 2
+    nal-phase: 5
+    epsilon-iron: 5
+    nepheline: 5
+
+tune2: # initialize encoder and sat heads 
+  strategy: lower # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
+  sweep: true
+  batch_size: 1024 
+  epochs: 5
+  scheduler:
+  type: OneCycleLR #CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
+  args:
+    #T_max: 10 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
+    max_lr: 1E-3
+    epochs: 6
+    steps_per_epoch: 1960
+  early_stopping_patience: 2
+  #max_N: 5E5
+  inherit_loss: True # Whether to inherit loss config from previous training stage when tuning
+  tune_params: # These go in the specified order
+    lowWD: [0, 1e-4, 1e-3, 1e-2]
+    noise: [0, 0.1, 0.05, 0.01]
+    low_regularization: [0.3batchnormdropout0.5, 0.2batchnormdropout0.5, 0.1batchnormdropout0.5, 0.0batchnormdropout0.5]
+  binweights:
+    wadsleyite: 2
+    coesite: 2
+    nal-phase: 5
+    epsilon-iron: 5
+    nepheline: 5
+tune3: #Find best middle brain geometry
+  #best_loss: 8.6477
+  strategy: upper #
+  batch_size: 1024 
+  epochs: 5
+  #learning_rate: 1E-3
+  early_stopping_patience: 2
+
+  type: OneCycleLR #CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
+  args:
+    #T_max: 10 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
+    max_lr: 1E-3
+    epochs: 6
+    steps_per_epoch: 1960
+
+  tune_params: 
+    middleLayer: [[1,0], [1,1], [2,2], [3,2], [2,0], [2,1]]
+  
+  loss_config:
+      binary:
+        weight: 0
+      chemistry:
+        type: symmetric_rel_l2
+        weight: 100
+      moles:
+        type: huber
+        weight: 0
+      bulk:
+        type: symmetric_rel_l2
+        weight: 0
+  which_heads_to_freeze: ['encoder', 'sat_head', 'mole_head']
+  binweights:
+    wadsleyite: 2
+    nal-phase: 5
+
+tune4: # initialize middle brain and chemistry heads with best geometry from tune3
+  #best_loss: 8.6477
+  inherit_loss: True # Whether to inherit loss config from previous training stage when tuning
+  sweep: true
+  strategy: upper #
+  batch_size: 1024 
+  epochs: 5
+  #learning_rate: 1E-3
+  early_stopping_patience: 2
+
+  type: OneCycleLR #CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
+  args:
+    #T_max: 10 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
+    max_lr: 1E-3
+    epochs: 6
+    steps_per_epoch: 1960
+
+  tune_params: # These go in the specified order
+      highWD: [0, 1e-4, 1e-3, 1e-2]
+      noise: [0, 0.1, 0.05, 0.01]
+      high_regularization: [0.10batchnormdropout0.5, 0.2batchnormdropout0.5, 0.05batchnormdropout0.5]
+
+  
+  loss_config:
+      binary:
+        weight: 0
+      chemistry:
+        type: symmetric_rel_l2
+        weight: 100
+      moles:
+        type: huber
+        weight: 0
+      bulk:
+        type: symmetric_rel_l2
+        weight: 0
+  which_heads_to_freeze: ['encoder', 'sat_head', 'mole_head']
+  binweights:
+    wadsleyite: 2
+    coesite: 2
+    nal-phase: 5
+    epsilon-iron: 5
+    nepheline: 5
+  
+
+tune5: # Initialize mole heads
+  strategy: upper # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
+  sweep: true
+  batch_size: 1024 
+  epochs: 5
+  early_stopping_patience: 2
+  scheduler:
+    type: OneCycleLR #CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
+    args:
+      #T_max: 10 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
+      max_lr: 1E-3
+      epochs: 6
+      steps_per_epoch: 1960
+  tune_params: # These go in the specified order
+    highWD: [0, 1e-4, 1e-3, 1e-2]
+    noise: [0, 0.1, 0.05, 0.01]
+    high_regularization: [0.10batchnormdropout0.5, 0.2batchnormdropout0.5, 0.05batchnormdropout0.5]
+
+  #DictFilePath: pGeoDynPTCrMole
+  loss_config:
+    binary:
+      weight: 0
+    chemistry:
+      type: symmetric_rel_l2
+      weight: 0
+    moles:
+      type: huber
+      weight: 50
+    bulk:
+      type: symmetric_rel_l2
+      weight: 0
+  which_heads_to_freeze: ['encoder', 'sat_head', 'middleBrain']
+  binweights:
+    wadsleyite: 2
+    coesite: 2
+    nal-phase: 5
+    epsilon-iron: 5
+    nepheline: 5
+
+
 train1: # Increase number for another layer of training
   strategy: upper # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
   batch_size: 1024 
@@ -32,6 +213,7 @@ train1: # Increase number for another layer of training
     coesite: 2
     nal-phase: 5
     epsilon-iron: 5
+    nepheline: 5
 
 tune6: # No dropout for models with bulk loss (breaks it for some reason), so let's investigate other regularization options
   strategy: upper # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
@@ -90,6 +272,7 @@ train5: # Increase number for another layer of training
     coesite: 2
     nal-phase: 5
     epsilon-iron: 5
+    nepheline: 5
 
 train6: # Increase number for another layer of training
   strategy: finetune # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
@@ -121,6 +304,7 @@ train6: # Increase number for another layer of training
     coesite: 2
     nal-phase: 5
     epsilon-iron: 5
+    nepheline: 5
   
 
 
@@ -183,7 +367,7 @@ train8: # Increase number for another layer of training
     coesite: 2
     nal-phase: 5
     epsilon-iron: 5
-
+    nepheline: 5
   
 tune9: # No dropout for models with bulk loss (breaks it for some reason), so let's investigate other regularization options
   strategy: finetune # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency

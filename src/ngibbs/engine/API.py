@@ -52,8 +52,12 @@ def _eval_adiabat_poly(
     """Evaluate the reference adiabat polynomial (P in GPa, T in K).
 
     Base: T = b0 + b_S*S + b_S2*S^2 + b_P*P + b_P2*P^2
-    Compositional extension (when features and comp_indices provided):
-        T += Σ_i  b_Xi*X_i + b_Xi2*X_i^2
+    Compositional extension (when features and comp_indices provided): each
+    element term X_i is the per-row reconstruction of the fit's total=norm
+    formula-unit composition from bundle atom fractions. comp_indices carries
+    {elem_weighted, cation_cols, norm_total}; see
+    train_temperature_residual_fcnn._resolve_comp_feature_indices. Kept in exact
+    sync with that module so reconstructed T is not systematically biased.
     """
     T = (
         coefs["b0"]
@@ -63,8 +67,23 @@ def _eval_adiabat_poly(
         + coefs["b_P2"] * P ** 2
     )
     if comp_indices and features is not None:
-        for elem, col_idx in comp_indices.items():
-            X = features[:, col_idx]
+        elem_weighted = comp_indices["elem_weighted"]
+        cation_cols = comp_indices["cation_cols"]
+        norm_total = comp_indices["norm_total"]
+        n = features.shape[0]
+        raw = {}
+        for elem, weighted_cols in elem_weighted.items():
+            v = np.zeros(n, dtype=np.float64)
+            for col_idx, weight in weighted_cols:
+                v += weight * features[:, col_idx]
+            raw[elem] = v
+        cation_sum = np.zeros(n, dtype=np.float64)
+        for col_idx in cation_cols:
+            cation_sum += features[:, col_idx]
+        grand_total = cation_sum + raw["O"] if "O" in raw else cation_sum
+        scale = np.where(np.abs(grand_total) < 1e-12, 0.0, norm_total / grand_total)
+        for elem, v in raw.items():
+            X = scale * v
             if f"b_{elem}" in coefs:
                 T = T + coefs[f"b_{elem}"] * X
             if f"b_{elem}2" in coefs:
@@ -72,7 +91,7 @@ def _eval_adiabat_poly(
     return np.asarray(T, dtype=np.float32)
 
 
-aliases = { # 
+aliases = { #
     'T': 'T(K)(System_main)',
     'T(K)': 'T(K)(System_main)',
     'Temperature': 'T(K)(System_main)',
@@ -1877,14 +1896,14 @@ HeFESToEmulatorCPU = HeFESToAPI(
 HeFESToMarsEmulatorCPU = HeFESToAPI(
     isothermal_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_isothermal.tar"),
     isentropic_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_isentropic.tar"),
-    temperature_model_path=str(_HeFESTo_Mars_dir / "best_temperature_emulator_path_HeFESTo_Mars_Profiles_NPS_noJCCValid.pt"),#"HeFESTo_Mars_Temp.pt"),
+    temperature_model_path=str(_HeFESTo_Mars_dir / "temperature_residual_emulator_path_HeFESTo_Mars_Profiles_NPStrimmed_noJCCValid.pt"),#"HeFESTo_Mars_Temp.pt"),
     device='cpu'
 )
 
 HeFESToMarsEmulatorGPU = HeFESToAPI(
     isothermal_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_isothermal.tar"),
     isentropic_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_isentropic.tar"),
-    temperature_model_path=str(_HeFESTo_Mars_dir / "best_temperature_emulator_path_HeFESTo_Mars_Profiles_NPS_noJCCValid.pt"),#"HeFESTo_Mars_Temp.pt"),
+    temperature_model_path=str(_HeFESTo_Mars_dir / "temperature_residual_emulator_path_HeFESTo_Mars_Profiles_NPStrimmed_noJCCValid.pt"),#"HeFESTo_Mars_Temp.pt"),
     device='cuda'
 )
 
