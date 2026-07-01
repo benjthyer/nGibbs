@@ -107,15 +107,34 @@ def _normalize(x: np.ndarray, x_min: np.ndarray, x_range: np.ndarray) -> np.ndar
     return ((x - x_min) / safe_range).astype(np.float32)
 
 
-def _eval_adiabat_poly(P: np.ndarray, S: np.ndarray, coefs: Dict[str, float]) -> np.ndarray:
-    """Evaluate T(K) = b0 + b_S*S + b_S2*S^2 + b_P*P + b_P2*P^2 (P in GPa)."""
-    return (
+def _eval_adiabat_poly(
+    P: np.ndarray,
+    S: np.ndarray,
+    coefs: Dict[str, float],
+    features: Optional[np.ndarray] = None,
+    comp_indices: Optional[Dict[str, int]] = None,
+) -> np.ndarray:
+    """Evaluate the reference adiabat polynomial (P in GPa, T in K).
+
+    Base: T = b0 + b_S*S + b_S2*S^2 + b_P*P + b_P2*P^2
+    Compositional extension (when features and comp_indices provided):
+        T += Σ_i  b_Xi*X_i + b_Xi2*X_i^2
+    """
+    T = (
         coefs["b0"]
         + coefs["b_S"] * S
         + coefs["b_S2"] * S ** 2
         + coefs["b_P"] * P
         + coefs["b_P2"] * P ** 2
-    ).astype(np.float32)
+    )
+    if comp_indices and features is not None:
+        for elem, col_idx in comp_indices.items():
+            X = features[:, col_idx]
+            if f"b_{elem}" in coefs:
+                T = T + coefs[f"b_{elem}"] * X
+            if f"b_{elem}2" in coefs:
+                T = T + coefs[f"b_{elem}2"] * X ** 2
+    return np.asarray(T, dtype=np.float32)
 
 
 def _build_emulator_augmented(
@@ -211,6 +230,7 @@ def _validate_checkpoint(
     # exactly, including is_melts unit handling, or the reconstructed T_pred will be
     # systematically biased by whatever the stored/default adiabat disagrees on).
     adiabat_coefs: Optional[Dict[str, float]] = payload.get("adiabat_coefs")
+    comp_indices: Optional[Dict[str, int]] = payload.get("coef_feature_indices")
     is_melts: bool = bool(payload.get("is_melts", False))
     P = features_raw[:, p_idx].astype(np.float64)
     if is_melts:
@@ -219,8 +239,13 @@ def _validate_checkpoint(
     else:
         S = features_raw[:, s_idx].astype(np.float64)
     if adiabat_coefs is not None:
-        print(f"    Using checkpoint-stored adiabat_coefs: {adiabat_coefs}")
-        T_ref = _eval_adiabat_poly(P, S, adiabat_coefs)
+        kind = "compositional" if comp_indices else "S+P only"
+        print(f"    Using checkpoint-stored adiabat ({kind}): {list(adiabat_coefs.keys())}")
+        T_ref = _eval_adiabat_poly(
+            P, S, adiabat_coefs,
+            features=features_raw.astype(np.float64),
+            comp_indices=comp_indices,
+        )
     else:
         T_ref = np.asarray(reference_adiabat(P, S), dtype=np.float32)
     if is_melts:

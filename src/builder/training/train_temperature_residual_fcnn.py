@@ -175,43 +175,120 @@ def _build_extended_input_normalizer_arrays(
 
 
 def _parse_adiabat_coefs(path: Path) -> Dict[str, float]:
-    """Parse 5-parameter polynomial coefficients from a text file.
+    """Parse polynomial coefficients from a text file (original case preserved).
 
-    Expected format (lines of 'key = value'):
-        b0  (intercept) = <float>
-        b_S             = <float>
-        b_S^2           = <float>
-        b_P             = <float>
-        b_P^2           = <float>
+    Handles both the 5-parameter S+P form and the extended compositional form that
+    adds linear+quadratic terms for each bulk-composition element:
 
-    Returns dict with keys b0, b_S, b_S2, b_P, b_P2.
-    Polynomial: T(K) = b0 + b_S*S + b_S2*S^2 + b_P*P + b_P2*P^2  (P in GPa).
+        T(K) = b0 + b_S*S + b_S2*S^2 + b_P*P + b_P2*P^2
+             [+ b_Si*Si + b_Si2*Si^2 + b_Mg*Mg + b_Mg2*Mg^2 + ...]
+
+    Key normalisation: ``^2`` suffix is replaced with ``2`` so "b_S^2" becomes "b_S2",
+    "b_Si^2" becomes "b_Si2", etc.  Original case is preserved so "b_Si" stays "b_Si"
+    (not "b_si"), which is required for later name-matching against featureNames.
+    At minimum b0, b_S, b_S2, b_P, b_P2 must be present.
     """
-    key_map = {"b0": "b0", "b_s": "b_S", "b_s^2": "b_S2", "b_p": "b_P", "b_p^2": "b_P2"}
     coefs: Dict[str, float] = {}
     with open(path, encoding="utf-8") as f:
         for line in f:
             if "=" not in line:
                 continue
             left, _, right = line.partition("=")
-            token = left.strip().split()[0].lower()
-            if token in key_map:
-                coefs[key_map[token]] = float(right.strip())
+            token = left.strip().split()[0]          # first word, original case
+            key = token[:-2] + "2" if token.endswith("^2") else token
+            try:
+                coefs[key] = float(right.strip())
+            except ValueError:
+                continue
     missing = {"b0", "b_S", "b_S2", "b_P", "b_P2"} - set(coefs)
     if missing:
         raise ValueError(f"Adiabat coefficients file '{path}' is missing keys: {missing}")
     return coefs
 
 
-def _eval_adiabat_poly(P: np.ndarray, S, coefs: Dict[str, float]) -> np.ndarray:
-    """Evaluate T(K) = b0 + b_S*S + b_S2*S^2 + b_P*P + b_P2*P^2 (P in GPa)."""
-    return (
+def _is_compositional(coefs: Dict[str, float]) -> bool:
+    """Return True if coefs contains element terms beyond the basic S+P polynomial."""
+    basic = {"b0", "b_S", "b_S2", "b_P", "b_P2"}
+    return any(k not in basic for k in coefs)
+
+
+def _resolve_comp_feature_indices(
+    coefs: Dict[str, float],
+    feature_names: List[str],
+) -> Dict[str, int]:
+    """Map element names from coef keys to feature column indices.
+
+    For each linear-term key of the form ``b_X`` (where X is not S or P), extracts
+    the element symbol X and searches ``feature_names`` for the corresponding column.
+    Matching tries exact equality first, then a prefix match that requires X to be
+    followed by a non-alpha character (e.g. "Si" matches "Si(System_main)" but not
+    "SiO2").  Raises ValueError if any element cannot be resolved.
+    """
+    basic_keys = {"b0", "b_S", "b_S2", "b_P", "b_P2"}
+    element_names: List[str] = []
+    for key in coefs:
+        if key in basic_keys or key[:-1].endswith("2") or not key.startswith("b_"):
+            continue
+        elem = key[2:]  # strip "b_" prefix
+        if elem not in element_names:
+            element_names.append(elem)
+
+    indices: Dict[str, int] = {}
+    for elem in element_names:
+        col_idx: Optional[int] = None
+        for i, fname in enumerate(feature_names):
+            if fname == elem:
+                col_idx = i
+                break
+        if col_idx is None:
+            for i, fname in enumerate(feature_names):
+                if fname.startswith(elem) and (
+                    len(fname) == len(elem) or not fname[len(elem)].isalpha()
+                ):
+                    col_idx = i
+                    break
+        if col_idx is None:
+            raise ValueError(
+                f"Cannot find feature column for element '{elem}' in featureNames. "
+                f"Checked: {feature_names}"
+            )
+        indices[elem] = col_idx
+
+    return indices
+
+
+def _eval_adiabat_poly(
+    P: np.ndarray,
+    S,
+    coefs: Dict[str, float],
+    features: Optional[np.ndarray] = None,
+    comp_indices: Optional[Dict[str, int]] = None,
+) -> np.ndarray:
+    """Evaluate the reference adiabat polynomial (P in GPa, T in K).
+
+    Base form (always applied):
+        T = b0 + b_S*S + b_S2*S^2 + b_P*P + b_P2*P^2
+
+    Compositional extension (when features and comp_indices are provided):
+        T += Σ_i  b_Xi*X_i + b_Xi2*X_i^2   for each element X_i in comp_indices
+    """
+    T = (
         coefs["b0"]
         + coefs["b_S"] * S
         + coefs["b_S2"] * S ** 2
         + coefs["b_P"] * P
         + coefs["b_P2"] * P ** 2
-    ).astype(np.float32)
+    )
+    if comp_indices and features is not None:
+        for elem, col_idx in comp_indices.items():
+            X = features[:, col_idx]
+            lin_key = f"b_{elem}"
+            quad_key = f"b_{elem}2"
+            if lin_key in coefs:
+                T = T + coefs[lin_key] * X
+            if quad_key in coefs:
+                T = T + coefs[quad_key] * X ** 2
+    return np.asarray(T, dtype=np.float32)
 
 
 def _compute_residuals(
@@ -221,15 +298,17 @@ def _compute_residuals(
     s_idx: int,
     is_melts: bool = False,
     adiabat_coefs: Optional[Dict[str, float]] = None,
+    comp_indices: Optional[Dict[str, int]] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Compute T_residual = T_true - reference_adiabat(P, S). Returns (residuals, T_ref).
+    """Compute T_residual = T_true - reference_adiabat(P, S[, X...]). Returns (residuals, T_ref).
 
     When is_melts=True, P is expected in bars and T in Celsius. P is converted to GPa
     before the adiabat call; the returned T_ref is in Celsius (K - 273.15) so the
     residual and all downstream targets remain in Celsius.
 
-    If adiabat_coefs is provided, the reference adiabat is the stored 5-parameter
-    polynomial rather than the built-in get_T function.
+    If adiabat_coefs is provided, the reference adiabat is the stored polynomial.
+    If comp_indices is also provided, element columns are extracted from features_raw
+    and fed into the compositional extension of the polynomial.
     """
     P = features_raw[:, p_idx].astype(np.float64)
     if is_melts:
@@ -238,7 +317,11 @@ def _compute_residuals(
     else:
         S = features_raw[:, s_idx].astype(np.float64)
     if adiabat_coefs is not None:
-        T_ref_K = _eval_adiabat_poly(P, S, adiabat_coefs)
+        T_ref_K = _eval_adiabat_poly(
+            P, S, adiabat_coefs,
+            features=features_raw.astype(np.float64),
+            comp_indices=comp_indices,
+        )
     else:
         T_ref_K = np.asarray(reference_adiabat(P, S), dtype=np.float32)
     T_ref = (T_ref_K - 273.15) if is_melts else T_ref_K
@@ -402,6 +485,7 @@ def _save_checkpoint(
     history: Dict,
     is_melts: bool = False,
     adiabat_coefs: Optional[Dict[str, float]] = None,
+    comp_indices: Optional[Dict[str, int]] = None,
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -420,6 +504,7 @@ def _save_checkpoint(
             "input_kind": input_kind,
             "is_melts": is_melts,
             "adiabat_coefs": adiabat_coefs,
+            "coef_feature_indices": comp_indices,
             "metrics": metrics,
             "history": history,
         },
@@ -587,6 +672,11 @@ def main() -> None:
     print(f"P feature index: {p_idx} ({P_FEATURE_NAME})")
     print(f"S feature index: {s_idx} ({S_FEATURE_NAME})")
 
+    comp_indices: Optional[Dict[str, int]] = None
+    if adiabat_coefs is not None and _is_compositional(adiabat_coefs):
+        comp_indices = _resolve_comp_feature_indices(adiabat_coefs, feature_names)
+        print(f"Compositional reference adiabat: element→column {comp_indices}")
+
     # Extract temperature targets and compute residuals against reference adiabat
     train_feats = np.asarray(train_bundle.features, dtype=np.float32)
     test_feats = np.asarray(test_bundle.features, dtype=np.float32)
@@ -602,9 +692,9 @@ def main() -> None:
         test_feats, T_test_true = _filter_by_entropy_range(test_bundle, test_feats, T_test_true, s_idx, args.s_min, args.s_max, "test")
         valid_feats, T_valid_true = _filter_by_entropy_range(valid_bundle, valid_feats, T_valid_true, s_idx, args.s_min, args.s_max, "valid")
 
-    T_train_residuals, T_train_ref = _compute_residuals(T_train_true, train_feats, p_idx, s_idx, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs)
-    T_test_residuals, T_test_ref = _compute_residuals(T_test_true, test_feats, p_idx, s_idx, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs)
-    T_valid_residuals, T_valid_ref = _compute_residuals(T_valid_true, valid_feats, p_idx, s_idx, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs)
+    T_train_residuals, T_train_ref = _compute_residuals(T_train_true, train_feats, p_idx, s_idx, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices)
+    T_test_residuals, T_test_ref = _compute_residuals(T_test_true, test_feats, p_idx, s_idx, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices)
+    T_valid_residuals, T_valid_ref = _compute_residuals(T_valid_true, valid_feats, p_idx, s_idx, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices)
 
     print(
         f"Train residuals (K): min={T_train_residuals.min():.1f}, "
@@ -656,7 +746,7 @@ def main() -> None:
 
     def _make_saver(out_path, x_min_, x_range_, kind, metrics_ref):
         def saver(m, hist):
-            _save_checkpoint(out_path, m, args.temperature_label, p_idx, s_idx, x_min_, x_range_, y_min, y_range, kind, metrics_ref, hist, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs)
+            _save_checkpoint(out_path, m, args.temperature_label, p_idx, s_idx, x_min_, x_range_, y_min, y_range, kind, metrics_ref, hist, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices)
         return saver
 
     # Train model 1 (emulator-predicted path)
@@ -706,11 +796,11 @@ def main() -> None:
     model1_out_str = "Not Trained!"
     if not args.skip_1 and history_emulator is not None:
         model1_out = args.out_dir / f"temperature_residual_emulator_path_{bundle_basename}.pt"
-        _save_checkpoint(model1_out, model_emulator, args.temperature_label, p_idx, s_idx, x1_emul_min, x1_emul_range, y_min, y_range, "emulator_path", metrics["emulator_path"], history_emulator, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs)
+        _save_checkpoint(model1_out, model_emulator, args.temperature_label, p_idx, s_idx, x1_emul_min, x1_emul_range, y_min, y_range, "emulator_path", metrics["emulator_path"], history_emulator, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices)
         model1_out_str = str(model1_out)
 
     model2_out = args.out_dir / f"temperature_residual_gt_path_{bundle_basename}.pt"
-    _save_checkpoint(model2_out, model_gt, args.temperature_label, p_idx, s_idx, x2_min, x2_range, y_min, y_range, "gt_path", metrics["gt_path"], history_gt, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs)
+    _save_checkpoint(model2_out, model_gt, args.temperature_label, p_idx, s_idx, x2_min, x2_range, y_min, y_range, "gt_path", metrics["gt_path"], history_gt, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices)
 
     metrics_path = args.out_dir / f"temperature_residual_metrics_{bundle_basename}.json"
     with open(metrics_path, "w", encoding="utf-8") as f:

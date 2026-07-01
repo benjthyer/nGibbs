@@ -42,15 +42,35 @@ from emulator import NN_MELTS
 from utils.math_utils import Normalizer, get_T as _reference_adiabat
 
 
-def _eval_adiabat_poly(P: np.ndarray, S, coefs: dict) -> np.ndarray:
-    """Evaluate T(K) = b0 + b_S*S + b_S2*S^2 + b_P*P + b_P2*P^2 (P in GPa)."""
-    return (
+def _eval_adiabat_poly(
+    P: np.ndarray,
+    S,
+    coefs: dict,
+    features: Optional[np.ndarray] = None,
+    comp_indices: Optional[Dict] = None,
+) -> np.ndarray:
+    """Evaluate the reference adiabat polynomial (P in GPa, T in K).
+
+    Base: T = b0 + b_S*S + b_S2*S^2 + b_P*P + b_P2*P^2
+    Compositional extension (when features and comp_indices provided):
+        T += Σ_i  b_Xi*X_i + b_Xi2*X_i^2
+    """
+    T = (
         coefs["b0"]
         + coefs["b_S"] * S
         + coefs["b_S2"] * S ** 2
         + coefs["b_P"] * P
         + coefs["b_P2"] * P ** 2
-    ).astype(np.float32)
+    )
+    if comp_indices and features is not None:
+        for elem, col_idx in comp_indices.items():
+            X = features[:, col_idx]
+            if f"b_{elem}" in coefs:
+                T = T + coefs[f"b_{elem}"] * X
+            if f"b_{elem}2" in coefs:
+                T = T + coefs[f"b_{elem}2"] * X ** 2
+    return np.asarray(T, dtype=np.float32)
+
 
 aliases = { # 
     'T': 'T(K)(System_main)',
@@ -1324,13 +1344,15 @@ class EmulatorAPI:
         p_idx = self.temperature_payload.get("p_feature_idx")
         s_idx = self.temperature_payload.get("s_feature_idx")
         adiabat_coefs = self.temperature_payload.get("adiabat_coefs")
+        comp_indices = self.temperature_payload.get("coef_feature_indices")
         if p_idx is not None and s_idx is not None:
             P_raw = features[:, p_idx].detach().cpu().numpy().astype(np.float64)
             S_raw = features[:, s_idx].detach().cpu().numpy().astype(np.float64)
             if self.modelType == "MELTSAPI":
                 P_raw = P_raw / 10000.0  # bars → GPa
             if adiabat_coefs is not None:
-                T_ref_K = _eval_adiabat_poly(P_raw, S_raw, adiabat_coefs)
+                features_cpu = features.detach().cpu().numpy().astype(np.float64) if comp_indices else None
+                T_ref_K = _eval_adiabat_poly(P_raw, S_raw, adiabat_coefs, features=features_cpu, comp_indices=comp_indices)
             else:
                 T_ref_K = np.asarray(_reference_adiabat(P_raw, S_raw), dtype=np.float32)
             if self.modelType == "MELTSAPI":
