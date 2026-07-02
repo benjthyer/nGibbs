@@ -53,7 +53,7 @@ import time
 time.sleep(sleepytime)"""
 
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-input_date = 'June30closed'
+input_date = 'July1closed'
 
 input_ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
 MELTSmodels = ['120']#, '120']#, '102'] # MELTS models to run. To add: MAGEmin
@@ -67,7 +67,7 @@ total_to_run = int(300) # How many total simulations to run
 startTs = [1800, 1800]#, 1800]
 delta = -1
 input_liquid_fractions = [102, 102]#, 100] # Make above 100 to allow for superliquidus
-simcycle = 100 # How many simulations to run per iteration
+simcycle = 50 # How many simulations to run per iteration
 
 #storage_directory = f'/mnt/d/Workspace/{MELTSModel}Datasets/'
 

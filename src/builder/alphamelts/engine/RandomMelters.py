@@ -32,21 +32,63 @@ EnsembleLocation = str(internal_scratch_dir())
 os.makedirs(EnsembleLocation, exist_ok=True)
 
 
+def _repair_torn_tail_and_count(path):
+    """
+    Count confirmed (newline-terminated) lines in an append-only metadata file,
+    truncating a torn trailing line first if a previous run crashed mid-write.
+
+    Uses a backward byte-seek to find the last newline rather than reading the
+    whole file into memory, so repair itself stays cheap even on a multi-GB
+    metadata file; the line count that follows is still a single sequential
+    scan (count_file_lines), done once here rather than once per cycle.
+    """
+    with open(path, 'rb') as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        if size == 0:
+            return 0
+        f.seek(-1, os.SEEK_END)
+        ends_clean = f.read(1) == b'\n'
+        if not ends_clean:
+            pos = size - 1
+            while pos > 0:
+                pos -= 1
+                f.seek(pos)
+                if f.read(1) == b'\n':
+                    break
+            else:
+                pos = -1  # no newline anywhere; the whole file was one torn line
+            truncate_at = pos + 1
+
+    if not ends_clean:
+        with open(path, 'r+b') as f:
+            f.truncate(truncate_at)
+
+    return count_file_lines(path)
+
+
 class MemmapWriter:
     """
     Fixed-size binary sink for import_MELTS_components, replacing the CSV append path.
 
     Pre-allocates `{output_file}.npy` sized to `target_rows` (the same layout
     BigMetaTable eventually builds from CSV, so BigMetaTable can load it directly
-    with rebuild_memmap=False), and tracks a write cursor in a small sidecar file
-    so a run can resume without rescanning the accumulated output - unlike
-    _validate_existing_files, which recounts every line of the CSV/txt files on
-    every call.
+    with rebuild_memmap=False).
+
+    Resuming after an interrupted run (crash or Ctrl+C) is driven by the metadata
+    `.txt` file, not by trusting the cursor sidecar file blindly: within write(),
+    the array segment is written and flushed *before* its metadata lines are
+    appended, so "N confirmed metadata lines" always implies "the first N array
+    rows are durably on disk" - the reverse is never true. Re-deriving the cursor
+    from the metadata file's confirmed line count at startup (self-healing a torn
+    last line if one crashed mid-write) is therefore always safe, and is a single
+    sequential scan done once per resume rather than once per cycle.
     """
 
     def __init__(self, output_file, target_rows, n_cols):
         self.path = f'{output_file}.npy'
         self.cursor_file = f'{output_file}_cursor.txt'
+        self.sim_metadata_name = f'{output_file}.txt'
 
         if os.path.exists(self.path):
             self.array = np.lib.format.open_memmap(self.path, mode='r+')
@@ -64,11 +106,23 @@ class MemmapWriter:
             self.array = np.lib.format.open_memmap(
                 self.path, mode='w+', dtype=np.float32, shape=(target_rows, n_cols))
 
+        confirmed_rows = 0
+        if os.path.exists(self.sim_metadata_name):
+            confirmed_rows = _repair_torn_tail_and_count(self.sim_metadata_name)
+
+        recorded_cursor = None
         if os.path.exists(self.cursor_file):
             with open(self.cursor_file, 'r') as f:
-                self.cursor = int(f.read().strip())
-        else:
-            self.cursor = 0
+                recorded_cursor = int(f.read().strip())
+
+        if recorded_cursor is not None and recorded_cursor != confirmed_rows:
+            print(f"[MemmapWriter] Cursor file said {recorded_cursor} rows but {self.sim_metadata_name} "
+                  f"has {confirmed_rows} confirmed lines (likely an interrupted previous run). "
+                  f"Resuming from {confirmed_rows}.")
+
+        self.cursor = confirmed_rows
+        with open(self.cursor_file, 'w') as f:
+            f.write(str(self.cursor))
 
     @property
     def full(self):
@@ -88,6 +142,27 @@ class MemmapWriter:
         with open(self.cursor_file, 'w') as f:
             f.write(str(self.cursor))
         return n
+
+    def finalize(self):
+        """
+        Shrink the memmap in place from its preallocated target_rows down to the
+        rows actually written (self.cursor). A run stopped before target_rows was
+        reached (early Ctrl+C, or simply not resumed further) otherwise leaves the
+        file at full target_rows size padded with unwritten (zero) rows, which
+        BigMetaTable has no way to distinguish from real data - call this before
+        handing a not-yet-full dataset to BigMetaTable or the merge script.
+        """
+        if self.cursor == self.array.shape[0]:
+            return  # already exactly full; nothing to trim
+        tmp_path = self.path + '.trimtmp'
+        trimmed = np.lib.format.open_memmap(
+            tmp_path, mode='w+', dtype=self.array.dtype, shape=(self.cursor, self.array.shape[1]))
+        trimmed[:] = self.array[:self.cursor]
+        trimmed.flush()
+        del trimmed
+        del self.array
+        os.replace(tmp_path, self.path)
+        self.array = np.lib.format.open_memmap(self.path, mode='r+')
 
 
 def _validate_existing_files(dataname, sim_metadata_name, indexer):
@@ -379,9 +454,15 @@ def alphaMELTScooling(output_file, MELTSModel, GEOROC, col_dict, indexer, iterco
                                 dataname=dataname, faultIDs=failure_IDs)
 
     if memmap_writer is not None:
-        while not memmap_writer.full:
-            _run_cycle()
-            print(f"[{output_file}] {memmap_writer.cursor}/{memmap_writer.array.shape[0]} rows filled")
+        try:
+            while not memmap_writer.full:
+                _run_cycle()
+                print(f"[{output_file}] {memmap_writer.cursor}/{memmap_writer.array.shape[0]} rows filled")
+        except KeyboardInterrupt:
+            print(f"[{output_file}] Interrupted at {memmap_writer.cursor}/{memmap_writer.array.shape[0]} rows. "
+                  f"Re-run with the same output_file/target_rows to resume, or call "
+                  f"MemmapWriter(...).finalize() to trim the file to the rows actually written.")
+            raise
     else:
         for j in range(start_iter, iter):
             _run_cycle()
