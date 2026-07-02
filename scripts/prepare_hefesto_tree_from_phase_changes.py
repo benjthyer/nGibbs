@@ -50,6 +50,17 @@ def parse_args() -> argparse.Namespace:
             'If a directory is given, shallowHeFESTo/deepHeFESTo is preferred.'
         ),
     )
+    parser.add_argument(
+        '--limit',
+        type=int,
+        default=None,
+        help=(
+            'Limit the number of Simulation directories created by randomly '
+            'sampling this many phase-path condition pairs from the CSV, '
+            'instead of using every pair. Pairs are read directly off disk, '
+            'so the rest of the CSV is never loaded into memory.'
+        ),
+    )
     return parser.parse_args()
 
 
@@ -59,6 +70,7 @@ def main() -> None:
         directory=args.directory,
         phase_path=args.phase_path,
         CONTROL_DIR=args.control_dir,
+        limit=args.limit,
     )
 
 
