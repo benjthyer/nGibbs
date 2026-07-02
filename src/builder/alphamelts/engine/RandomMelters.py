@@ -32,6 +32,64 @@ EnsembleLocation = str(internal_scratch_dir())
 os.makedirs(EnsembleLocation, exist_ok=True)
 
 
+class MemmapWriter:
+    """
+    Fixed-size binary sink for import_MELTS_components, replacing the CSV append path.
+
+    Pre-allocates `{output_file}.npy` sized to `target_rows` (the same layout
+    BigMetaTable eventually builds from CSV, so BigMetaTable can load it directly
+    with rebuild_memmap=False), and tracks a write cursor in a small sidecar file
+    so a run can resume without rescanning the accumulated output - unlike
+    _validate_existing_files, which recounts every line of the CSV/txt files on
+    every call.
+    """
+
+    def __init__(self, output_file, target_rows, n_cols):
+        self.path = f'{output_file}.npy'
+        self.cursor_file = f'{output_file}_cursor.txt'
+
+        if os.path.exists(self.path):
+            self.array = np.lib.format.open_memmap(self.path, mode='r+')
+            if self.array.shape[1] != n_cols:
+                raise ValueError(
+                    f"Existing memmap {self.path} has {self.array.shape[1]} columns, "
+                    f"expected {n_cols}. Indexer/phase list changed since this run started?"
+                )
+            if self.array.shape[0] != target_rows:
+                raise ValueError(
+                    f"Existing memmap {self.path} has {self.array.shape[0]} rows, "
+                    f"expected target_rows={target_rows}. Remove it or use a new output_file."
+                )
+        else:
+            self.array = np.lib.format.open_memmap(
+                self.path, mode='w+', dtype=np.float32, shape=(target_rows, n_cols))
+
+        if os.path.exists(self.cursor_file):
+            with open(self.cursor_file, 'r') as f:
+                self.cursor = int(f.read().strip())
+        else:
+            self.cursor = 0
+
+    @property
+    def full(self):
+        return self.cursor >= self.array.shape[0]
+
+    def write(self, rows, meta_lines, sim_metadata_name):
+        """Write as many of rows/meta_lines as fit before the memmap fills. Returns rows written."""
+        n_avail = self.array.shape[0] - self.cursor
+        n = min(n_avail, len(rows))
+        if n <= 0:
+            return 0
+        self.array[self.cursor:self.cursor + n] = rows[:n]
+        self.array.flush()
+        with open(sim_metadata_name, 'a') as f:
+            f.writelines(meta_lines[:n])
+        self.cursor += n
+        with open(self.cursor_file, 'w') as f:
+            f.write(str(self.cursor))
+        return n
+
+
 def _validate_existing_files(dataname, sim_metadata_name, indexer):
     """
     Validate that existing output files have compatible headers and matching line counts.
@@ -156,7 +214,7 @@ def _process_compositions(compositions, col_dict, simcycle, MELTSModel, zeroOxid
 
 def alphaMELTScooling(output_file, MELTSModel, GEOROC, col_dict, indexer, itercode='a1', simcycle=50, fxtal=False,
                       ExFailures=False, zeroOxides=['MnO', 'NiO'], startT=1925, max_liquid_fraction=100, end=700,
-                      Prange=None, delta=-1, Oxygen='Closed', replace_CO2=True, af=None):
+                      Prange=None, delta=-1, Oxygen='Closed', replace_CO2=True, af=None, target_rows=None):
     """
     Perform ensemble MELTS cooling calculations with random compositions.
 
@@ -167,13 +225,17 @@ def alphaMELTScooling(output_file, MELTSModel, GEOROC, col_dict, indexer, iterco
     MELTSModel : str
         MELTS model version ('102', '110', '120', 'p')
     GEOROC : np.ndarray
-        Array of GEOROC compositions (first column is index, rest are oxides)
+        Array of GEOROC compositions (first column is index, rest are oxides).
+        If target_rows is given, GEOROC is expected to already be pre-mixed to
+        the desired compositional-group ratio (see composition_pool.build_ratio_pool),
+        since every cycle draws simcycle rows from it uniformly at random.
     col_dict : dict
         Dictionary mapping oxide names to column indices in compositions
     indexer : DatasetIndexer
         DatasetIndexer object for the dataset
     itercode : str, default='a1'
-        Code for the total iteration (used for tracking progress. a for all melts, m for mafics)
+        Code for the total iteration (used for tracking progress. a for all melts, m for mafics).
+        Ignored (beyond its use as a log label) when target_rows is given.
     simcycle : int, default=50
         Number of simulations per iteration
     fxtal : bool, default=False
@@ -188,11 +250,14 @@ def alphaMELTScooling(output_file, MELTSModel, GEOROC, col_dict, indexer, iterco
         End temperature in Celsius
     Oxygen : str, default='Closed'
         Oxygen fugacity condition ('Closed' or 'Open')
+    target_rows : int, optional
+        If given, ignore itercode's iteration count and instead cycle until a
+        memmap of this many rows (`{output_file}.npy`) is filled, resuming from
+        a persisted cursor rather than the legacy progress-file/iteration scheme.
     """
 
     iterLetter = itercode[0]
-    iter = int(itercode[1:])
-    
+
     # Set pressure range and end temperature based on MELTS model
     if Prange is None:
         if MELTSModel == 'p':
@@ -200,44 +265,50 @@ def alphaMELTScooling(output_file, MELTSModel, GEOROC, col_dict, indexer, iterco
         else:
             Prange = [1, 12000]  # Pressure in bars
 
-    if iter <= 0 or iter != int(iter):
-        print('Must have integer positive nonzero for iteration "iter" argument. Substituting 1.')
-        iter = int(1)
-    
     batch_file = MELTSModel + 'batch'
     dataname = f'{output_file}.csv'
     sim_metadata_name = f'{output_file}.txt'
-    progress_file = f'{output_file}_progress.txt'
-    
-    _validate_existing_files(dataname, sim_metadata_name, indexer)
 
-    # Initialize or resume from progress file
+    memmap_writer = None
+    iter = None
     start_iter = 0
     existing_lines = []
-    if os.path.exists(progress_file):
-        try:
-            with open(progress_file, 'r') as f:
-                all_lines = f.read().strip().split('\n')
-            
-            if all_lines and all_lines[0]:  # Check if file has content
-                # Find and extract the line with current letter code if it exists
-                found_current_letter = False
-                for line in all_lines:
-                    if line.strip().startswith(iterLetter):
-                        parts = line.strip().split()
-                        if len(parts) >= 2:
-                            start_iter = int(parts[1].split('/')[0])
-                            print(f"Resuming {iterLetter} from iteration {start_iter}/{iter}")
-                            found_current_letter = True
-                        break
-                
-                # Preserve all lines except the one with current letter code (will be rewritten)
-                existing_lines = [line for line in all_lines if not line.strip().startswith(iterLetter)]
-        except Exception as e:
-            print(f"Warning: Could not read progress file {progress_file}: {e}. Starting fresh.")
-            existing_lines = []
-            start_iter = 0
-    
+    progress_file = None
+
+    if target_rows is not None:
+        memmap_writer = MemmapWriter(output_file, target_rows, indexer.get_max_index() + 1)
+    else:
+        iter = int(itercode[1:])
+        if iter <= 0 or iter != int(iter):
+            print('Must have integer positive nonzero for iteration "iter" argument. Substituting 1.')
+            iter = int(1)
+
+        progress_file = f'{output_file}_progress.txt'
+        _validate_existing_files(dataname, sim_metadata_name, indexer)
+
+        # Initialize or resume from progress file
+        if os.path.exists(progress_file):
+            try:
+                with open(progress_file, 'r') as f:
+                    all_lines = f.read().strip().split('\n')
+
+                if all_lines and all_lines[0]:  # Check if file has content
+                    # Find and extract the line with current letter code if it exists
+                    for line in all_lines:
+                        if line.strip().startswith(iterLetter):
+                            parts = line.strip().split()
+                            if len(parts) >= 2:
+                                start_iter = int(parts[1].split('/')[0])
+                                print(f"Resuming {iterLetter} from iteration {start_iter}/{iter}")
+                            break
+
+                    # Preserve all lines except the one with current letter code (will be rewritten)
+                    existing_lines = [line for line in all_lines if not line.strip().startswith(iterLetter)]
+            except Exception as e:
+                print(f"Warning: Could not read progress file {progress_file}: {e}. Starting fresh.")
+                existing_lines = []
+                start_iter = 0
+
     def PTF_initialize(conditions, length=simcycle):
         """Initialize Pressure-Temperature-fO2 arrays for cooling runs."""
         conditions = conditions.copy()
@@ -268,7 +339,7 @@ def alphaMELTScooling(output_file, MELTSModel, GEOROC, col_dict, indexer, iterco
     elif Oxygen.lower() == 'open':
         keys = np.array(["Pressure", "Temperature", 'fO2'] + list(col_dict.keys()))
 
-    for j in range(start_iter, iter):
+    def _run_cycle():
         # Select random compositions
         choices = np.random.randint(np.shape(GEOROC)[0], size=simcycle, dtype=int)
         compositions = GEOROC[choices, 1:].copy()
@@ -276,13 +347,13 @@ def alphaMELTScooling(output_file, MELTSModel, GEOROC, col_dict, indexer, iterco
 
         # Process and normalize compositions
         compositions = _process_compositions(compositions, col_dict, simcycle, MELTSModel, zeroOxides=zeroOxides, replace_CO2=replace_CO2)
-        
+
         # Initialize PTX conditions
         in_array = np.round(PTF_initialize(compositions, length=simcycle), 2)
-        
+
         # Set batch names
         batchname = np.full(simcycle, batch_file, dtype=object)
-        
+
         # Run ensemble simulation
         af.forward_ensemble(
             in_array, keys=keys, batchname=batchname,
@@ -291,32 +362,40 @@ def alphaMELTScooling(output_file, MELTSModel, GEOROC, col_dict, indexer, iterco
             EnsembleLocation=EnsembleLocation, WSL=True,
             compression=False, delta=delta
         )
-        
+
         # Update batch names with metadata
         for i, name in enumerate(batchname):
             batchname[i] = f"{pull_number(str(indices[i]))}:{random_char(4)}:{name}"
-        
+
         # Import results
         failure_IDs = af.import_MELTS_components(
             EnsembleLocation=EnsembleLocation, batchname=batchname,
             indexer=indexer, fO2Arr=in_array[:, 2], dataname=dataname,
-            max_liquid_fraction=max_liquid_fraction
+            max_liquid_fraction=max_liquid_fraction, memmap_writer=memmap_writer
         )
 
         if ExFailures:
             af.pick_exsolution_failure(EnsembleLocation, in_array, keys, batchname=batchname,
                                 dataname=dataname, faultIDs=failure_IDs)
-        
-        # Update progress file
-        current_iter = j + 1
-        progress_content = '\n'.join(existing_lines) if existing_lines else ''
-        if progress_content:
-            progress_content += f"\n{iterLetter} {current_iter}/{iter}"
-        else:
-            progress_content = f"{iterLetter} {current_iter}/{iter}"
-        
-        with open(progress_file, 'w') as f:
-            f.write(progress_content)
+
+    if memmap_writer is not None:
+        while not memmap_writer.full:
+            _run_cycle()
+            print(f"[{output_file}] {memmap_writer.cursor}/{memmap_writer.array.shape[0]} rows filled")
+    else:
+        for j in range(start_iter, iter):
+            _run_cycle()
+
+            # Update progress file
+            current_iter = j + 1
+            progress_content = '\n'.join(existing_lines) if existing_lines else ''
+            if progress_content:
+                progress_content += f"\n{iterLetter} {current_iter}/{iter}"
+            else:
+                progress_content = f"{iterLetter} {current_iter}/{iter}"
+
+            with open(progress_file, 'w') as f:
+                f.write(progress_content)
 
 def alphaMELTSERph(output_file, GEOROC, col_dict, indexer, itercode='a1', simcycle=50, fxtal=False,
                       ExFailures=False, zeroOxides=['MnO', 'NiO'],

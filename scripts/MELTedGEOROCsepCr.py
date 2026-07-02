@@ -16,6 +16,7 @@ if str(SRC_DIR) not in sys.path:
 
 from recipes.settings import internal_data_dir, internal_scratch_dir
 from builder.indexer import generate_column_headers, DatasetIndexer
+from builder.alphamelts.engine.composition_pool import build_ratio_pool
 import numpy as np
 import pandas as pd
 #import warnings
@@ -52,7 +53,7 @@ import time
 time.sleep(sleepytime)"""
 
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-input_date = 'June17closed'
+input_date = 'June30closed'
 
 input_ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
 MELTSmodels = ['120']#, '120']#, '102'] # MELTS models to run. To add: MAGEmin
@@ -64,15 +65,17 @@ Oxygen = 'Closed' # 'Closed' or 'Open' system with respect to oxygen. Buffered o
 total_to_run = int(300) # How many total simulations to run
 
 startTs = [1800, 1800]#, 1800]
-delta = -4
+delta = -1
 input_liquid_fractions = [102, 102]#, 100] # Make above 100 to allow for superliquidus
-simcycle = 50 # How many simulations to run per iteration
+simcycle = 100 # How many simulations to run per iteration
 
 #storage_directory = f'/mnt/d/Workspace/{MELTSModel}Datasets/'
 
 # Check that arguments are valid
 
-
+# Tunable: final table row count for each memmap (~30x scale-up target).
+target_rows_train = 45_000_000
+target_rows_valid = 0 #2_500_000 # Change pipeline later to keep all this as test, no 3rd valid split. Existing set is fine
 #batch_file = MELTSModel + 'batch'
 
 for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']): 
@@ -82,11 +85,11 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
         mafics_to_run = int(total_to_run * 0.4)
         full_to_run = int(total_to_run * 0.2)
     else:
-        ultramafics_to_run = int(total_to_run * 0.15)
+        ultramafics_to_run = int(total_to_run * 0.2) #0.15)
         mafics_to_run = int(total_to_run * 0.3)
-        full_to_run = int(total_to_run * 0.55)
+        full_to_run = int(total_to_run * 0.5) #0.55)
 
-    for C, Tag in enumerate(['Cr']): ###################################################################
+    for C, Tag in enumerate(['NoCr', 'Cr']): ###################################################################
         ZeroOxides = input_ZeroOxides.copy()
         if Tag == 'NoCr':
             ZeroOxides.append('Cr2O3')
@@ -162,45 +165,29 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
                     'max_liquid_fraction': max_liquid_fraction, 'zeroOxides': ZeroOxides,
                     'Prange': Prange, 'delta': delta, 'Oxygen': Oxygen, 'af': af}
 
-            # Run full GEOROC training dataset
-            args = {**shared_kwargs, 'GEOROC':GEOROC, 'col_dict':col_dict, 'itercode':f'a{full_to_run}'}
-            valid_args = {**shared_kwargs, 'GEOROC':GEOROC_valid, 'col_dict':col_dict_valid, 'itercode':f'a{int(full_to_run//4)}'}
+            # Pre-mix full/ultramafic/mafic compositions into a single pool per dataset,
+            # weighted by the same proportions the old per-group iteration counts used,
+            # and let the melter run to a fixed row target instead of calling it three
+            # times with hand-tuned per-group iteration counts.
+            ultramafics = GEOROC[:,col_dict['MgO']+1]>=25 # MgO above 25
+            mafics = GEOROC[:,col_dict['MgO']+1]>=5 # MgO above 5
+            ultramafics_valid = GEOROC_valid[:,col_dict_valid['MgO']+1]>=25
+            mafics_valid = GEOROC_valid[:,col_dict_valid['MgO']+1]>=5
 
-            if full_to_run != 0:
-                if not parsed_args.no_training:
-                    MELTER(output_file=Trainfilename, **args)
+            train_weights = [full_to_run, ultramafics_to_run, mafics_to_run]
+            train_pool = build_ratio_pool(
+                [GEOROC, GEOROC[ultramafics], GEOROC[mafics]], train_weights, pool_size=20_000)
+            valid_pool = build_ratio_pool(
+                [GEOROC_valid, GEOROC_valid[ultramafics_valid], GEOROC_valid[mafics_valid]],
+                train_weights, pool_size=5_000)
 
-                # Run full GEOROC validation dataset
-                if not parsed_args.no_validation:
-                    MELTER(output_file=Validfilename, **valid_args)
+            if not parsed_args.no_training and target_rows_train > 0:
+                MELTER(output_file=Trainfilename, GEOROC=train_pool, col_dict=col_dict,
+                       itercode='mix', target_rows=target_rows_train, **shared_kwargs)
 
-            if ultramafics_to_run != 0:
-                ultramafics = GEOROC[:,col_dict['MgO']+1]>=25 # MgO above 25
-                ultramafics_valid = GEOROC_valid[:,col_dict_valid['MgO']+1]>=25
-
-                if not parsed_args.no_training:
-                    args['GEOROC'] = GEOROC[ultramafics]
-                    args['itercode'] = f'u{ultramafics_to_run}'
-                    MELTER(output_file=Trainfilename, **args)
-
-                if not parsed_args.no_validation:
-                    valid_args['GEOROC'] = GEOROC_valid[ultramafics_valid]
-                    valid_args['itercode'] = f'u{int(ultramafics_to_run//4)}'
-                    MELTER(output_file=Validfilename, **valid_args)
-
-            if mafics_to_run != 0:
-                mafics = GEOROC[:,col_dict['MgO']+1]>=5 # MgO above 5
-                mafics_valid = GEOROC_valid[:,col_dict_valid['MgO']+1]>=5
-
-                if not parsed_args.no_training:
-                    args['GEOROC'] = GEOROC[mafics]
-                    args['itercode'] = f'm{mafics_to_run}'
-                    MELTER(output_file=Trainfilename, **args)
-
-                if not parsed_args.no_validation:
-                    valid_args['GEOROC'] = GEOROC_valid[mafics_valid]
-                    valid_args['itercode'] = f'm{int(mafics_to_run//4)}'
-                    MELTER(output_file=Validfilename, **valid_args)
+            if not parsed_args.no_validation and target_rows_valid > 0:
+                MELTER(output_file=Validfilename, GEOROC=valid_pool, col_dict=col_dict_valid,
+                       itercode='mix', target_rows=target_rows_valid, **shared_kwargs)
 
 
 

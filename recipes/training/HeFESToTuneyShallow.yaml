@@ -1,6 +1,6 @@
-tarname: HeFESTo_Mars_Profiles_NPS_NoJCCValid   #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
+tarname: HeFESTo_Mars_Profiles_NPT_JCC  #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
     
-warm_start: HeFESTo_Mars_Profiles_NPS_NoJCCValid_tune5 #pGeoDynamicsIsentropicNoCrApr20_train1 #None #pGeoDynamicsIsothemalNoCrMar11_train6 #None #pGeoDynPTNoCrBinaries #None # 102CrMoleLinear
+warm_start: None #pGeoDynamicsIsentropicNoCrApr20_train1 #None #pGeoDynamicsIsothemalNoCrMar11_train6 #None #pGeoDynPTNoCrBinaries #None # 102CrMoleLinear
 
 
   
@@ -19,7 +19,7 @@ description: ""
 tune1: # find best encoder geometry 
   #best_loss: 7.45870
   strategy: lower # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
-  batch_size: 1024 
+  batch_size: 32768
   epochs: 5
   #learning_rate: 1E-3
   scheduler:

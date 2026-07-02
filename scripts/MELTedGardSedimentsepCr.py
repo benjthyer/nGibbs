@@ -18,6 +18,7 @@ from recipes.settings import internal_data_dir, internal_scratch_dir
 #from builder.alphamelts.engine import alphamelts_functions # The essential ensemble MELTS functions
 #from nMELTS.utils.string_utils import pull_number, random_char
 from builder.alphamelts.engine import RandomMelters as RM
+from builder.alphamelts.engine.composition_pool import build_ratio_pool
 from builder.indexer import generate_column_headers, DatasetIndexer
 import numpy as np
 import pandas as pd
@@ -57,7 +58,7 @@ import time
 time.sleep(sleepytime)"""
 
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-input_date = 'June26Sediments'
+input_date = 'June30SedimentsOpen'
 
 input_ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
 MELTSmodels = ['120']#, '120']#, '102'] # MELTS models to run. To add: MAGEmin
@@ -86,7 +87,7 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
     carbonates_to_run = int(total_to_run * 0.40) # Most fail
     noncarbonates_to_run = int(total_to_run * 0.70) # almost as many fail
 
-    for C, Tag in enumerate(['Cr']): ###################################################################
+    for C, Tag in enumerate(['Cr', 'NoCr']): ###################################################################
         ZeroOxides = input_ZeroOxides.copy()
         if Tag == 'NoCr':
             ZeroOxides.append('Cr2O3')
@@ -165,36 +166,33 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
                     'max_liquid_fraction': max_liquid_fraction, 'zeroOxides': ZeroOxides,
                     'Prange': Prange, 'delta': delta, 'Oxygen': Oxygen, 'replace_CO2': False, 'af': af} # Keep reported CO2 values
 
-            args = {**shared_kwargs, 'GEOROC':GEOROC, 'col_dict':col_dict}
-            valid_args = {**shared_kwargs, 'GEOROC':GEOROC_valid, 'col_dict':col_dict_valid}
+            # Pre-mix carbonate/non-carbonate compositions into a single pool per dataset,
+            # weighted by the same proportions the old per-group iteration counts used,
+            # and let the melter run to a fixed row target instead of calling it twice
+            # with hand-tuned per-group iteration counts.
+            carbonates = GEOROC[:,col_dict['CO2']+1]>=10 # CO2 above 10
+            noncarbonates = GEOROC[:,col_dict['CaO']+1]<10 # CaO below 10
+            carbonates_valid = GEOROC_valid[:,col_dict_valid['CO2']+1]>=10
+            noncarbonates_valid = GEOROC_valid[:,col_dict_valid['CaO']+1]<10
 
-            if carbonates_to_run != 0:
-                carbonates = GEOROC[:,col_dict['CO2']+1]>=10 # CO2 above 10
-                carbonates_valid = GEOROC_valid[:,col_dict_valid['CO2']+1]>=10
+            train_weights = [carbonates_to_run, noncarbonates_to_run]
+            train_pool = build_ratio_pool(
+                [GEOROC[carbonates], GEOROC[noncarbonates]], train_weights, pool_size=20_000)
+            valid_pool = build_ratio_pool(
+                [GEOROC_valid[carbonates_valid], GEOROC_valid[noncarbonates_valid]],
+                train_weights, pool_size=5_000)
 
-                if not parsed_args.no_training:
-                    args['GEOROC'] = GEOROC[carbonates]
-                    args['itercode'] = f'c{carbonates_to_run}'
-                    MELTER(output_file=Trainfilename, **args)
+            # Tunable: final table row count for each memmap (~30x scale-up target).
+            target_rows_train = 300_000
+            target_rows_valid = 75_000
 
-                if not parsed_args.no_validation:
-                    valid_args['GEOROC'] = GEOROC_valid[carbonates_valid]
-                    valid_args['itercode'] = f'c{int(carbonates_to_run//4)}'
-                    MELTER(output_file=Validfilename, **valid_args)
+            if not parsed_args.no_training:
+                MELTER(output_file=Trainfilename, GEOROC=train_pool, col_dict=col_dict,
+                       itercode='mix', target_rows=target_rows_train, **shared_kwargs)
 
-            if noncarbonates_to_run != 0:
-                noncarbonates = GEOROC[:,col_dict['CaO']+1]<10 # CaO below 10
-                noncarbonates_valid = GEOROC_valid[:,col_dict_valid['CaO']+1]<10
-
-                if not parsed_args.no_training:
-                    args['GEOROC'] = GEOROC[noncarbonates]
-                    args['itercode'] = f'n{noncarbonates_to_run}'
-                    MELTER(output_file=Trainfilename, **args)
-
-                if not parsed_args.no_validation:
-                    valid_args['GEOROC'] = GEOROC_valid[noncarbonates_valid]
-                    valid_args['itercode'] = f'n{int(noncarbonates_to_run//4)}'
-                    MELTER(output_file=Validfilename, **valid_args)
+            if not parsed_args.no_validation:
+                MELTER(output_file=Validfilename, GEOROC=valid_pool, col_dict=col_dict_valid,
+                       itercode='mix', target_rows=target_rows_valid, **shared_kwargs)
 
 
 

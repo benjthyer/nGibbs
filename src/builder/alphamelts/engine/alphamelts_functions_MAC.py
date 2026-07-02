@@ -323,6 +323,7 @@ def import_MELTS_components(EnsembleLocation, batchname, indexer, fO2Arr=None,
     folders = len(contents) - 1
     sim_metadata_name = dataname.split('.')[0] + '.txt'
     metadata = []
+    sim_ids = []
     workbase = np.empty((0, indexer.get_max_index()+1))
 
     if not os.path.exists(sim_metadata_name):
@@ -464,7 +465,8 @@ def import_MELTS_components(EnsembleLocation, batchname, indexer, fO2Arr=None,
                 for wdr in working_database_rows:
                     metadata.append(wdr + '\n')
                 workbase = np.vstack([workbase, meltsobj])
-        
+                sim_ids.extend([folderNo] * nrows)
+
         if fault or not go:
             faultIDs.append(folderNo)  # Record failures for exfail function
             print(f"FAILURE AT FOLDER {folderNo}")
@@ -472,12 +474,15 @@ def import_MELTS_components(EnsembleLocation, batchname, indexer, fO2Arr=None,
     if len(metadata) != np.shape(workbase)[0]:
         raise Exception('Metadata different length than rows of csv!')
 
+    sim_ids = np.array(sim_ids, dtype=int)
+
     # Filter by maximum liquid fraction if specified
     if max_liquid_fraction < 100:
         liquid_mass_idx = indexer.mass_indices[-1]  # Last mass index is liquid
         liquid_mask = workbase[:, liquid_mass_idx] <= max_liquid_fraction
         workbase = workbase[liquid_mask]
         metadata = [metadata[i] for i in range(len(metadata)) if liquid_mask[i]]
+        sim_ids = sim_ids[liquid_mask]
         print(f"Filtered to {len(metadata)} rows with liquid mass <= {max_liquid_fraction}")
 
     # Assertion: Less than half of simulations should fail
@@ -492,8 +497,14 @@ def import_MELTS_components(EnsembleLocation, batchname, indexer, fO2Arr=None,
         f"(failure rate: {failure_rate*100:.2f}%). More than 50% failure rate is unacceptable."
     print(f"=== IMPORT SUCCESSFUL (< 50% failure rate) ===\n")
 
-    # New as of 10/08/25: Filter out much of the superliquidus assemblage to save space, balance dataset. 
-    
+    # New as of 10/08/25: Filter out much of the superliquidus assemblage to save space, balance dataset.
+    # Updated 07/01/26: Instead of randomly keeping a fraction of superliquidus rows, keep the
+    # 15 coolest (lowest-temperature) superliquidus rows per simulation (closest to the liquidus,
+    # most informative for the model to learn it), plus a random sample of 10 more superliquidus
+    # rows spread across the hotter range per simulation, so the model isn't starved of high-T
+    # examples (simulations mostly start near the same temperature, so sampling randomly rather
+    # than just taking the hottest rows keeps coverage spread across the whole hot range).
+
     # Step 1: Identify nonzero rows in selected columns
     nonzero_mask = (workbase[:, indexer.mass_indices[:-1]] != 0).any(axis=1)
     print(nonzero_mask.shape)
@@ -502,12 +513,30 @@ def import_MELTS_components(EnsembleLocation, batchname, indexer, fO2Arr=None,
     nonzero_indices = np.where(nonzero_mask)[0]
     zero_indices = np.where(~nonzero_mask)[0]
 
-    # Step 3: Choose one-fourth as many zero rows as nonzero rows to add back
-    n_add = len(nonzero_indices) // 4
+    # Step 3: For each simulation, keep the 15 coolest superliquidus rows plus a random
+    # sample of 10 more from the remaining (hotter) superliquidus rows
+    temp_idx = indexer.MELTS_indices['System_main']['Temperature']
+    n_coolest = 15
+    n_hot_sample = 10
+    add_back_indices_list = []
     if len(zero_indices) > 0:
-        add_back_indices = np.random.choice(zero_indices, size=min(n_add, len(zero_indices)), replace=False)
-    else:
-        add_back_indices = np.array([], dtype=int)
+        zero_sim_ids = sim_ids[zero_indices]
+        zero_temps = workbase[zero_indices, temp_idx]
+        for sim_id in np.unique(zero_sim_ids):
+            sim_selector = zero_sim_ids == sim_id
+            sim_rows = zero_indices[sim_selector]
+            sim_temps = zero_temps[sim_selector]
+            order = np.argsort(sim_temps)
+            n_keep_cool = min(n_coolest, len(sim_rows))
+            coolest_rows = sim_rows[order[:n_keep_cool]]
+            hotter_rows = sim_rows[order[n_keep_cool:]]
+            n_keep_hot = min(n_hot_sample, len(hotter_rows))
+            if n_keep_hot > 0:
+                hot_sample_rows = np.random.choice(hotter_rows, size=n_keep_hot, replace=False)
+            else:
+                hot_sample_rows = np.array([], dtype=int)
+            add_back_indices_list.append(np.concatenate([coolest_rows, hot_sample_rows]))
+    add_back_indices = np.concatenate(add_back_indices_list) if add_back_indices_list else np.array([], dtype=int)
 
     final_indices = np.sort(np.concatenate([nonzero_indices, add_back_indices]))
 
