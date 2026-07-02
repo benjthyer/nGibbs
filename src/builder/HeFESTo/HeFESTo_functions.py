@@ -923,6 +923,8 @@ def prepare_HeFESTo_tree_Mars(directory: Path, GEOROC_DIR: Path, control_path: P
 
         d_fe = float(np.random.uniform(0.0, 0.1))
         d_cr = float(np.random.uniform(0.0, 0.01))
+        d_si = float(np.random.uniform(-0.5/24, 2.0/24)) # Read these values off of norm 24 histograms
+        d_mg = float(np.random.uniform(0, 3.0/24)) * (element_moles.get('Mg', 0.0) < 1.0/24)
         d_ca = -(float(np.random.uniform(0.0, 0.1)) * (element_moles.get('Ca', 0.0) > 0.1))
         d_al = -(float(np.random.uniform(0.0, 0.05)) * (element_moles.get('Al', 0.0) > 0.05))
 
@@ -930,12 +932,16 @@ def prepare_HeFESTo_tree_Mars(directory: Path, GEOROC_DIR: Path, control_path: P
         element_moles['Cr'] = element_moles.get('Cr', 0.0) + d_cr
         element_moles['Ca'] = element_moles.get('Ca', 0.0) + d_ca
         element_moles['Al'] = element_moles.get('Al', 0.0) + d_al
+        element_moles['Si'] = element_moles.get('Si', 0.0) + d_si
+        element_moles['Mg'] = element_moles.get('Mg', 0.0) + d_mg
         element_moles['O'] = (
             element_moles.get('O', 0.0)
             + 1.0 * d_fe   # FeO baseline for the added Fe (ferrous by default)
             + 1.5 * d_cr   # Cr2O3
             + 1.0 * d_ca   # CaO
             + 1.5 * d_al   # Al2O3
+            + 2.0 * d_si   # SiO2
+            + 1.0 * d_mg   # MgO
         )
 
         # Apply the target Fe3+/FeT ratio now, on the final total Fe, by adding
