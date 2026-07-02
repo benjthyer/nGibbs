@@ -886,30 +886,67 @@ def prepare_HeFESTo_tree_Mars(directory: Path, GEOROC_DIR: Path, control_path: P
         ratio = float(fe3_fet_grid[sim_idx])
         row_a, row_b, alpha = spec
 
+        # Build element moles with total Fe treated as fully ferrous (Fe3+/FeT = 0)
+        # for now. The target fe3_fet ratio is applied further below, on the
+        # *final* total Fe -- i.e. after the random Fe/Cr/Ca/Al perturbation --
+        # since HeFESTo's control file has no separate Fe3+ element and can only
+        # be told the intended oxidation state via the bulk O/Fe ratio. Speciating
+        # before that perturbation would bake the oxidation signal into a Fe
+        # budget that then gets overwritten, diluting (and effectively
+        # randomizing) the intended fe3_fet signal.
         if row_b is None:
             # Pure mafic or pure ultramafic
             base_oxide_wt = _build_oxide_wt_from_row(row_a)
-            speciated_wt = _speciate_iron_and_normalize(base_oxide_wt, ratio)
-            element_moles = _oxide_wt_to_element_moles(speciated_wt)
+            unspeciated_wt = _speciate_iron_and_normalize(base_oxide_wt, 0.0)
+            element_moles = _oxide_wt_to_element_moles(unspeciated_wt)
         else:
             # Linear mixture: alpha = mafic fraction, (1-alpha) = ultramafic fraction
             mafic_oxide = _build_oxide_wt_from_row(row_a)
             ultra_oxide = _build_oxide_wt_from_row(row_b)
-            mafic_spec = _speciate_iron_and_normalize(mafic_oxide, ratio)
-            ultra_spec = _speciate_iron_and_normalize(ultra_oxide, ratio)
-            mafic_moles = _oxide_wt_to_element_moles(mafic_spec)
-            ultra_moles = _oxide_wt_to_element_moles(ultra_spec)
+            mafic_unspec = _speciate_iron_and_normalize(mafic_oxide, 0.0)
+            ultra_unspec = _speciate_iron_and_normalize(ultra_oxide, 0.0)
+            mafic_moles = _oxide_wt_to_element_moles(mafic_unspec)
+            ultra_moles = _oxide_wt_to_element_moles(ultra_unspec)
             element_moles = {
                 key: float(alpha) * mafic_moles[key] + (1.0 - float(alpha)) * ultra_moles[key]
                 for key in mafic_moles
             }
 
-        # Normalize to total moles = 1, add Fe, then renormalize to target
+        # Normalize to total moles = 1, then perturb Fe/Cr/Ca/Al to add
+        # compositional diversity beyond the two GEOROC end-members. Each
+        # perturbation also adjusts O to preserve mass balance for the default
+        # oxide it represents (FeO: O:Fe=1, Cr2O3: O:Cr=1.5, CaO: O:Ca=1,
+        # Al2O3: O:Al=1.5) -- otherwise cations are added/removed with no
+        # matching oxygen, which distorts the bulk O budget (and, for Fe,
+        # would swamp the oxidation-state signal applied just below).
         element_moles = _normalize_total_moles(element_moles, 1.0)
-        element_moles['Fe'] = element_moles.get('Fe', 0.0) + float(np.random.uniform(0.0, 0.1))
-        element_moles['Cr'] = element_moles.get('Cr', 0.0) + float(np.random.uniform(0.0, 0.01))
-        element_moles['Ca'] = element_moles.get('Ca', 0.0) - (float(np.random.uniform(0.0, 0.1))*(element_moles.get('Ca', 0.0)>0.1))
-        element_moles['Al'] = element_moles.get('Al', 0.0) - (float(np.random.uniform(0.0, 0.05))*(element_moles.get('Al', 0.0)>0.05))
+
+        d_fe = float(np.random.uniform(0.0, 0.1))
+        d_cr = float(np.random.uniform(0.0, 0.01))
+        d_ca = -(float(np.random.uniform(0.0, 0.1)) * (element_moles.get('Ca', 0.0) > 0.1))
+        d_al = -(float(np.random.uniform(0.0, 0.05)) * (element_moles.get('Al', 0.0) > 0.05))
+
+        element_moles['Fe'] = element_moles.get('Fe', 0.0) + d_fe
+        element_moles['Cr'] = element_moles.get('Cr', 0.0) + d_cr
+        element_moles['Ca'] = element_moles.get('Ca', 0.0) + d_ca
+        element_moles['Al'] = element_moles.get('Al', 0.0) + d_al
+        element_moles['O'] = (
+            element_moles.get('O', 0.0)
+            + 1.0 * d_fe   # FeO baseline for the added Fe (ferrous by default)
+            + 1.5 * d_cr   # Cr2O3
+            + 1.0 * d_ca   # CaO
+            + 1.5 * d_al   # Al2O3
+        )
+
+        # Apply the target Fe3+/FeT ratio now, on the final total Fe, by adding
+        # the extra oxygen that a Fe2O3 (vs FeO) stoichiometry requires beyond
+        # the FeO baseline just added above: 1.5 O per Fe3+ atom instead of 1.0
+        # O per Fe2+ atom, i.e. +0.5 O per Fe3+ atom. This is algebraically
+        # identical to speciating the final Fe budget directly through
+        # _speciate_iron_and_normalize.
+        fe_total = element_moles.get('Fe', 0.0)
+        element_moles['O'] = element_moles.get('O', 0.0) + 0.5 * ratio * fe_total
+
         element_moles = _normalize_total_moles(element_moles, target_total_moles)
 
         wt_debug = ', '.join(f'{key}={value:.4f}' for key, value in element_moles.items())
