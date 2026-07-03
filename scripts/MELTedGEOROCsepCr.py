@@ -56,13 +56,13 @@ calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, I
 input_date = 'June30closed'
 
 input_ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
-MELTSmodels = ['120']#, '120']#, '102'] # MELTS models to run. To add: MAGEmin
+MELTSmodels = ['102']#, '120']#, '102'] # MELTS models to run. To add: MAGEmin
 FXes = ['Batch']#, 'FxCryst']
 Prange = None # Auto if None, for lithosphere/aesthenospere (p)
 
 Oxygen = 'Closed' # 'Closed' or 'Open' system with respect to oxygen. Buffered or constant oxygen?
 
-total_to_run = int(300) # How many total simulations to run
+total_to_run = int(300) # How many total simulations to run. Now 
 
 startTs = [1800, 1800]#, 1800]
 delta = -1
@@ -74,8 +74,8 @@ simcycle = 100 # How many simulations to run per iteration
 # Check that arguments are valid
 
 # Tunable: final table row count for each memmap (~30x scale-up target).
-target_rows_train = 45_000_000
-target_rows_valid = 0 #2_500_000 # Change pipeline later to keep all this as test, no 3rd valid split. Existing set is fine
+target_rows_train = 90_000_000
+target_rows_valid = 2_500_000 # Change pipeline later to keep all this as test, no 3rd valid split. Existing set is fine
 #batch_file = MELTSModel + 'batch'
 
 for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']): 

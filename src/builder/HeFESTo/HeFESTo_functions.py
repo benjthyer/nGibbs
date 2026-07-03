@@ -922,10 +922,12 @@ def prepare_HeFESTo_tree_Mars(directory: Path, GEOROC_DIR: Path, control_path: P
         # would swamp the oxidation-state signal applied just below).
         element_moles = _normalize_total_moles(element_moles, 1.0)
 
+        mg_val = element_moles.get('Mg', 0.0)
+
         d_fe = float(np.random.uniform(0.0, 0.1))
         d_cr = float(np.random.uniform(0.0, 0.01))
         d_si = float(np.random.uniform(-0.5/24, 2.0/24)) # Read these values off of norm 24 histograms
-        d_mg = float(np.random.uniform(0, 3.0/24)) * (element_moles.get('Mg', 0.0) < 1.0/24)
+        d_mg = float(np.random.uniform(1.5/24, 3.0/24)) * (mg_val < 3.0/24)
         d_ca = -(float(np.random.uniform(0.0, 0.1)) * (element_moles.get('Ca', 0.0) > 0.1))
         d_al = -(float(np.random.uniform(0.0, 0.05)) * (element_moles.get('Al', 0.0) > 0.05))
 
