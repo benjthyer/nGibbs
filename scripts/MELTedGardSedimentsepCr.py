@@ -58,7 +58,7 @@ import time
 time.sleep(sleepytime)"""
 
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-input_date = 'June30SedimentsOpen'
+input_date = 'July5SedimentsOpen'
 
 input_ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
 MELTSmodels = ['120']#, '120']#, '102'] # MELTS models to run. To add: MAGEmin
@@ -70,15 +70,13 @@ Oxygen = 'Open' # 'Closed' or 'Open' system with respect to oxygen. Buffered or 
 total_to_run = int(300) # How many total simulations to run
 
 startTs = [1800, 1800]#, 1800]
-delta = -2
+delta = -1
 input_liquid_fractions = [102, 102]#, 100] # Make above 100 to allow for superliquidus
 simcycle = 50 # How many simulations to run per iteration
 
-#storage_directory = f'/mnt/d/Workspace/{MELTSModel}Datasets/'
-
-# Check that arguments are valid
-
-
+# Tunable: final table row count for each memmap (~30x scale-up target).
+target_rows_train = 35_000_000
+target_rows_valid = 0 #2_500_000 # Change pipeline later to keep all this as test, no 3rd valid split. Existing set is fine
 #batch_file = MELTSModel + 'batch'
 
 for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']): 
@@ -181,10 +179,6 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
             valid_pool = build_ratio_pool(
                 [GEOROC_valid[carbonates_valid], GEOROC_valid[noncarbonates_valid]],
                 train_weights, pool_size=5_000)
-
-            # Tunable: final table row count for each memmap (~30x scale-up target).
-            target_rows_train = 300_000
-            target_rows_valid = 75_000
 
             if not parsed_args.no_training:
                 MELTER(output_file=Trainfilename, GEOROC=train_pool, col_dict=col_dict,

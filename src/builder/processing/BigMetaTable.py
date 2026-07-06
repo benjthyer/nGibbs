@@ -232,9 +232,9 @@ class BigMetaTable():
             
         # --- Convert lists to arrays
         t_start = time.time()
-        self.meta = np.array(self.meta, dtype=str)
-        self.run_indices = np.array(self.run_indices, dtype=str)
-        self.MELTSversion = np.array(self.MELTSversion, dtype=str)
+        self.meta = np.array(self.meta, dtype=object)
+        self.run_indices = np.array(self.run_indices, dtype=object)
+        self.MELTSversion = np.array(self.MELTSversion, dtype=object)
         self.metadata = np.array(self.metadata, dtype=object)
         gc.collect()
         print(f"[TIMER] Metadata Lists to arrays: completed in {time.time() - t_start:.2f} seconds")
@@ -1938,8 +1938,258 @@ class BigMetaTable():
         self.save_csv_streaming(name=self.filename)
         print("[RECOVER] Done.")
 
+    def recover_constant_composition_phases(self, phase_names):
+        """
+        Recover mass for one or more compositionally-constant phases (a single
+        fixed oxide formula, e.g. graphite, quartz, calcite) from the bulk-
+        composition residual, for rows whose metadata lists only phases named
+        in `phase_names` as untracked. Generalizes the graphite branch of
+        recover_untracked_phases to an arbitrary set of fixed-stoichiometry
+        phases, using the stoichiometry rows already present in the compToOx
+        projection CSV (self.indexer.compToOx_df). Variable-composition
+        phases (e.g. hornblende) are out of scope - use
+        recover_untracked_phases for those.
 
-def merge_big_meta_tables(tables, new_filename, chunk_size=100_000, clear_old_tables = False):
+        Parameters:
+        - phase_names (iterable of str): Table phase names to recover. Each
+          must have a stoichiometry row in self.indexer.compToOx_df keyed by
+          its bare name (no ' : phase' suffix - that suffix only applies to
+          variable-composition endmembers), and must match the name used for
+          this phase in the per-row text metadata.
+
+        Writes ``mass (gm)(<phase>)`` columns, appending them if absent. Rows
+        already non-zero in an existing column are left untouched. Metadata
+        text file is NOT modified. Does not write a CSV - the .npy memmap is
+        updated (and flushed) in place; call .save() afterwards if a CSV
+        companion is wanted.
+        """
+        from scipy.optimize import nnls as _nnls
+        from ngibbs.config.constants import OXIDE_MOLAR_MASSES
+
+        phase_names = list(dict.fromkeys(phase_names))  # de-dupe, preserve order
+        if not phase_names:
+            raise ValueError("phase_names must be non-empty.")
+        ALLOWED_META_PHASES = set(phase_names)
+        phase_pos = {p: i for i, p in enumerate(phase_names)}
+
+        compToOx_df = self.indexer.compToOx_df
+        Oxides = self.indexer.Oxides
+        n_ox = len(Oxides)
+        MM_ox = np.array([OXIDE_MOLAR_MASSES[ox] for ox in Oxides], dtype=np.float64)
+
+        # ------------------------------------------------------------------ #
+        # Stoichiometry (over active Oxides) and molar mass per phase.         #
+        # ------------------------------------------------------------------ #
+        stoich = np.zeros((len(phase_names), n_ox), dtype=np.float64)
+        for p_i, phase in enumerate(phase_names):
+            if phase not in compToOx_df.index:
+                raise KeyError(f"[RECOVER] '{phase}' not found in compToOx projection CSV.")
+            row = compToOx_df.loc[phase]
+            for k, ox in enumerate(Oxides):
+                if ox in compToOx_df.columns:
+                    stoich[p_i, k] = float(row[ox])
+        phase_MM = stoich @ MM_ox
+        if np.any(phase_MM <= 0):
+            bad = [phase_names[i] for i in np.where(phase_MM <= 0)[0]]
+            raise ValueError(
+                f"[RECOVER] Non-positive molar mass computed for phase(s) {bad} "
+                "from the active Oxides - check compToOx entries / excluded oxides."
+            )
+
+        # ------------------------------------------------------------------ #
+        # 1. Classify rows from metadata.                                      #
+        # ------------------------------------------------------------------ #
+        n_rows = self.table.shape[0]
+        has_phase = np.zeros((len(phase_names), n_rows), dtype=bool)
+        do_recovery = np.zeros(n_rows, dtype=bool)
+
+        for i, meta in enumerate(self.metadata):
+            tokens = str(meta).strip().split()
+            names = set()
+            for tok in tokens:
+                name = tok.split(':')[0].strip().lower()
+                if not name.lstrip('-').replace('.', '', 1).isdigit():
+                    names.add(name)
+            if not names:
+                continue
+            if names - ALLOWED_META_PHASES:
+                continue                           # unrecognised phase → skip
+            for name in names:
+                has_phase[phase_pos[name], i] = True
+            do_recovery[i] = True
+
+        target_idx = np.where(do_recovery)[0]
+        if len(target_idx) == 0:
+            print("[RECOVER] No rows with recoverable constant-composition phases found.")
+            return
+
+        # ------------------------------------------------------------------ #
+        # 1b. Guard: skip rows already non-zero in an existing mass column.    #
+        # ------------------------------------------------------------------ #
+        for p_i, phase in enumerate(phase_names):
+            hdr = f"mass (gm)({phase})"
+            if hdr in self.header:
+                col = self.header.index(hdr)
+                existing = self.table[target_idx, col].astype(np.float64)
+                already = existing != 0
+                n_skip = int((has_phase[p_i, target_idx] & already).sum())
+                if n_skip:
+                    print(f"[RECOVER] Skipping {n_skip} '{phase}' rows already non-zero.")
+                has_phase[p_i, target_idx[already]] = False
+
+        do_recovery = np.any(has_phase, axis=0)
+        target_idx = np.where(do_recovery)[0]
+        if len(target_idx) == 0:
+            print("[RECOVER] All target rows already recovered; nothing to do.")
+            return
+
+        n_target = len(target_idx)
+        print(f"[RECOVER] {n_target} target rows to recover — " + ", ".join(
+            f"{phase} ({int(has_phase[p_i, target_idx].sum())})"
+            for p_i, phase in enumerate(phase_names)
+        ))
+
+        # ------------------------------------------------------------------ #
+        # 2. Actual bulk oxide moles for target rows.                          #
+        # ------------------------------------------------------------------ #
+        bulk_cols = self.indexer.MELTS_indices.get('Bulk_comp', {})
+        if 'mass' in bulk_cols:
+            sys_mass = self.table[target_idx, bulk_cols['mass']].astype(np.float64)
+        else:
+            sys_mass = np.full(n_target, 100.0, dtype=np.float64)
+            print("[RECOVER] No 'mass(Bulk_comp)' column — assuming 100 g system mass.")
+
+        actual_ox_moles = np.zeros((n_target, n_ox), dtype=np.float64)
+        for k, ox in enumerate(Oxides):
+            if ox in bulk_cols:
+                wt_pct = self.table[target_idx, bulk_cols[ox]].astype(np.float64)
+                actual_ox_moles[:, k] = (wt_pct / 100.0) * sys_mass / MM_ox[k]
+
+        # ------------------------------------------------------------------ #
+        # 3. Tracked-phase oxide moles (recovered phases excluded).            #
+        # ------------------------------------------------------------------ #
+        SKIP = self.indexer.EXCLUDED_PHASES | ALLOWED_META_PHASES
+        ml = self.indexer.ml_indexer
+        tracked_ox_moles = np.zeros((n_target, n_ox), dtype=np.float64)
+
+        for phase in ml.all_phases:
+            if phase in SKIP:
+                continue
+            phase_cols = self.indexer.MELTS_indices.get(phase, {})
+
+            if phase == 'melts-liquid':
+                liq_col = phase_cols.get('liq mass (gm)')
+                if liq_col is None:
+                    continue
+                liq_mass = self.table[target_idx, liq_col].astype(np.float64)
+                for k, ox in enumerate(Oxides):
+                    wt_col = phase_cols.get(f'wt% {ox}')
+                    if wt_col is not None:
+                        ox_g = (self.table[target_idx, wt_col].astype(np.float64)
+                                / 100.0) * liq_mass
+                        tracked_ox_moles[:, k] += ox_g / MM_ox[k]
+                continue
+
+            mass_col = phase_cols.get('mass (gm)', phase_cols.get('total (moles)'))
+            if mass_col is None:
+                continue
+            phase_mass = self.table[target_idx, mass_col].astype(np.float64)
+            if np.all(phase_mass == 0):
+                continue
+
+            phase_label_inds = ml.label_indices.get(phase)
+            if phase_label_inds is None:
+                continue
+
+            comp_names = [ml.label_names[i] for i in phase_label_inds]
+            if len(phase_label_inds) == 1:
+                comp_fracs = np.ones((n_target, 1), dtype=np.float64)
+            else:
+                comp_fracs = np.zeros((n_target, len(phase_label_inds)), dtype=np.float64)
+                for j, cname in enumerate(comp_names):
+                    ccol = phase_cols.get(cname)
+                    if ccol is not None:
+                        comp_fracs[:, j] = self.table[target_idx, ccol].astype(np.float64)
+
+            sub_compToOx   = ml.compToOxLoad[phase_label_inds, :].astype(np.float64)
+            phase_ox_fracs = comp_fracs @ sub_compToOx
+            phase_MM_row   = phase_ox_fracs @ MM_ox
+            phase_moles    = np.where(phase_MM_row > 0, phase_mass / phase_MM_row, 0.0)
+            tracked_ox_moles += phase_moles[:, np.newaxis] * phase_ox_fracs
+
+        # ------------------------------------------------------------------ #
+        # 4. Residual, then solve per row for the phase(s) actually present.  #
+        #    Rows with a single present phase are solved with a vectorized     #
+        #    least-squares projection; rows with several simultaneous          #
+        #    constant-composition phases fall back to per-row NNLS (mirrors    #
+        #    the hornblende NNLS fit in recover_untracked_phases).             #
+        # ------------------------------------------------------------------ #
+        residual = actual_ox_moles - tracked_ox_moles
+        phase_moles_arr = np.zeros((len(phase_names), n_target), dtype=np.float64)
+
+        present_counts = has_phase[:, target_idx].sum(axis=0)
+        single_mask = present_counts == 1
+        multi_mask  = present_counts > 1
+
+        if single_mask.any():
+            single_rows  = np.where(single_mask)[0]
+            phase_of_row = np.argmax(has_phase[:, target_idx[single_rows]], axis=0)
+            for p_i in np.unique(phase_of_row):
+                rows_p = single_rows[phase_of_row == p_i]
+                s = stoich[p_i]
+                denom = s @ s
+                if denom <= 0:
+                    continue
+                proj = (residual[rows_p] @ s) / denom
+                phase_moles_arr[p_i, rows_p] = np.maximum(0.0, proj)
+
+        if multi_mask.any():
+            for row in tqdm(np.where(multi_mask)[0],
+                             desc="[RECOVER] Constant-composition NNLS", leave=False):
+                present = np.where(has_phase[:, target_idx[row]])[0]
+                A = stoich[present].T
+                x, _ = _nnls(A, residual[row])
+                phase_moles_arr[present, row] = x
+
+        phase_mass_arr = phase_moles_arr * phase_MM[:, np.newaxis]
+
+        # ------------------------------------------------------------------ #
+        # 5. Write results: fill existing columns / append new ones as needed.#
+        # ------------------------------------------------------------------ #
+        to_append = [p for p in phase_names if f"mass (gm)({p})" not in self.header
+                     and has_phase[phase_pos[p]].any()]
+        if to_append:
+            old_ncols = self.table.shape[1]
+            tmp_path = self.memmap_file.replace('.npy', '_constphase_expand.npy')
+            new_mm = np.lib.format.open_memmap(
+                tmp_path, mode='w+', dtype=self.table.dtype,
+                shape=(n_rows, old_ncols + len(to_append)))
+            new_mm[:, :old_ncols] = self.table
+            new_mm[:, old_ncols:] = 0
+            new_mm.flush()
+            del new_mm, self.table
+            gc.collect()
+            os.replace(tmp_path, self.memmap_file)
+            self.table = np.load(self.memmap_file, mmap_mode='r+')
+            self.header.extend(f"mass (gm)({p})" for p in to_append)
+            self.indexer = DatasetIndexer(self.header, MODEL=self.Model, OXYGEN=self.OXYGEN)
+            print(f"[RECOVER] Appended columns: {[f'mass (gm)({p})' for p in to_append]}")
+
+        for p_i, phase in enumerate(phase_names):
+            mask = has_phase[p_i, target_idx]
+            if not mask.any():
+                continue
+            hdr = f"mass (gm)({phase})"
+            col = self.header.index(hdr)
+            rows = target_idx[mask]
+            self.table[rows, col] = phase_mass_arr[p_i, mask].astype(np.float32)
+            print(f"[RECOVER] Wrote {phase} → {mask.sum()} rows "
+                  f"(total mass = {phase_mass_arr[p_i, mask].sum():.3f} g).")
+        self.table.flush()
+        print("[RECOVER] Done.")
+
+
+def merge_big_meta_tables(tables, new_filename, chunk_size=100_000, clear_old_tables = True):
     """
     Merges multiple BigMetaTable instances into a new memmapped BigMetaTable.
     Edited 6/30/25 to initialize merged BigMetaTable using .__init__() for stability
