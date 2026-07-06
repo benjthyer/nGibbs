@@ -406,7 +406,7 @@ class BigMetaTable():
         """Efficient delete that preserves memory-mapping by rewriting."""
         keep_mask = np.ones(self.table.shape[0], dtype=bool)
         keep_mask[indices] = False
-        new_shape = (np.sum(keep_mask), self.table.shape[1])
+        new_shape = (int(np.sum(keep_mask)), self.table.shape[1])
         
         # Apply operation to blurred binary data first to call assertion before we get too deep.
         if self.blurredbinaries is not None:
