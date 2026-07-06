@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import argparse
+import random
 import subprocess
 from time import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -921,10 +922,13 @@ def prepare_HeFESTo_tree_Mars(directory: Path, GEOROC_DIR: Path, control_path: P
         # would swamp the oxidation-state signal applied just below).
         element_moles = _normalize_total_moles(element_moles, 1.0)
 
+        mg_val = element_moles.get('Mg', 0.0)
+
         d_fe = float(np.random.uniform(0.0, 0.1))
         d_cr = float(np.random.uniform(0.0, 0.01))
         d_si = float(np.random.uniform(-0.5/24, 2.0/24)) # Read these values off of norm 24 histograms
-        d_mg = float(np.random.uniform(0, 3.0/24)) * (element_moles.get('Mg', 0.0) < 1.0/24)
+        d_mg = float(np.random.uniform(1.5/24, 2.75/24)) * (mg_val < 2.5/24)
+        d_mg += float(np.random.uniform(0.25/24, 2.0/24))
         d_ca = -(float(np.random.uniform(0.0, 0.1)) * (element_moles.get('Ca', 0.0) > 0.1))
         d_al = -(float(np.random.uniform(0.0, 0.05)) * (element_moles.get('Al', 0.0) > 0.05))
 
@@ -1113,7 +1117,12 @@ def plot_bulk_compositions(
     return df
 
 
-def prepare_HeFESTo_tree_from_phase_changes(directory: Path, phase_path: Path, CONTROL_DIR: Path) -> None:
+def prepare_HeFESTo_tree_from_phase_changes(
+    directory: Path,
+    phase_path: Path,
+    CONTROL_DIR: Path,
+    limit: Optional[int] = None,
+) -> None:
     """
     Prepare a directory tree from a phase-boundary CSV.
 
@@ -1121,11 +1130,20 @@ def prepare_HeFESTo_tree_from_phase_changes(directory: Path, phase_path: Path, C
     Each pair is copied into its own SimulationN directory, the bulk element
     abundances are written verbatim into a HeFESTo control file, and the paired
     rows are preserved in a per-simulation CSV for downstream reuse.
+
+    Parameters
+    ----------
+    limit : int, optional
+        If given, only ``limit`` phase-change pairs are loaded. Pair indices
+        are drawn as random integers in ``[0, total_pairs)`` and each pair's
+        two rows (``idx * 2`` and ``idx * 2 + 1``) are read directly off disk
+        via ``skiprows``, so the rest of the CSV is never materialized in
+        memory.
     """
 
     directory = Path(directory)
     phase_path = Path(phase_path)
-   
+
 
     if not phase_path.exists():
         raise FileNotFoundError(f'Phase boundary file not found: {phase_path}')
@@ -1137,13 +1155,43 @@ def prepare_HeFESTo_tree_from_phase_changes(directory: Path, phase_path: Path, C
             f'Target directory already contains Simulation<number> subdirectories: {directory}'
         )"""
 
-    phase_df = pd.read_csv(phase_path, dtype=str)
-    if phase_df.empty:
-        raise ValueError('Phase boundary file is empty')
-    if len(phase_df) % 2 != 0:
-        raise ValueError(
-            'Phase boundary file should contain an even number of rows, '
-            'with each pair bounding one phase change'
+    if limit is None:
+        phase_df = pd.read_csv(phase_path, dtype=str)
+        if phase_df.empty:
+            raise ValueError('Phase boundary file is empty')
+        if len(phase_df) % 2 != 0:
+            raise ValueError(
+                'Phase boundary file should contain an even number of rows, '
+                'with each pair bounding one phase change'
+            )
+    else:
+        if limit <= 0:
+            raise ValueError('limit must be a positive integer')
+
+        with open(phase_path, 'r', encoding='utf-8', errors='ignore') as handle:
+            total_data_rows = sum(1 for _ in handle) - 1
+        if total_data_rows <= 0:
+            raise ValueError('Phase boundary file is empty')
+        if total_data_rows % 2 != 0:
+            raise ValueError(
+                'Phase boundary file should contain an even number of rows, '
+                'with each pair bounding one phase change'
+            )
+
+        total_pairs = total_data_rows // 2
+        if limit > total_pairs:
+            raise ValueError(
+                f'limit ({limit}) exceeds the number of available phase-change '
+                f'pairs ({total_pairs})'
+            )
+
+        pair_idx = random.sample(range(total_pairs), limit)
+        keep_rows = {row for idx in pair_idx for row in (idx * 2, idx * 2 + 1)}
+
+        phase_df = pd.read_csv(
+            phase_path,
+            dtype=str,
+            skiprows=lambda line_no: line_no != 0 and (line_no - 1) not in keep_rows,
         )
 
     bulk_element_cols = [
