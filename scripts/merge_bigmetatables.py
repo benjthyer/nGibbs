@@ -29,13 +29,14 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from tqdm import tqdm
 
 
 repo_src = str(Path(__file__).resolve().parents[1] / "src")
 if repo_src not in sys.path:
     sys.path.insert(0, repo_src)
 
-from builder.processing.BigMetaTable import BigMetaTable, merge_big_meta_tables
+from builder.processing.BigMetaTable import BigMetaTable
 
 
 def _validate_extensionless(value: str, arg_name: str) -> str:
@@ -127,34 +128,89 @@ def _warn_missing(missing_in_b, when: str) -> None:
         print(f"[INFO] ({when}) Table B contains every column of Table A.")
 
 
-def _align_table_b_to_a(table_a: BigMetaTable, table_b: BigMetaTable, output_name: str) -> None:
+def _build_merged_table(table_a: BigMetaTable, table_b: BigMetaTable, output_name: str,
+                         chunk_size: int = 100_000) -> BigMetaTable:
     """
-    Reorder/reindex table_b's underlying array to match table_a's header
-    exactly (same columns, same order). Columns of A missing from B are
-    filled with 0. Mutates table_b in place.
+    Build the merged table directly at `output_name`, in a single pass:
+    table_a's rows are copied in row-chunks into the front of a new memmap
+    (table_a is already in its own column order, so this is a plain
+    contiguous copy); table_b's rows are then written into the tail,
+    column-by-column, reordered/zero-filled to table_a's column layout.
+
+    This replaces reindexing table_b into a full standalone copy and then
+    handing both tables to merge_big_meta_tables for a second chunked copy -
+    that path touched every row of table_b twice (once to align, once to
+    merge) plus a further full rewrite in the final .save(). Building the
+    output array once, directly, cuts that down to a single pass per table.
     """
     a_header = table_a.header
     b_index = {name: i for i, name in enumerate(table_b.header)}
+    b_col_for_a = [b_index.get(name) for name in a_header]  # None -> missing from B, filled with 0
 
-    n_rows = table_b.table.shape[0]
-    n_cols = len(a_header)
-    dtype = table_b.table.dtype
+    rows_a, n_cols = table_a.table.shape
+    rows_b = table_b.table.shape[0]
+    dtype = table_a.table.dtype
+    if table_b.table.dtype != dtype:
+        raise ValueError("Dtype mismatch between Table A and Table B.")
 
-    aligned_path = f"{output_name}_tableB_aligned.npy"
-    aligned = np.lib.format.open_memmap(aligned_path, mode='w+', dtype=dtype, shape=(n_rows, n_cols))
+    mmap_path = f"{output_name}.npy"
+    merged = np.lib.format.open_memmap(mmap_path, mode='w+', dtype=dtype, shape=(rows_a + rows_b, n_cols))
 
-    for j, col_name in enumerate(a_header):
-        b_col = b_index.get(col_name)
-        if b_col is not None:
-            aligned[:, j] = table_b.table[:, b_col]
-        else:
-            aligned[:, j] = 0
+    print(f"Copying Table A ({rows_a} rows)...")
+    for start in tqdm(range(0, rows_a, chunk_size), desc="Copying Table A"):
+        end = min(start + chunk_size, rows_a)
+        merged[start:end] = table_a.table[start:end]
+        merged.flush()
 
-    aligned.flush()
-    del table_b.table
+    print(f"Writing Table B ({rows_b} rows), reordered to Table A's columns...")
+    # Row-chunked like Table A above: source/dest slices stay contiguous, and the
+    # column reorder happens on a small in-RAM chunk rather than as a strided
+    # column-at-a-time pass over the whole (row-major) memmap.
+    zero_mask = np.array([b_col is None for b_col in b_col_for_a])
+    safe_cols = np.array([b_col if b_col is not None else 0 for b_col in b_col_for_a])
+    for start in tqdm(range(0, rows_b, chunk_size), desc="Aligning Table B columns"):
+        end = min(start + chunk_size, rows_b)
+        chunk = table_b.table[start:end][:, safe_cols]
+        if zero_mask.any():
+            chunk[:, zero_mask] = 0
+        merged[rows_a + start:rows_a + end] = chunk
+        merged.flush()
+
+    # Blurred binaries are row-aligned labels unrelated to header columns - a plain concat.
+    move_blurred = table_a.blurredbinaries is not None and table_b.blurredbinaries is not None
+    if move_blurred:
+        if table_a.blurredbinaries.shape[1] != table_b.blurredbinaries.shape[1]:
+            raise ValueError("Blurredbinaries column mismatch between Table A and Table B.")
+        print("Merging blurred boundaries...")
+        merged_bb = np.lib.format.open_memmap(
+            f"{output_name}blurredbinaries.npy", mode='w+',
+            dtype=table_a.blurredbinaries.dtype,
+            shape=(rows_a + rows_b, table_a.blurredbinaries.shape[1]),
+        )
+        merged_bb[:rows_a] = table_a.blurredbinaries
+        merged_bb[rows_a:] = table_b.blurredbinaries
+        merged_bb.flush()
+        del merged_bb
+    else:
+        print("Not merging blurred boundaries")
+
+    meta_rows = len(table_a.metadata) + len(table_b.metadata)
+    assert merged.shape[0] == meta_rows, "Metadata length does not equal table rows!"
+    with open(f"{output_name}.txt", "w") as f:
+        table_a.write_meta_lines(f)
+        table_b.write_meta_lines(f)
+
+    del merged, table_a.table, table_b.table
+    if table_a.blurredbinaries is not None:
+        del table_a.blurredbinaries
+    if table_b.blurredbinaries is not None:
+        del table_b.blurredbinaries
     gc.collect()
-    table_b.table = aligned
-    table_b.header = list(a_header)
+
+    table_a._clear_metadata_rows()
+    table_b._clear_metadata_rows()
+
+    return BigMetaTable(output_name, header=list(a_header))
 
 
 def main() -> None:
@@ -179,17 +235,12 @@ def main() -> None:
     missing_in_b = _column_discrepancies(table_a, table_b)
     _warn_missing(missing_in_b, when="before merge")
 
-    print("Aligning Table B columns to Table A...")
-    _align_table_b_to_a(table_a, table_b, output_name)
-
     print("Merging tables...")
-    merged_table = merge_big_meta_tables(
-        [table_a, table_b],
-        new_filename=output_name+'temp',
-    )
+    merged_table = _build_merged_table(table_a, table_b, output_name)
 
-    merged_table.save(output_name, save_csv=(args.csv_output == "full"))
-    if args.csv_output == "header":
+    if args.csv_output == "full":
+        merged_table.save_csv_streaming(name=output_name)
+    elif args.csv_output == "header":
         with open(f"{output_name}.csv", "w", newline="") as f:
             csv.writer(f).writerow(merged_table.header)
 
@@ -201,7 +252,7 @@ def main() -> None:
 
     _warn_missing(missing_in_b, when="after merge")
 
-    del merged_table, table_a, table_b
+    del merged_table
     gc.collect()
 
 

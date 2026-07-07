@@ -36,7 +36,7 @@ from ngibbs.utils.math_utils import Normalizer
 
 
 def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=False, featureNames=["Pressure(System_main)", "Temperature(System_main)"],
-                            freeOutputs=None, indexer=None, config_path=None, bundle_name=None):
+                            freeOutputs=None, indexer=None, config_path=None, bundle_name=None, chunk_size=100_000):
 
     """Builds features and labels for training. Converts MELTS tables to .npy files fit for ML work.
     Self: BigMetaTable Instance.
@@ -189,12 +189,19 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             shape=self.table.shape
     )
 
-    # Copy data in blocks or all at once (depending on size). This is done to avoid mutating the original table during resampling.
-    self.table1[:] = self.table[:]
-    self.table1.flush()
-    
+    # Copy data one row-chunk at a time, so this never holds the whole table's worth of
+    # dirty pages in RAM before anything reaches disk. This is done to avoid mutating the
+    # original table during resampling.
+    self._chunked_copy_into(self.table, self.table1, chunk_size=chunk_size)
+
     if self.blurredbinaries is None:
-        binary_mask = (self.table[:,mass_indices]>0).astype(int)
+        # Read in chunks rather than `self.table[:, mass_indices]` across every row at
+        # once - a single column subset spanning the whole (row-major) table is a
+        # strided read over every row's memory, not a sequential one.
+        binary_mask = np.empty((total_rows, len(mass_indices)), dtype=int)
+        for start in range(0, total_rows, chunk_size):
+            end = min(start + chunk_size, total_rows)
+            binary_mask[start:end] = (self.table[start:end, mass_indices] > 0).astype(int)
     else:
         assert self.blurredbinaries.shape[0] == self.table.shape[0], "Table of labels and blurred binaries must have the same number of rows!"
         print('Using Blurred Binaries to generate binary labels...')
@@ -249,11 +256,18 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     try:
         for i, bounds in enumerate(tqdm(resample_bounds, desc = 'Generating Molar Features and Labels', leave = False)):
             print(f"SAMPLE: {i}")
-            mass_multipliers = np.random.uniform(*bounds, size = total_rows*num_phases).reshape(total_rows,num_phases) # Vary proportions of equilibrium assemblages
-            self.table1[:,mass_indices] *= mass_multipliers
-            self.table1[:,mass_indices] *= 100/np.sum(self.table1[:,mass_indices], axis = 1, keepdims = True)
+            # Vary proportions of equilibrium assemblages, one row-chunk at a time -
+            # `self.table1[:, mass_indices]` across every row is a strided read/write
+            # over the whole (row-major) memmap; chunking keeps each pass contiguous.
+            for start in range(0, total_rows, chunk_size):
+                end = min(start + chunk_size, total_rows)
+                chunk_t1 = self.table1[start:end]
+                mass_multipliers = np.random.uniform(*bounds, size=(end - start, num_phases))
+                chunk_t1[:, mass_indices] *= mass_multipliers
+                chunk_t1[:, mass_indices] *= 100/np.sum(chunk_t1[:, mass_indices], axis=1, keepdims=True)
+                self.table1[start:end] = chunk_t1
             self.table1.flush()
-            
+
             # Get molar quantities
             self.retrieve_component_moles()
 
@@ -302,114 +316,100 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
                 )
                 debug_dump_done = True
                         
-            Inmoles = (self.molar @ compToOxLoad) @ OxToEl
-            InTot = np.sum(Inmoles, axis = 1).reshape(-1,1)
-            
-            # --- Binary labels
-            sl = np.s_[i*num_rows:(i+1)*num_rows]
-            self.binarylabels[sl] = binary_mask
-            self.binarylabels.flush()
-            del sl
+            # Every downstream label/feature array is derived from self.molar/self.table1/
+            # self.table, one row-chunk at a time. This used to read self.molar in full
+            # (once for Inmoles, again for masslabels, again for molarlabels, again per
+            # phase in the labels loop below) and self.table/self.table1 in full per
+            # feature/free-output column - each chunk is now read once and every output
+            # for that row range is derived from it before moving to the next chunk.
+            for start in tqdm(range(0, num_rows, chunk_size), desc=f"Building labels/features (sample {i})", leave=False):
+                end = min(start + chunk_size, num_rows)
+                out_start, out_end = i*num_rows + start, i*num_rows + end
 
-            # --- Mass labels
-            sl = np.s_[i*num_rows:(i+1)*num_rows]
-            if self.Model == 'HeFESTo':
-                phaseComps = self.molar[:, :, np.newaxis] * phaseToCompMap.T  # (B, C, P)
+                molar_chunk = self.molar[start:end]
+                Inmoles_chunk = (molar_chunk @ compToOxLoad) @ OxToEl
+                InTot_chunk = np.sum(Inmoles_chunk, axis=1).reshape(-1, 1)
 
-                # Convert to oxides per phase (plug in iron speciator). Moles, then grams
-                phaseOxMolar = np.einsum("bcp,co->bpo", phaseComps, compToOxLoad)
-                
+                # --- Binary labels
+                self.binarylabels[out_start:out_end] = binary_mask[start:end]
 
-                phaseOxMass = np.einsum("bpo,oo->bpo", phaseOxMolar, MM)
-                
-                # Compute total phase masses
-                phaseMass = np.sum(phaseOxMass, axis=-1)  # (B, P)
+                # --- Mass labels
+                if self.Model == 'HeFESTo':
+                    phaseComps = molar_chunk[:, :, np.newaxis] * phaseToCompMap.T  # (B, C, P)
 
-                # Normalize systemwide to 100%
-                systemTotal = phaseMass.sum(axis=-1, keepdims=True)  # (B, 1)
-                phaseMassNorm = 100.0 * phaseMass / (systemTotal)
-                self.masslabels[sl] = phaseMassNorm
+                    # Convert to oxides per phase (plug in iron speciator). Moles, then grams
+                    phaseOxMolar = np.einsum("bcp,co->bpo", phaseComps, compToOxLoad)
 
-            else: # For MELTS, we can just use the mass columns directly (already wt%)
-                self.masslabels[sl] = self.table1[:, mass_indices]
+                    phaseOxMass = np.einsum("bpo,oo->bpo", phaseOxMolar, MM)
 
-            self.masslabels.flush()
-            del sl
-            
-            # --- Free outputs (if any): replicate values from original table across resamples
-            if freeOutputs is not None and len(free_output_indices) > 0:
-                sl_rows = slice(i*num_rows, (i+1)*num_rows)
-                for k, fidx in enumerate(free_output_indices):
+                    # Compute total phase masses
+                    phaseMass = np.sum(phaseOxMass, axis=-1)  # (B, P)
+
+                    # Normalize systemwide to 100%
+                    systemTotal = phaseMass.sum(axis=-1, keepdims=True)  # (B, 1)
+                    phaseMassNorm = 100.0 * phaseMass / (systemTotal)
+                    self.masslabels[out_start:out_end] = phaseMassNorm
+
+                else: # For MELTS, we can just use the mass columns directly (already wt%)
+                    self.masslabels[out_start:out_end] = self.table1[start:end, mass_indices]
+
+                # --- Free outputs (if any): replicate values from original table across resamples
+                if freeOutputs is not None and len(free_output_indices) > 0:
+                    for k, fidx in enumerate(free_output_indices):
+                        if isinstance(fidx, tuple):
+                            num_col = self.table[start:end, fidx[0]].astype(np.float64)
+                            den_col = self.table[start:end, fidx[1]].astype(np.float64)
+                            self.freeOutputs[out_start:out_end, k] = np.where(den_col != 0, num_col / den_col, 0.0).astype(np.float32)
+                        else:
+                            self.freeOutputs[out_start:out_end, k] = self.table[start:end, fidx]
+
+                # --- Features (bulk chemistry in elements normalized to 1)
+                self.features[out_start:out_end, feature_offset:] = (Inmoles_chunk / InTot_chunk)
+
+                # --- Features (selected input variables from table by featureNames)
+                for k, fidx in enumerate(feature_indices):
                     if isinstance(fidx, tuple):
-                        num_col = self.table[:, fidx[0]].astype(np.float64)
-                        den_col = self.table[:, fidx[1]].astype(np.float64)
-                        self.freeOutputs[sl_rows, k] = np.where(den_col != 0, num_col / den_col, 0.0).astype(np.float32)
+                        num_col = self.table[start:end, fidx[0]].astype(np.float64)
+                        den_col = self.table[start:end, fidx[1]].astype(np.float64)
+                        self.features[out_start:out_end, k] = np.where(den_col != 0, num_col / den_col, 0.0).astype(np.float32)
                     else:
-                        self.freeOutputs[sl_rows, k] = self.table[:, fidx]
+                        self.features[out_start:out_end, k] = self.table[start:end, fidx]
+
+                # --- Molar labels
+                self.molarlabels[out_start:out_end] = (molar_chunk / InTot_chunk) @ phaseToCompMap.T
+
+                for phase, idx in label_indices.items(): # Move components into the right space. Using molar_chunk to support HeFESTo and MELTS with same code
+                    if len(idx) == 1:
+                        continue # Skip pure phases
+
+                    if phase != 'melts-liquid':
+                        input_idx = label_indices_comp[phase]
+                        # --- Labels (phase components)
+                        row_tot = np.sum(molar_chunk[:, idx], axis=1)
+                        nonzeros = row_tot != 0
+                        normed = np.zeros_like(molar_chunk[:, idx])
+                        normed[nonzeros] = molar_chunk[np.ix_(nonzeros, idx)] / row_tot[nonzeros].reshape(-1, 1)
+                        self.labels[out_start:out_end, input_idx] = normed
+
+                    if phase == 'melts-liquid':
+                        liq_mol = molar_chunk[:, label_indices[phase]] # Non-normalized liquid element moles
+                        liq_tot = np.sum(liq_mol, axis=1)
+                        liqNonzero = liq_tot != 0
+                        liq_mol[liqNonzero] = liq_mol[liqNonzero] / liq_tot[liqNonzero].reshape(-1, 1) # Normalize to sum 1
+
+                        # --- Labels (phase components)
+                        self.labels[out_start:out_end, label_indices_comp[phase]] = liq_mol
+
+            self.binarylabels.flush()
+            self.masslabels.flush()
+            if freeOutputs is not None and len(free_output_indices) > 0:
                 self.freeOutputs.flush()
-
-            # --- Features (bulk chemistry in elements normalized to 1)
-            sl = np.s_[i*num_rows:(i+1)*num_rows, feature_offset:]
-            print(feature_offset)
-            print(Inmoles.shape)
-            print(self.features.shape)
-            print(len(self.indexer.ml_indexer.Elkeys))
-            self.features[sl] = (Inmoles / InTot)
             self.features.flush()
-            del sl
-
-            # --- Features (selected input variables from table by featureNames)
-            sl_rows = slice(i*num_rows, (i+1)*num_rows)
-            for k, fidx in enumerate(feature_indices):
-                if isinstance(fidx, tuple):
-                    num_col = self.table[:, fidx[0]].astype(np.float64)
-                    den_col = self.table[:, fidx[1]].astype(np.float64)
-                    self.features[sl_rows, k] = np.where(den_col != 0, num_col / den_col, 0.0).astype(np.float32)
-                else:
-                    self.features[sl_rows, k] = self.table[:, fidx]
-            self.features.flush()
-
-            # --- Molar labels
-            sl = np.s_[i*num_rows:(i+1)*num_rows]
-            self.molarlabels[sl] = (self.molar / InTot) @ phaseToCompMap.T
             self.molarlabels.flush()
-            del sl
+            self.labels.flush()
 
             # Explicitly collect to close lingering references
-            gc.collect()
-            
-            for phase, idx in label_indices.items(): # Move components into the right space. Using self.molar to support HeFESTo and MELTS with same code
-                if len(idx) == 1:
-                    continue # Skip pure phases
-              
-                if phase != 'melts-liquid':
-                    input_idx = label_indices_comp[phase]
-                    # --- Labels (phase components)
-                    sl = np.s_[i*num_rows:(i+1)*num_rows, input_idx]
-                    row_tot = np.sum(self.molar[:, idx], axis=1)
-                    nonzeros = row_tot != 0
-                    normed = np.zeros_like(self.molar[:, idx])
-                    normed[nonzeros] = self.molar[np.ix_(nonzeros, idx)] / row_tot[nonzeros].reshape(-1, 1)
-                    self.labels[sl] = normed
-                    self.labels.flush()
-                    del sl
-                        
-
-                if phase == 'melts-liquid':
-                    liq_mol = self.molar[:,label_indices[phase]] # Non-normalized liquid element moles
-                    liq_tot = np.sum(liq_mol, axis = 1)
-                    liqNonzero = liq_tot != 0
-                    liq_mol[liqNonzero] = liq_mol[liqNonzero] / liq_tot[liqNonzero].reshape(-1,1) # Normalize to sum 1
-                    
-                    # --- Labels (phase components)
-                    sl = np.s_[i*num_rows:(i+1)*num_rows, label_indices_comp[phase]]
-                    self.labels[sl] = liq_mol
-                    self.labels.flush()
-                    
-                    del liq_mol, liq_tot, liqNonzero, sl
-                    gc.collect()
-
-            del self.molar, Inmoles, InTot #  Delete ALL memmap references!
+            del self.molar #  Delete memmap reference!
             gc.collect()
 
         ## Filter out data where features are improperly summed. Why is that? 

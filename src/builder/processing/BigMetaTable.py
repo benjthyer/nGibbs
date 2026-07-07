@@ -10,7 +10,6 @@ import os
 import csv
 import gc
 import time
-import mmap
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -25,8 +24,6 @@ if src_path not in sys.path:
 
 # Import from refactored modules
 from builder.indexer import DatasetIndexer
-from ngibbs.utils.string_utils import pull_number
-from ngibbs.utils.math_utils import blur_binary_boundaries
 from ngibbs.utils.file_utils import move_file
 
 
@@ -116,12 +113,6 @@ class BigMetaTable():
         
         working_text = False # Do we change text file name to protect it after loading?
 
-      
-        self.meta = []
-        self.run_indices = []
-        self.MELTSversion = []
-        self.metadata = []
-        
         t_start = time.time()
         
         print(f"{self.memmap_file}  {['DOES NOT EXIST', 'exists'][int(os.path.exists(self.memmap_file))]}")
@@ -210,32 +201,67 @@ class BigMetaTable():
             self.read_metadata = True
 
         print(f"Preparing to read {file_rows} rows of text")
-        
-        # --- Read TXT metadata (only the slice)
+
+        # --- Read TXT metadata, encoding the low-cardinality fields (run id, value
+        # tag, MELTS version) as int32 codes into small vocab tables rather than
+        # boxing every row as its own Python string. A run's steps repeat the same
+        # run/value/version tokens over and over, so a run_id/version array does
+        # not need one Python object per row - just an int per row plus one string
+        # per distinct value.
+        run_group_vocab, value_vocab, run_id_vocab, version_vocab = {}, {}, {}, {}
+        run_group_codes, value_codes, run_id_codes, version_codes = [], [], [], []
+        metadata_list = []
+
+        def _code_for(vocab_map, key):
+            code = vocab_map.get(key)
+            if code is None:
+                code = len(vocab_map)
+                vocab_map[key] = code
+            return code
+
         with open(self.txt_file, 'r') as f:
             for i, line in tqdm(enumerate(f), desc = 'Reading Text...', total=int(file_rows)):
                 line = line.strip()
-                self.meta.append(line)
                 parts = line.split(' ', 1)
                 id_parts = parts[0].split(':')
                 if len(id_parts) == 1:
-                    self.run_indices.append('')
-                    self.MELTSversion.append(id_parts[0])
+                    value_str, run_id_str, version_str = '', '', id_parts[0]
                 else:
-                    self.run_indices.append(id_parts[0] + id_parts[1])
-                    self.MELTSversion.append(id_parts[2])
-                self.metadata.append(parts[1] if len(parts) > 1 else '')
+                    value_str, run_id_str, version_str = id_parts[0], id_parts[1], id_parts[2]
+                run_group_codes.append(_code_for(run_group_vocab, value_str + run_id_str))
+                value_codes.append(_code_for(value_vocab, value_str))
+                run_id_codes.append(_code_for(run_id_vocab, run_id_str))
+                version_codes.append(_code_for(version_vocab, version_str))
+                metadata_list.append(parts[1] if len(parts) > 1 else '')
         print(f"[TIMER] Parsed {total_rows} of Metadata to Lists: completed in {time.time() - t_start:.2f} seconds")
-        
+
         if working_text:
             self.txt_file = self.filename + '.txt' # Now change name if we are using a 'working' version after reading text.
-            
-        # --- Convert lists to arrays
+
+        # --- Convert to compact typed storage. run_indices/MELTSversion are int32
+        # codes into small vocab arrays (the concatenated value+run-id key and the
+        # MELTS version string are both highly repeated within a run); value_codes
+        # and run_id_codes are kept separately only so the original line's
+        # value:run_id:version structure can be reconstructed for save/save_txt.
+        # metadata stays an array of strings, but fixed-width instead of boxed -
+        # its content isn't reliably numeric (see recover_untracked_phases), so it
+        # can't be coerced to int, but fixed-width unicode avoids per-row object
+        # overhead just the same.
         t_start = time.time()
-        self.meta = np.array(self.meta, dtype=object)
-        self.run_indices = np.array(self.run_indices, dtype=object)
-        self.MELTSversion = np.array(self.MELTSversion, dtype=object)
-        self.metadata = np.array(self.metadata, dtype=object)
+
+        def _vocab_array(vocab_map):
+            return np.array(list(vocab_map.keys()), dtype=str) if vocab_map else np.array([], dtype='<U1')
+
+        self.run_indices = np.array(run_group_codes, dtype=np.int32)
+        self._run_group_vocab = _vocab_array(run_group_vocab)
+        self._value_codes = np.array(value_codes, dtype=np.int32)
+        self._value_vocab = _vocab_array(value_vocab)
+        self._run_id_codes = np.array(run_id_codes, dtype=np.int32)
+        self._run_id_vocab = _vocab_array(run_id_vocab)
+        self.MELTSversion = np.array(version_codes, dtype=np.int32)
+        self._melts_version_vocab = _vocab_array(version_vocab)
+        self.metadata = np.array(metadata_list) if metadata_list else np.array([], dtype='<U1')
+        del run_group_codes, value_codes, run_id_codes, version_codes, metadata_list
         gc.collect()
         print(f"[TIMER] Metadata Lists to arrays: completed in {time.time() - t_start:.2f} seconds")
 
@@ -259,8 +285,8 @@ class BigMetaTable():
 
         len_problem = False
         row_expected = self.table.shape[0]
-        if len(self.meta) != row_expected:
-            print(f'WARNING: Metadata length {len(self.meta)} does not match data rows: {row_expected}')
+        if len(self._value_codes) != row_expected:
+            print(f'WARNING: Metadata length {len(self._value_codes)} does not match data rows: {row_expected}')
             len_problem = True
         if len(self.run_indices) != row_expected:
             print(f'WARNING: Run Indices length {len(self.run_indices)} does not match data rows: {row_expected}')
@@ -278,7 +304,68 @@ class BigMetaTable():
             gc.collect()
             raise ValueError(f'Metadata length does not match data rows: {rows}')
 
-    
+    @property
+    def meta(self):
+        """Reconstruct every raw metadata line from the compact encoded fields.
+
+        Kept for backward compatibility (e.g. interactive use); materializes the
+        whole table's lines at once, so prefer `write_meta_lines`/`_build_meta_lines`
+        for anything operating on a large table.
+        """
+        return self._build_meta_lines()
+
+    def _build_meta_lines(self, indices=None):
+        """Reconstruct raw ``value:run_id:version metadata`` lines for `indices`
+        (an index array/boolean mask/slice, or None for all rows)."""
+        if indices is None:
+            indices = slice(None)
+        value_strs = self._value_vocab[self._value_codes[indices]]
+        run_id_strs = self._run_id_vocab[self._run_id_codes[indices]]
+        version_strs = self._melts_version_vocab[self.MELTSversion[indices]]
+        metadata_strs = self.metadata[indices]
+        n = len(metadata_strs)
+        lines = np.empty(n, dtype=object)
+        for i in range(n):
+            if value_strs[i] == '' and run_id_strs[i] == '':
+                head = version_strs[i]
+            else:
+                head = f"{value_strs[i]}:{run_id_strs[i]}:{version_strs[i]}"
+            lines[i] = f"{head} {metadata_strs[i]}" if metadata_strs[i] else head
+        return lines
+
+    def write_meta_lines(self, fileobj, indices=None, chunk_size=100_000):
+        """Stream reconstructed metadata lines to `fileobj`, chunked so peak RAM
+        stays bounded regardless of table size. `indices` may be an index array
+        (e.g. the rows moved by `split`) or None to write every row in order."""
+        n = len(self.metadata) if indices is None else len(indices)
+        for start in range(0, n, chunk_size):
+            end = min(start + chunk_size, n)
+            chunk_indices = slice(start, end) if indices is None else indices[start:end]
+            for line in self._build_meta_lines(chunk_indices):
+                fileobj.write(line + '\n')
+
+    def _filter_metadata_rows(self, keep):
+        """Restrict every metadata field to the rows selected by `keep` (a
+        boolean mask or integer index array)."""
+        self.run_indices = self.run_indices[keep]
+        self.MELTSversion = self.MELTSversion[keep]
+        self.metadata = self.metadata[keep]
+        self._value_codes = self._value_codes[keep]
+        self._run_id_codes = self._run_id_codes[keep]
+
+    def _clear_metadata_rows(self):
+        del self.run_indices, self.MELTSversion, self.metadata, self._value_codes, self._run_id_codes
+        gc.collect()
+
+    def _append_metadata_rows(self, source_selector, n_repeats=1):
+        """Append `n_repeats` copies of the rows selected by `source_selector`
+        (a boolean mask or integer index array) to every metadata field."""
+        self.run_indices = np.append(self.run_indices, np.repeat(self.run_indices[source_selector], n_repeats))
+        self.MELTSversion = np.append(self.MELTSversion, np.repeat(self.MELTSversion[source_selector], n_repeats))
+        self.metadata = np.append(self.metadata, np.repeat(self.metadata[source_selector], n_repeats))
+        self._value_codes = np.append(self._value_codes, np.repeat(self._value_codes[source_selector], n_repeats))
+        self._run_id_codes = np.append(self._run_id_codes, np.repeat(self._run_id_codes[source_selector], n_repeats))
+
     def _csv_to_memmap(self, chunk_size=100000):
         """Convert CSV to memmap, storing header."""
         t_start = time.time()
@@ -342,47 +429,6 @@ class BigMetaTable():
         del memmap
         gc.collect()
             
-    def _try_close_memmap_array(self, arr):
-        """Try to close underlying mmap for numpy memmap-like arrays. Not functioning nor used 10/3/25"""
-        if arr is None:
-            return
-        # numpy.memmap objects (and arrays from open_memmap) may expose _mmap
-        m = getattr(arr, '_mmap', None)
-        if m is not None:
-            try:
-                m.close()
-            except Exception:
-                pass
-        # Sometimes the mmap object is in .base
-        base = getattr(arr, 'base', None)
-        if base is not None:
-            # base might itself be an mmap or numpy.memmap
-            if hasattr(base, '_mmap'):
-                try:
-                    base._mmap.close()
-                except Exception:
-                    pass
-            elif isinstance(base, mmap.mmap):
-                try:
-                    base.close()
-                except Exception:
-                    pass
-        # As a last-ditch attempt, delete the object and gc
-        try:
-            del arr
-        except Exception:
-            pass
-        gc.collect()
-            
-    def _mark_nan_rows_for_deletion(self, nan_mask):
-        """Delete corresponding metadata rows after filtering NaN rows."""
-        nan_indices = np.where(nan_mask)[0]
-        self.meta = np.delete(self.meta, nan_indices)
-        self.run_indices = np.delete(self.run_indices, nan_indices)
-        self.MELTSversion = np.delete(self.MELTSversion, nan_indices)
-        self.metadata = np.delete(self.metadata, nan_indices)
-
-    
     def save_csv_streaming(self, name, chunk_size=100000):
         with open(name + '.csv', 'w', newline='') as f:
             writer = csv.writer(f)
@@ -393,69 +439,91 @@ class BigMetaTable():
                 writer.writerows(chunk)
 
     def run_ind(self, indices):
-        return self.run_indices[np.array(indices)]
+        return self._run_group_vocab[self.run_indices[np.array(indices)]]
 
     def version(self, indices):
-        return self.MELTSversion[np.array(indices)]
+        return self._melts_version_vocab[self.MELTSversion[np.array(indices)]]
 
     def ID(self, code):
         return np.where(self.run_indices == code)[0] # Boolean for clarity
         #return np.arange(len(self.metadata))[self.run_indices == code]
 
-    def delete(self, indices, save_text = True):
-        """Efficient delete that preserves memory-mapping by rewriting."""
+    def _chunked_copy_into(self, src, dst, dst_offset=0, chunk_size=100_000):
+        """Copy every row of `src` into `dst` starting at `dst_offset`, one
+        contiguous row-chunk at a time with a flush per chunk - avoids a single
+        huge one-shot assignment that leaves the whole copy as dirty pages
+        before any of it reaches disk."""
+        for start in range(0, src.shape[0], chunk_size):
+            end = min(start + chunk_size, src.shape[0])
+            dst[dst_offset + start:dst_offset + end] = src[start:end]
+            dst.flush()
+
+    def _chunked_mask_copy(self, src, dst_path, keep_mask, chunk_size=100_000):
+        """Copy the rows of `src` selected by boolean `keep_mask` into a new
+        memmap at `dst_path`, one row-chunk at a time. `src[start:end]` and the
+        write into `dst` both stay contiguous; only the boolean sub-select of a
+        chunk is fancy-indexed, so peak RAM is O(chunk_size) instead of
+        materializing every selected row at once via `src[keep_mask]`."""
+        n_keep = int(np.count_nonzero(keep_mask))
+        dst = np.lib.format.open_memmap(dst_path, mode='w+', dtype=src.dtype, shape=(n_keep,) + src.shape[1:])
+        write_ptr = 0
+        for start in range(0, src.shape[0], chunk_size):
+            end = min(start + chunk_size, src.shape[0])
+            chunk_mask = keep_mask[start:end]
+            if not chunk_mask.any():
+                continue
+            kept = src[start:end][chunk_mask]
+            n = kept.shape[0]
+            dst[write_ptr:write_ptr + n] = kept
+            write_ptr += n
+        dst.flush()
+        del dst
+        gc.collect()
+        return n_keep
+
+    def delete(self, indices, save_text = True, chunk_size = 100_000):
+        """Efficient delete that preserves memory-mapping by rewriting, one
+        row-chunk at a time via `_chunked_mask_copy` instead of materializing
+        every kept row through `self.table[keep_mask]` at once."""
         keep_mask = np.ones(self.table.shape[0], dtype=bool)
         keep_mask[indices] = False
-        new_shape = (int(np.sum(keep_mask)), self.table.shape[1])
-        
+
         # Apply operation to blurred binary data first to call assertion before we get too deep.
         if self.blurredbinaries is not None:
             binary_name = self.filename + 'blurredbinaries.npy'
             if os.path.exists(binary_name):
                 temp_binary_filename = self.filename + 'blurredbinaries_temp.npy'
-            else: 
+            else:
                 temp_binary_filename = binary_name
-                
-            assert np.shape(self.blurredbinaries)[0] == np.shape(self.table)[0], "Shape of binary and main tables are not equal!"
-            new_binary_memmap = np.lib.format.open_memmap(temp_binary_filename, dtype='float32', mode='w+', shape=(new_shape[0], self.blurredbinaries.shape[1]))
 
-            # Write filtered rows to new memmap file
-            new_binary_memmap[:] = self.blurredbinaries[keep_mask]
-            new_binary_memmap.flush()
+            assert np.shape(self.blurredbinaries)[0] == np.shape(self.table)[0], "Shape of binary and main tables are not equal!"
+            self._chunked_mask_copy(self.blurredbinaries, temp_binary_filename, keep_mask, chunk_size)
 
             # Clear memory mapping and update file
-            del new_binary_memmap, self.blurredbinaries
+            del self.blurredbinaries
             gc.collect()
-            
+
             if os.path.exists(self.filename + 'blurredbinaries_temp.npy'):
                 os.replace(temp_binary_filename, binary_name)
 
             # Update reference to new memmap in read mode
             self.blurredbinaries = np.load(binary_name, mmap_mode='r+')
-        
+
         # Prepare output memmap
         temp_filename = self.filename + '_temp.npy'
-        new_memmap = np.lib.format.open_memmap(temp_filename, dtype='float32', mode='w+', shape=new_shape)
+        self._chunked_mask_copy(self.table, temp_filename, keep_mask, chunk_size)
 
-        # Write filtered rows to new memmap file
-        new_memmap[:] = self.table[keep_mask]
-        new_memmap.flush()
-        
         # Clear memory mapping and update file
-        del new_memmap
         del self.table
         gc.collect()
         os.replace(temp_filename, self.memmap_file)
-        
+
         # Update reference to new memmap
         self.table = np.load(self.memmap_file, mmap_mode='r+')
 
         # Update metadata arrays (all in RAM)
         if save_text:
-            self.meta = self.meta[keep_mask]
-            self.run_indices = self.run_indices[keep_mask]
-            self.MELTSversion = self.MELTSversion[keep_mask]
-            self.metadata = self.metadata[keep_mask]
+            self._filter_metadata_rows(keep_mask)
             self.save_txt()
 
 
@@ -468,17 +536,15 @@ class BigMetaTable():
         if save_csv:
             self.save_csv_streaming(name = name)
         with open(name + '.txt', 'w') as f:
-            for line in self.meta:
-                f.write(line + '\n')
-    
+            self.write_meta_lines(f)
+
     def save_txt(self, name=None):
         if name is None:
             name = self.filename + '.txt'
         if '.txt' not in name:
             name += '.txt'
         with open(name, 'w') as f:
-            for line in self.meta:
-                f.write(line + '\n')
+            self.write_meta_lines(f)
                 
     def split(self, proportion):
         """
@@ -508,53 +574,37 @@ class BigMetaTable():
         move_indices.sort()
         keep_indices.sort()
 
-        # Create memmap files for both splits
-        dtype = self.table.dtype
-        col_count = self.table.shape[1]
-
         new_filename = f"{self.filename}_split"
         new_path = f"{new_filename}.npy"
         remaining_filename = f"{self.filename}_remaining"
 
-        # Write moved data
-        new_table_data = np.lib.format.open_memmap(
-            new_path, mode='w+', dtype=dtype, shape=(num_to_move, col_count)
-        )
-        new_table_data[:] = self.table[move_indices]
-        new_table_data.flush()
+        # Write moved data, one row-chunk at a time (see _chunked_mask_copy)
+        move_mask = ~keep_mask
+        self._chunked_mask_copy(self.table, new_path, move_mask)
 
         #...and moved text
         with open(new_filename+'.txt', 'w') as f:
-            for line in self.meta[move_indices]:
-                f.write(line + '\n')
-        
+            self.write_meta_lines(f, indices=move_indices)
+
         # Save headers for new table
-        
+
         new_header_file = new_path.replace('.npy', '_headers.pkl')
         with open(new_header_file, 'wb') as f:
             pickle.dump(self.header, f)
-        
+
         # Write kept data
-        remaining_data = np.lib.format.open_memmap(
-            remaining_filename+'.npy', mode='w+', dtype=dtype, shape=(total_rows - num_to_move, col_count)
-        )
-        remaining_data[:] = self.table[keep_indices]
-        remaining_data.flush()
-        
+        remaining_data_path = remaining_filename + '.npy'
+        self._chunked_mask_copy(self.table, remaining_data_path, keep_mask)
+
         # Save headers for remaining table
         remaining_header_file = remaining_filename+'_headers.pkl'
         with open(remaining_header_file, 'wb') as f:
             pickle.dump(self.header, f)
-        
+
         #...and kept text
-        self.meta = self.meta[keep_indices]
-        self.run_indices = self.run_indices[keep_indices]
-        self.MELTSversion = self.MELTSversion[keep_indices]
-        self.metadata = self.metadata[keep_indices]
-            
+        self._filter_metadata_rows(keep_indices)
+
         # Now clear memmaps, reinitialize new memmap, and replace memmaps for this object
-        del new_table_data
-        del remaining_data
         del self.table
         gc.collect()
         
@@ -571,51 +621,38 @@ class BigMetaTable():
         # Build new BigMetaTable
         new_table = BigMetaTable(new_filename, Model=self.Model, OXYGEN=self.OXYGEN)
         
-        # Move BlurredBinaries
+        # Move BlurredBinaries, one row-chunk at a time (see _chunked_mask_copy)
         if self.blurredbinaries is not None:
-            new_table.blurredbinaries = np.lib.format.open_memmap(
-                new_filename+'blurredbinaries.npy', mode='w+', dtype=np.float32, shape=(num_to_move, self.indexer.nphases)
-                )
-            new_table.blurredbinaries[:] = self.blurredbinaries[move_indices]
-            new_table.blurredbinaries.flush()
-            print(f"First Row blurredbinaries split Memmap write mode:{new_table.blurredbinaries[0]}")
-            #Reopen blurred binaries for split data in read mode
-            del new_table.blurredbinaries
-            gc.collect()
+            self._chunked_mask_copy(self.blurredbinaries, new_filename+'blurredbinaries.npy', move_mask)
             new_table.blurredbinaries = np.load(new_filename+'blurredbinaries.npy', mmap_mode = 'r')
             assert np.shape(new_table.blurredbinaries)[0] == np.shape(new_table.table)[0], "Shape of split binary and main tables are not equal!"
             print(f"First Row blurredbinaries split Memmap read mode:{new_table.blurredbinaries[0]}")
-            
-            
+
             #Update remaining blurredboundaries object
             binary_name = self.filename + 'blurredbinaries.npy'
             if os.path.exists(binary_name):
                 temp_binary_filename = self.filename + 'blurredbinaries_temp.npy'
-            else: 
+            else:
                 temp_binary_filename = binary_name
-                
-            new_binary_memmap = np.lib.format.open_memmap(temp_binary_filename, dtype=np.float32, mode='w+', shape=(total_rows - num_to_move, self.indexer.nphases))
 
-            # Write filtered rows to new memmap file
-            new_binary_memmap[:] = self.blurredbinaries[keep_indices]
-            new_binary_memmap.flush()
+            self._chunked_mask_copy(self.blurredbinaries, temp_binary_filename, keep_mask)
 
             # Clear memory mapping and update file
-            del new_binary_memmap, self.blurredbinaries
+            del self.blurredbinaries
             gc.collect()
-            
+
             if os.path.exists(self.filename + 'blurredbinaries_temp.npy'):
                 os.replace(temp_binary_filename, binary_name)
 
             # Update reference to new memmap in read mode
             #self.blurredbinaries = np.load(binary_name, mmap_mode='r')
-            
+
         OXYGEN = self.OXYGEN
         Model = self.Model
         del self
         gc.collect()
         newself = BigMetaTable(remaining_filename, Model=Model, OXYGEN=OXYGEN)
-            
+
         return newself, new_table
 
 
@@ -644,51 +681,33 @@ class BigMetaTable():
         keep_mask = np.ones(total_rows, dtype=bool)
         keep_mask[sep_idx] = False
         keep_indices = all_indices[keep_mask]
-        num_to_move = len(sep_idx)
-        move_indices = sep_idx
-
-        # Create memmap files for both splits
-        dtype = self.table.dtype
-        col_count = self.table.shape[1]
+        move_mask = ~keep_mask
 
         new_filename = f"{self.filename}_split"
         new_path = f"{new_filename}.npy"
         remaining_filename = f"{self.filename}_remaining"
 
-        # Write moved data
-        new_table_data = np.lib.format.open_memmap(
-            new_path, mode='w+', dtype=dtype, shape=(num_to_move, col_count)
-        )
-        new_table_data[:] = self.table[sep_idx]
-        new_table_data.flush()
+        # Write moved data, one row-chunk at a time (see _chunked_mask_copy)
+        self._chunked_mask_copy(self.table, new_path, move_mask)
 
         #...and moved text
         with open(new_filename+'.txt', 'w') as f:
-            for line in self.meta[sep_idx]:
-                f.write(line + '\n')
-        
+            self.write_meta_lines(f, indices=sep_idx)
+
         # Save headers for new table
-        
+
         new_header_file = new_path.replace('.npy', '_headers.pkl')
         with open(new_header_file, 'wb') as f:
             pickle.dump(self.header, f)
-        
+
         # Write kept data
-        remaining_data = np.lib.format.open_memmap(
-            remaining_filename+'.npy', mode='w+', dtype=dtype, shape=(total_rows - num_to_move, col_count)
-        )
-        remaining_data[:] = self.table[keep_indices]
-        remaining_data.flush()
-        
+        remaining_data_path = remaining_filename + '.npy'
+        self._chunked_mask_copy(self.table, remaining_data_path, keep_mask)
+
         #...and kept text
-        self.meta = self.meta[keep_indices]
-        self.run_indices = self.run_indices[keep_indices]
-        self.MELTSversion = self.MELTSversion[keep_indices]
-        self.metadata = self.metadata[keep_indices]
-            
+        self._filter_metadata_rows(keep_indices)
+
         # Now clear memmaps, reinitialize new memmap, and replace memmaps for this object
-        del new_table_data
-        del remaining_data
         del self.table
         gc.collect()
         
@@ -705,187 +724,41 @@ class BigMetaTable():
         # Build new BigMetaTable
         new_table = BigMetaTable(new_filename, Model=self.Model, OXYGEN=self.OXYGEN)
         
-        # Move BlurredBinaries
+        # Move BlurredBinaries, one row-chunk at a time (see _chunked_mask_copy)
         if self.blurredbinaries is not None:
-            new_table.blurredbinaries = np.lib.format.open_memmap(
-                new_filename+'blurredbinaries.npy', mode='w+', dtype=np.float32, shape=(num_to_move, self.indexer.nphases)
-                )
-            new_table.blurredbinaries[:] = self.blurredbinaries[move_indices]
-            new_table.blurredbinaries.flush()
-            print(f"First Row blurredbinaries split Memmap write mode:{new_table.blurredbinaries[0]}")
-            #Reopen blurred binaries for split data in read mode
-            del new_table.blurredbinaries
-            gc.collect()
+            self._chunked_mask_copy(self.blurredbinaries, new_filename+'blurredbinaries.npy', move_mask)
             new_table.blurredbinaries = np.load(new_filename+'blurredbinaries.npy', mmap_mode = 'r')
             assert np.shape(new_table.blurredbinaries)[0] == np.shape(new_table.table)[0], "Shape of split binary and main tables are not equal!"
             print(f"First Row blurredbinaries split Memmap read mode:{new_table.blurredbinaries[0]}")
-            
-            
+
             #Update remaining blurredboundaries object
             binary_name = self.filename + 'blurredbinaries.npy'
             if os.path.exists(binary_name):
                 temp_binary_filename = self.filename + 'blurredbinaries_temp.npy'
-            else: 
+            else:
                 temp_binary_filename = binary_name
-                
-            new_binary_memmap = np.lib.format.open_memmap(temp_binary_filename, dtype=np.float32, mode='w+', shape=(total_rows - num_to_move, self.indexer.nphases))
 
-            # Write filtered rows to new memmap file
-            new_binary_memmap[:] = self.blurredbinaries[keep_indices]
-            new_binary_memmap.flush()
+            self._chunked_mask_copy(self.blurredbinaries, temp_binary_filename, keep_mask)
 
             # Clear memory mapping and update file
-            del new_binary_memmap, self.blurredbinaries
+            del self.blurredbinaries
             gc.collect()
-            
+
             if os.path.exists(self.filename + 'blurredbinaries_temp.npy'):
                 os.replace(temp_binary_filename, binary_name)
 
             # Update reference to new memmap in read mode
             #self.blurredbinaries = np.load(binary_name, mmap_mode='r')
-            
+
         OXYGEN = self.OXYGEN
         Model = self.Model
-        del self # Deletion for memory management. 
+        del self # Deletion for memory management.
         gc.collect()
         newself = BigMetaTable(remaining_filename, Model=Model, OXYGEN=OXYGEN)
-            
+
         return newself, new_table
 
 
-    def filter_twophase(self, ExFail): # Function used to delete simulations that predicted multiple phases. Now deprecated, this is better handled in MELTS directly
-        to_delete = []
-
-        for i, failsim in enumerate(tqdm(ExFail.metadata, desc="Filtering Instances of Multiple Phases", leave=False)):
-            if not failsim:
-                continue
-
-            clusters = failsim.split()
-            lowlist = [int(c.split('-')[1]) for c in clusters]
-            highlist = [pull_number(c.split('-')[2]) for c in clusters]
-            lo, hi = min(lowlist), max(highlist)
-
-            code = ExFail.run_indices[i]
-            inds = self.ID(code)
-            if not len(inds):
-                continue
-
-            stepnos = self.metadata[inds]
-            stepnos_num = np.array([pull_number(stp) for stp in stepnos], dtype=int)
-            mask = (stepnos_num >= lo) & (stepnos_num <= hi)
-
-            if np.any(mask):
-                to_delete.extend(inds[mask])
-
-        if to_delete:
-            self.delete(np.array(to_delete, dtype=int))
-            print(f"Deleted: {len(to_delete)} Assemblages With 2 Phases")
-        else:
-            print("Deleted: 0 Assemblages With 2 Phases")
-
-    def filter_jumps(self, thresholds = np.array([6,12,4,4,4,5])):
-        IDs = np.unique(self.run_indices)
-        to_delete = set()
-
-        relevant_cols = [self.indexer.MELTS_indices['System_main']['Temperature'],
-                 self.indexer.MELTS_indices['melts-liquid']['liq mass (gm)'],
-                 self.indexer.MELTS_indices['melts-liquid']['wt% TiO2'],
-                 self.indexer.MELTS_indices['melts-liquid']['wt% P2O5'],
-                 self.indexer.MELTS_indices['melts-liquid']['wt% MnO'],
-                 self.indexer.MELTS_indices['melts-liquid']['wt% NiO']]
-
-        for ID in tqdm(IDs, desc="Trimming Unstable Jumps", leave=False):
-            indices = self.ID(ID)
-            
-            if len(indices) < 2:
-                continue
-      
-            data = self.table[np.ix_(indices, relevant_cols)]
-            deltas = np.abs(data[:-1] - data[1:])
-
-            # Check where any delta exceeds the threshold
-            over_threshold = deltas > thresholds
-            any_jump = np.any(over_threshold, axis=1)
-
-            if np.any(any_jump):
-                jump_index = np.argmax(any_jump)  # First occurrence
-                to_delete.update(indices[jump_index:])  # delete from this index onward
-
-        if to_delete:
-            self.delete(np.array(sorted(to_delete), dtype=int))
-            print(f"Deleted total {len(to_delete)} simulations with large jumps")
-            
-    def filter_jumps_with_phase_matrix(self,  thresholds = np.array([6,12,4,4,4,5,100])):
-        IDs = np.unique(self.run_indices)
-        to_delete = set()
-        num_rows = np.shape(self.table)[0]
-        num_phases = self.indexer.nphases
-        broke_count = 0
-        
-        
-        relevant_cols = [self.indexer.MELTS_indices['System_main']['Temperature'],
-                 self.indexer.MELTS_indices['melts-liquid']['liq mass (gm)'],
-                 self.indexer.MELTS_indices['melts-liquid']['wt% TiO2'],
-                 self.indexer.MELTS_indices['melts-liquid']['wt% P2O5'],
-                 self.indexer.MELTS_indices['melts-liquid']['wt% MnO'],
-                 self.indexer.MELTS_indices['melts-liquid']['wt% NiO'],
-                 self.indexer.MELTS_indices['System_main']['Pressure']]
-        
-        table_labels = ['Temperature','liq mass (gm)', 'wt% TiO2', 'wt% P2O5','wt% MnO','wt% NiO','Pressure']
-        
-        self.blurredbinaries = np.lib.format.open_memmap( # Flags of present phases
-                self.filename+'blurredbinaries.npy',
-                mode='w+',
-                dtype=np.float32,
-                shape=(num_rows, num_phases)
-        )
-
-        for ID in tqdm(IDs, desc="Trimming Unstable Jumps", leave=False):
-            indices = self.ID(ID)
-            
-            if np.any(np.abs(np.diff(indices))>1):
-                raise ValueError(f'Non-consectutive indices for ID: {ID}')
-            
-            if len(indices) < 3:
-                print(f"Small simulation (Less that 3 assemblages) for ID: {ID}")
-                to_delete.update(indices)
-                continue
-      
-            data = self.table[np.ix_(indices, relevant_cols)]
-            
-            deltas = np.abs(data[:-1] - data[1:])
-            # Check where any delta exceeds the threshold
-            over_threshold = deltas > thresholds
-
-            # Build Binary labels with blurred boundaries
-            binary_mask = (self.table[np.ix_(indices,self.indexer.mass_indices)]>0).astype(np.float32)
-            # Check where any delta exceeds the threshold
-            any_jump = np.any(over_threshold, axis=1)
-
-            if np.any(any_jump):
-                jump_index = np.argmax(any_jump)  # First occurrence
-                to_delete.update(indices[jump_index:])  # delete from this index onward
-                #to_delete.update(real_indices[jump_index:])  # delete from this index onward
-                if jump_index == 0:
-                    print(f'We had to delete ALL of run {ID}')
-                else:
-                    self.blurredbinaries[indices[:jump_index]] = blur_binary_boundaries(binary_mask[:jump_index]) # Do not blur for excluded steps with potentially weird phases 
-                    #self.blurredbinaries[real_indices[:jump_index]] = blur_binary_boundaries(binary_mask[:jump_index]) # Do not blur for excluded steps with potentially weird phases
-            else:
-                #self.blurredbinaries[real_indices] = blur_binary_boundaries(binary_mask)
-                self.blurredbinaries[indices] = blur_binary_boundaries(binary_mask)
-                
-        #Now reload binary_labels in safer read mode.
-        self.blurredbinaries.flush()
-        del self.blurredbinaries
-        gc.collect()        
-
-        self.blurredbinaries = np.load(self.filename+'blurredbinaries.npy', mmap_mode='r+')
-        
-        if to_delete:
-            self.delete(np.array(sorted(to_delete), dtype=int))
-            print(f"Deleted total {len(to_delete)} simulations with large jumps")
-            
     def filter_min_phase_proportion(self, min_proportion):
         """
         Delete all rows that contain phases whose presence falls below a minimum proportion.
@@ -1021,10 +894,10 @@ class BigMetaTable():
         else:
             print("No rows matched phases outside ml_indexer; no rows deleted.")
     
-    def filter_inconsistent_phase_data(self):
+    def filter_inconsistent_phase_data(self, chunk_size=100_000):
         """
         Delete rows with inconsistent phase data: mass = 0 but non-zero attributes.
-        
+
         Checks all phases in ml_indexer and removes rows where a phase has zero mass
         but has non-zero values in any of its other attributes (composition, etc.).
         This indicates corrupted or inconsistent data.
@@ -1042,52 +915,60 @@ class BigMetaTable():
         non_phase_keys = set(getattr(self.indexer, 'EXCLUDED_PHASES', set())) | {
             'System_main', 'Bulk_comp', 'Bulk_comp_elements'
         }
-        delete_mask = np.zeros(total_rows, dtype=bool)
-        inconsistent_phases = {}
 
+        # Resolve each phase's (mass_col, other_cols) once up front - this used to be
+        # interleaved with a full-table column read per phase (self.table[:, mass_col],
+        # then self.table[zero_mass_mask] materializing every zero-mass row's full width
+        # for that phase alone), so a table with N phases paid for N separate full-table
+        # passes. Below, a single row-chunked pass checks every phase against each chunk,
+        # so the whole table is only read once regardless of phase count.
+        phase_cols = []
         for phase in self.indexer.ml_indexer.all_phases:
             if phase in non_phase_keys:
                 continue
-
             if phase not in self.indexer.MELTS_indices:
                 continue
-
             components = self.indexer.MELTS_indices[phase]
-
-            # Get mass column
             if phase == 'melts-liquid':
                 mass_col = components.get('liq mass (gm)')
             else:
                 mass_col = components.get('mass (gm)')
-
             if mass_col is None:
                 mass_col = components.get('mass(gm)')
-
             if mass_col is None:
                 continue
-
-            # Get all other attribute columns for this phase
-            other_cols = [col_idx for key, col_idx in components.items() 
+            other_cols = [col_idx for key, col_idx in components.items()
                          if col_idx != mass_col]
-
             if not other_cols:
                 continue
+            phase_cols.append((phase, mass_col, other_cols))
 
-            # Find rows where mass = 0
-            zero_mass_mask = self.table[:, mass_col] == 0
+        delete_mask = np.zeros(total_rows, dtype=bool)
+        inconsistent_phases = {}
 
-            # Check if any other attributes are non-zero when mass = 0
-            other_data = self.table[zero_mass_mask][:, other_cols]
-            has_nonzero_attrs = np.any(other_data != 0, axis=1)
+        for start in tqdm(range(0, total_rows, chunk_size), desc="Checking phase consistency"):
+            end = min(start + chunk_size, total_rows)
+            chunk = self.table[start:end]
 
-            # Mark these rows for deletion
-            zero_mass_indices = np.where(zero_mass_mask)[0]
-            inconsistent_indices = zero_mass_indices[has_nonzero_attrs]
+            for phase, mass_col, other_cols in phase_cols:
+                zero_mass_mask = chunk[:, mass_col] == 0
+                if not zero_mass_mask.any():
+                    continue
 
-            if len(inconsistent_indices) > 0:
-                delete_mask[inconsistent_indices] = True
-                inconsistent_phases[phase] = len(inconsistent_indices)
-            assert delete_mask.sum()/self.table.shape[0] < 0.03, f'Too many ({100*delete_mask.sum()/self.table.shape[0]} %) broken assemblages... What is going on? '
+                other_data = chunk[zero_mass_mask][:, other_cols]
+                has_nonzero_attrs = np.any(other_data != 0, axis=1)
+                if not has_nonzero_attrs.any():
+                    continue
+
+                zero_mass_indices = np.where(zero_mass_mask)[0]
+                inconsistent_indices = zero_mass_indices[has_nonzero_attrs]
+                delete_mask[start + inconsistent_indices] = True
+                inconsistent_phases[phase] = inconsistent_phases.get(phase, 0) + len(inconsistent_indices)
+
+            # Checked per chunk (covering every phase seen so far) rather than per phase
+            # across the whole table, since phases are now the inner loop - still catches
+            # the same "data is overwhelmingly broken" condition.
+            assert delete_mask.sum()/total_rows < 0.03, f'Too many ({100*delete_mask.sum()/total_rows} %) broken assemblages... What is going on? '
 
         # Count total inconsistent rows
         num_to_delete = int(np.sum(delete_mask))
@@ -1110,42 +991,6 @@ class BigMetaTable():
             
             
     
-    def filter_legal(self):
-        """OLD CODE TO FILTER BY LIQUID COMPOSITION; DEPRECATED."""
-        TiO2_col = self.indexer.MELTS_indices['melts-liquid']['wt% TiO2']
-        SiO2_col = self.indexer.MELTS_indices['melts-liquid']['wt% SiO2']
-        FO2_col = self.indexer.MELTS_indices['System_main']['logfO2-QFM']
-        
-        TiO2_excess = self.table[:, TiO2_col] > self.table[:, SiO2_col]
-        FO2_out = (self.table[:, FO2_col] > 5) | (self.table[:, FO2_col] < -5)
-        #amphibole_bearing = self.table[:, self.indexer.MELTS_indices['amphibole']['mass (gm)']] > 0
-        #cristobalite_bearing = self.table[:, self.indexer.MELTS_indices['cristobalite']['mass (gm)']] > 0
-        SiO2_deficit = (self.table[:, SiO2_col] < 20) * (self.table[:, SiO2_col] != 0)
-        
-        # Check for nonzero values in excluded phases (skip System_main as it's always present)
-        excluded_phase_cols = []
-        for phase in self.indexer.EXCLUDED_PHASES:
-            if phase not in ['System_main', 'Bulk_comp'] and phase in self.indexer.MELTS_indices:
-                # Get all column indices for this excluded phase
-                phase_cols = list(self.indexer.MELTS_indices[phase].values())
-                excluded_phase_cols.extend(phase_cols)
-        
-        excluded_phase_mask = np.zeros(self.table.shape[0], dtype=bool)
-        if excluded_phase_cols:
-            # Check if any excluded phase column has nonzero values
-            excluded_phase_data = self.table[:, excluded_phase_cols]
-            excluded_phase_mask = np.any(excluded_phase_data != 0, axis=1)
-      
-        #self.delete(np.where(TiO2_excess | FO2_out | amphibole_bearing | cristobalite_bearing | SiO2_deficit | excluded_phase_mask)[0])
-        self.delete(np.where(TiO2_excess | FO2_out | SiO2_deficit | excluded_phase_mask)[0])
-        
-        print(f"Deleted {np.sum(TiO2_excess)} for TiO2 dominant liquids")
-        print(f"Deleted {np.sum(FO2_out)} for out-of-bounds fO2")
-        #print(f"Deleted {np.sum(amphibole_bearing)} for having amphibole")
-        #print(f"Deleted {np.sum(cristobalite_bearing)} for having cristobalite")
-        print(f"Deleted {np.sum(SiO2_deficit)} for low (<20%) SiO2 liquids")
-        print(f"Deleted {np.sum(excluded_phase_mask)} for having nonzero values in excluded phases: {self.indexer.EXCLUDED_PHASES}")
-          
     def filter_full_metadata(self):
         """Deletes rows where metadata contain unsupported phases."""
         # Try parsing each metadata entry
@@ -1159,26 +1004,6 @@ class BigMetaTable():
             indices_to_delete = np.where(~mask_keep)[0]
             self.delete(indices_to_delete)
 
-    def filter_all(self, generate_binaries = False, thresholds = None):#, ExFail, name = None):
-        """INELEGANT HARD CODE; DEPRECATED. 'Blanket filtering from scratch'"""
-
-        if generate_binaries:
-            if thresholds is None:
-                thresholds = np.array([6,12,4,4,4,5,100])
-            t_start = time.time()
-            self.filter_jumps_with_phase_matrix()
-            print(f"[TIMER] Filtering Large Jumps and Blurred Binaries Generated in {time.time() - t_start:.2f} seconds")
-        else:
-            if thresholds is None:
-                thresholds = np.array([6,12,4,4,4,5])
-            t_start = time.time()
-            self.filter_jumps()
-            print(f"[TIMER] Filtering Large Jumps Completed in {time.time() - t_start:.2f} seconds")
-        
-        t_start = time.time()
-        self.filter_legal()
-        print(f"[TIMER] Filtering For legal TiO2 and fO2 Completed in {time.time() - t_start:.2f} seconds")
-      
     def resample_rare_phase(self, phase_column, multiplier_bounds, n_resamples, overwrite = False):
         """
         Resamples entries that contain a rare phase (nonzero in `phase_column`).
@@ -1222,7 +1047,7 @@ class BigMetaTable():
                 new_binary_path, mode='w+', dtype=self.blurredbinaries.dtype, shape=(new_total, self.blurredbinaries.shape[1])
             )
         
-            new_binary_table[:old_rows] = self.blurredbinaries
+            self._chunked_copy_into(self.blurredbinaries, new_binary_table)
             new_binary_table[old_rows:] = resampled_binaries
             new_binary_table.flush()
             
@@ -1261,7 +1086,7 @@ class BigMetaTable():
             new_path, mode='w+', dtype=self.table.dtype, shape=(new_total, n_cols)
         )
 
-        new_table[:old_rows] = self.table
+        self._chunked_copy_into(self.table, new_table)
         new_table[old_rows:] = resampled
         new_table.flush()
             
@@ -1275,10 +1100,7 @@ class BigMetaTable():
         else:
             self.table = np.load(new_path, mmap_mode='r+')
 
-        self.meta = np.append(self.meta,[m + 'RESAMPLE' for m in np.repeat(self.meta[rare_mask], n_resamples)])
-        self.run_indices = np.append(self.run_indices, np.repeat(self.run_indices[rare_mask], n_resamples))
-        self.MELTSversion = np.append(self.MELTSversion, np.repeat(self.MELTSversion[rare_mask], n_resamples))
-        self.metadata = np.append(self.metadata, np.repeat(self.metadata[rare_mask], n_resamples))
+        self._append_metadata_rows(rare_mask, n_resamples)
         
     def separate_analcime(self):
         
@@ -1475,26 +1297,26 @@ class BigMetaTable():
             self.delete(np.unique(conflict_rows).astype(int))
 
         
-    def retrieve_component_moles(self, multiplier_bounds=[1, 1]):
+    def retrieve_component_moles(self, multiplier_bounds=[1, 1], chunk_size=100_000):
         """
         Convert phase assemblages to molar component form.
-        
+
         This method transforms the table data into absolute molar quantities for each
         component in each phase. MELTS phases are reconstructed from masses, while
         HeFESTo phases already store component moles directly.
 
         It handles three types of phases differently:
-        
+
         1. Solid phases with variable composition (e.g., olivine with Mg-Fe substitution)
         2. Solid phases with fixed composition (e.g., quartz)
         3. Liquid phase (stored as wt% oxides in MELTS table)
-        
+
         Args:
             multiplier_bounds: [min, max] range for random mass multipliers (for resampling)
-        
+
         Requires:
             self.table1 must be initialized (done by resampling_to_datasets, the parent function)
-        
+
         Creates:
             self.molar: memmap array (n_rows, n_components) with absolute component moles, normalized to sum(element moles) = 1
         """
@@ -1502,7 +1324,7 @@ class BigMetaTable():
         label_indices = self.indexer.label_indices  # Phase -> component indices in label space
         label_names = self.indexer.label_names      # List of all component names
         component_indices = self.indexer.MELTS_indices  # Phase -> column indices in MELTS table
-        
+
         # Transformation matrices
         compToOxLoad = self.indexer.ml_indexer.compToOxLoad  # Components -> oxides
         OxToEl = self.indexer.ml_indexer.OxToEl              # Oxides -> elements
@@ -1513,156 +1335,170 @@ class BigMetaTable():
         # ========== Initialize output memmap ==========
         total_rows = self.table1.shape[0]
         num_cols = self.indexer.ml_indexer.ncomps
-        
+
         self.molar = np.lib.format.open_memmap(
             self.filename + 'component_moles.npy',
             mode='w+',
             dtype=np.float32,
             shape=(total_rows, num_cols)
         )
-        
-        # ========== Process each phase ==========
-        for phase in list(label_indices.keys()):
-            # Generate random multipliers for resampling (1.0 for no resampling)
-            phase_multipliers = np.random.uniform(
-                *multiplier_bounds, 
-                size=total_rows
-            ).reshape(-1, 1)
-            
-            if phase != 'melts-liquid':
-                # --- CASE 0: HeFESTo solids phases (olivine, pyroxene, etc.) ---
 
-                if self.Model == 'HeFESTo':
-                    # HeFESTo solids are already stored as extensive component moles.
-                    # Keep them directly, but assert the phase-total column matches the
-                    # sum of component columns so schema mismatches fail loudly.
-                    phase_label_inds = label_indices[phase]
-                    component_names = np.array(label_names)[phase_label_inds]
-                    component_col_indices = np.array([
-                        component_indices[phase][comp_name]
-                        for comp_name in component_names
-                    ])
+        phases = list(label_indices.keys())
 
-                    component_moles = self.table1[:, component_col_indices]
-                   
+        # ========== Process one row-chunk at a time, every phase within it ==========
+        # Each phase used to do its own full-height column read from self.table1 and
+        # full-height write into self.molar - a strided pass over every row, repeated
+        # once per phase. Looping chunk-outer/phase-inner instead means self.table1 is
+        # read contiguously exactly once (per chunk) and self.molar written once, no
+        # matter how many phases there are.
+        for start in tqdm(range(0, total_rows, chunk_size), desc="Computing component moles"):
+            end = min(start + chunk_size, total_rows)
+            chunk = self.table1[start:end]
+            chunk_len = end - start
+            molar_chunk = np.zeros((chunk_len, num_cols), dtype=np.float32)
 
-                    self.molar[:, phase_label_inds] = component_moles * phase_multipliers
-                
-                # --- CASE 1: MELTS solid phases (olivine, pyroxene, etc.) ---
-                else:
-                        
+            for phase in phases:
+                # Generate random multipliers for resampling (1.0 for no resampling)
+                phase_multipliers = np.random.uniform(
+                    *multiplier_bounds,
+                    size=chunk_len
+                ).reshape(-1, 1)
 
-                    # Get indices for this phase's components
-                    phase_label_inds = label_indices[phase]
-                    
-                    if len(phase_label_inds) > 1:
-                        # Variable composition solid (e.g., olivine: Fo + Fa + Monticellite)
-                        # Components are stored as mole fractions that sum to 1
-                        
-                        # Get component names and their column indices in table
+                if phase != 'melts-liquid':
+                    # --- CASE 0: HeFESTo solids phases (olivine, pyroxene, etc.) ---
+
+                    if self.Model == 'HeFESTo':
+                        # HeFESTo solids are already stored as extensive component moles.
+                        # Keep them directly, but assert the phase-total column matches the
+                        # sum of component columns so schema mismatches fail loudly.
+                        phase_label_inds = label_indices[phase]
                         component_names = np.array(label_names)[phase_label_inds]
                         component_col_indices = np.array([
-                            component_indices[phase][comp_name] 
+                            component_indices[phase][comp_name]
                             for comp_name in component_names
                         ])
-                        
-                        # Extract component mole fractions from table (sum to 1 per row)
-                        component_fractions = self.table1[:, component_col_indices]
-                        
-                        # Calculate phase molar mass from composition
-                        # component_fractions -> oxides -> molar mass
-                        phase_molar_mass = (
-                            component_fractions @ compToOxLoad[phase_label_inds]
-                        ) @ Mtot
-                        
-                        # Get phase mass (grams) from table
-                        phase_mass_grams = self.table1[:, component_indices[phase]['mass (gm)']]
-                        phase_mass_col = np.atleast_2d(phase_mass_grams).T
-                        
-                        # Calculate total moles of phase: moles = mass / molar_mass
-                        # Handle division by zero with safe divide
-                        zero_mat = np.zeros_like(phase_molar_mass, dtype=float)
-                        total_phase_moles = np.divide(
-                            phase_mass_col,
-                            phase_molar_mass,
-                            out=zero_mat,
-                            where=phase_molar_mass != 0
-                        )
-                        
-                        # Moles of each component = component_fraction * total_moles * multiplier
-                        self.molar[:, phase_label_inds] = (
-                            component_fractions * 
-                            phase_multipliers * 
-                            total_phase_moles
-                        )
-                        
+
+                        component_moles = chunk[:, component_col_indices]
+
+                        molar_chunk[:, phase_label_inds] = component_moles * phase_multipliers
+
+                    # --- CASE 1: MELTS solid phases (olivine, pyroxene, etc.) ---
                     else:
-                        # Invariant composition solid (e.g., quartz = 100% SiO2)
-                        # Only one component, so moles = mass / molar_mass
-                        
-                        phase_mass_grams = self.table1[:, component_indices[phase]['mass (gm)']]
-                        phase_mass_col = phase_mass_grams.reshape(-1, 1)
-                        
-                        # Get molar mass of this single component
-                        phase_molar_mass = compToOxLoad[phase_label_inds, :] @ Mtot
-                        
-                        # Calculate moles: mass / MM, with multiplier
-                        self.molar[:, phase_label_inds] = (
-                            (phase_multipliers * phase_mass_col / phase_molar_mass).T
-                        ).T
-                
-            # --- CASE 2: Liquid phase in MELTS (special handling) ---
-            else:
-                # Liquid is stored as wt% oxides in MELTS table
-                # Need to convert: wt% oxides -> mole oxides -> mole elements
-                
-                # Get column indices for oxide weight percents
-                oxide_col_indices = np.array([
-                    component_indices['melts-liquid'][f"wt% {oxide}"] 
-                    for oxide in Oxides
-                ])
-                
-                # Extract wt% oxides from table
-                wt_percent_oxides = self.table1[:, oxide_col_indices]
-                
-                # Convert wt% to unnormalized moles: wt% / molar_mass
-                # Minv is diagonal matrix of 1/MM for each oxide
-                unnormed_mole_oxides = wt_percent_oxides @ Minv
-                
-                # Normalize to sum = 1 (mole fractions)
-                total_unnormed = np.sum(unnormed_mole_oxides, axis=1).reshape(-1, 1)
-                zero_mat = np.zeros_like(unnormed_mole_oxides, dtype=float)
-                mole_fraction_oxides = np.divide(
-                    unnormed_mole_oxides,
-                    total_unnormed,
-                    out=zero_mat,
-                    where=total_unnormed != 0
-                )
-                
-                # Calculate liquid molar mass from composition
-                liquid_molar_mass = mole_fraction_oxides @ Mtot
-                
-                # Get liquid mass (grams) from table
-                liquid_mass_grams = self.table1[:, component_indices[phase]['liq mass (gm)']]
-                liquid_mass_col = liquid_mass_grams.reshape(-1, 1)
-                
-                # Calculate total moles of liquid: mass / molar_mass
-                zero_mat = np.zeros_like(liquid_molar_mass, dtype=float)
-                total_liquid_moles = np.divide(
-                    liquid_mass_col,
-                    liquid_molar_mass.reshape(-1, 1),
-                    out=zero_mat,
-                    where=liquid_molar_mass.reshape(-1, 1) != 0
-                )
-                
-                # Convert from mole oxides to mole elements
-                # mole_fraction_oxides @ OxToEl gives element mole fractions
-                # Multiply by total moles and multiplier to get absolute moles
-                self.molar[:, label_indices[phase]] = (
-                    mole_fraction_oxides * 
-                    phase_multipliers * 
-                    total_liquid_moles
-                ) @ OxToEl
+
+                        # Get indices for this phase's components
+                        phase_label_inds = label_indices[phase]
+
+                        if len(phase_label_inds) > 1:
+                            # Variable composition solid (e.g., olivine: Fo + Fa + Monticellite)
+                            # Components are stored as mole fractions that sum to 1
+
+                            # Get component names and their column indices in table
+                            component_names = np.array(label_names)[phase_label_inds]
+                            component_col_indices = np.array([
+                                component_indices[phase][comp_name]
+                                for comp_name in component_names
+                            ])
+
+                            # Extract component mole fractions from table (sum to 1 per row)
+                            component_fractions = chunk[:, component_col_indices]
+
+                            # Calculate phase molar mass from composition
+                            # component_fractions -> oxides -> molar mass
+                            phase_molar_mass = (
+                                component_fractions @ compToOxLoad[phase_label_inds]
+                            ) @ Mtot
+
+                            # Get phase mass (grams) from table
+                            phase_mass_grams = chunk[:, component_indices[phase]['mass (gm)']]
+                            phase_mass_col = np.atleast_2d(phase_mass_grams).T
+
+                            # Calculate total moles of phase: moles = mass / molar_mass
+                            # Handle division by zero with safe divide
+                            zero_mat = np.zeros_like(phase_molar_mass, dtype=float)
+                            total_phase_moles = np.divide(
+                                phase_mass_col,
+                                phase_molar_mass,
+                                out=zero_mat,
+                                where=phase_molar_mass != 0
+                            )
+
+                            # Moles of each component = component_fraction * total_moles * multiplier
+                            molar_chunk[:, phase_label_inds] = (
+                                component_fractions *
+                                phase_multipliers *
+                                total_phase_moles
+                            )
+
+                        else:
+                            # Invariant composition solid (e.g., quartz = 100% SiO2)
+                            # Only one component, so moles = mass / molar_mass
+
+                            phase_mass_grams = chunk[:, component_indices[phase]['mass (gm)']]
+                            phase_mass_col = phase_mass_grams.reshape(-1, 1)
+
+                            # Get molar mass of this single component
+                            phase_molar_mass = compToOxLoad[phase_label_inds, :] @ Mtot
+
+                            # Calculate moles: mass / MM, with multiplier
+                            molar_chunk[:, phase_label_inds] = (
+                                (phase_multipliers * phase_mass_col / phase_molar_mass).T
+                            ).T
+
+                # --- CASE 2: Liquid phase in MELTS (special handling) ---
+                else:
+                    # Liquid is stored as wt% oxides in MELTS table
+                    # Need to convert: wt% oxides -> mole oxides -> mole elements
+
+                    # Get column indices for oxide weight percents
+                    oxide_col_indices = np.array([
+                        component_indices['melts-liquid'][f"wt% {oxide}"]
+                        for oxide in Oxides
+                    ])
+
+                    # Extract wt% oxides from table
+                    wt_percent_oxides = chunk[:, oxide_col_indices]
+
+                    # Convert wt% to unnormalized moles: wt% / molar_mass
+                    # Minv is diagonal matrix of 1/MM for each oxide
+                    unnormed_mole_oxides = wt_percent_oxides @ Minv
+
+                    # Normalize to sum = 1 (mole fractions)
+                    total_unnormed = np.sum(unnormed_mole_oxides, axis=1).reshape(-1, 1)
+                    zero_mat = np.zeros_like(unnormed_mole_oxides, dtype=float)
+                    mole_fraction_oxides = np.divide(
+                        unnormed_mole_oxides,
+                        total_unnormed,
+                        out=zero_mat,
+                        where=total_unnormed != 0
+                    )
+
+                    # Calculate liquid molar mass from composition
+                    liquid_molar_mass = mole_fraction_oxides @ Mtot
+
+                    # Get liquid mass (grams) from table
+                    liquid_mass_grams = chunk[:, component_indices[phase]['liq mass (gm)']]
+                    liquid_mass_col = liquid_mass_grams.reshape(-1, 1)
+
+                    # Calculate total moles of liquid: mass / molar_mass
+                    zero_mat = np.zeros_like(liquid_molar_mass, dtype=float)
+                    total_liquid_moles = np.divide(
+                        liquid_mass_col,
+                        liquid_molar_mass.reshape(-1, 1),
+                        out=zero_mat,
+                        where=liquid_molar_mass.reshape(-1, 1) != 0
+                    )
+
+                    # Convert from mole oxides to mole elements
+                    # mole_fraction_oxides @ OxToEl gives element mole fractions
+                    # Multiply by total moles and multiplier to get absolute moles
+                    molar_chunk[:, label_indices[phase]] = (
+                        mole_fraction_oxides *
+                        phase_multipliers *
+                        total_liquid_moles
+                    ) @ OxToEl
+
+            self.molar[start:end] = molar_chunk
+            self.molar.flush()
 
     def recover_untracked_phases(self):
         """
@@ -2187,118 +2023,3 @@ class BigMetaTable():
                   f"(total mass = {phase_mass_arr[p_i, mask].sum():.3f} g).")
         self.table.flush()
         print("[RECOVER] Done.")
-
-
-def merge_big_meta_tables(tables, new_filename, chunk_size=100_000, clear_old_tables = True):
-    """
-    Merges multiple BigMetaTable instances into a new memmapped BigMetaTable.
-    Edited 6/30/25 to initialize merged BigMetaTable using .__init__() for stability
-    MUST BE DONE AFTER ANALCIME IS ISOLATED BECAUSE THE NEW TABLE WILL INHERIT THE GLOBAL COLUMNS
-
-    Parameters:
-    - tables: list/tuple of BigMetaTable instances to merge.
-    - new_filename: base name for output .npy file (no extension needed).
-    - chunk_size: number of rows per chunk when copying (default: 100,000).
-
-    Returns:
-    - A new BigMetaTable instance with combined memmapped data.
-    """
-    
-    if not tables:
-        raise ValueError("No tables were provided for merging.")
-
-    if len(tables) == 2 and tables[0] is None: # SAFEGUARD FOR ITERATIVE USE
-        return tables[1]
-
-    tables = [t for t in tables if t is not None]
-    if not tables:
-        raise ValueError("All provided tables were None.")
-    
-    # Ensure consistent shape/dtype
-    col_count = tables[0].table.shape[1]
-    dtype = tables[0].table.dtype
-    
-    
-        
-    
-    for t in tables:
-        if t.table.shape[1] != col_count:
-            raise ValueError("Column count mismatch among tables.")
-        if t.table.dtype != dtype:
-            raise ValueError("Dtype mismatch among tables.")
-
-    # Compute total number of rows
-    total_rows = sum(t.table.shape[0] for t in tables)
-
-    # Create memmap file
-    mmap_path = f"{new_filename}.npy"
-    merged_array = np.lib.format.open_memmap(
-        mmap_path, mode='w+', dtype=dtype, shape=(total_rows, col_count)
-    )
-    
-    # Move BlurredBinaries
-    if np.all(np.array([t.blurredbinaries is not None for t in tables])):
-        move_blurred = True
-        print('MERGING BLURRED BOUNDARIES')
-
-        blurred_cols = tables[0].blurredbinaries.shape[1]
-        blurred_dtype = tables[0].blurredbinaries.dtype
-        for t in tables:
-            if t.blurredbinaries.shape[1] != blurred_cols:
-                raise ValueError("Blurredbinaries column mismatch among tables.")
-
-        merged_blurredbinaries = np.lib.format.open_memmap(
-        new_filename+'blurredbinaries.npy', mode='w+', dtype=blurred_dtype, shape=(total_rows, blurred_cols)
-        )
-    else:
-        move_blurred = False
-        print('Not merging blurred boundaries')
-        
-
-    # Copy in chunks
-    current_row = 0
-    new_meta = []
-
-    for t in tables:
-        table_rows = t.table.shape[0]
-        for start in range(0, table_rows, chunk_size):
-            end = min(start + chunk_size, table_rows)
-            merged_array[current_row:current_row + (end - start)] = t.table[start:end]
-            
-            if move_blurred:
-                merged_blurredbinaries[current_row:current_row + (end - start)] = t.blurredbinaries[start:end]
-            
-            current_row += (end - start)
-            
-        # merge metadata
-        new_meta.append(t.meta)
-    
-    # Save metadata
-    new_meta = np.concatenate(new_meta)
-    
-    assert merged_array.shape[0] == len(new_meta), 'Metadata length does not equal table rows!'
-            
-    # Flush memmap(s) to disk
-    merged_array.flush()
-    del merged_array
-    if move_blurred:
-        merged_blurredbinaries.flush()
-        del merged_blurredbinaries
-    if clear_old_tables:
-        for t in tables:
-            del t.table
-            if t.blurredbinaries is not None:
-                del t.blurredbinaries
-            del t
-            
-    gc.collect()
-    
-    # Write metadata 
-    with open(new_filename+'.txt', 'w') as f:
-        for line in new_meta:
-            f.write(line + '\n')
-
-    # Build new BigMetaTable
-    new_table = BigMetaTable(new_filename, header=tables[0].header)
-
-    return new_table
