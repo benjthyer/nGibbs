@@ -608,7 +608,7 @@ class MidLevelNetwork(TunableModel):
         reconBulkUnNormed = componentMoles @ self.compToEl #(B,E)
         totals = reconBulkUnNormed.sum(dim=1)#torch.ones(reconBulkUnNormed.size()[0], device = 'cuda')   #(B) TEMP NO NORMALIZATION, LET LINEAR ALGEBRA TAKE CARE OF IT
         #print(f"Normalization Totals is nan: {torch.isnan(totals).sum()}, is zero: {(totals == 0).sum()}")
-        reconBulk = reconBulkUnNormed / totals.unsqueeze(-1) # How to project? BE / B1 -> BE
+        reconBulk = reconBulkUnNormed / totals.unsqueeze(-1).clamp(min=1e-6) 
 
         if details_out:
             return logMoles, reconBulk, componentMoles / totals.unsqueeze(-1), phaseProportions, phaseMoles # Apply identical normalization to components for equality

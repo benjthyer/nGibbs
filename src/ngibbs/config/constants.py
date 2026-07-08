@@ -34,6 +34,10 @@ TYPE_CONVERSION_MAP = {
     'batch_size': int,
     'epochs': int,
     'early_stopping_patience': int,
+    'dropout_step_up': float,
+    'dropout_step_down': float,
+    'noise_step_up': float,
+    'noise_step_down': float,
 }
 
 # Required elements (must always be present)

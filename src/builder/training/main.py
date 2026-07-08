@@ -455,6 +455,10 @@ def main() -> None:
         lr = float(episode_cfg["learning_rate"])
         eps = float(episode_cfg.get("eps", 1E-8))
         amsgrad = bool(episode_cfg.get("amsgrad", True))
+        dropout_step_up = float(episode_cfg.get("dropout_step_up", 0.05))
+        dropout_step_down = float(episode_cfg.get("dropout_step_down", 0.02))
+        noise_step_up = float(episode_cfg.get("noise_step_up", 0.002))
+        noise_step_down = float(episode_cfg.get("noise_step_down", 0.001))
 
         binWeights, compWeights = _build_phase_weights(ml_indexer, episode_cfg)
         which_heads_to_freeze = episode_cfg.get('which_heads_to_freeze', None)
@@ -524,6 +528,10 @@ def main() -> None:
                         Param_Dict=episode_cfg['tune_params'],
                         best_loss=tune_seed_loss,
                         sweep=sweep,
+                        dropout_step_up=dropout_step_up,
+                        dropout_step_down=dropout_step_down,
+                        noise_step_up=noise_step_up,
+                        noise_step_down=noise_step_down,
                     )
                     tuned_best_loss = _best_loss_from_tune_results(tune_results)
                     if tuned_best_loss is not None:
@@ -550,11 +558,15 @@ def main() -> None:
                         eps=eps,
                         amsgrad=amsgrad,
                         sweep=sweep,
+                        dropout_step_up=dropout_step_up,
+                        dropout_step_down=dropout_step_down,
+                        noise_step_up=noise_step_up,
+                        noise_step_down=noise_step_down,
                     )
                     tuned_best_loss = _best_loss_from_tune_results(tune_results)
                     if tuned_best_loss is not None:
                         best_loss = tuned_best_loss
-                
+
                 # Update best_model and best_config for next episode
                 #best_model = NN.rebuild_MELTS_model(str(dict_filepath))
                 best_model = model # No need to reload from disk, we have the tuned model in memory
@@ -612,6 +624,10 @@ def main() -> None:
                         max_N=max_N,
                         device=device,
                         DictFilePath=str(dict_filepath),
+                        dropout_step_up=dropout_step_up,
+                        dropout_step_down=dropout_step_down,
+                        noise_step_up=noise_step_up,
+                        noise_step_down=noise_step_down,
                         config_yaml=config_yaml_text,
                         training_yaml=training_yaml_text,
                         processing_yaml=processing_yaml_text,
@@ -642,6 +658,10 @@ def main() -> None:
                         early_stopping_patience=ESP,
                         which_heads_to_freeze=which_heads_to_freeze,
                         DictFilePath=str(dict_filepath),
+                        dropout_step_up=dropout_step_up,
+                        dropout_step_down=dropout_step_down,
+                        noise_step_up=noise_step_up,
+                        noise_step_down=noise_step_down,
                         config_yaml=config_yaml_text,
                         training_yaml=training_yaml_text,
                         processing_yaml=processing_yaml_text,
