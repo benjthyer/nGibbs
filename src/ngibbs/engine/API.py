@@ -1900,13 +1900,6 @@ HeFESToMarsEmulatorCPU = HeFESToAPI(
     device='cpu'
 )
 
-HeFESToMarsEmulatorGPU = HeFESToAPI(
-    isothermal_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Isothermal.tar"),
-    isentropic_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Isentropic.tar"),
-    temperature_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Temp.pt"),
-    device='cuda'
-)
-
 MELTS102EmulatorCPU = MELTSAPI(
     isothermal_NoCr_model_path = str(MELTS102_dir / "102Isothermal_NoCr.tar"),
     isothermal_Cr_model_path = str(MELTS102_dir / "102Isothermal_Cr.tar"),
@@ -1932,6 +1925,13 @@ if torch.cuda.is_available():
         isothermal_model_path=str(adiabat_NPT_path),
         isentropic_model_path=str(adiabat_NPS_path),
         temperature_model_path=str(adiabat_TfromS_path),
+        device='cuda'
+    )
+
+    HeFESToMarsEmulatorGPU = HeFESToAPI(
+        isothermal_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Isothermal.tar"),
+        isentropic_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Isentropic.tar"),
+        temperature_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Temp.pt"),
         device='cuda'
     )
 
