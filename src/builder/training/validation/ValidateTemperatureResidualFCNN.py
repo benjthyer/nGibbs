@@ -225,6 +225,32 @@ def _save_parity_plot(
     plt.close(fig)
 
 
+def _filter_by_entropy_range(
+    features: np.ndarray,
+    free_outputs: np.ndarray,
+    molar_labels: np.ndarray,
+    labels: np.ndarray,
+    s_idx: int,
+    s_min: Optional[float],
+    s_max: Optional[float],
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Keep only rows with S strictly inside (s_min, s_max).
+
+    Mirrors _filter_by_entropy_range in train_temperature_residual_fcnn.py (strict
+    inequalities, either bound optional). No-op when both bounds are None.
+    """
+    if s_min is None and s_max is None:
+        return features, free_outputs, molar_labels, labels
+    S = features[:, s_idx]
+    mask = np.ones(S.shape[0], dtype=bool)
+    if s_min is not None:
+        mask &= S > s_min
+    if s_max is not None:
+        mask &= S < s_max
+    print(f"  Filtering bundle: keeping {int(mask.sum())}/{mask.shape[0]} rows with S in ({s_min}, {s_max})")
+    return features[mask], free_outputs[mask], molar_labels[mask], labels[mask]
+
+
 def _validate_checkpoint(
     checkpoint_path: Path,
     bundle,
@@ -382,6 +408,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=4096)
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--max-samples", type=int, default=2 ** 16)
+    parser.add_argument(
+        "--s-min",
+        type=float,
+        default=None,
+        help=(
+            "Minimum entropy S (J/g/K), exclusive. Rows with S <= s-min are dropped from "
+            "the bundle before validation, mirroring the KEEP_RANGE convention used by "
+            "train_temperature_residual_fcnn.py. Default: no lower bound."
+        ),
+    )
+    parser.add_argument(
+        "--s-max",
+        type=float,
+        default=None,
+        help=(
+            "Maximum entropy S (J/g/K), exclusive. Rows with S >= s-max are dropped. "
+            "Default: no upper bound."
+        ),
+    )
     parser.add_argument("--cuda", action="store_true")
     parser.add_argument(
         "--out-dir",
@@ -409,7 +454,7 @@ def main() -> None:
     if bundle.features is None or bundle.molar_labels is None or bundle.labels is None:
         raise ValueError("Bundle missing required arrays (features / molar_labels / labels)")
 
-    # Identify temperature column from first checkpoint's metadata
+    # Identify temperature column and S feature index from first checkpoint's metadata
     first_payload = torch.load(args.checkpoints[0], map_location="cpu", weights_only=False)
     temperature_label: str = first_payload.get("temperature_label", "")
     available_output_names = list(getattr(bundle.ml_indexer, "freeOutputs", []) or [])
@@ -419,22 +464,31 @@ def main() -> None:
             f"Available: {available_output_names}"
         )
     temp_col = available_output_names.index(temperature_label)
+    s_idx = int(first_payload["s_feature_idx"])
 
-    # Subset to max_samples
     features_raw = np.asarray(bundle.features, dtype=np.float32)
     free_outputs = np.asarray(bundle.free_outputs, dtype=np.float32)
+    molar_labels_full = np.asarray(bundle.molar_labels, dtype=np.float32)
+    labels_full = np.asarray(bundle.labels, dtype=np.float32)
+
+    if args.s_min is not None or args.s_max is not None:
+        print(f"Filtering bundle to S in ({args.s_min}, {args.s_max}):")
+        features_raw, free_outputs, molar_labels_full, labels_full = _filter_by_entropy_range(
+            features_raw, free_outputs, molar_labels_full, labels_full, s_idx, args.s_min, args.s_max
+        )
+
+    # Subset to max_samples
     n_total = features_raw.shape[0]
     if args.max_samples < n_total:
         rng = np.random.default_rng(args.seed)
         subset = rng.choice(n_total, size=args.max_samples, replace=False)
         features_raw = features_raw[subset]
         free_outputs = free_outputs[subset]
-        # We need sliced versions of molar_labels / labels too
-        molar_labels = np.asarray(bundle.molar_labels, dtype=np.float32)[subset]
-        labels = np.asarray(bundle.labels, dtype=np.float32)[subset]
+        molar_labels = molar_labels_full[subset]
+        labels = labels_full[subset]
     else:
-        molar_labels = np.asarray(bundle.molar_labels, dtype=np.float32)
-        labels = np.asarray(bundle.labels, dtype=np.float32)
+        molar_labels = molar_labels_full
+        labels = labels_full
 
     T_true = free_outputs[:, temp_col].astype(np.float32)
 
@@ -492,6 +546,8 @@ def main() -> None:
         "bundle": str(bundle_path),
         "n_samples": int(T_true.shape[0]),
         "temperature_label": temperature_label,
+        "s_min": args.s_min,
+        "s_max": args.s_max,
         "results": all_metrics,
     }
     summary_path = out_dir / "temperature_residual_validation_metrics.json"

@@ -1,11 +1,16 @@
 """Compare bulk composition and P-T-S coverage between two MELTStable tables.
 
-For two MELTStable-format CSVs (as produced by HeFESTo_functions.py /
+For two MELTStable-format tables (as produced by HeFESTo_functions.py /
 import_HeFESTo_components, or the MELTS import pipeline), plots:
   - Stacked histograms of each oxide bulk composition   ('(Bulk_comp)' columns)
   - Stacked histograms of each element bulk composition ('(Bulk_comp_elements)' columns)
   - Stacked histogram of entropy S ('S(J/g/K)(System_main)')
   - Stacked density scatter (hexbin) of P vs S and P vs T
+
+Each table may be a standalone CSV (header + data rows), or a BigMetaTable
+.npy/.csv pair (a .npy array plus a header-only .csv of column names) - pass
+the .npy file, the shared base name with no extension, or the paired .csv
+itself.
 
 Composition histograms are built from one row per *unique* bulk composition:
 a MELTStable row repeats once per pressure step along a simulation's P-T
@@ -20,6 +25,11 @@ Usage:
         --table-b data/MELTStables/HeFESTo/Training062426_MarsProfiles.csv \\
         --name-a JiChingSims --name-b "Mars training" \\
         --output-dir plots/melts_comparison
+
+    python scripts/melts_table_comparison.py \\
+        --table-a data/MELTStables/HeFESTo/HeFESTo_Trainset070426Mars__mergedJCC.npy \\
+        --table-b data/MELTStables/HeFESTo/HeFESTo_Validset070426Mars__mergedJCC.npy \\
+        --output-dir plots/melts_comparison
 """
 
 from __future__ import annotations
@@ -27,7 +37,7 @@ from __future__ import annotations
 import argparse
 import re
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -58,13 +68,52 @@ def _element_cols(columns) -> List[str]:
     return [c for c in columns if '(Bulk_comp_elements)' in c]
 
 
-def load_table(path: Path) -> pd.DataFrame:
-    """Load only the composition and condition columns of a MELTStable CSV."""
-    header = pd.read_csv(path, nrows=0).columns.tolist()
+def _npy_pair_paths(path: Path) -> Optional[Tuple[Path, Path]]:
+    """If `path` refers to a BigMetaTable .npy/.csv pair, return (npy_path, header_csv_path).
+
+    Accepts a bare .npy file, an extensionless base name, or a .csv that has a
+    sibling .npy (the paired BigMetaTable format, where the .csv holds just the
+    header row). Returns None for a standalone CSV with no sibling .npy.
+    """
+    if path.suffix == '.npy':
+        return path, path.with_suffix('.csv')
+    if path.suffix == '':
+        npy_path = path.with_suffix('.npy')
+        return (npy_path, path.with_suffix('.csv')) if npy_path.exists() else None
+    if path.suffix == '.csv' and path.with_suffix('.npy').exists():
+        return path.with_suffix('.npy'), path
+    return None
+
+
+def _usecols_and_indices(header: List[str]) -> Tuple[List[str], List[int]]:
     oxide_cols = _oxide_cols(header)
     element_cols = _element_cols(header)
     condition_cols = [c for c in CONDITION_COLS.values() if c in header]
     usecols = sorted(set(oxide_cols) | set(element_cols) | set(condition_cols))
+    indices = [header.index(c) for c in usecols]
+    return usecols, indices
+
+
+def load_npy_table(npy_path: Path, header_path: Path) -> pd.DataFrame:
+    """Load only the composition and condition columns of a BigMetaTable .npy/.csv pair."""
+    header = pd.read_csv(header_path, nrows=0).columns.tolist()
+    usecols, indices = _usecols_and_indices(header)
+    if not usecols:
+        raise ValueError(
+            f'{header_path} does not look like a MELTStable header '
+            "(no '(Bulk_comp)' / '(Bulk_comp_elements)' / condition columns found)"
+        )
+    print(f'Reading {npy_path} ({len(usecols)} of {len(header)} columns)...')
+    arr = np.load(npy_path, mmap_mode='r')
+    df = pd.DataFrame(np.asarray(arr[:, indices], dtype=np.float64), columns=usecols)
+    print(f'  {len(df):,} rows')
+    return df
+
+
+def load_csv_table(path: Path) -> pd.DataFrame:
+    """Load only the composition and condition columns of a standalone MELTStable CSV."""
+    header = pd.read_csv(path, nrows=0).columns.tolist()
+    usecols, _ = _usecols_and_indices(header)
     if not usecols:
         raise ValueError(
             f'{path} does not look like a MELTStable CSV '
@@ -76,6 +125,19 @@ def load_table(path: Path) -> pd.DataFrame:
         df[col] = pd.to_numeric(df[col], errors='coerce')
     print(f'  {len(df):,} rows')
     return df
+
+
+def load_table(path: Path) -> pd.DataFrame:
+    """Load a MELTStable table from a standalone CSV or a BigMetaTable .npy/.csv pair."""
+    pair = _npy_pair_paths(path)
+    if pair is not None:
+        npy_path, header_path = pair
+        if not npy_path.exists():
+            raise FileNotFoundError(f'{npy_path} does not exist')
+        if not header_path.exists():
+            raise FileNotFoundError(f'{header_path} (header CSV for {npy_path}) does not exist')
+        return load_npy_table(npy_path, header_path)
+    return load_csv_table(path)
 
 
 def unique_compositions(df: pd.DataFrame, comp_cols: List[str]) -> pd.DataFrame:
@@ -137,7 +199,19 @@ def _stacked_density_scatter(
     out_path: Path,
     gridsize: int = 60,
 ) -> None:
-    fig, axes = plt.subplots(len(x_lists), 1, figsize=(7.5, 3.4 * len(x_lists)), sharex=False)
+    all_x = np.concatenate([x[np.isfinite(x)] for x in x_lists if len(x) > 0])
+    all_y = np.concatenate([y[np.isfinite(y)] for y in y_lists if len(y) > 0])
+    extent: Optional[Tuple[float, float, float, float]] = None
+    if len(all_x) > 0 and len(all_y) > 0:
+        x_lo, x_hi = float(np.nanmin(all_x)), float(np.nanmax(all_x))
+        y_lo, y_hi = float(np.nanmin(all_y)), float(np.nanmax(all_y))
+        if x_lo >= x_hi:
+            x_lo, x_hi = x_lo - 0.5, x_hi + 0.5
+        if y_lo >= y_hi:
+            y_lo, y_hi = y_lo - 0.5, y_hi + 0.5
+        extent = (x_lo, x_hi, y_lo, y_hi)
+
+    fig, axes = plt.subplots(len(x_lists), 1, figsize=(7.5, 3.4 * len(x_lists)), sharex=True, sharey=True)
     if len(x_lists) == 1:
         axes = [axes]
 
@@ -147,11 +221,14 @@ def _stacked_density_scatter(
         if len(x_f) == 0:
             ax.text(0.5, 0.5, 'No data', transform=ax.transAxes, ha='center', va='center')
             ax.set_title(name, fontsize=9)
-            continue
-        hb = ax.hexbin(x_f, y_f, gridsize=gridsize, cmap='viridis', mincnt=1, bins='log')
-        fig.colorbar(hb, ax=ax, label='log10(count)')
+        else:
+            hb = ax.hexbin(x_f, y_f, gridsize=gridsize, cmap='viridis', mincnt=1, bins='log', extent=extent)
+            fig.colorbar(hb, ax=ax, label='log10(count)')
+            ax.set_title(f'{name}   (n={len(x_f):,})', fontsize=9)
         ax.set_ylabel(ylabel)
-        ax.set_title(f'{name}   (n={len(x_f):,})', fontsize=9)
+        if extent is not None:
+            ax.set_xlim(extent[0], extent[1])
+            ax.set_ylim(extent[2], extent[3])
 
     axes[-1].set_xlabel(xlabel)
     fig.suptitle(title, fontsize=11, y=1.0)
@@ -264,8 +341,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    p.add_argument('--table-a', required=True, help='Path to first MELTStable CSV')
-    p.add_argument('--table-b', required=True, help='Path to second MELTStable CSV')
+    p.add_argument(
+        '--table-a', required=True,
+        help='Path to first MELTStable table: a CSV, or a .npy file / base name paired with a header-only .csv',
+    )
+    p.add_argument(
+        '--table-b', required=True,
+        help='Path to second MELTStable table: a CSV, or a .npy file / base name paired with a header-only .csv',
+    )
     p.add_argument('--name-a', default=None, help='Display name for table A (default: filename stem)')
     p.add_argument('--name-b', default=None, help='Display name for table B (default: filename stem)')
     p.add_argument('--output-dir', required=True, help='Directory to save plots into')

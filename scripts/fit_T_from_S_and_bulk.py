@@ -9,6 +9,10 @@ where Xi runs over every column matching *Bulk_comp_elements in the CSV.
 
 Coefficients are saved to a text file whose name contains the R^2 value.
 
+Accepts either a standalone CSV (header + data rows), or a BigMetaTable pair
+(a .npy array plus a header-only .csv of column names) - pass the .npy file,
+the shared base name with no extension, or the paired .csv itself.
+
 Usage:
     python scripts/fit_T_from_S_and_bulk.py \
         --csv data/MELTStables/HeFESTo/HeFESTo_TrainsetMar2NTP.csv
@@ -16,11 +20,15 @@ Usage:
     python scripts/fit_T_from_S_and_bulk.py \
         --csv data/MELTStables/HeFESTo/HeFESTo_TrainsetMar2NTP.csv \
         --out-dir data/MELTStables/HeFESTo
+
+    python scripts/fit_T_from_S_and_bulk.py \
+        --csv data/MELTStables/HeFESTo/HeFESTo_TrainsetMar2NTP
 """
 
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -28,7 +36,35 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
 
+repo_src = str(Path(__file__).resolve().parents[1] / "src")
+if repo_src not in sys.path:
+    sys.path.insert(0, repo_src)
+
+from builder.processing.BigMetaTable import BigMetaTable
+
 KEEP_RANGE = [1.75, 2.9]  # Only keep rows with S in this range for fitting
+
+
+def _load_table(path: Path) -> pd.DataFrame:
+    """Load tabular data from a standalone CSV or a BigMetaTable .npy/.csv pair.
+
+    A bare .npy file, an extensionless base name, or a .csv that has a sibling
+    .npy (the paired BigMetaTable format, where the .csv holds just the header
+    row) are all loaded through BigMetaTable so the array and its column names
+    are read together. A .csv with no sibling .npy is read directly with
+    pandas, preserving the original standalone-CSV behavior.
+    """
+    if path.suffix == ".npy":
+        base = path.with_suffix("")
+    elif path.suffix == "":
+        base = path
+    elif path.suffix == ".csv" and path.with_suffix(".npy").exists():
+        base = path.with_suffix("")
+    else:
+        return pd.read_csv(path)
+
+    table = BigMetaTable(str(base))
+    return pd.DataFrame(np.asarray(table.table), columns=table.header)
 
 def _find_column(df: pd.DataFrame, *, exact: list[str], prefixes: list[str], label: str) -> str:
     for name in exact:
@@ -46,7 +82,7 @@ def _find_column(df: pd.DataFrame, *, exact: list[str], prefixes: list[str], lab
 
 
 def fit_T_from_S_and_bulk(csv_path: Path, out_dir: Path) -> None:
-    df = pd.read_csv(csv_path)
+    df = _load_table(csv_path)
 
     t_col = _find_column(
         df,
@@ -158,7 +194,11 @@ def parse_args() -> argparse.Namespace:
         "--csv",
         type=Path,
         default=Path("data/MELTStables/HeFESTo/HeFESTo_TrainsetMar2NTP.csv"),
-        help="Path to HeFESTo CSV file.",
+        help=(
+            "Path to HeFESTo data: either a standalone CSV, or a BigMetaTable "
+            "(.npy array + header-only .csv) given as the .npy file, the "
+            "extensionless base name, or the paired .csv."
+        ),
     )
     parser.add_argument(
         "--out-dir",

@@ -11,6 +11,11 @@ from math_utils. The NN learns the correction to the polynomial reference.
 Bundle convention:
 - test bundle: in-training validation (used each epoch)
 - valid bundle: post-training holdout evaluation
+
+Only one of the test/valid bundles is strictly required. If just one of the two
+is present on disk, it is used for both roles (in-training validation and
+post-training evaluation). If both are present, each keeps its own role as
+described above.
 """
 
 from __future__ import annotations
@@ -94,6 +99,13 @@ def _fit_minmax(y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
 
 def _build_bundle_paths(bundle_stem: Path) -> Dict[str, Path]:
+    """Resolve train/test/valid bundle paths from a shared stem.
+
+    Train is always required. Of test/valid, only one is strictly required —
+    if the other is missing on disk, its path is aliased to the one that is
+    present so it gets used for both the in-training validation role and the
+    post-training holdout evaluation role (see module docstring).
+    """
     stem = str(bundle_stem)
     if stem.endswith(".tar.gz"):
         stem = stem[:-7]
@@ -106,12 +118,22 @@ def _build_bundle_paths(bundle_stem: Path) -> Dict[str, Path]:
         "test": Path(f"{stem}_Test.tar.gz"),
         "valid": Path(f"{stem}_Valid.tar.gz"),
     }
-    missing = [name for name, path in paths.items() if not path.exists()]
-    if missing:
-        details = ", ".join(f"{name}: {paths[name]}" for name in missing)
+    if not paths["train"].exists():
+        raise FileNotFoundError(f"Could not resolve required train bundle: {paths['train']}")
+
+    have_test = paths["test"].exists()
+    have_valid = paths["valid"].exists()
+    if not have_test and not have_valid:
         raise FileNotFoundError(
-            f"Could not resolve required bundle files. Missing -> {details}"
+            "Could not resolve either test or valid bundle; at least one is required -> "
+            f"test: {paths['test']}, valid: {paths['valid']}"
         )
+    if not have_test:
+        print(f"Test bundle not found ({paths['test']}); using valid bundle for both roles.")
+        paths["test"] = paths["valid"]
+    elif not have_valid:
+        print(f"Valid bundle not found ({paths['valid']}); using test bundle for both roles.")
+        paths["valid"] = paths["test"]
     return paths
 
 

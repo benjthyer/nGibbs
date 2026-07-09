@@ -1894,16 +1894,16 @@ HeFESToEmulatorCPU = HeFESToAPI(
 )
 
 HeFESToMarsEmulatorCPU = HeFESToAPI(
-    isothermal_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_isothermal.tar"),
-    isentropic_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_isentropic.tar"),
-    temperature_model_path=str(_HeFESTo_Mars_dir / "temperature_residual_emulator_path_HeFESTo_Mars_Profiles_NPStrimmed_noJCCValid.pt"),#"HeFESTo_Mars_Temp.pt"),
+    isothermal_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Isothermal.tar"),
+    isentropic_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Isentropic.tar"),
+    temperature_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Temp.pt"),
     device='cpu'
 )
 
 HeFESToMarsEmulatorGPU = HeFESToAPI(
-    isothermal_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_isothermal.tar"),
-    isentropic_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_isentropic.tar"),
-    temperature_model_path=str(_HeFESTo_Mars_dir / "temperature_residual_emulator_path_HeFESTo_Mars_Profiles_NPStrimmed_noJCCValid.pt"),#"HeFESTo_Mars_Temp.pt"),
+    isothermal_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Isothermal.tar"),
+    isentropic_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Isentropic.tar"),
+    temperature_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Temp.pt"),
     device='cuda'
 )
 

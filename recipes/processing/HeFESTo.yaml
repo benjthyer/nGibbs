@@ -6,8 +6,8 @@
 # ============================================================================
 dataset: #EXPECTED FILENAME: "nMELTS/data/MELTStables/{MELTSModel}/{'MELTS' if MELTSModel in ['102', '110', '120', 'p'] else ''}{MELTSModel}_<Train/Valid>set{Date}{Mode}"
   MELTSModel: 'HeFESTo'          # MELTS model version: '102', '110', '120', 'p'. Affects which directory dataproducts are read from and written to
-  Date: '062426'               # Date identifier for dataset naming
-  Mode: 'Mars__merged'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
+  Date: '070426'               # Date identifier for dataset naming
+  Mode: 'Mars__mergedJCC'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
@@ -51,7 +51,7 @@ preprocessing:
   excluded_oxides: []         # Explicitly exclude oxides from indexer basis (e.g., ['H2O', 'NiO'])
   #(Generally do this, Analcime in MELTS has two distinct compositional fields)
 
-min_phase_proportion: 0.01    # Minimum phase proportion (0-1) for a sample to be included in training set. Applied after upsampling.
+min_phase_proportion: 0.005    # Minimum phase proportion (0-1) for a sample to be included in training set. Applied after upsampling.
 
 # ============================================================================
 # RARE PHASE UPSAMPLING
