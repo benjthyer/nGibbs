@@ -134,8 +134,8 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
     # --- Loaders (same for both "Cr" and "NoCr" if you only want one test here) ---
 
-    train_loader = DataLoader(trainData, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    test_loader = DataLoader(testData, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(trainData, batch_size=batch_size, shuffle=True, num_workers=12, pin_memory=True)
+    test_loader = DataLoader(testData, batch_size=batch_size, shuffle=False, num_workers=12, pin_memory=True)
 
     best_test_loss = np.inf
     train_losses, test_losses = [], []

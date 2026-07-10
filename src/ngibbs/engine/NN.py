@@ -515,9 +515,11 @@ class MidLevelNetwork(TunableModel):
             DictFilePath = DictFilePath.with_suffix(".pt")
         DictFilePath.parent.mkdir(parents=True, exist_ok=True)
         
-        # Create temporary directory for zip contents
+        # Create temporary directory for zip contents (kept on disk, not a RAM-backed /tmp)
         import tempfile
-        with tempfile.TemporaryDirectory() as temp_dir:
+        tmp_base = mod_root.parent.parent / "data" / "tmp"
+        tmp_base.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=tmp_base) as temp_dir:
             temp_path = Path(temp_dir)
             
             # === 1. Save state_dict as .pt ===
@@ -1114,9 +1116,11 @@ def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = 
     
     zip_path = Path(zip_path)
     
-    # Extract to temporary directory and load
+    # Extract to temporary directory and load (kept on disk, not a RAM-backed /tmp)
     import tempfile
-    with tempfile.TemporaryDirectory() as temp_dir:
+    tmp_base = mod_root.parent.parent / "data" / "tmp"
+    tmp_base.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=tmp_base) as temp_dir:
         temp_path = Path(temp_dir)
         
         # Extract zip contents

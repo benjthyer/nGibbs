@@ -6,6 +6,7 @@ Extracted from Legacy/BackEnds/EmulatorLibrary.py
 
 import os
 import shutil
+import gc
 from pathlib import Path
 import tarfile
 import tempfile
@@ -13,6 +14,45 @@ import pickle
 from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
+
+# Repo root, used to keep temp directories on disk (not a RAM-backed /tmp)
+_repo_root = Path(__file__).resolve().parents[3]
+
+
+def chunked_mask_copy(src, dst_path, keep_mask, chunk_size=100_000):
+    """Copy the rows of `src` selected by boolean `keep_mask` into a new
+    memmap at `dst_path`, one row-chunk at a time.
+
+    `src[start:end]` and the write into `dst` both stay contiguous; only the
+    boolean sub-select of a chunk is fancy-indexed, so peak RAM is
+    O(chunk_size) instead of materializing every selected row at once via
+    `src[keep_mask]` (or, equivalently, `np.vstack` over a list of kept
+    batches) - either of which holds the entire surviving array in RAM before
+    anything is written back out.
+
+    Shared by BigMetaTable.delete/split/manual_split (row-major .npy tables)
+    and filters.safe_delete_batched (standalone ML-bundle .npy arrays with no
+    live BigMetaTable around) so there is one implementation of "delete rows
+    from a memmap" rather than several with diverging memory behavior.
+
+    Returns the number of rows written (`n_keep`).
+    """
+    n_keep = int(np.count_nonzero(keep_mask))
+    dst = np.lib.format.open_memmap(dst_path, mode='w+', dtype=src.dtype, shape=(n_keep,) + src.shape[1:])
+    write_ptr = 0
+    for start in range(0, src.shape[0], chunk_size):
+        end = min(start + chunk_size, src.shape[0])
+        chunk_mask = keep_mask[start:end]
+        if not chunk_mask.any():
+            continue
+        kept = src[start:end][chunk_mask]
+        n = kept.shape[0]
+        dst[write_ptr:write_ptr + n] = kept
+        write_ptr += n
+    dst.flush()
+    del dst
+    gc.collect()
+    return n_keep
 
 
 def delete_files_with_keyword(directory, keyword, dry_run=True):
@@ -374,7 +414,9 @@ def load_ml_bundle(bundle_path):
         raise FileNotFoundError(f"Bundle file not found: {bundle_path}")
     
     # Create temporary directory for extraction
-    temp_dir = tempfile.mkdtemp()
+    tmp_base = _repo_root / "data" / "tmp"
+    tmp_base.mkdir(parents=True, exist_ok=True)
+    temp_dir = tempfile.mkdtemp(dir=tmp_base)
     try:
         # Extract tarball
         with tarfile.open(bundle_path, 'r:gz') as tar:
@@ -453,7 +495,9 @@ def save_ml_bundle(bundle, output_path):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
     # Create temporary directory for staging
-    temp_dir = tempfile.mkdtemp()
+    tmp_base = _repo_root / "data" / "tmp"
+    tmp_base.mkdir(parents=True, exist_ok=True)
+    temp_dir = tempfile.mkdtemp(dir=tmp_base)
     try:
         # Helper to get attribute or dict key
         def get_attr(obj, name, default=None):

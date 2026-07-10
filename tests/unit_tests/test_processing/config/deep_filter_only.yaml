@@ -1,10 +1,10 @@
 # Test config: isolate deep_filter only
 
 dataset:
-  MELTSModel: '110'
-  Date: 'Feb13'
+  MELTSModel: '120'
+  Date: 'June30SedimentsNoCr'
   Mode: 'BatchCooling'
-  subset: false
+  subset: true
   use_external: false
 #outname: '110DeepFilterOnly'
 
