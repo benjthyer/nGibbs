@@ -41,7 +41,7 @@ def _load_trial_model(bundle_path, ml_indexer, substitutions=None, low_only=Fals
 # AI REVISED:
 def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=None, scheduler_kwargs = {},
                      Param_Dict=None, Epochs=10, batch_size=1024, early_stopping_patience=5, max_N=np.inf, best_loss=None,
-                     sweep=False):
+                     sweep=False, dropout_step_up=0.05, dropout_step_down=0.02, noise_step_up=0.002, noise_step_down=0.001):
     """
     Tune lower binary saturation model.
     Model argument is now required.
@@ -78,7 +78,9 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
 
     if best_loss is None:
         best_loss = train_Lower_MELTS(best_model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
-                                    Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience, max_N=max_N)
+                                    Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience, max_N=max_N,
+                                               dropout_step_up=dropout_step_up, dropout_step_down=dropout_step_down,
+                                               noise_step_up=noise_step_up, noise_step_down=noise_step_down)
     results = [{'model': deepcopy(best_model.config), 'loss': best_loss}]
 
     # === Begin tuning loop ===
@@ -135,7 +137,9 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
                     load_prefixes=['encoder.', 'sat_head.'],
                 )
                 trial_loss = train_Lower_MELTS(Model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
-                                               Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience, max_N=max_N)
+                                               Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience, max_N=max_N,
+                                               dropout_step_up=dropout_step_up, dropout_step_down=dropout_step_down,
+                                               noise_step_up=noise_step_up, noise_step_down=noise_step_down)
                 results.append({'model': deepcopy(Model.config), 'loss': trial_loss})
 
                 if trial_loss < parameter_best_loss:
@@ -196,7 +200,9 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
                 trial_loss = train_Lower_MELTS(
                     Model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
                     Epochs=Epochs, lr=lr, batch_size=batch_size,
-                    early_stopping_patience=early_stopping_patience, max_N=max_N
+                    early_stopping_patience=early_stopping_patience, max_N=max_N,
+                    dropout_step_up=dropout_step_up, dropout_step_down=dropout_step_down,
+                    noise_step_up=noise_step_up, noise_step_down=noise_step_down,
                 )
                 results.append({'model': deepcopy(Model.config), 'loss': trial_loss})
 
@@ -228,7 +234,9 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
                 trial_loss = train_Lower_MELTS(
                     Model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
                     Epochs=Epochs, lr=lr, batch_size=batch_size,
-                    early_stopping_patience=early_stopping_patience, max_N=max_N
+                    early_stopping_patience=early_stopping_patience, max_N=max_N,
+                    dropout_step_up=dropout_step_up, dropout_step_down=dropout_step_down,
+                    noise_step_up=noise_step_up, noise_step_down=noise_step_down,
                 )
                 results.append({'model': deepcopy(Model.config), 'loss': trial_loss})
 
@@ -267,7 +275,9 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
                     load_prefixes=['encoder.', 'sat_head.'],
                 )
                 trial_loss = train_Lower_MELTS(Model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
-                                               Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience, max_N=max_N)
+                                               Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience, max_N=max_N,
+                                               dropout_step_up=dropout_step_up, dropout_step_down=dropout_step_down,
+                                               noise_step_up=noise_step_up, noise_step_down=noise_step_down)
                 results.append({'model': deepcopy(Model.config), 'loss': trial_loss})
 
                 if trial_loss < parameter_best_loss:
@@ -305,7 +315,8 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
 
 def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=None, scheduler_kwargs = {}, Param_Dict=None,
                      Epochs=10, best_loss = None, batch_size=1024, early_stopping_patience=5, binWeights=None, compWeights=None, max_N=np.inf, which_heads_to_freeze = [],
-                    chem_alpha=1, mole_alpha=1, bulk_alpha=0, sat_alpha=0, amsgrad=False, eps = 1E-8, sweep=False):
+                    chem_alpha=1, mole_alpha=1, bulk_alpha=0, sat_alpha=0, amsgrad=False, eps = 1E-8, sweep=False,
+                    dropout_step_up=0.05, dropout_step_down=0.02, noise_step_up=0.002, noise_step_down=0.001):
     """
     Function to 
      lower binary saturation model. Initializes new model if none given.
@@ -356,7 +367,9 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
         best_loss = train_Upper_MELTS(Model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
                           Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience,
                           binWeights=binWeights, compWeights=compWeights, max_N=max_N, which_heads_to_freeze = which_heads_to_freeze,
-                          chem_alpha=chem_alpha, mole_alpha=mole_alpha, bulk_alpha=bulk_alpha, sat_alpha=sat_alpha, amsgrad=amsgrad, eps = eps)
+                          chem_alpha=chem_alpha, mole_alpha=mole_alpha, bulk_alpha=bulk_alpha, sat_alpha=sat_alpha, amsgrad=amsgrad, eps = eps,
+                                               dropout_step_up=dropout_step_up, dropout_step_down=dropout_step_down,
+                                               noise_step_up=noise_step_up, noise_step_down=noise_step_down)
 
     results = [{'model': deepcopy(Model.config), 'loss': best_loss}]
     best_model = Model
@@ -425,7 +438,9 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
                 trial_loss = train_Upper_MELTS(trial_model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
                                                Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience,
                                                binWeights=binWeights, compWeights=compWeights, max_N=max_N, which_heads_to_freeze=which_heads_to_freeze,
-                                               chem_alpha=chem_alpha, mole_alpha=mole_alpha, bulk_alpha=bulk_alpha, sat_alpha=sat_alpha, amsgrad=amsgrad, eps = eps) # Set sat alpha to 1 for middle layer tuning to isolate middle layer effects without changing relative importance of chemistry vs mole vs bulk loss since they don't change model structure and we want fair comparison between middle layer configs.
+                                               chem_alpha=chem_alpha, mole_alpha=mole_alpha, bulk_alpha=bulk_alpha, sat_alpha=sat_alpha, amsgrad=amsgrad, eps = eps,
+                                               dropout_step_up=dropout_step_up, dropout_step_down=dropout_step_down,
+                                               noise_step_up=noise_step_up, noise_step_down=noise_step_down) # Set sat alpha to 1 for middle layer tuning to isolate middle layer effects without changing relative importance of chemistry vs mole vs bulk loss since they don't change model structure and we want fair comparison between middle layer configs.
                 results.append({'model': deepcopy(trial_model.config), 'loss': trial_loss})
 
                 if trial_loss < parameter_best_loss:
@@ -483,7 +498,9 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
                 trial_loss = train_Upper_MELTS(trial_model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
                                                Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience,
                                                binWeights=binWeights, compWeights=compWeights, max_N=max_N, which_heads_to_freeze=which_heads_to_freeze,
-                                               chem_alpha=chem_alpha, mole_alpha=mole_alpha, bulk_alpha=bulk_alpha, sat_alpha=sat_alpha, amsgrad=amsgrad, eps = eps)
+                                               chem_alpha=chem_alpha, mole_alpha=mole_alpha, bulk_alpha=bulk_alpha, sat_alpha=sat_alpha, amsgrad=amsgrad, eps = eps,
+                                               dropout_step_up=dropout_step_up, dropout_step_down=dropout_step_down,
+                                               noise_step_up=noise_step_up, noise_step_down=noise_step_down)
                 results.append({'model': deepcopy(trial_model.config), 'loss': trial_loss})
 
                 if trial_loss < parameter_best_loss:
@@ -526,7 +543,9 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
                 trial_loss = train_Upper_MELTS(trial_model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs, 
                                                Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience,
                                                binWeights=binWeights, compWeights=compWeights, max_N=max_N, which_heads_to_freeze=which_heads_to_freeze,
-                                               chem_alpha=chem_alpha, mole_alpha=mole_alpha, bulk_alpha=bulk_alpha, sat_alpha=sat_alpha, amsgrad=amsgrad, eps = eps) # Set sat alpha to 1 for regularization tuning to isolate regularization effects without changing relative importance of chemistry vs mole vs bulk loss since they don't change model structure and we want fair comparison between regularization configs.
+                                               chem_alpha=chem_alpha, mole_alpha=mole_alpha, bulk_alpha=bulk_alpha, sat_alpha=sat_alpha, amsgrad=amsgrad, eps = eps,
+                                               dropout_step_up=dropout_step_up, dropout_step_down=dropout_step_down,
+                                               noise_step_up=noise_step_up, noise_step_down=noise_step_down) # Set sat alpha to 1 for regularization tuning to isolate regularization effects without changing relative importance of chemistry vs mole vs bulk loss since they don't change model structure and we want fair comparison between regularization configs.
                 results.append({'model': deepcopy(trial_model.config), 'loss': trial_loss})
 
                 if trial_loss < parameter_best_loss:

@@ -119,8 +119,17 @@ def check_missing_phases(sim_dir: Path, indexer, gt_component_moles: np.ndarray,
         'missing_fraction' : (n,) array — fraction of each row's total assemblage
                               moles attributable to unrepresented components
         'unresolved'       : {abbrev: {'resolved_name', 'n_active_rows',
-                              'peak_fraction', 'P_at_peak'}} for components whose
-                              peak contribution exceeds MISSING_PHASE_FRACTION_THRESHOLD
+                              'peak_fraction', 'P_at_peak', 'significant'}} for
+                              every fort.99 component not represented by the
+                              emulator's indexer. 'significant' marks whether
+                              that component's own peak contribution exceeds
+                              MISSING_PHASE_FRACTION_THRESHOLD; components below
+                              that bar are still listed (name + peak fraction)
+                              but may not individually explain a hatched span —
+                              hatching is driven by the row-wise sum of *all*
+                              unresolved components (see 'missing_fraction'), so
+                              several sub-threshold components can jointly cross
+                              the threshold in the same row.
     """
     comp_df = _safe_read_ws_table(str(sim_dir / 'fort.99'), skiprows=0)
     n = len(gt_component_moles)
@@ -148,13 +157,12 @@ def check_missing_phases(sim_dir: Path, indexer, gt_component_moles: np.ndarray,
             row_fraction = np.where(total_all > 0, values / total_all, 0.0)
         peak_idx = int(np.argmax(row_fraction))
         peak_fraction = float(row_fraction[peak_idx])
-        if peak_fraction < MISSING_PHASE_FRACTION_THRESHOLD:
-            continue
         unresolved[comp_abbr_str] = {
             'resolved_name': comp_name,
             'n_active_rows': int(np.sum(values > 0)),
             'peak_fraction': peak_fraction,
             'P_at_peak': float(P_gpa[peak_idx]),
+            'significant': peak_fraction >= MISSING_PHASE_FRACTION_THRESHOLD,
         }
 
     return {'missing_fraction': missing_fraction, 'unresolved': unresolved}
@@ -220,26 +228,32 @@ def compare_simulation_phases(sim_dir: Path) -> dict:
 
 
 def print_phase_coverage_report(results: list) -> None:
-    """Print, per simulation, any HeFESTo component whose peak contribution to
-    the assemblage exceeds MISSING_PHASE_FRACTION_THRESHOLD but that the
-    emulator's indexer cannot represent at all."""
+    """Print, per simulation, every HeFESTo component that the emulator's
+    indexer cannot represent at all, sorted by peak contribution to the
+    assemblage (largest first). Components below MISSING_PHASE_FRACTION_THRESHOLD
+    are still listed but marked '(below noise threshold)' -- individually they
+    don't cross the bar, though several of them together can still push a
+    row's *combined* missing fraction over threshold and trigger hatching in
+    the plot (see check_missing_phases)."""
     print('\n' + '=' * 78)
     print('Phase coverage check -- components in fort.99 not represented by the emulator')
     print('=' * 78)
-    any_flagged = False
+    any_unresolved = False
     for result in results:
         unresolved = result['phase_coverage']['unresolved']
         if not unresolved:
             continue
-        any_flagged = True
+        any_unresolved = True
         print(f"\n{result['sim_dir'].name}:")
-        for abbrev, info in unresolved.items():
+        for abbrev, info in sorted(unresolved.items(), key=lambda kv: kv[1]['peak_fraction'], reverse=True):
+            note = '' if info['significant'] else '  (below noise threshold)'
             print(
                 f"  '{abbrev}' (resolved as '{info['resolved_name']}')  "
                 f"active in {info['n_active_rows']}/{len(result['P_gpa'])} rows  "
-                f"peak={info['peak_fraction'] * 100:.2f}% of assemblage at P={info['P_at_peak']:.2f} GPa"
+                f"peak={info['peak_fraction'] * 100:.3f}% of assemblage at P={info['P_at_peak']:.2f} GPa"
+                f"{note}"
             )
-    if not any_flagged:
+    if not any_unresolved:
         print('\nNone -- every component present in fort.99 is represented in the emulator.')
 
 

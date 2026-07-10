@@ -1,22 +1,28 @@
-tarname: HeFESTo_Mars_Profiles_NPS_NoJCCValid   #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
+tarname:  HeFESTo_Mars_Profiles_NPT_JCC1   #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
     
-warm_start: HeFESTo_Mars_Profiles_NPS_NoJCCValid_train5 #pGeoDynamicsIsentropicNoCrApr20_train1 #None #pGeoDynamicsIsothemalNoCrMar11_train6 #None #pGeoDynPTNoCrBinaries #None # 102CrMoleLinear
+warm_start:  HeFESTo_Mars_Profiles_NPT_JCC1_train6 #pGeoDynamicsIsentropicNoCrApr20_train1 #None #pGeoDynamicsIsothemalNoCrMar11_train6 #None #pGeoDynPTNoCrBinaries #None # 102CrMoleLinear
+
 
 tune7: # No dropout for models with bulk loss (breaks it for some reason), so let's investigate other regularization options
+  dropout_step_up: 0.02 # Adaptive dropout: step size when increasing dropout on overfitting
+  dropout_step_down: 0.01 # Adaptive dropout: step size when decreasing dropout on underfitting
+  noise_step_up: 0.002 # Adaptive noise: step size when increasing noise on overfitting (kicks in once dropout is maxed out)
+  noise_step_down: 0.001 # Adaptive noise: step size when decreasing noise on underfitting (kicks in once dropout is at zero)
+  low_regularization: 0.00batchnormdropout0.00
+  high_regularization: 0.00batchnormdropout0.00
+  highWD: 1e-4
   strategy: upper # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
-  low_regularization: 0.0batchnormdropout0.5
-  high_regularization: 0.0batchnormdropout0.5
+  lowWD: 0 # No WD for frozen layers
   sweep: true
-  batch_size: 1024 
-  epochs: 7
+  batch_size: 4096
+  epochs: 15
+  early_stopping_patience: 7
   learning_rate: 5E-4
-  early_stopping_patience: 4
-  max_N: 5E5
+  #max_N: 5E5
   tune_params:
     #lowWD: [0, 1e-6, 1e-5, 1e-4, 1e-3]
     highWD: [0, 1e-4, 1e-3, 1e-2]
     noise: [0, 0.005, 0.01, 0.02, 0.05]
-
   loss_config:
     binary:
       weight: 0
@@ -34,16 +40,22 @@ tune7: # No dropout for models with bulk loss (breaks it for some reason), so le
 tune8: # No dropout for models with bulk loss (breaks it for some reason), so let's investigate other regularization options
   strategy: finetune # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
   sweep: true
-  batch_size: 1024 
-  epochs: 7
+  dropout_step_up: 0.02 # Adaptive dropout: step size when increasing dropout on overfitting
+  dropout_step_down: 0.01 # Adaptive dropout: step size when decreasing dropout on underfitting
+  noise_step_up: 0.002 # Adaptive noise: step size when increasing noise on overfitting (kicks in once dropout is maxed out)
+  noise_step_down: 0.001 # Adaptive noise: step size when decreasing noise on underfitting (kicks in once dropout is at zero)
+  low_regularization: 0.00batchnormdropout0.00
+  high_regularization: 0.00batchnormdropout0.00
+  batch_size: 4096
+  lowWD: 1E-5
+  epochs: 15
+  early_stopping_patience: 7
   learning_rate: 5E-4
-  early_stopping_patience: 4
-  max_N: 5E5
+  #max_N: 5E5
   tune_params:
     lowWD: [0, 1e-6, 1e-5, 1e-4, 1e-3]
     highWD: [0, 1e-4, 1e-3, 1e-2]
     noise: [0, 0.005, 0.01, 0.02, 0.05]
-
   loss_config:
     binary:
       weight: 1
@@ -56,20 +68,63 @@ tune8: # No dropout for models with bulk loss (breaks it for some reason), so le
     bulk:
       type: symmetric_rel_l2
       weight: 100
+      
+train8: # Increase number for another layer of training
+  strategy: finetune # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
+  dropout_step_up: 0.02 # Adaptive dropout: step size when increasing dropout on overfitting
+  dropout_step_down: 0.01 # Adaptive dropout: step size when decreasing dropout on underfitting
+  noise_step_up: 0.002 # Adaptive noise: step size when increasing noise on overfitting (kicks in once dropout is maxed out)
+  noise_step_down: 0.001 # Adaptive noise: step size when decreasing noise on underfitting (kicks in once dropout is at zero)
+  low_regularization: 0.00batchnormdropout0.00
+  high_regularization: 0.00batchnormdropout0.00
+  batch_size: 4096
+  epochs: 50
+  learning_rate: 5E-4
+  early_stopping_patience: 25
+  scheduler:
+    type: CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
+    args:
+      T_max: 10 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
+  max_N: null # none, 0 and inf all mean 'no limit'
+  #DictFilePath: pGeoDynPTCrFull
+  loss_config:
+    binary:
+      weight: 1
+    chemistry:
+      type: symmetric_rel_l2
+      weight: 100
+    moles:
+      type: huber
+      weight: 100
+    bulk:
+      type: symmetric_rel_l2
+      weight: 100
+  which_heads_to_freeze: [] # ['encoder', 'sat_head'] #['encoder', 'sat_head', 'middleBrain', 'chem_heads']
+  binweights:
+    wadsleyite: 2
+    coesite: 2
+    nal-phase: 5
+    epsilon-iron: 5
+    nepheline: 5
 
-  tune9: # No dropout for models with bulk loss (breaks it for some reason), so let's investigate other regularization options
+tune9: # No dropout for models with bulk loss (breaks it for some reason), so let's investigate other regularization options
   strategy: finetune # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
   sweep: true
-  batch_size: 1024 
-  epochs: 15
+  dropout_step_up: 0.02 # Adaptive dropout: step size when increasing dropout on overfitting
+  dropout_step_down: 0.01 # Adaptive dropout: step size when decreasing dropout on underfitting
+  noise_step_up: 0.002 # Adaptive noise: step size when increasing noise on overfitting (kicks in once dropout is maxed out)
+  noise_step_down: 0.001 # Adaptive noise: step size when decreasing noise on underfitting (kicks in once dropout is at zero)
+  low_regularization: 0.00batchnormdropout0.00
+  high_regularization: 0.00batchnormdropout0.00
+  batch_size: 4096
+  epochs: 30
+  early_stopping_patience: 7
   learning_rate: 5E-4
-  early_stopping_patience: 4
-  max_N: 5E5
+  #max_N: 5E5
   tune_params:
     lowWD: [0, 1e-6, 1e-5, 1e-4, 1e-3]
     highWD: [0, 1e-4, 1e-3, 1e-2]
     noise: [0, 0.005, 0.01, 0.02, 0.05]
-
   loss_config:
     binary:
       weight: 1
@@ -82,4 +137,10 @@ tune8: # No dropout for models with bulk loss (breaks it for some reason), so le
     bulk:
       type: symmetric_rel_l2
       weight: 100
+  binweights:
+    wadsleyite: 2
+    coesite: 2
+    nal-phase: 5
+    epsilon-iron: 5
+    nepheline: 5
   
