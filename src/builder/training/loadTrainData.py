@@ -2,6 +2,7 @@
 import sys
 import os
 import gc
+import tarfile
 import numpy as np
 import torch
 from pathlib import Path
@@ -62,21 +63,37 @@ if not os.path.exists(f'{Testfilename}.tar.gz') or use_external == True:
 # ============================================================================
 # LOAD TRAINING DATA
 # ============================================================================
-def load_ML_data(Trainpath, only_VP=None):
+def load_ML_data(Trainpath, only_VP=None, feature_normalizer=None):
 
     #sanity_check_bundle(Path(f'{Trainpath}.tar.gz')) # Good check. Cost time, so we skip for now, 
 
+    bundle_path = f'{Trainpath}.tar.gz'
     print(f"Loading training data from {Trainpath}")
-    train_data = load_ml_bundle(f'{Trainpath}.tar.gz')
+
+    # Cheap presence check (tar member names only, no extraction) purely for the
+    # diagnostic below - free_outputs is never loaded into RAM here regardless,
+    # since nothing downstream consumes it yet (see note below). Previously this
+    # was checked via getattr(train_data, 'freeOutputs', ...) - the wrong
+    # (camelCase) attribute name, so it silently always evaluated to False
+    # whether or not the bundle actually had one.
+    with tarfile.open(bundle_path, 'r:gz') as tar:
+        has_free_outputs = 'free_outputs.npy' in tar.getnames()
+    if has_free_outputs:
+        print("[load_ML_data] Bundle contains free_outputs, but training does not yet "
+              "consume them - not loaded. (Loading/using free_outputs during training "
+              "is planned to be configurable in the future.)")
+
+    # mass_labels is unused by every current consumer; free_outputs is likewise
+    # unused for now (see above) - neither is loaded into RAM.
+    train_data = load_ml_bundle(bundle_path, arrays=('features', 'binary_labels', 'labels', 'molar_labels'))
 
     ml_indexer = train_data.ml_indexer
     featureMap = train_data.features
     binaryMap = train_data.binary_labels
     labelMap = train_data.labels
     moleMap = train_data.molar_labels
-    has_free_outputs = getattr(train_data, 'freeOutputs', None) is not None
 
-    ml_indexer.molar_epsilon = molar_epsilon # Save 
+    ml_indexer.molar_epsilon = molar_epsilon # Save
 
     # Extract indexer components for easier access
     label_indices = ml_indexer.label_indices
@@ -115,30 +132,47 @@ def load_ML_data(Trainpath, only_VP=None):
         print(f"Restricted Label Shape: {labelMap.shape}")
 
     # ============================================================================
-    # Create feature normalizer
+    # Create (or inherit) feature normalizer
     # ============================================================================
-    # Determine number of physical features (P, T, fO2) - rest are chemical
-    n_physical_features = len(ml_indexer.featureNames) if hasattr(ml_indexer, 'featureNames') else 3
     n_total_features = featureMap.shape[1]
 
-    # Calculate min/max for first n_physical_features only
-    min_tensor = torch.zeros(n_total_features, device='cpu', dtype=torch.float)
-    range_tensor = torch.ones(n_total_features, device='cpu', dtype=torch.float)
+    if feature_normalizer is not None:
+        # Inherit bounds from an already-fit normalizer (the Train set's) rather
+        # than fitting a new one from this bundle's own data - the model is
+        # trained on Train-normalized inputs and expects every later input
+        # (Test, inference) normalized the *same* way. Computing an independent
+        # min/max per-bundle (the old behavior below, still used when no
+        # normalizer is supplied - e.g. loading Train itself) would silently
+        # normalize Test differently from what the model was trained on.
+        got = feature_normalizer.miner.shape[0]
+        if got != n_total_features:
+            raise ValueError(
+                f"feature_normalizer has {got} columns but this bundle's features "
+                f"have {n_total_features} - Train/Test featureNames or Elkeys must match."
+            )
+        ml_indexer.feature_normalizer = feature_normalizer
+    else:
+        # Determine number of physical features (P, T, fO2) - rest are chemical
+        n_physical_features = len(ml_indexer.featureNames) if hasattr(ml_indexer, 'featureNames') else 3
 
-    # For physical features, calculate from training data
-    if n_physical_features > 0:
-        feature_tensor = torch.tensor(featureMap[:, :n_physical_features], device='cpu', dtype=torch.float)
-        min_tensor[:n_physical_features] = torch.min(feature_tensor, dim=0).values
-        range_tensor[:n_physical_features] = torch.max(feature_tensor, dim=0).values - min_tensor[:n_physical_features]
-        
-        # Avoid division by zero (Should be no zero-range columns- let the error fly.
-        #range_tensor[:n_physical_features] = torch.clamp(range_tensor[:n_physical_features], min=1e-7)
+        # Calculate min/max for first n_physical_features only
+        min_tensor = torch.zeros(n_total_features, device='cpu', dtype=torch.float)
+        range_tensor = torch.ones(n_total_features, device='cpu', dtype=torch.float)
 
-    # For chemical features, use identity normalization (min=0, range=1)
-    # (already set to these values above)
+        # For physical features, calculate from this bundle's own data
+        if n_physical_features > 0:
+            feature_tensor = torch.tensor(featureMap[:, :n_physical_features], device='cpu', dtype=torch.float)
+            min_tensor[:n_physical_features] = torch.min(feature_tensor, dim=0).values
+            range_tensor[:n_physical_features] = torch.max(feature_tensor, dim=0).values - min_tensor[:n_physical_features]
 
-    # Store normalizer in ml_indexer
-    ml_indexer.feature_normalizer = Normalizer(min_tensor=min_tensor, range_tensor=range_tensor)
+            # Avoid division by zero (Should be no zero-range columns- let the error fly.
+            #range_tensor[:n_physical_features] = torch.clamp(range_tensor[:n_physical_features], min=1e-7)
+
+        # For chemical features, use identity normalization (min=0, range=1)
+        # (already set to these values above)
+
+        # Store normalizer in ml_indexer
+        ml_indexer.feature_normalizer = Normalizer(min_tensor=min_tensor, range_tensor=range_tensor)
 
     # ============================================================================
     # Normalize features
@@ -167,24 +201,10 @@ def load_ML_data(Trainpath, only_VP=None):
     del moleMap
     gc.collect()
 
-    if has_free_outputs:
-        Trainfreeoutputs = torch.tensor(ml_indexer.freeOutputs, device='cpu', dtype=torch.float)
-        
-        # ============================================================================
-        # Create output normalizer for free outputs
-        # ============================================================================
-        free_output_tensor = Trainfreeoutputs
-        free_output_min = torch.min(free_output_tensor, dim=0).values
-        free_output_range = torch.max(free_output_tensor, dim=0).values - free_output_min
-        free_output_range = torch.clamp(free_output_range, min=1e-7)
-        
-        ml_indexer.output_normalizer = Normalizer(min_tensor=free_output_min, range_tensor=free_output_range)
-        Trainfreeoutputs_normalized = ml_indexer.output_normalizer.norm(Trainfreeoutputs)
-        
-
-    else:
-        Trainfreeoutputs = None
-        Trainfreeoutputs_normalized = None
+    # free_outputs is never loaded (see note above), regardless of has_free_outputs -
+    # kept as stable no-op values until loading/using them is made configurable.
+    Trainfreeoutputs = None
+    Trainfreeoutputs_normalized = None
 
     del train_data
     gc.collect()
@@ -276,24 +296,103 @@ def load_ML_data(Trainpath, only_VP=None):
     Trainbinaryfeatures = Trainbinaryfeatures[goodMap]
     Trainlabels = Trainlabels[goodMap]
     Trainmoles = Trainmoles[goodMap]
-    if Trainfreeoutputs is not None:
-        Trainfreeoutputs = Trainfreeoutputs[goodMap]
     print(f"Train Features: {Trainnormfeatures.size()}, Binaries {Trainbinaryfeatures.size()}, labels: {Trainlabels.size()}")
 
-    # Create dataset objects based on whether free outputs exist
-    if has_free_outputs:
-        full_train_set = TensorDatasetFive(
-            features=Trainnormfeatures,
-            binarylabels=Trainbinaryfeatures,
-            labels=Trainlabels,
-            molelabels=Trainmoles,
-            freeoutputs=Trainfreeoutputs_normalized,
-        )
-    else:
-        full_train_set = TensorDatasetFour(
-            features=Trainnormfeatures,
-            binarylabels=Trainbinaryfeatures,
-            labels=Trainlabels,
-            molelabels=Trainmoles,
-        )                       
+    # Always TensorDatasetFour for now - free_outputs is never loaded (see note
+    # above), so there's nothing for TensorDatasetFive to hold even when the
+    # bundle has one.
+    full_train_set = TensorDatasetFour(
+        features=Trainnormfeatures,
+        binarylabels=Trainbinaryfeatures,
+        labels=Trainlabels,
+        molelabels=Trainmoles,
+    )
     return full_train_set, ml_indexer
+
+
+def load_ML_data_auto(Trainpath, only_VP=None, molar_epsilon=0,
+                       ram_threshold_bytes=4 * 1024 ** 3, workspace_dir=None,
+                       chunk_size=1_000_000, batch_size=1024, chunk_rows=1_000_000):
+    """
+    Load Train data via the cached, pre-transformed working directory
+    (see builder.training.dataset_workspace), then decide - based on the
+    workspace's actual size, not the compressed bundle size - whether to
+    materialize it fully in RAM (small datasets, today's behavior) or hand
+    back an async chunked loader (large datasets).
+
+    Unlike `load_ML_data`, every per-row transform (PxSp label transform,
+    feature normalization, out-of-bounds row filtering) is already baked into
+    the cached workspace by `get_or_build_train_workspace`, so this function
+    does no further transform work itself.
+
+    Parameters
+    ----------
+    Trainpath : str
+        Bundle base path (without .tar.gz), same convention as load_ML_data.
+    only_VP : list, optional
+        Restrict to a phase subset - see load_ML_data. Changing this from a
+        previous call invalidates the cached workspace and triggers a rebuild.
+    molar_epsilon : float, default 0
+        Log-scaling epsilon for mole labels - see load_ML_data. Changing this
+        from a previous call invalidates the cached workspace and triggers a
+        rebuild.
+    ram_threshold_bytes : int, default 4 GiB
+        If the workspace's 4 arrays total at or below this many bytes,
+        return a full in-RAM TensorDatasetFour (as load_ML_data does). Above
+        it, return a ChunkedMemmapTrainLoader instead. Measured against the
+        *uncompressed* workspace size, not the .tar.gz bundle size - those
+        can differ by several times (gzip on this kind of data compresses
+        well), and the RAM-fit decision only cares about the former.
+    workspace_dir, chunk_size :
+        Forwarded to get_or_build_train_workspace.
+    batch_size, chunk_rows : only used for the chunked-loader path.
+        Starting batch_size for the returned ChunkedMemmapTrainLoader.
+        main.py's episode loop reads a (possibly different) batch_size per
+        episode from its own config, so trainer.py updates
+        `train_loader.batch_size` before each train_Lower_MELTS/
+        train_Upper_MELTS call rather than relying on the value given here -
+        this is just what a bare/direct iteration would use.
+
+    Returns
+    -------
+    (dataset_or_loader, ml_indexer)
+        Either a TensorDatasetFour (small dataset) or a ChunkedMemmapTrainLoader
+        (large dataset) - both are valid `trainData` arguments to
+        trainer.train_Lower_MELTS/train_Upper_MELTS, and both yield
+        (features, binary_labels, labels, molar_labels) batches.
+    """
+    from builder.training.dataset_workspace import get_or_build_train_workspace
+
+    workspace = get_or_build_train_workspace(
+        Trainpath, only_VP=only_VP, molar_epsilon=molar_epsilon,
+        workspace_dir=workspace_dir, chunk_size=chunk_size,
+    )
+
+    total_bytes = workspace.total_bytes()
+    print(f"[load_ML_data_auto] Workspace size: {total_bytes / 1024**3:.2f} GiB "
+          f"({workspace.n_rows:,} rows), threshold: {ram_threshold_bytes / 1024**3:.2f} GiB")
+
+    if total_bytes <= ram_threshold_bytes:
+        print("[load_ML_data_auto] Within RAM threshold - materializing full in-RAM TensorDatasetFour")
+        full_train_set = TensorDatasetFour(
+            features=torch.tensor(np.array(workspace.features), dtype=torch.float),
+            binarylabels=torch.tensor(np.array(workspace.binary_labels), dtype=torch.float),
+            labels=torch.tensor(np.array(workspace.labels), dtype=torch.float),
+            molelabels=torch.tensor(np.array(workspace.molar_labels), dtype=torch.float),
+        )
+        return full_train_set, workspace.ml_indexer
+
+    print("[load_ML_data_auto] Above RAM threshold - returning ChunkedMemmapTrainLoader")
+    loader = build_chunked_train_loader(workspace, batch_size=batch_size, chunk_rows=chunk_rows)
+    return loader, workspace.ml_indexer
+
+
+def build_chunked_train_loader(workspace_handle, batch_size, chunk_rows=1_000_000,
+                                pin_memory=True, seed=None):
+    """Wrap a WorkspaceHandle (as returned internally by load_ML_data_auto for
+    large datasets) in a ChunkedMemmapTrainLoader with a concrete batch_size."""
+    from builder.training.dataset_workspace import ChunkedMemmapTrainLoader
+    return ChunkedMemmapTrainLoader(
+        workspace_handle, batch_size=batch_size, chunk_rows=chunk_rows,
+        pin_memory=pin_memory, seed=seed,
+    )

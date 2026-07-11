@@ -15,6 +15,11 @@ import pandas as pd
 from tqdm import tqdm
 import pickle
 
+try:
+    import resource  # POSIX only (Linux/WSL/macOS) - absent on Windows.
+except ImportError:  # pragma: no cover - platform-dependent
+    resource = None
+
 # Ensure src is on path
 import sys
 from pathlib import Path
@@ -24,7 +29,26 @@ if src_path not in sys.path:
 
 # Import from refactored modules
 from builder.indexer import DatasetIndexer
-from ngibbs.utils.file_utils import move_file
+from ngibbs.utils.file_utils import move_file, chunked_mask_copy, chunked_permutation_copy
+
+
+def _log_mem(label):
+    """Print current process peak RSS so far (stdlib-only, no psutil dependency).
+
+    On Linux, ``ru_maxrss`` from ``getrusage`` is the high-water-mark resident
+    set size in KB - i.e. it only ever grows within a process, so consecutive
+    calls show how peak memory climbs across pipeline stages. Intended as a
+    diagnostic breadcrumb trail for large (tens-of-millions-of-rows) datasets
+    where a crash can otherwise only be localized to "somewhere in this call".
+    No-ops quietly if `resource` isn't available (e.g. native Windows).
+    """
+    if resource is None:
+        return
+    try:
+        rss_gb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6
+        print(f"[MEM] {label}: peak RSS so far = {rss_gb:.2f} GB")
+    except Exception:
+        pass
 
 
 def strip_filename_suffixes(filename, suffixes=None):
@@ -75,8 +99,13 @@ def strip_filename_suffixes(filename, suffixes=None):
 
 class BigMetaTable():
     def __init__(self, filename, read_dir=None, memmap_mode='r+', rebuild_memmap=False,
-                 allow_differing_lengths=False, header=None, Model='MELTS', OXYGEN='closed'):
-        
+                 allow_differing_lengths=False, header=None, Model='MELTS', OXYGEN='closed',
+                 chunk_size=100_000):
+
+        # Default row-chunk size for every large-table scan/copy/filter/resample
+        # method below that doesn't get an explicit chunk_size argument (see YAML
+        # `performance.chunk_size`, threaded in from prepareML_fullvalid.py).
+        self.chunk_size = chunk_size
         self.filename = filename
         self.memmap_file = self.filename + '.npy'
         self.csv_file =  self.filename + '.csv'
@@ -143,7 +172,7 @@ class BigMetaTable():
             self.memmap_file = self.filename + '.npy'
             working_text = True
     
-            self._csv_to_memmap()
+            self._csv_to_memmap(chunk_size=self.chunk_size)
             self.table = np.load(self.memmap_file, mmap_mode=memmap_mode, allow_pickle=True)
             
             """# Save headers for future loading
@@ -201,6 +230,7 @@ class BigMetaTable():
             self.read_metadata = True
 
         print(f"Preparing to read {file_rows} rows of text")
+        _log_mem("After CSV/memmap load, before metadata text parsing")
 
         # --- Read TXT metadata, encoding the low-cardinality fields (run id, value
         # tag, MELTS version) as int32 codes into small vocab tables rather than
@@ -209,8 +239,9 @@ class BigMetaTable():
         # not need one Python object per row - just an int per row plus one string
         # per distinct value.
         run_group_vocab, value_vocab, run_id_vocab, version_vocab = {}, {}, {}, {}
+        metadata_vocab = {}
         run_group_codes, value_codes, run_id_codes, version_codes = [], [], [], []
-        metadata_list = []
+        metadata_codes = []
 
         def _code_for(vocab_map, key):
             code = vocab_map.get(key)
@@ -232,7 +263,16 @@ class BigMetaTable():
                 value_codes.append(_code_for(value_vocab, value_str))
                 run_id_codes.append(_code_for(run_id_vocab, run_id_str))
                 version_codes.append(_code_for(version_vocab, version_str))
-                metadata_list.append(parts[1] if len(parts) > 1 else '')
+                # Metadata (the free-text suffix after run/value/version) is vocab-coded
+                # exactly like the other fields, rather than stored as a raw per-row
+                # string. At 90M-row scale, np.array(list_of_python_strs) picks a
+                # SINGLE fixed unicode width equal to the LONGEST string across every
+                # row, then pays that width for all 90M rows (e.g. a 50-char outlier
+                # row -> 50 * 4 bytes * 90M = ~18 GB for this array alone). Since
+                # metadata values are highly repetitive (mostly '' plus a handful of
+                # phase-annotation patterns), coding them into a small vocab collapses
+                # this to a 90M-entry int32 array (~360 MB) plus a tiny string table.
+                metadata_codes.append(_code_for(metadata_vocab, parts[1] if len(parts) > 1 else ''))
         print(f"[TIMER] Parsed {total_rows} of Metadata to Lists: completed in {time.time() - t_start:.2f} seconds")
 
         if working_text:
@@ -243,10 +283,13 @@ class BigMetaTable():
         # MELTS version string are both highly repeated within a run); value_codes
         # and run_id_codes are kept separately only so the original line's
         # value:run_id:version structure can be reconstructed for save/save_txt.
-        # metadata stays an array of strings, but fixed-width instead of boxed -
-        # its content isn't reliably numeric (see recover_untracked_phases), so it
-        # can't be coerced to int, but fixed-width unicode avoids per-row object
-        # overhead just the same.
+        # metadata (the free-text suffix, not reliably numeric - see
+        # recover_untracked_phases) is vocab-coded the same way as run/value/
+        # version below, NOT stored as a per-row fixed-width string array: at
+        # 90M rows, np.array() over Python strings picks one unicode width equal
+        # to the single longest string across the whole table and pays that
+        # width for every row, which is the dominant cause of OOM on large
+        # datasets (a 50-char outlier row -> ~18 GB for this array alone).
         t_start = time.time()
 
         def _vocab_array(vocab_map):
@@ -260,10 +303,12 @@ class BigMetaTable():
         self._run_id_vocab = _vocab_array(run_id_vocab)
         self.MELTSversion = np.array(version_codes, dtype=np.int32)
         self._melts_version_vocab = _vocab_array(version_vocab)
-        self.metadata = np.array(metadata_list) if metadata_list else np.array([], dtype='<U1')
-        del run_group_codes, value_codes, run_id_codes, version_codes, metadata_list
+        self._metadata_codes = np.array(metadata_codes, dtype=np.int32)
+        self._metadata_vocab = _vocab_array(metadata_vocab)
+        del run_group_codes, value_codes, run_id_codes, version_codes, metadata_codes
         gc.collect()
         print(f"[TIMER] Metadata Lists to arrays: completed in {time.time() - t_start:.2f} seconds")
+        _log_mem("After metadata vocab-coding, before phase-abundance reporting")
 
         
 
@@ -294,8 +339,8 @@ class BigMetaTable():
         if len(self.MELTSversion) != row_expected:
             print(f'WARNING: MELTSversion length {len(self.MELTSversion)} does not match data rows: {row_expected}')
             len_problem = True
-        if len(self.metadata) != row_expected:
-            print(f'WARNING: Metadata length {len(self.metadata)} does not match data rows: {row_expected}')
+        if len(self._metadata_codes) != row_expected:
+            print(f'WARNING: Metadata length {len(self._metadata_codes)} does not match data rows: {row_expected}')
             len_problem = True
 
         if len_problem and not allow_differing_lengths:
@@ -314,6 +359,18 @@ class BigMetaTable():
         """
         return self._build_meta_lines()
 
+    @property
+    def metadata(self):
+        """Full per-row metadata (free-text) strings, reconstructed from the
+        compact vocab-coded storage (`_metadata_codes`/`_metadata_vocab`; see
+        __init__). Kept for backward compatibility / interactive use only -
+        this allocates an array sized (widest distinct metadata string) x
+        (row count), which is exactly the allocation this vocab coding was
+        added to avoid for a 90M-row table. Internal code should index
+        `_metadata_vocab[_metadata_codes[...]]` for a bounded subset instead.
+        """
+        return self._metadata_vocab[self._metadata_codes]
+
     def _build_meta_lines(self, indices=None):
         """Reconstruct raw ``value:run_id:version metadata`` lines for `indices`
         (an index array/boolean mask/slice, or None for all rows)."""
@@ -322,7 +379,12 @@ class BigMetaTable():
         value_strs = self._value_vocab[self._value_codes[indices]]
         run_id_strs = self._run_id_vocab[self._run_id_codes[indices]]
         version_strs = self._melts_version_vocab[self.MELTSversion[indices]]
-        metadata_strs = self.metadata[indices]
+        # Reconstruct only the requested subset's metadata strings from the vocab -
+        # not self.metadata (which would materialize every row at once; see the
+        # `metadata` property docstring). Callers that want the whole table pass
+        # `indices=None` deliberately (e.g. the `meta` property); `write_meta_lines`
+        # always passes a bounded chunk, so peak RAM here stays O(chunk size).
+        metadata_strs = self._metadata_vocab[self._metadata_codes[indices]]
         n = len(metadata_strs)
         lines = np.empty(n, dtype=object)
         for i in range(n):
@@ -333,11 +395,13 @@ class BigMetaTable():
             lines[i] = f"{head} {metadata_strs[i]}" if metadata_strs[i] else head
         return lines
 
-    def write_meta_lines(self, fileobj, indices=None, chunk_size=100_000):
+    def write_meta_lines(self, fileobj, indices=None, chunk_size=None):
         """Stream reconstructed metadata lines to `fileobj`, chunked so peak RAM
         stays bounded regardless of table size. `indices` may be an index array
         (e.g. the rows moved by `split`) or None to write every row in order."""
-        n = len(self.metadata) if indices is None else len(indices)
+        if chunk_size is None:
+            chunk_size = self.chunk_size
+        n = len(self._metadata_codes) if indices is None else len(indices)
         for start in range(0, n, chunk_size):
             end = min(start + chunk_size, n)
             chunk_indices = slice(start, end) if indices is None else indices[start:end]
@@ -349,12 +413,12 @@ class BigMetaTable():
         boolean mask or integer index array)."""
         self.run_indices = self.run_indices[keep]
         self.MELTSversion = self.MELTSversion[keep]
-        self.metadata = self.metadata[keep]
+        self._metadata_codes = self._metadata_codes[keep]
         self._value_codes = self._value_codes[keep]
         self._run_id_codes = self._run_id_codes[keep]
 
     def _clear_metadata_rows(self):
-        del self.run_indices, self.MELTSversion, self.metadata, self._value_codes, self._run_id_codes
+        del self.run_indices, self.MELTSversion, self._metadata_codes, self._value_codes, self._run_id_codes
         gc.collect()
 
     def _append_metadata_rows(self, source_selector, n_repeats=1):
@@ -362,12 +426,17 @@ class BigMetaTable():
         (a boolean mask or integer index array) to every metadata field."""
         self.run_indices = np.append(self.run_indices, np.repeat(self.run_indices[source_selector], n_repeats))
         self.MELTSversion = np.append(self.MELTSversion, np.repeat(self.MELTSversion[source_selector], n_repeats))
-        self.metadata = np.append(self.metadata, np.repeat(self.metadata[source_selector], n_repeats))
+        # Repeated rows reference the same vocab entries as their source rows, so
+        # only the (small) int32 code array needs to grow - the vocab itself is
+        # unchanged.
+        self._metadata_codes = np.append(self._metadata_codes, np.repeat(self._metadata_codes[source_selector], n_repeats))
         self._value_codes = np.append(self._value_codes, np.repeat(self._value_codes[source_selector], n_repeats))
         self._run_id_codes = np.append(self._run_id_codes, np.repeat(self._run_id_codes[source_selector], n_repeats))
 
-    def _csv_to_memmap(self, chunk_size=100000):
+    def _csv_to_memmap(self, chunk_size=None):
         """Convert CSV to memmap, storing header."""
+        if chunk_size is None:
+            chunk_size = self.chunk_size
         t_start = time.time()
         num_cols = len(self.header)
 
@@ -429,7 +498,9 @@ class BigMetaTable():
         del memmap
         gc.collect()
             
-    def save_csv_streaming(self, name, chunk_size=100000):
+    def save_csv_streaming(self, name, chunk_size=None):
+        if chunk_size is None:
+            chunk_size = self.chunk_size
         with open(name + '.csv', 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(self.header)  # write header
@@ -448,43 +519,38 @@ class BigMetaTable():
         return np.where(self.run_indices == code)[0] # Boolean for clarity
         #return np.arange(len(self.metadata))[self.run_indices == code]
 
-    def _chunked_copy_into(self, src, dst, dst_offset=0, chunk_size=100_000):
+    def run_code_to_label(self, codes):
+        """Decode run_indices code(s) (e.g. from np.unique(self.run_indices) or
+        whatever ID() was called with) back to the human-readable 'value:run_id'
+        string(s) - run_indices itself holds compact int codes, not strings, so a
+        raw code isn't meaningful on its own in diagnostics/log messages."""
+        return self._run_group_vocab[np.asarray(codes)]
+
+    def _chunked_copy_into(self, src, dst, dst_offset=0, chunk_size=None):
         """Copy every row of `src` into `dst` starting at `dst_offset`, one
         contiguous row-chunk at a time with a flush per chunk - avoids a single
         huge one-shot assignment that leaves the whole copy as dirty pages
         before any of it reaches disk."""
+        if chunk_size is None:
+            chunk_size = self.chunk_size
         for start in range(0, src.shape[0], chunk_size):
             end = min(start + chunk_size, src.shape[0])
             dst[dst_offset + start:dst_offset + end] = src[start:end]
             dst.flush()
 
-    def _chunked_mask_copy(self, src, dst_path, keep_mask, chunk_size=100_000):
-        """Copy the rows of `src` selected by boolean `keep_mask` into a new
-        memmap at `dst_path`, one row-chunk at a time. `src[start:end]` and the
-        write into `dst` both stay contiguous; only the boolean sub-select of a
-        chunk is fancy-indexed, so peak RAM is O(chunk_size) instead of
-        materializing every selected row at once via `src[keep_mask]`."""
-        n_keep = int(np.count_nonzero(keep_mask))
-        dst = np.lib.format.open_memmap(dst_path, mode='w+', dtype=src.dtype, shape=(n_keep,) + src.shape[1:])
-        write_ptr = 0
-        for start in range(0, src.shape[0], chunk_size):
-            end = min(start + chunk_size, src.shape[0])
-            chunk_mask = keep_mask[start:end]
-            if not chunk_mask.any():
-                continue
-            kept = src[start:end][chunk_mask]
-            n = kept.shape[0]
-            dst[write_ptr:write_ptr + n] = kept
-            write_ptr += n
-        dst.flush()
-        del dst
-        gc.collect()
-        return n_keep
+    def _chunked_mask_copy(self, src, dst_path, keep_mask, chunk_size=None):
+        """Thin wrapper around the shared `chunked_mask_copy` helper (see
+        ngibbs.utils.file_utils), defaulting chunk_size from this instance."""
+        if chunk_size is None:
+            chunk_size = self.chunk_size
+        return chunked_mask_copy(src, dst_path, keep_mask, chunk_size)
 
-    def delete(self, indices, save_text = True, chunk_size = 100_000):
+    def delete(self, indices, save_text = True, chunk_size = None):
         """Efficient delete that preserves memory-mapping by rewriting, one
         row-chunk at a time via `_chunked_mask_copy` instead of materializing
         every kept row through `self.table[keep_mask]` at once."""
+        if chunk_size is None:
+            chunk_size = self.chunk_size
         keep_mask = np.ones(self.table.shape[0], dtype=bool)
         keep_mask[indices] = False
 
@@ -526,6 +592,59 @@ class BigMetaTable():
             self._filter_metadata_rows(keep_mask)
             self.save_txt()
 
+    def shuffle_rows(self, seed=None, chunk_size=None):
+        """Permute every row into a random order, once, out-of-core.
+
+        Rewrites self.table (and self.blurredbinaries, if present) via
+        `chunked_permutation_copy` (ngibbs.utils.file_utils) - RAM-bounded
+        regardless of table size, though the read side is a scattered gather
+        rather than a sequential scan, so this pays a real one-time IO cost.
+        That cost buys every future *sequential/chunked* read against this
+        table a guarantee that row order carries no structure to worry about -
+        e.g. `resample_rare_phase` appends upsampled rows as a block at the
+        end of the table, which would otherwise make any fixed contiguous
+        chunk unrepresentative of the whole dataset. Intended to run once,
+        right before `resampling_to_datasets()`, on tables a later out-of-core
+        training data loader will read in fixed-size chunks.
+
+        Parameters
+        ----------
+        seed : int, optional
+            Seed for the row permutation (reproducibility). None (default)
+            draws fresh entropy.
+        chunk_size : int, optional
+            Row-chunk size for the underlying chunked_permutation_copy passes.
+            Defaults to self.chunk_size.
+        """
+        if chunk_size is None:
+            chunk_size = self.chunk_size
+        n = self.table.shape[0]
+        permutation = np.random.default_rng(seed).permutation(n)
+
+        if self.blurredbinaries is not None:
+            assert np.shape(self.blurredbinaries)[0] == n, "Shape of binary and main tables are not equal!"
+            binary_name = self.filename + 'blurredbinaries.npy'
+            temp_binary_filename = self.filename + 'blurredbinaries_temp.npy'
+            chunked_permutation_copy(self.blurredbinaries, temp_binary_filename, permutation, chunk_size)
+
+            del self.blurredbinaries
+            gc.collect()
+            os.replace(temp_binary_filename, binary_name)
+            self.blurredbinaries = np.load(binary_name, mmap_mode='r+')
+
+        temp_filename = self.filename + '_temp.npy'
+        chunked_permutation_copy(self.table, temp_filename, permutation, chunk_size)
+
+        del self.table
+        gc.collect()
+        os.replace(temp_filename, self.memmap_file)
+        self.table = np.load(self.memmap_file, mmap_mode='r+')
+
+        # Metadata arrays are small and already fully in RAM (see
+        # _filter_metadata_rows) - fancy-indexing them with the full
+        # permutation array reorders them the same way, no chunking needed.
+        self._filter_metadata_rows(permutation)
+        self.save_txt()
 
     def save(self, name=None, save_csv = True):
         if name is None:
@@ -759,13 +878,15 @@ class BigMetaTable():
         return newself, new_table
 
 
-    def filter_min_phase_proportion(self, min_proportion):
+    def filter_min_phase_proportion(self, min_proportion, chunk_size=None):
         """
         Delete all rows that contain phases whose presence falls below a minimum proportion.
 
         Parameters:
         - min_proportion (float): Minimum fraction of rows in which a phase must appear to be kept.
         """
+        if chunk_size is None:
+            chunk_size = self.chunk_size
         if not isinstance(min_proportion, (float, int)):
             raise TypeError("min_proportion must be a float between 0 and 1.")
         if not (0.0 < float(min_proportion) <= 1.0):
@@ -777,33 +898,40 @@ class BigMetaTable():
             print("No rows available; skipping phase proportion filtering.")
             return
 
-        delete_mask = np.zeros(total_rows, dtype=bool)
-        phases_removed = []
-
+        # Resolve each phase's mass column once, up front.
+        phase_mass_cols = []
         for phase, components in self.indexer.MELTS_indices.items():
-
             if phase in self.indexer.EXCLUDED_PHASES:
                 continue
-
             if phase == 'melts-liquid':
                 mass_col = components.get('liq mass (gm)')
             else:
                 mass_col = components.get('mass (gm)')
-
             if mass_col is None: # HeFESTo sims different
                 mass_col = components.get('total (moles)')
                 print(f"Phase '{phase}' missing 'mass (gm)', trying 'total (moles)' column: {mass_col}")
-
             if mass_col is None:
                 print(f"Skipping phase '{phase}': no mass column found.")
                 continue
+            phase_mass_cols.append((phase, mass_col))
 
-            phase_mask = self.table[:, mass_col] > 0
-            phase_count = int(np.sum(phase_mask))
+        # Single row-chunked pass building a compact (rows x phases) presence matrix,
+        # instead of reading each phase's mass column across every row separately -
+        # every phase's presence is then just an in-RAM column of this matrix.
+        mass_col_indices = np.array([c for _, c in phase_mass_cols])
+        presence = np.zeros((total_rows, len(phase_mass_cols)), dtype=bool)
+        for start in range(0, total_rows, chunk_size):
+            end = min(start + chunk_size, total_rows)
+            presence[start:end] = self.table[start:end][:, mass_col_indices] > 0
+
+        below_threshold = []
+        phases_removed = []
+        for j, (phase, mass_col) in enumerate(phase_mass_cols):
+            phase_count = int(presence[:, j].sum())
             phase_proportion = phase_count / total_rows
 
             if phase_proportion < min_proportion:
-                delete_mask |= phase_mask
+                below_threshold.append(j)
                 phases_removed.append(phase)
                 print(
                     f"Phase '{phase}' proportion {phase_proportion:.6f} below {min_proportion:.6f}; "
@@ -814,7 +942,8 @@ class BigMetaTable():
                     f"Phase '{phase}' proportion {phase_proportion:.6f} meets threshold {min_proportion:.6f}; keeping."
                 )
 
-        if np.any(delete_mask):
+        if below_threshold:
+            delete_mask = presence[:, below_threshold].any(axis=1)
             indices_to_delete = np.where(delete_mask)[0]
             print(
                 f"Deleting {len(indices_to_delete)} rows from {len(phases_removed)} underrepresented phases: "
@@ -831,13 +960,15 @@ class BigMetaTable():
         Intended to be called shortly after BigMetaTable instantiation.
         """
         removed = self.indexer.exclude_oxides(oxides)
-        self.indexer.table_update(self.table, tolerance=tolerance)
+        self.indexer.table_update(self.table, tolerance=tolerance, chunk_size=self.chunk_size)
         return removed
     
-    def filter_phases_not_in_ml_indexer(self):
+    def filter_phases_not_in_ml_indexer(self, chunk_size=None):
         """
         Delete all rows that contain phases not present in self.indexer.ml_indexer.all_phases.
         """
+        if chunk_size is None:
+            chunk_size = self.chunk_size
         if not hasattr(self.indexer, 'ml_indexer'):
             raise AttributeError("DatasetIndexer has no ml_indexer attached.")
         if not hasattr(self.indexer.ml_indexer, 'all_phases'):
@@ -852,39 +983,46 @@ class BigMetaTable():
             'System_main', 'Bulk_comp', 'Bulk_comp_elements'
         }
         allowed_phases = set(self.indexer.ml_indexer.all_phases) | non_phase_keys
-        delete_mask = np.zeros(total_rows, dtype=bool)
-        phases_removed = []
 
+        # Resolve the (usually few) disallowed phases' mass columns once, up front.
+        disallowed_mass_cols = []
         for phase, components in self.indexer.MELTS_indices.items():
-
-            if phase in non_phase_keys:
+            if phase in non_phase_keys or phase in allowed_phases:
                 continue
-
-            if phase in allowed_phases:
-                continue
-
-            if phase == 'melts-liquid':
-                mass_col = components.get('liq mass (gm)')
-            else:
-                mass_col = components.get('mass (gm)')
-
+            mass_col = components.get('liq mass (gm)') if phase == 'melts-liquid' else components.get('mass (gm)')
             if mass_col is None:
                 print(f"Skipping phase '{phase}': no mass column found.")
                 continue
+            disallowed_mass_cols.append((phase, mass_col))
 
-            phase_mask = self.table[:, mass_col] > 0
-            phase_count = int(np.sum(phase_mask))
+        if not disallowed_mass_cols:
+            print("No rows matched phases outside ml_indexer; no rows deleted.")
+            return
+
+        # Single row-chunked pass building a compact (rows x disallowed phases)
+        # presence matrix, instead of reading each phase's mass column across every
+        # row separately.
+        mass_col_indices = np.array([c for _, c in disallowed_mass_cols])
+        presence = np.zeros((total_rows, len(disallowed_mass_cols)), dtype=bool)
+        for start in range(0, total_rows, chunk_size):
+            end = min(start + chunk_size, total_rows)
+            presence[start:end] = self.table[start:end][:, mass_col_indices] > 0
+
+        keep_cols = []
+        phases_removed = []
+        for j, (phase, mass_col) in enumerate(disallowed_mass_cols):
+            phase_count = int(presence[:, j].sum())
             if phase_count == 0:
                 print(f"Phase '{phase}' not in ml_indexer; no rows contain it.")
                 continue
-
-            delete_mask |= phase_mask
+            keep_cols.append(j)
             phases_removed.append(phase)
             print(
                 f"Phase '{phase}' not in ml_indexer; marking {phase_count} rows for deletion."
             )
 
-        if np.any(delete_mask):
+        if keep_cols:
+            delete_mask = presence[:, keep_cols].any(axis=1)
             indices_to_delete = np.where(delete_mask)[0]
             print(
                 f"Deleting {len(indices_to_delete)} rows from {len(phases_removed)} non-ml phases: "
@@ -893,8 +1031,65 @@ class BigMetaTable():
             self.delete(indices_to_delete)
         else:
             print("No rows matched phases outside ml_indexer; no rows deleted.")
-    
-    def filter_inconsistent_phase_data(self, chunk_size=100_000):
+
+    def report_phase_abundances(self, label=None, chunk_size=None):
+        """
+        Print the non-zero-mass row count and percentage for every phase, in one
+        row-chunked pass over the table rather than one full-column read per phase.
+
+        Parameters:
+        - label (str, optional): Included in the printed header, e.g. "Raw" or
+          "After Filtering", to distinguish reports taken at different pipeline stages.
+        """
+        if chunk_size is None:
+            chunk_size = self.chunk_size
+        if not hasattr(self.indexer, 'ml_indexer'):
+            raise AttributeError("DatasetIndexer has no ml_indexer attached.")
+
+        header = "Phase Abundance" if label is None else f"Phase Abundance ({label})"
+        print(f"\n################ {header} ####################")
+
+        total_rows = self.table.shape[0]
+        if total_rows == 0:
+            print("No rows available.")
+            print("########################################################################\n")
+            return
+
+        phase_mass_cols = []
+        for phase in self.indexer.ml_indexer.all_phases:
+            if phase not in self.indexer.MELTS_indices:
+                continue
+            col_idx = self.indexer.MELTS_indices[phase].get('mass (gm)')
+            if col_idx is not None:
+                phase_mass_cols.append((phase, col_idx))
+
+        if not phase_mass_cols:
+            print("No phases with a 'mass (gm)' column found.")
+            print("########################################################################\n")
+            return
+
+        mass_col_indices = np.array([c for _, c in phase_mass_cols])
+        counts = np.zeros(len(phase_mass_cols), dtype=np.int64)
+        n_chunks = int(np.ceil(total_rows / chunk_size))
+        _log_mem(f"report_phase_abundances('{label}') start, {n_chunks} chunks over {total_rows:,} rows")
+        for chunk_i, start in enumerate(range(0, total_rows, chunk_size)):
+            end = min(start + chunk_size, total_rows)
+            counts += np.sum(self.table[start:end][:, mass_col_indices] > 0, axis=0)
+            # Periodic checkpoint (not every chunk, to avoid flooding stdout) - lets a
+            # crash mid-scan be localized to "memory was already climbing steadily"
+            # (WSL2 page-cache buildup from the full-table sequential read) versus
+            # "memory jumped once" (a one-shot allocation elsewhere).
+            if chunk_i % 100 == 0:
+                _log_mem(f"report_phase_abundances('{label}') chunk {chunk_i}/{n_chunks}")
+
+        for j, (phase, col_idx) in enumerate(phase_mass_cols):
+            non_zero_count = int(counts[j])
+            total_pct = 100 * non_zero_count / total_rows
+            print(f"{phase:20} {non_zero_count:>10,} samples ({total_pct:>6.2f}%)")
+        print("########################################################################\n")
+        _log_mem(f"report_phase_abundances('{label}') done")
+
+    def filter_inconsistent_phase_data(self, chunk_size=None):
         """
         Delete rows with inconsistent phase data: mass = 0 but non-zero attributes.
 
@@ -902,6 +1097,8 @@ class BigMetaTable():
         but has non-zero values in any of its other attributes (composition, etc.).
         This indicates corrupted or inconsistent data.
         """
+        if chunk_size is None:
+            chunk_size = self.chunk_size
         if not hasattr(self.indexer, 'ml_indexer'):
             raise AttributeError("DatasetIndexer has no ml_indexer attached.")
         if not hasattr(self.indexer.ml_indexer, 'all_phases'):
@@ -993,10 +1190,18 @@ class BigMetaTable():
     
     def filter_full_metadata(self):
         """Deletes rows where metadata contain unsupported phases."""
-        # Try parsing each metadata entry
-        mask_keep = np.array([
-            entry.strip().isdigit() for entry in self.metadata
-        ])
+        # Classify each DISTINCT vocab entry once (typically a handful to a few
+        # hundred), then broadcast that classification across all rows via the
+        # int32 code array - instead of a 90M-row Python loop over materialized
+        # per-row strings (both much slower and, before vocab-coding, required
+        # materializing the whole `self.metadata` array first).
+        if len(self._metadata_vocab):
+            vocab_is_digit = np.array(
+                [str(entry).strip().isdigit() for entry in self._metadata_vocab]
+            )
+            mask_keep = vocab_is_digit[self._metadata_codes]
+        else:
+            mask_keep = np.ones(self.table.shape[0], dtype=bool)
 
         # Delete where mask is False
         if np.sum(~mask_keep):
@@ -1004,7 +1209,7 @@ class BigMetaTable():
             indices_to_delete = np.where(~mask_keep)[0]
             self.delete(indices_to_delete)
 
-    def resample_rare_phase(self, phase_column, multiplier_bounds, n_resamples, overwrite = False):
+    def resample_rare_phase(self, phase_column, multiplier_bounds, n_resamples, overwrite = False, chunk_size = None):
         """
         Resamples entries that contain a rare phase (nonzero in `phase_column`).
 
@@ -1014,70 +1219,58 @@ class BigMetaTable():
         - n_resamples (int): Number of times to replicate/resample each rare-phase entry.
 
         Appends the resampled entries (with perturbed mass columns) to the table.
+
+        NOTE ON NAMING: despite the name (and the YAML config it's driven from being
+        called "upsampling"/"rare phase" resampling), this method does not itself
+        check that the phase passed in is actually rare - it resamples whatever
+        phase_column is given. If a phase present in a large fraction of rows is
+        passed (e.g. olivine in a mostly-mafic dataset), the number of matching
+        rows can be comparable to the whole table. Everything below is written
+        chunk-wise so that case stays memory-bounded instead of materializing an
+        "all matching rows" array that can be a large fraction of the whole table.
         """
+        if chunk_size is None:
+            chunk_size = self.chunk_size
         min_multiplier, max_multiplier = multiplier_bounds
         if min_multiplier >= max_multiplier:
             raise ValueError("Invalid multiplier bounds: min must be less than max.")
         if not isinstance(n_resamples, int) or n_resamples < 1:
             raise ValueError("n_resamples must be a positive integer.")
 
-        # Identify entries with the rare phase present
-        rare_mask = self.table[:, phase_column] > 0
-        rare_rows = self.table[rare_mask]
-        
-        if rare_rows.shape[0] == 0:
+        old_rows, n_cols = self.table.shape
+
+        # --- Pass 1: count matching rows only, one chunk (single column) at a
+        # time, so the output memmap can be allocated at its final size up front.
+        # This never holds more than `chunk_size` rows of a single column in RAM -
+        # contrast with the previous `self.table[:, phase_column] > 0` (a
+        # full-table column read) followed by `self.table[rare_mask]`, which
+        # materialized every matching row (all columns) as one in-RAM array. That
+        # was fine when "rare" really meant rare, but blew up memory for a common
+        # phase like olivine, where matching rows can be tens of millions.
+        n_rare = 0
+        for start in range(0, old_rows, chunk_size):
+            end = min(start + chunk_size, old_rows)
+            n_rare += int(np.count_nonzero(self.table[start:end, phase_column] > 0))
+
+        if n_rare == 0:
             print("[INFO] No rare-phase entries found. No resampling performed.")
             return
 
         #Define Sizings
-        n_rare = rare_rows.shape[0]
         n_masscols = self.indexer.nphases
+        mass_indices = self.indexer.mass_indices
         total_new = n_rare * n_resamples
-        old_rows, n_cols = self.table.shape
         new_total = old_rows + total_new
-        
-        #Apply all operations to blurred binary too, done early for assertion to occur before opening new memmap
-        if self.blurredbinaries is not None:
+
+        has_binaries = self.blurredbinaries is not None
+        if has_binaries:
             assert np.shape(self.blurredbinaries)[0] == np.shape(self.table)[0], 'Shape mismatch between main table and binarylabel table!'
-            rare_binaries = self.blurredbinaries[rare_mask]
-            resampled_binaries = np.repeat(rare_binaries, n_resamples, axis=0)
             old_binary_filename = self.blurredbinaries.filename
             new_binary_path = f"{old_binary_filename.split('.')[0]}_resampledblurredbinaries.npy"
             new_binary_table = np.lib.format.open_memmap(
                 new_binary_path, mode='w+', dtype=self.blurredbinaries.dtype, shape=(new_total, self.blurredbinaries.shape[1])
             )
-        
-            self._chunked_copy_into(self.blurredbinaries, new_binary_table)
-            new_binary_table[old_rows:] = resampled_binaries
-            new_binary_table.flush()
-            
-            
-            
-            #reload resampled binaries in read mode
-            del new_binary_table, self.blurredbinaries
-            gc.collect()
-            
-            if overwrite:
-                os.replace(new_binary_path, old_binary_filename)
-                self.blurredbinaries = np.load(old_binary_filename, mmap_mode='r+')
-            else:
-                self.blurredbinaries = np.load(new_binary_path, mmap_mode='r+')
-                
-
-        multipliers = np.random.uniform(
-            low=min_multiplier, high=max_multiplier, size=(total_new, n_masscols)
-        )
-        
-
-        # Repeat original rare rows
-        resampled = np.repeat(rare_rows, n_resamples, axis=0)
-
-        # Apply multipliers to specified mass columns
-        resampled[:,self.indexer.mass_indices] = resampled[:,self.indexer.mass_indices] * multipliers
-        
-        totals = np.sum(resampled[:,self.indexer.mass_indices], axis = 1).reshape((-1,1))
-        
-        resampled[:,self.indexer.mass_indices] = resampled[:,self.indexer.mass_indices] * 100/totals
+            self._chunked_copy_into(self.blurredbinaries, new_binary_table, chunk_size=chunk_size)
 
         # Expand underlying memmap
         new_path = f"{self.table.filename.split('.')[0]}_resampled.npy"
@@ -1085,20 +1278,71 @@ class BigMetaTable():
         new_table = np.lib.format.open_memmap(
             new_path, mode='w+', dtype=self.table.dtype, shape=(new_total, n_cols)
         )
+        self._chunked_copy_into(self.table, new_table, chunk_size=chunk_size)
 
-        self._chunked_copy_into(self.table, new_table)
-        new_table[old_rows:] = resampled
+        # --- Pass 2: walk the table again one chunk at a time. For each chunk,
+        # pull out just its matching rows (bounded by chunk_size, not by how
+        # common the phase is), repeat + perturb + renormalize that small piece,
+        # and write it straight into the new memmap. Peak RAM added by this loop
+        # is O(chunk_size * n_resamples), never O(n_rare). The per-chunk mask is
+        # reused for both the main table and blurred binaries so the two stay
+        # row-aligned, and accumulated to reconstruct the full `rare_mask` needed
+        # by `_append_metadata_rows` at the end (cheap: booleans, same size as
+        # the old table's row count either way).
+        rare_mask_chunks = []
+        write_ptr = old_rows
+        for start in range(0, old_rows, chunk_size):
+            end = min(start + chunk_size, old_rows)
+            table_chunk = self.table[start:end]
+            chunk_mask = table_chunk[:, phase_column] > 0
+            rare_mask_chunks.append(chunk_mask)
+            if not chunk_mask.any():
+                continue
+
+            rare_chunk = table_chunk[chunk_mask]
+            resampled_chunk = np.repeat(rare_chunk, n_resamples, axis=0)
+
+            multipliers = np.random.uniform(
+                low=min_multiplier, high=max_multiplier,
+                size=(resampled_chunk.shape[0], n_masscols)
+            )
+            resampled_chunk[:, mass_indices] = resampled_chunk[:, mass_indices] * multipliers
+            totals = np.sum(resampled_chunk[:, mass_indices], axis=1).reshape((-1, 1))
+            resampled_chunk[:, mass_indices] = resampled_chunk[:, mass_indices] * 100 / totals
+
+            n = resampled_chunk.shape[0]
+            new_table[write_ptr:write_ptr + n] = resampled_chunk
+
+            if has_binaries:
+                rare_binary_chunk = self.blurredbinaries[start:end][chunk_mask]
+                resampled_binary_chunk = np.repeat(rare_binary_chunk, n_resamples, axis=0)
+                new_binary_table[write_ptr:write_ptr + n] = resampled_binary_chunk
+
+            write_ptr += n
+
+        assert write_ptr == new_total, f"Resampled row count mismatch: wrote {write_ptr}, expected {new_total}"
+
         new_table.flush()
-            
+        rare_mask = np.concatenate(rare_mask_chunks)
         del self.table, new_table
+        if has_binaries:
+            new_binary_table.flush()
+            del new_binary_table, self.blurredbinaries
         gc.collect()
-        
+
         # Update self in-place
         if overwrite:
             os.replace(new_path, old_path)
             self.table = np.load(old_path, mmap_mode='r+')
         else:
             self.table = np.load(new_path, mmap_mode='r+')
+
+        if has_binaries:
+            if overwrite:
+                os.replace(new_binary_path, old_binary_filename)
+                self.blurredbinaries = np.load(old_binary_filename, mmap_mode='r+')
+            else:
+                self.blurredbinaries = np.load(new_binary_path, mmap_mode='r+')
 
         self._append_metadata_rows(rare_mask, n_resamples)
         
@@ -1297,7 +1541,7 @@ class BigMetaTable():
             self.delete(np.unique(conflict_rows).astype(int))
 
         
-    def retrieve_component_moles(self, multiplier_bounds=[1, 1], chunk_size=100_000):
+    def retrieve_component_moles(self, multiplier_bounds=[1, 1], chunk_size=None):
         """
         Convert phase assemblages to molar component form.
 
@@ -1320,6 +1564,8 @@ class BigMetaTable():
         Creates:
             self.molar: memmap array (n_rows, n_components) with absolute component moles, normalized to sum(element moles) = 1
         """
+        if chunk_size is None:
+            chunk_size = self.chunk_size
         # ========== Extract indexer data ==========
         label_indices = self.indexer.label_indices  # Phase -> component indices in label space
         label_names = self.indexer.label_names      # List of all component names
@@ -1533,7 +1779,12 @@ class BigMetaTable():
         has_hornblende = np.zeros(n_rows, dtype=bool)
         do_recovery    = np.zeros(n_rows, dtype=bool)
 
-        for i, meta in enumerate(self.metadata):
+        # Iterate the small int32 code array and look up each row's string from the
+        # (small) vocab on demand, rather than enumerate(self.metadata) - the latter
+        # would materialize every row's metadata string into one giant fixed-width
+        # array before the loop even starts.
+        for i, _code in enumerate(self._metadata_codes):
+            meta        = self._metadata_vocab[_code]
             tokens      = str(meta).strip().split()
             phase_names = set()
             for tok in tokens:
@@ -1839,7 +2090,10 @@ class BigMetaTable():
         has_phase = np.zeros((len(phase_names), n_rows), dtype=bool)
         do_recovery = np.zeros(n_rows, dtype=bool)
 
-        for i, meta in enumerate(self.metadata):
+        # See recover_untracked_phases: iterate codes + small vocab, not the
+        # materialized self.metadata array.
+        for i, _code in enumerate(self._metadata_codes):
+            meta = self._metadata_vocab[_code]
             tokens = str(meta).strip().split()
             names = set()
             for tok in tokens:

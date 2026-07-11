@@ -10,6 +10,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import re
+import argparse
+import json
 
 # Ensure repo root and src are on path
 import sys
@@ -20,12 +22,12 @@ src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
-from .filters import filter_invalid_rows
 from recipes.settings import internal_train_dir, external_train_dir, external_base
 from ngibbs.utils.string_utils import pull_number
 from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
 from ngibbs.utils.file_utils import load_ml_bundle, MLDataBundle
 from ngibbs.utils.math_utils import Normalizer
+from builder.processing.BigMetaTable import BigMetaTable
 
 #featureNames = ['Pressure(System_main)', 'Temperature(System_main)', 'logfO2-QFM(System_main)']
 #freeOutputs = ['viscocity(System_main)', 'liq H (kJ)(melts-liquid)', 'Temperature(System_main)']
@@ -36,7 +38,8 @@ from ngibbs.utils.math_utils import Normalizer
 
 
 def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=False, featureNames=["Pressure(System_main)", "Temperature(System_main)"],
-                            freeOutputs=None, indexer=None, config_path=None, bundle_name=None, chunk_size=100_000):
+                            freeOutputs=None, indexer=None, config_path=None, bundle_name=None, chunk_size=None,
+                            deep_filter_kwargs=None, insanity_filter_kwargs=None):
 
     """Builds features and labels for training. Converts MELTS tables to .npy files fit for ML work.
     Self: BigMetaTable Instance.
@@ -45,7 +48,24 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     ----------
     bundle_name : str, optional
         Optional .tar.gz filename to use for the final bundle (stored in the dataset directory).
+    chunk_size : int, optional
+        Row-chunk size for every large-array pass below. Defaults to `self.chunk_size`
+        (the BigMetaTable instance's configured chunk size - see YAML `performance.chunk_size`)
+        when not given explicitly.
+    deep_filter_kwargs : dict, optional
+        If given, applies `filters.deep_filter_npy` to the exported .npy files
+        in place before packaging (kwargs forwarded as-is, e.g.
+        Oxide_Lower_Bounds, Component_Upper_Bounds, batch_size). Filtering
+        before packaging avoids the extract/repack round trip that applying
+        these filters to the finished .tar.gz bundle would require.
+    insanity_filter_kwargs : dict, optional
+        If given, applies `filters.insanity_filter_npy` to the exported .npy
+        files in place before packaging (kwargs forwarded as-is, e.g.
+        tolerance, bulk_tol_frac, batch_size).
     """
+
+    if chunk_size is None:
+        chunk_size = getattr(self, 'chunk_size', 100_000)
 
     sampleNo = len(resample_bounds)
     debug_dump_enabled = os.getenv('NMELTS_DEBUG_DUMP_MOLAR', '').lower() in ('1', 'true', 'yes', 'on')
@@ -195,17 +215,11 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     self._chunked_copy_into(self.table, self.table1, chunk_size=chunk_size)
 
     if self.blurredbinaries is None:
-        # Read in chunks rather than `self.table[:, mass_indices]` across every row at
-        # once - a single column subset spanning the whole (row-major) table is a
-        # strided read over every row's memory, not a sequential one.
-        binary_mask = np.empty((total_rows, len(mass_indices)), dtype=int)
-        for start in range(0, total_rows, chunk_size):
-            end = min(start + chunk_size, total_rows)
-            binary_mask[start:end] = (self.table[start:end, mass_indices] > 0).astype(int)
+        binary_source = None  # derived per-chunk below from self.table; never held in full
     else:
         assert self.blurredbinaries.shape[0] == self.table.shape[0], "Table of labels and blurred binaries must have the same number of rows!"
         print('Using Blurred Binaries to generate binary labels...')
-        binary_mask = self.blurredbinaries
+        binary_source = self.blurredbinaries
     
     self.molarlabels =np.lib.format.open_memmap( # Molar abundances
             self.filename + 'molar_labels.npy',
@@ -272,6 +286,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             self.retrieve_component_moles()
 
             if debug_dump_enabled and not debug_dump_done:
+                print("Debug dump of molar and compToOxLoad previews enabled. Saving to debug/ subdirectory...")
                 debug_dir = Path(self.filename).parent / 'debug'
                 debug_dir.mkdir(parents=True, exist_ok=True)
 
@@ -330,9 +345,17 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
                 Inmoles_chunk = (molar_chunk @ compToOxLoad) @ OxToEl
                 InTot_chunk = np.sum(Inmoles_chunk, axis=1).reshape(-1, 1)
 
-                # --- Binary labels
-                self.binarylabels[out_start:out_end] = binary_mask[start:end]
+                # --- Binary labels (computed per-chunk rather than precomputed for all
+                # rows up front, since it doesn't depend on the resample index and a
+                # full (total_rows, num_phases) array is large enough to OOM on
+                # multi-hundred-million-row tables)
+                #print(f"Building binary labels for rows {start}:{end} (sample {i})")
+                if binary_source is None:
+                    self.binarylabels[out_start:out_end] = (self.table[start:end, mass_indices] > 0).astype(np.float32)
+                else:
+                    self.binarylabels[out_start:out_end] = binary_source[start:end]
 
+                #print(f"Building mass labels for rows {start}:{end} (sample {i})")
                 # --- Mass labels
                 if self.Model == 'HeFESTo':
                     phaseComps = molar_chunk[:, :, np.newaxis] * phaseToCompMap.T  # (B, C, P)
@@ -355,6 +378,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
 
                 # --- Free outputs (if any): replicate values from original table across resamples
                 if freeOutputs is not None and len(free_output_indices) > 0:
+                    #print(f"Building free outputs for rows {start}:{end} (sample {i})")
                     for k, fidx in enumerate(free_output_indices):
                         if isinstance(fidx, tuple):
                             num_col = self.table[start:end, fidx[0]].astype(np.float64)
@@ -364,6 +388,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
                             self.freeOutputs[out_start:out_end, k] = self.table[start:end, fidx]
 
                 # --- Features (bulk chemistry in elements normalized to 1)
+                #print(f"Building features for rows {start}:{end} (sample {i})")
                 self.features[out_start:out_end, feature_offset:] = (Inmoles_chunk / InTot_chunk)
 
                 # --- Features (selected input variables from table by featureNames)
@@ -376,6 +401,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
                         self.features[out_start:out_end, k] = self.table[start:end, fidx]
 
                 # --- Molar labels
+                #print(f"Building molar labels for rows {start}:{end} (sample {i})")
                 self.molarlabels[out_start:out_end] = (molar_chunk / InTot_chunk) @ phaseToCompMap.T
 
                 for phase, idx in label_indices.items(): # Move components into the right space. Using molar_chunk to support HeFESTo and MELTS with same code
@@ -400,6 +426,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
                         # --- Labels (phase components)
                         self.labels[out_start:out_end, label_indices_comp[phase]] = liq_mol
 
+            print(f"Finished sample {i} of {len(resample_bounds)}. Flushing memmaps to disk...")
             self.binarylabels.flush()
             self.masslabels.flush()
             if freeOutputs is not None and len(free_output_indices) > 0:
@@ -449,6 +476,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
         gc.collect()"""
        
     finally: #Close Memmaps
+        print("Closing memmaps and cleaning up...")
         del self.binarylabels, self.masslabels, self.features, self.labels, self.table1, self.molarlabels
         if hasattr(self, 'freeOutputs'):
             del self.freeOutputs
@@ -457,12 +485,47 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     indexer_dir = self.filename + 'ml_indexer'
     indexer.ml_indexer.save(indexer_dir)
 
+    print("Generating dataset statistics...")
     # Generate dataset statistics
     stats_path = generate_dataset_stats(
         dataset_name=self.filename,
         ml_indexer=indexer.ml_indexer,
-        output_dir=Path(self.filename).parent
+        output_dir=Path(self.filename).parent,
+        chunk_size=chunk_size
     )
+    # generate_dataset_stats() also writes a "{stem}_feature_bounds.json"
+    # companion (featureNames' min/max) next to stats_path - same stem, so
+    # derive its path the same way rather than changing generate_dataset_stats'
+    # return signature.
+    feature_bounds_path = Path(self.filename).parent / f"{Path(self.filename).stem}_feature_bounds.json"
+
+    # Apply deep/insanity filters directly to the exported .npy files, before
+    # packaging - filtering the finished .tar.gz instead would mean extracting
+    # and repacking it, which is an expensive and unnecessary round trip on
+    # large binary datasets.
+    if deep_filter_kwargs is not None or insanity_filter_kwargs is not None:
+        from builder.processing.filters import deep_filter_npy, insanity_filter_npy
+
+        if stats_path and stats_path.exists():
+            os.replace(stats_path, stats_path.with_name(f"{stats_path.stem}_prefilter.txt"))
+        if feature_bounds_path.exists():
+            os.replace(feature_bounds_path, feature_bounds_path.with_name(f"{feature_bounds_path.stem}_prefilter.json"))
+
+        if deep_filter_kwargs is not None:
+            print("Applying deep_filter to unpacked dataset (pre-packaging)...")
+            deep_filter_npy(self.filename, indexer.ml_indexer, **deep_filter_kwargs)
+
+        if insanity_filter_kwargs is not None:
+            print("Applying insanity_filter to unpacked dataset (pre-packaging)...")
+            insanity_filter_npy(self.filename, indexer.ml_indexer, **insanity_filter_kwargs)
+
+        print("Regenerating dataset statistics after filtering...")
+        stats_path = generate_dataset_stats(
+            dataset_name=self.filename,
+            ml_indexer=indexer.ml_indexer,
+            output_dir=Path(self.filename).parent,
+            chunk_size=chunk_size
+        )
 
     # Map full file paths to simple archive names (without self.filename prefix for readability)
     file_mappings = {
@@ -482,6 +545,10 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     if stats_path and stats_path.exists():
         file_mappings[str(stats_path)] = 'stats.txt'
 
+    # Add feature bounds file (featureNames' min/max - see generate_dataset_stats)
+    if feature_bounds_path.exists():
+        file_mappings[str(feature_bounds_path)] = 'feature_bounds.json'
+
     bundle_base = self.filename.split('_working')[0]
     if bundle_name:
         bundle_filename = Path(bundle_name).name
@@ -491,7 +558,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     else:
         bundle_path = bundle_base + '.tar.gz'
 
-
+    print("Packaging dataset bundle...")
     with tarfile.open(bundle_path, 'w:gz') as tar:
         for fpath, arcname in file_mappings.items():
             if os.path.exists(fpath):
@@ -502,7 +569,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     #sanity_check_bundle(bundle_path=Path(bundle_path)) # Verify that the data make sense. Expensive for large files
     
 
-
+    print(f"Moving dataset bundle")
     # Move bundle to configured training directory
     model_match = re.search(r"MELTS([^_]+)_", Path(bundle_base).name)
     if model_match:
@@ -518,7 +585,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
 
         return target_path
     
-    return bundle_path  #filter_invalid_rows(self, mismatches)
+    return bundle_path
 
 
 def make_Tplots(MELTS, plot_directory, colormap = 'turbo'):
@@ -686,17 +753,17 @@ def make_harkers(MELTS, plot_directory, colormap = 'turbo', hist = False):
             plt.show()
 
 
-def generate_dataset_stats(dataset_name, ml_indexer, output_dir=None):
+def generate_dataset_stats(dataset_name, ml_indexer, output_dir=None, chunk_size=None):
     """
     Generate comprehensive statistics for a processed ML dataset.
-    
+
     Creates a stats.txt file containing:
     - Dataset size
     - Phase abundances from binary_labels
     - Bulk composition bounds in wt% oxide (using ElToOx, iron as FeOT)
     - Condition bounds (P, T, fO2)
     - Liquid fraction distribution
-    
+
     Parameters
     ----------
     dataset_name : str
@@ -705,88 +772,143 @@ def generate_dataset_stats(dataset_name, ml_indexer, output_dir=None):
         ML indexer with transformation matrices and phase information
     output_dir : str or Path, optional
         Directory for output stats.txt. If None, uses dataset directory.
+    chunk_size : int, optional
+        Row-chunk size for the scan below. Defaults to 100_000.
     """
     from pathlib import Path
-    
+
+    if chunk_size is None:
+        chunk_size = 100_000
+
     dataset_path = Path(dataset_name)
     if output_dir is None:
         output_dir = dataset_path.parent
     else:
         output_dir = Path(output_dir)
-    
+
     output_dir.mkdir(parents=True, exist_ok=True)
     stats_file = output_dir / f"{dataset_path.stem}_stats.txt"
-    
-    # Load dataset arrays
-    features = np.load(f"{dataset_name}features.npy")
-    binary_labels = np.load(f"{dataset_name}binary_labels.npy")
-    mass_labels = np.load(f"{dataset_name}mass_labels.npy")
-    
+
+    # Memory-mapped rather than loaded in full - every statistic below (phase
+    # abundance counts, bulk-oxide min/max, condition min/max, liquid-fraction
+    # bin counts) is a simple reduction across rows, so a single row-chunked
+    # pass accumulates all of them at once instead of holding
+    # features.npy/binary_labels.npy/mass_labels.npy fully in RAM (three
+    # full-size arrays simultaneously on a large dataset).
+    features = np.load(f"{dataset_name}features.npy", mmap_mode='r')
+    binary_labels = np.load(f"{dataset_name}binary_labels.npy", mmap_mode='r')
+    mass_labels = np.load(f"{dataset_name}mass_labels.npy", mmap_mode='r')
+
     n_samples = features.shape[0]
     n_conditions = len(ml_indexer.featureNames)  # P, T, fO2
     n_chem_features = features.shape[1] - n_conditions
-    
+
+    all_phases = ml_indexer.all_phases
+    n_phase_cols = min(len(all_phases), binary_labels.shape[1])
+
+    ElToOx = ml_indexer.ElToOx
+    MM_ox = ml_indexer.MM[:len(ml_indexer.Elkeys), :len(ml_indexer.Elkeys)]
+    oxide_names = ml_indexer.Oxides
+    n_oxide_cols = len(oxide_names)
+
+    liquid_idx = None
+    for i, phase in enumerate(all_phases):
+        if phase == 'melts-liquid':
+            liquid_idx = i
+            break
+    has_liquid = liquid_idx is not None and liquid_idx < mass_labels.shape[1]
+
+    bin_edges = np.arange(0, 100, 5)  # 0-5, 5-10, ..., 95-100
+
+    # --- Accumulators: all sized by column count (phases/oxides/conditions/bins),
+    # never by row count, so they stay tiny regardless of dataset size.
+    phase_present_counts = np.zeros(n_phase_cols, dtype=np.int64)
+    oxide_min = np.full(n_oxide_cols, np.inf)
+    oxide_max = np.full(n_oxide_cols, -np.inf)
+    cond_min = np.full(n_conditions, np.inf)
+    cond_max = np.full(n_conditions, -np.inf)
+    superliquidus = 0
+    subsolidus = 0
+    bin_counts = np.zeros(len(bin_edges), dtype=np.int64)
+
+    for start in range(0, n_samples, chunk_size):
+        end = min(start + chunk_size, n_samples)
+
+        binary_chunk = np.asarray(binary_labels[start:end, :n_phase_cols])
+        phase_present_counts += np.sum(binary_chunk > 0, axis=0)
+
+        features_chunk = np.asarray(features[start:end])
+
+        # Bulk composition: element moles -> oxide moles -> wt% oxide
+        chem_chunk = features_chunk[:, n_conditions:]
+        oxide_moles_chunk = chem_chunk @ ElToOx
+        oxide_wt_chunk = oxide_moles_chunk @ MM_ox
+        oxide_wt_pct_chunk = 100 * oxide_wt_chunk / np.sum(oxide_wt_chunk, axis=1, keepdims=True)
+        # np.fmin/fmax (not minimum/maximum) so an all-NaN column in one chunk
+        # doesn't NaN-poison a running min/max that's valid in every other chunk.
+        oxide_min = np.fmin(oxide_min, np.nanmin(oxide_wt_pct_chunk, axis=0))
+        oxide_max = np.fmax(oxide_max, np.nanmax(oxide_wt_pct_chunk, axis=0))
+
+        cond_chunk = features_chunk[:, :n_conditions]
+        cond_min = np.fmin(cond_min, np.nanmin(cond_chunk, axis=0))
+        cond_max = np.fmax(cond_max, np.nanmax(cond_chunk, axis=0))
+
+        if has_liquid:
+            liquid_wt_frac_chunk = np.asarray(mass_labels[start:end, liquid_idx]) / 100.0
+            superliquidus += int(np.sum(liquid_wt_frac_chunk >= 0.995))
+            subsolidus += int(np.sum(liquid_wt_frac_chunk < 0.005))
+            pct_chunk = liquid_wt_frac_chunk * 100
+            for i in range(len(bin_edges)):
+                lower = bin_edges[i]
+                upper = bin_edges[i] + 5 if i < len(bin_edges) - 1 else 100
+                if upper <= 0.5 or lower >= 99.5:
+                    continue
+                bin_counts[i] += int(np.sum((pct_chunk >= lower) & (pct_chunk < upper)))
+
+    for arr in (features, binary_labels, mass_labels):
+        if hasattr(arr, '_mmap') and arr._mmap is not None:
+            arr._mmap.close()
+    del features, binary_labels, mass_labels
+    gc.collect()
+
     # Helper function for horizontal histogram
     def make_horizontal_bar(percent, max_width=50):
         """Create horizontal bar: '19.75% ||||||||||||'"""
         n_bars = int(round(percent / 100.0 * max_width))
         return '|' * n_bars
-    
+
     with open(stats_file, 'w') as f:
         f.write("=" * 80 + "\n")
         f.write(f"DATASET STATISTICS: {dataset_path.stem}\n")
         f.write("=" * 80 + "\n\n")
-        
+
         # 1. Dataset size
         f.write(f"Dataset Size: {n_samples:,} samples\n\n")
-        
+
         # 2. Phase abundances from binary_labels
         f.write("-" * 80 + "\n")
         f.write("PHASE ABUNDANCES (from binary labels)\n")
         f.write("-" * 80 + "\n")
-        
-        all_phases = ml_indexer.all_phases
-        for i, phase in enumerate(all_phases):
-            if i < binary_labels.shape[1]:
-                phase_present = np.sum(binary_labels[:, i] > 0)
-                percent = 100.0 * phase_present / n_samples
 
+        for i, phase in enumerate(all_phases):
+            if i < n_phase_cols:
+                percent = 100.0 * phase_present_counts[i] / n_samples
                 bar = make_horizontal_bar(percent)
                 f.write(f"{phase:20} {percent:6.2f}% {bar}\n")
-        
+
         f.write("\n")
-        
+
         # 3. Bulk composition bounds in wt% oxide space
         f.write("-" * 80 + "\n")
         f.write("BULK COMPOSITION BOUNDS (wt% oxide, FeO as FeOT)\n")
         f.write("-" * 80 + "\n")
-        
-        # Extract chemical features (skip conditions)
-        chem_features = features[:, n_conditions:]
-        
-        # Convert from element moles to wt% oxide using ElToOx
-        ElToOx = ml_indexer.ElToOx
-        
-        # Element moles to oxide moles
-        oxide_moles = chem_features @ ElToOx
-        
-        # Oxide moles to wt% (multiply by molar mass and normalize)
-        MM_ox = ml_indexer.MM[:len(ml_indexer.Elkeys), :len(ml_indexer.Elkeys)]
-        oxide_names = ml_indexer.Oxides
-        
-        # Calculate oxide wt% for each sample
-        oxide_wt = oxide_moles @ MM_ox
-        oxide_wt_pct = 100 * oxide_wt / np.sum(oxide_wt, axis=1, keepdims=True)
-        
+
         f.write(f"{'Oxide':>10} {'Min (wt%)':>12} {'Max (wt%)':>12}\n")
         f.write("-" * 40 + "\n")
-        
+
         for i, oxide in enumerate(oxide_names):
-            if i < oxide_wt_pct.shape[1]:
-                oxide_col = oxide_wt_pct[:, i]
-                min_val = np.nanmin(oxide_col)
-                max_val = np.nanmax(oxide_col)
-                f.write(f"{oxide:>10} {min_val:12.4f} {max_val:12.4f}\n")
+            if i < n_oxide_cols:
+                f.write(f"{oxide:>10} {oxide_min[i]:12.4f} {oxide_max[i]:12.4f}\n")
 
         f.write("\n")
 
@@ -801,66 +923,150 @@ def generate_dataset_stats(dataset_name, ml_indexer, output_dir=None):
 
         for i, cond_name in enumerate(condition_names):
             if i < n_conditions:
-                cond_col = features[:, i]
-                min_val = np.nanmin(cond_col)
-                max_val = np.nanmax(cond_col)
-                f.write(f"{cond_name:>20} {min_val:15.2f} {max_val:15.2f}\n")
-        
+                f.write(f"{cond_name:>20} {cond_min[i]:15.2f} {cond_max[i]:15.2f}\n")
+
         f.write("\n")
-        
+
         # 5. Liquid fraction distribution
         f.write("-" * 80 + "\n")
         f.write("LIQUID FRACTION DISTRIBUTION (from mass labels)\n")
         f.write("-" * 80 + "\n")
-        
-        # Find liquid column in mass_labels
-        liquid_idx = None
-        for i, phase in enumerate(all_phases):
-            if phase == 'melts-liquid':
-                liquid_idx = i
-                break
-        
-        if liquid_idx is not None and liquid_idx < mass_labels.shape[1]:
-            liquid_wt_frac = mass_labels[:, liquid_idx] / 100.0  # Convert from wt% to fraction
-            
+
+        if has_liquid:
             # Superliquidus (liquid >= 99.5%)
-            superliquidus = np.sum(liquid_wt_frac >= 0.995)
             superliq_pct = 100.0 * superliquidus / n_samples
             bar = make_horizontal_bar(superliq_pct)
             f.write(f"{'Superliquidus (>99.5%)':30} {superliq_pct:6.2f}% {bar}\n")
-            
+
             # Subsolidus (liquid < 0.5%)
-            subsolidus = np.sum(liquid_wt_frac < 0.005)
             subsol_pct = 100.0 * subsolidus / n_samples
             bar = make_horizontal_bar(subsol_pct)
             f.write(f"{'Subsolidus (<0.5%)':30} {subsol_pct:6.2f}% {bar}\n")
-            
+
             f.write("\n")
-            
+
             # Bin remainder by 5% increments
             f.write("Intermediate liquid fractions (5% bins):\n")
-            bin_edges = np.arange(0, 100, 5)  # 0-5, 5-10, ..., 95-100
-            
+
             for i in range(len(bin_edges)):
                 lower = bin_edges[i]
                 upper = bin_edges[i] + 5 if i < len(bin_edges) - 1 else 100
-                
+
                 # Skip bins outside intermediate range
                 if upper <= 0.5 or lower >= 99.5:
                     continue
-                
-                # Count samples in this bin
-                in_bin = np.sum((liquid_wt_frac * 100 >= lower) & (liquid_wt_frac * 100 < upper))
-                bin_pct = 100.0 * in_bin / n_samples
-                
+
+                bin_pct = 100.0 * bin_counts[i] / n_samples
+
                 if bin_pct > 0:  # Only show non-empty bins
                     bar = make_horizontal_bar(bin_pct)
                     f.write(f"{lower:3.0f}-{upper:3.0f}% liquid {bin_pct:6.2f}% {bar}\n")
         else:
             f.write("Warning: melts-liquid phase not found in mass labels\n")
-        
+
         f.write("\n")
         f.write("=" * 80 + "\n")
-    
+
+    # Machine-readable companion to the "CONDITION BOUNDS" section above -
+    # featureNames' min/max are an immutable property of this dataset, so they
+    # belong here (computed once, during preprocessing) rather than being
+    # rescanned by every training run that loads this bundle. Same stem as
+    # stats_file so callers that already derive stats_file's path (e.g.
+    # resampling_to_datasets) can derive this one identically.
+    feature_bounds_file = output_dir / f"{dataset_path.stem}_feature_bounds.json"
+    with open(feature_bounds_file, 'w') as f:
+        json.dump(
+            {
+                "featureNames": list(ml_indexer.featureNames),
+                "min": [float(v) for v in cond_min],
+                "max": [float(v) for v in cond_max],
+            },
+            f,
+            indent=2,
+        )
+
     print(f"Generated statistics file: {stats_file}")
+    print(f"Generated feature bounds file: {feature_bounds_file}")
     return stats_file
+
+
+def _parse_resample_bounds(value):
+    """Parse a JSON list of [low, high] mass-multiplier pairs, e.g. '[[1,1]]'."""
+    parsed = json.loads(value)
+    if not isinstance(parsed, list) or not all(isinstance(b, list) and len(b) == 2 for b in parsed):
+        raise argparse.ArgumentTypeError(
+            f"--resample-bounds must be a JSON list of [low, high] pairs, got: {value}"
+        )
+    return parsed
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Load a BigMetaTable and export resampled ML training datasets via resampling_to_datasets()."
+    )
+
+    # BigMetaTable construction args
+    parser.add_argument("input_path", type=str, help="Path to table base name or to .csv/.txt/.npy file.")
+    parser.add_argument("--read-dir", type=str, default=None,
+                         help="Optional source directory used by BigMetaTable(read_dir=...).")
+    parser.add_argument("--memmap-mode", type=str, default="r+", help="Mode used to open the table memmap.")
+    parser.add_argument("--rebuild-memmap", action="store_true",
+                         help="Force rebuilding the .npy memmap from the .csv/.txt source.")
+    parser.add_argument("--allow-differing-lengths", action="store_true",
+                         help="Allow header/table column count mismatch.")
+    parser.add_argument("--model", type=str, default="MELTS", choices=["MELTS", "HeFESTo"],
+                         help="Thermodynamic model used to build the table (BigMetaTable Model=).")
+    parser.add_argument("--oxygen", type=str, default="closed", choices=["closed", "open"],
+                         help="Oxygen buffering mode (BigMetaTable OXYGEN=).")
+    parser.add_argument("--chunk-size", type=int, default=100_000,
+                         help="Row-chunk size for BigMetaTable, and for resampling_to_datasets unless "
+                              "--resample-chunk-size is given.")
+
+    # resampling_to_datasets args
+    parser.add_argument("--resample-bounds", type=_parse_resample_bounds, default=[[1, 1]],
+                         help="JSON list of [low, high] mass-multiplier bounds, e.g. '[[1,1]]' or "
+                              "'[[0.8,1.2],[0.9,1.1]]'.")
+    parser.add_argument("--clear-old-tables", action="store_true",
+                         help="Delete any previously computed label/feature arrays on the table before resampling.")
+    parser.add_argument("--feature-names", nargs="+",
+                         default=["Pressure(System_main)", "Temperature(System_main)"],
+                         help="Feature column names, e.g. 'Pressure(System_main)'.")
+    parser.add_argument("--free-outputs", nargs="+", default=None,
+                         help="Optional free-output column names, not constrained by phase equilibria.")
+    parser.add_argument("--config-path", type=str, default=None,
+                         help="Optional config file to bundle alongside the exported dataset.")
+    parser.add_argument("--bundle-name", type=str, default=None,
+                         help="Optional .tar.gz filename for the final bundle.")
+    parser.add_argument("--resample-chunk-size", type=int, default=None,
+                         help="Row-chunk size override for resampling_to_datasets only (defaults to --chunk-size).")
+
+    args = parser.parse_args()
+
+    print(f"Loading BigMetaTable from: {args.input_path}")
+    bmt = BigMetaTable(
+        args.input_path,
+        read_dir=args.read_dir,
+        memmap_mode=args.memmap_mode,
+        rebuild_memmap=args.rebuild_memmap,
+        allow_differing_lengths=args.allow_differing_lengths,
+        Model=args.model,
+        OXYGEN=args.oxygen,
+        chunk_size=args.chunk_size,
+    )
+    bmt.indexer.table_update(bmt.table)
+
+    bundle_path = resampling_to_datasets(
+        bmt,
+        resample_bounds=args.resample_bounds,
+        clear_old_tables=args.clear_old_tables,
+        featureNames=args.feature_names,
+        freeOutputs=args.free_outputs,
+        config_path=args.config_path,
+        bundle_name=args.bundle_name,
+        chunk_size=args.resample_chunk_size,
+    )
+    print(f"Export complete: {bundle_path}")
+
+
+if __name__ == "__main__":
+    main()

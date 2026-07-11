@@ -583,9 +583,11 @@ def test_ml_indexer(indexer):
     # 14. SAVE/LOAD ROUND-TRIP TESTS
     # ========================================================================
     print("\n[36] Testing save/load round-trip...")
-    from nMELTS.config.ml_indexer import load_ml_indexer_from_state
+    from ngibbs.config.ml_indexer import load_ml_indexer_from_state
 
-    with tempfile.TemporaryDirectory() as tmp_dir:
+    tmp_base = project_root / "data" / "tmp"
+    tmp_base.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=tmp_base) as tmp_dir:
         indexer.save(tmp_dir)
         reloaded = load_ml_indexer_from_state(tmp_dir)
     
@@ -1000,7 +1002,7 @@ def test_dataset_indexer(indexer):
     # ========================================================================
     print("\n[6] Testing MLIndexer delegation...")
     assert hasattr(indexer, 'ml_indexer'), "DatasetIndexer must have ml_indexer attribute"
-    from nMELTS.config.ml_indexer import MLIndexer
+    from ngibbs.config.ml_indexer import MLIndexer
     assert isinstance(indexer.ml_indexer, MLIndexer), "ml_indexer must be an MLIndexer instance"
     
     # Verify key attributes are exposed from ml_indexer

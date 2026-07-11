@@ -40,6 +40,29 @@ def _read_text_file(path: Optional[str]) -> Optional[str]:
         return None
 
 
+def _make_train_loader(trainData, batch_size, num_workers):
+    """Build (or reuse) the training batch iterator.
+
+    `trainData` is either a `torch.utils.data.Dataset` (the usual, fully
+    in-RAM case - e.g. TensorDatasetFour from load_ML_data/load_ML_data_auto
+    below the RAM threshold), in which case it's wrapped in a normal
+    DataLoader exactly as before, or an already-iterable batch source (e.g.
+    ChunkedMemmapTrainLoader from load_ML_data_auto above the RAM threshold -
+    see builder.training.dataset_workspace), in which case it's used as-is.
+
+    Episodes can each configure their own batch_size (see main.py's episode
+    loop), but a ChunkedMemmapTrainLoader is constructed once, up front, by
+    load_ML_data_auto - so its batch_size is kept in sync with whatever the
+    *current* call configured, rather than whatever it happened to be built
+    with.
+    """
+    if isinstance(trainData, torch.utils.data.Dataset):
+        return DataLoader(trainData, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
+    if hasattr(trainData, 'batch_size'):
+        trainData.batch_size = batch_size
+    return trainData
+
+
 def symmetric_rel_l1(pred, target, eps=1e-6):
     denom = torch.clamp(torch.abs(pred) + torch.abs(target), min=eps)
     return torch.mean(torch.abs(pred - target) / denom)
@@ -218,8 +241,8 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
     # --- Loaders (same for both "Cr" and "NoCr" if you only want one test here) ---
 
-    train_loader = DataLoader(trainData, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    test_loader = DataLoader(testData, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    train_loader = _make_train_loader(trainData, batch_size, num_workers=12)
+    test_loader = DataLoader(testData, batch_size=batch_size, shuffle=False, num_workers=12, pin_memory=True)
 
     # --- Baseline: evaluate the incoming (pre-training) model first, so a training run that
     # never beats its own starting point cannot overwrite a superior saved checkpoint. ---
@@ -405,7 +428,7 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
     # --- Loaders (same for both "Cr" and "NoCr" if you only want one test here) ---
 
-    train_loader = DataLoader(trainData, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    train_loader = _make_train_loader(trainData, batch_size, num_workers=4)
     test_loader = DataLoader(testData, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
     binWeights = binWeights.to(device)

@@ -512,7 +512,7 @@ class DatasetIndexer:
                 self.EXCLUDED_PHASES.add(phase)
                 print(f"Excluding phase '{phase}' as all its components are excluded.")
 
-    def exclude_zero_sum_components(self, data_matrix: np.ndarray, tolerance: float = 1e-10):
+    def exclude_zero_sum_components(self, data_matrix: np.ndarray, tolerance: float = 1e-10, chunk_size: int = 100_000):
         """
         Exclude components with zero columnwise sums from the dataset.
         
@@ -559,8 +559,17 @@ class DatasetIndexer:
         # Abundance columns use a separate positive-value check so that tiny negative
         # solver artifacts (HeFESTo outputs slightly negative moles for absent phases)
         # don't make a column appear non-zero when the phase is truly absent.
-        column_sums = np.sum(np.abs(data_matrix), axis=0)
-        column_has_positive = np.any(data_matrix > 0, axis=0)
+        # Accumulated in row-chunks rather than `np.abs(data_matrix)`/`data_matrix > 0`
+        # across the whole matrix at once - those each materialize a full copy the same
+        # size as data_matrix, which for a memmapped table can be tens of GB.
+        n_rows, n_cols = data_matrix.shape
+        column_sums = np.zeros(n_cols, dtype=np.float64)
+        column_has_positive = np.zeros(n_cols, dtype=bool)
+        for start in range(0, n_rows, chunk_size):
+            end = min(start + chunk_size, n_rows)
+            chunk = data_matrix[start:end]
+            column_sums += np.sum(np.abs(chunk), axis=0)
+            column_has_positive |= np.any(chunk > 0, axis=0)
 
         # Track newly excluded components for reporting
         newly_excluded = []
@@ -621,7 +630,7 @@ class DatasetIndexer:
         
         return newly_excluded
 
-    def exclude_zero_sum_oxides(self, data_matrix: np.ndarray, tolerance: float = 1e-10):
+    def exclude_zero_sum_oxides(self, data_matrix: np.ndarray, tolerance: float = 1e-10, chunk_size: int = 100_000):
         """
         Remove oxides with zero columnwise sums in Bulk_comp from the active oxide list.
         
@@ -673,9 +682,15 @@ class DatasetIndexer:
             print("Warning: Bulk_comp phase not found in dataset. Skipping oxide exclusion.")
             return []
         
-        # Calculate columnwise sums
-        column_sums = np.sum(np.abs(data_matrix), axis=0)
-        
+        # Calculate columnwise sums, accumulated in row-chunks rather than
+        # `np.abs(data_matrix)` across the whole matrix at once (see
+        # exclude_zero_sum_components for why - same full-copy cost).
+        n_rows, n_cols = data_matrix.shape
+        column_sums = np.zeros(n_cols, dtype=np.float64)
+        for start in range(0, n_rows, chunk_size):
+            end = min(start + chunk_size, n_rows)
+            column_sums += np.sum(np.abs(data_matrix[start:end]), axis=0)
+
         # Track which oxides to remove
         oxides_to_remove = []
         oxide_sum_status = {}  # For reporting
@@ -847,11 +862,11 @@ class DatasetIndexer:
         return active_removals
 
     def table_update(self, data_matrix: np.ndarray, tolerance: float = 1e-10,
-                     excluded_oxides: Optional[List[str]] = None):
+                     excluded_oxides: Optional[List[str]] = None, chunk_size: int = 100_000):
         if excluded_oxides:
             self.exclude_oxides(excluded_oxides)
-        self.exclude_zero_sum_components(data_matrix, tolerance)
-        self.exclude_zero_sum_oxides(data_matrix, tolerance)
+        self.exclude_zero_sum_components(data_matrix, tolerance, chunk_size=chunk_size)
+        self.exclude_zero_sum_oxides(data_matrix, tolerance, chunk_size=chunk_size)
 
     def _build_label_indices(self):
         raise NotImplementedError("ML label indices are built by MLIndexer (available at self.ml_indexer)")

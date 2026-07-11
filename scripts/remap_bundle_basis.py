@@ -73,7 +73,9 @@ def remap_bundle(input_path: Path, demote: str, promote: str, output_path: Path)
     output_path : Path
         Destination .tar.gz path (created or overwritten).
     """
-    tmp = Path(tempfile.mkdtemp(prefix="remap_bundle_"))
+    tmp_base = _repo_root / "data" / "tmp"
+    tmp_base.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix="remap_bundle_", dir=tmp_base))
     try:
         # Extract
         with tarfile.open(input_path, 'r:gz') as tar:

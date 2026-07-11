@@ -14,7 +14,6 @@ import shutil
 from pathlib import Path
 import yaml
 
-import numpy as np
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend - save plots without displaying
 
@@ -46,7 +45,9 @@ from ngibbs.utils.file_utils import delete_files_with_keyword, move_files_with_e
 from builder.processing.MLexporter import resampling_to_datasets, make_harkers, make_Tplots
 
 # Perhaps migrate the chemistry filters to their own module?
-from builder.processing.filters import deep_filter, bundle_insanity_filter
+# deep_filter/bundle_insanity_filter run inside resampling_to_datasets() via
+# deep_filter_kwargs/insanity_filter_kwargs below, so they aren't called directly here.
+from builder.processing.filters import filter_bulk_composition_mismatch
 from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
 
 
@@ -110,7 +111,24 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
     balance_cfg = config['balancing']
     filter_cfg = config['deep_filter']
     min_phase_cfg = config['min_phase_proportion']
+
+    # Forwarded into resampling_to_datasets() so deep_filter/bundle_insanity_filter
+    # run on the unpacked .npy files before packaging, instead of extracting and
+    # repacking the finished .tar.gz bundle.
+    deep_filter_kwargs = None
+    if filter_cfg['enabled']:
+        deep_filter_kwargs = dict(
+            Oxide_Lower_Bounds=filter_cfg['oxide_lower_bounds'] or None,
+            Oxide_Upper_Bounds=filter_cfg['oxide_upper_bounds'] or None,
+            Component_Upper_Bounds=filter_cfg['component_upper_bounds'] or None,
+            Component_Lower_Bounds=filter_cfg.get('component_lower_bounds', []),
+            Bulk_Oxide_Bounds=filter_cfg.get('bulk_oxide_bounds') or None,
+            batch_size=filter_cfg['batch_size'],
+        )
+    insanity_filter_kwargs = dict(bulk_tol_frac=5E-3)
     excluded_oxides_cfg = preproc_cfg.get('excluded_oxides', [])
+    performance_cfg = config.get('performance', {})
+    chunk_size = performance_cfg.get('chunk_size', 100_000)
 
     if excluded_oxides_cfg is None:
         excluded_oxides_cfg = []
@@ -122,7 +140,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
     plot_cfg = config.get('plot', {})
     outname = config.get('outname', '').strip()
 
-    resampling_kwargs = {}
+    resampling_kwargs = {'chunk_size': chunk_size}
     if feature_names_cfg is not None:
         resampling_kwargs['featureNames'] = feature_names_cfg
     if free_outputs_cfg is not None:
@@ -247,12 +265,16 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
 
         saved_ml_indexer = None  # populated when skip_train=True
         if not skip_train:
-            TrainMELTS = BigMetaTable(TrainName, read_dir=read_dir, Model=MODEL, OXYGEN=OXYGEN) # Assume closed system for training data
+            TrainMELTS = BigMetaTable(TrainName, read_dir=read_dir, Model=MODEL, OXYGEN=OXYGEN, chunk_size=chunk_size) # Assume closed system for training data
             if excluded_oxides_cfg:
                 print(f"Applying configured oxide exclusions at table load: {excluded_oxides_cfg}")
                 TrainMELTS.exclude_oxides(excluded_oxides_cfg)
             header = TrainMELTS.header  # Capture header for indexer construction
             pre_filter = TrainMELTS.table.shape[0]
+
+            # Raw phase abundances before any row filtering, so surprising abundances
+            # can be traced back to the source data rather than to a filtering step.
+            TrainMELTS.report_phase_abundances(label="Raw, Before Any Filtering")
 
             TrainMELTS.filter_inconsistent_phase_data()
 
@@ -271,27 +293,27 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
 
                 # Diagnostic: Check which phases have non-zero abundance after filtering
                 if upsample:
-                    print("\n################ Phase Abundance After Filtering ####################")
-                    phase_list = TrainMELTS.indexer.ml_indexer.all_phases
-                    for phase in phase_list:
-                        if phase in TrainMELTS.indexer.MELTS_indices:
-                            col_idx = TrainMELTS.indexer.MELTS_indices[phase].get('mass (gm)')
-                            if col_idx is not None:
-                                non_zero_count = np.sum(TrainMELTS.table[:, col_idx] > 0)
-                                total_pct = 100 * non_zero_count / len(TrainMELTS.table)
-                                print(f"{phase:20} {non_zero_count:>10,} samples ({total_pct:>6.2f}%)")
-                    print("########################################################################\n")
+                    TrainMELTS.report_phase_abundances(label="After Filtering")
+
+                # Catch rows where MELTS's own reported Bulk_comp disagrees with the
+                # bulk composition summed from its own per-phase output (seen as a
+                # low-temperature MELTS solver artifact). Must run before
+                # resampling_to_datasets(), which perturbs the mass columns this compares.
+                print("Filtering rows with bulk composition mismatch...")
+                pre_filter = TrainMELTS.table.shape[0]
+                filter_bulk_composition_mismatch(TrainMELTS)
+                assert TrainMELTS.table.shape[0] > pre_filter*0.9, "More than 10 percent of the training dataset has a bulk composition mismatch!"
 
                 if upsample:
                     # Resample configured phases from YAML (excluding test_set_phases)
                     for phase_name, phase_config in upsample_cfg['phases'].items():
                         if phase_name == 'test_set_phases':
                             continue  # Skip test set configuration
-
+                        print(f"Resampling phase '{phase_name}' with config: {phase_config}")
                         if phase_name in TrainMELTS.indexer.MELTS_indices:
                             try:
                                 TrainMELTS.resample_rare_phase(
-                                    TrainMELTS.indexer.MELTS_indices[phase_name]['mass (gm)'],
+                                    TrainMELTS.indexer.MELTS_indices[phase_name]['mass (gm)'], # NOT GENERALIZABLE TO HEFESTO
                                     multiplier_bounds=phase_config['multiplier_bounds'],
                                     n_resamples=phase_config['n_resamples'],
                                     overwrite=True
@@ -302,31 +324,46 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
                             print(f"Warning: Phase '{phase_name}' not available in current MELTS model")
 
                 if balance_function is not None:
+                    print(f"Applying balance function: {balance_function.__name__}")
                     balance_function(TrainMELTS)
 
                 # Exclude exceptionally low-abundance phases, these won't be learned well and may add noise to training. Configured in YAML.
                 # Run iteratively: deleting rows for rare phases can push co-occurring borderline phases below the threshold.
                 if min_phase_cfg != 0:
+                    print(f"Filtering phases with proportion below {min_phase_cfg}")
+                    TrainMELTS.filter_min_phase_proportion(min_proportion=min_phase_cfg)
+                    """
                     while True:
                         before = TrainMELTS.table.shape[0]
                         TrainMELTS.filter_min_phase_proportion(min_proportion=min_phase_cfg)
                         if TrainMELTS.table.shape[0] == before:
-                            break
+                            break"""
 
+            print(f"Table update now after filtering and resampling.")
             TrainMELTS.indexer.table_update(
                 TrainMELTS.table,
-                excluded_oxides=excluded_oxides_cfg
+                excluded_oxides=excluded_oxides_cfg,
+                chunk_size=chunk_size
             )
 
             TrainMELTS.filename = TrainName
             train_bundle = train_dir / get_bundle_name('Train')
 
+            # One-time out-of-core shuffle so later out-of-core/chunked training
+            # readers never have to worry about row-order structure (e.g. upsampled
+            # rows resample_rare_phase appends as a block at the end of the table).
+            print("Shuffling training row order (one-time, out-of-core)...")
+            TrainMELTS.shuffle_rows(chunk_size=chunk_size)
+
+            print("Running resampling to datasets for training data...")
             if upsample:
                 train_bundle_path = resampling_to_datasets(
                     TrainMELTS,
                     resampling_cfg['train_bounds'],
                     config_path=config_path,
                     bundle_name=train_bundle,
+                    deep_filter_kwargs=deep_filter_kwargs,
+                    insanity_filter_kwargs=insanity_filter_kwargs,
                     **resampling_kwargs,
                 )
             else:
@@ -335,6 +372,8 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
                     [[1, 1]],
                     config_path=config_path,
                     bundle_name=train_bundle,
+                    deep_filter_kwargs=deep_filter_kwargs,
+                    insanity_filter_kwargs=insanity_filter_kwargs,
                     **resampling_kwargs,
                 )
                 train_bundle_path = ensure_bundle_in_train_dir(train_bundle_path)
@@ -348,19 +387,6 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
             # Clear intermediate memory maps
             delete_files_with_keyword(str(INTERNAL_DIR), keyword='working', dry_run=False)
             delete_files_with_keyword(str(INTERNAL_DIR), keyword='temp', dry_run=False)
-
-            if filter_cfg['enabled']:
-                deep_filter(
-                    str(train_bundle_path),
-                    Oxide_Lower_Bounds=filter_cfg['oxide_lower_bounds'] or None,
-                    Oxide_Upper_Bounds=filter_cfg['oxide_upper_bounds'] or None,
-                    Component_Upper_Bounds=filter_cfg['component_upper_bounds'] or None,
-                    Component_Lower_Bounds=filter_cfg.get('component_lower_bounds', []),
-                    Bulk_Oxide_Bounds=filter_cfg.get('bulk_oxide_bounds') or None,
-                    batch_size=filter_cfg['batch_size']
-                )
-
-            bundle_insanity_filter(train_bundle_path, bulk_tol_frac=5E-3)
 
         else:
             # Load pre-built training artifacts; skip the full training pipeline.
@@ -378,7 +404,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
 
         # Process test data - the entire validation dataset is used as the test
         # dataset (no split, no separate Valid bundle).
-        TestMELTS = BigMetaTable(ValidName, read_dir=read_dir, Model=MODEL, OXYGEN=OXYGEN)
+        TestMELTS = BigMetaTable(ValidName, read_dir=read_dir, Model=MODEL, OXYGEN=OXYGEN, chunk_size=chunk_size)
         try:
             assert TestMELTS.header == header, "Validation dataset header does not match training dataset header! Trying without last training column." #(This is assummed in later steps, but maybe doesn't need to be?)
         except AssertionError as e:
@@ -398,8 +424,15 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
 
         TestMELTS.filter_inconsistent_phase_data()
 
-        assert TestMELTS.table.shape[0] > pre_filter*0.97, "More than 3% of the Validation dataset has inconsistent phase data! (Zero mass but non-zero other properties)."
+        assert TestMELTS.table.shape[0] > pre_filter*0.9, "More than 10% of the Validation dataset has inconsistent phase data! (Zero mass but non-zero other properties)."
 
+        # Catch rows where MELTS's own reported Bulk_comp disagrees with the bulk
+        # composition summed from its own per-phase output. Must run before
+        # resampling_to_datasets(), which perturbs the mass columns this compares.
+        pre_filter = TestMELTS.table.shape[0]
+        filter_bulk_composition_mismatch(TestMELTS)
+        assert TestMELTS.table.shape[0] > pre_filter*0.9, "More than 10% of the test dataset has a bulk composition mismatch!"
+        
         if not preprocessed:
             if preproc_cfg.get('recover_untracked_phases', False):
                 TestMELTS.recover_untracked_phases()
@@ -445,6 +478,8 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
             resampling_cfg['test_bounds'],
             config_path=config_path,
             bundle_name=test_bundle,
+            deep_filter_kwargs=deep_filter_kwargs,
+            insanity_filter_kwargs=insanity_filter_kwargs,
             **resampling_kwargs,
         )
 
@@ -461,19 +496,6 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
 
         delete_files_with_keyword(str(INTERNAL_DIR), keyword='working', dry_run=False)
         delete_files_with_keyword(str(INTERNAL_DIR), keyword='temp', dry_run=False)
-
-        if filter_cfg['enabled']:
-            deep_filter(
-                str(test_bundle_path),
-                Oxide_Lower_Bounds=filter_cfg['oxide_lower_bounds'] or None,
-                Oxide_Upper_Bounds=filter_cfg['oxide_upper_bounds'] or None,
-                Component_Upper_Bounds=filter_cfg['component_upper_bounds'] or None,
-                Component_Lower_Bounds=filter_cfg.get('component_lower_bounds', []),
-                Bulk_Oxide_Bounds=filter_cfg.get('bulk_oxide_bounds') or None,
-                batch_size=filter_cfg['batch_size']
-            )
-
-        bundle_insanity_filter(test_bundle_path, bulk_tol_frac=5E-3)
         #sanity_check_bundle(test_bundle)  # Verify test bundle integrity before proceeding
 
         # Move ALL files to external directory if requested

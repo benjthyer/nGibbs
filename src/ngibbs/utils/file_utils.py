@@ -6,6 +6,7 @@ Extracted from Legacy/BackEnds/EmulatorLibrary.py
 
 import os
 import shutil
+import gc
 from pathlib import Path
 import tarfile
 import tempfile
@@ -13,6 +14,73 @@ import pickle
 from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
+
+# Repo root, used to keep temp directories on disk (not a RAM-backed /tmp)
+_repo_root = Path(__file__).resolve().parents[3]
+
+
+def chunked_mask_copy(src, dst_path, keep_mask, chunk_size=100_000):
+    """Copy the rows of `src` selected by boolean `keep_mask` into a new
+    memmap at `dst_path`, one row-chunk at a time.
+
+    `src[start:end]` and the write into `dst` both stay contiguous; only the
+    boolean sub-select of a chunk is fancy-indexed, so peak RAM is
+    O(chunk_size) instead of materializing every selected row at once via
+    `src[keep_mask]` (or, equivalently, `np.vstack` over a list of kept
+    batches) - either of which holds the entire surviving array in RAM before
+    anything is written back out.
+
+    Shared by BigMetaTable.delete/split/manual_split (row-major .npy tables)
+    and filters.safe_delete_batched (standalone ML-bundle .npy arrays with no
+    live BigMetaTable around) so there is one implementation of "delete rows
+    from a memmap" rather than several with diverging memory behavior.
+
+    Returns the number of rows written (`n_keep`).
+    """
+    n_keep = int(np.count_nonzero(keep_mask))
+    dst = np.lib.format.open_memmap(dst_path, mode='w+', dtype=src.dtype, shape=(n_keep,) + src.shape[1:])
+    write_ptr = 0
+    for start in range(0, src.shape[0], chunk_size):
+        end = min(start + chunk_size, src.shape[0])
+        chunk_mask = keep_mask[start:end]
+        if not chunk_mask.any():
+            continue
+        kept = src[start:end][chunk_mask]
+        n = kept.shape[0]
+        dst[write_ptr:write_ptr + n] = kept
+        write_ptr += n
+    dst.flush()
+    del dst
+    gc.collect()
+    return n_keep
+
+
+def chunked_permutation_copy(src, dst_path, permutation, chunk_size=100_000):
+    """Write `dst[i] = src[permutation[i]]` for every row, one output row-chunk
+    at a time.
+
+    The *write* into `dst` is always a contiguous chunk; the *read* from `src`
+    is a scattered fancy-index gather (`src[permutation[start:end]]`), so this
+    is only as fast as random access to `src` allows - but peak RAM is bounded
+    to O(chunk_size) regardless of how large `src`/`permutation` are, since only
+    one chunk's worth of gathered rows exists at a time. `permutation` itself
+    (a single (n,) int array) is expected to already be in RAM - cheap even at
+    tens of millions of rows, unlike the row data itself.
+
+    This is the one-time "shuffle a table's row order" primitive: pay a
+    scattered-read cost once during processing so that later, repeated
+    sequential/chunked reads (e.g. a chunked training data loader) never need
+    to worry about the underlying row order carrying any structure (such as
+    upsampled rows appended as a block at the end of a table).
+    """
+    n = src.shape[0]
+    dst = np.lib.format.open_memmap(dst_path, mode='w+', dtype=src.dtype, shape=(n,) + src.shape[1:])
+    for start in range(0, n, chunk_size):
+        end = min(start + chunk_size, n)
+        dst[start:end] = src[permutation[start:end]]
+    dst.flush()
+    del dst
+    gc.collect()
 
 
 def delete_files_with_keyword(directory, keyword, dry_run=True):
@@ -351,38 +419,48 @@ class MLDataBundle:
         self.ml_indexer = None
 
 
-def load_ml_bundle(bundle_path):
+def load_ml_bundle(bundle_path, arrays=None):
     """
     Load a .tar.gz bundle created by resampling_to_datasets.
-    
+
     Extracts all .npy files and the ml_indexer.pkl from the tarball and returns
     them as a MLDataBundle object with attributes for each file.
-    
+
     Parameters
     ----------
     bundle_path : str or Path
         Path to the .tar.gz bundle file
-        
+    arrays : iterable of str, optional
+        Which arrays to actually load into RAM (any of 'molar_labels',
+        'binary_labels', 'mass_labels', 'features', 'labels', 'free_outputs').
+        Arrays not listed are left as None on the returned bundle and never
+        read off disk - use this to skip arrays nothing downstream needs
+        (e.g. 'mass_labels' is unused by every current training/inference
+        consumer). Default (None) loads every array present, matching the
+        original behavior.
+
     Returns
     -------
     MLDataBundle
-        Object with attributes: molar_labels, binary_labels, mass_labels, 
+        Object with attributes: molar_labels, binary_labels, mass_labels,
         features, labels, free_outputs (if present), ml_indexer
     """
     bundle_path = Path(bundle_path)
     if not bundle_path.exists():
         raise FileNotFoundError(f"Bundle file not found: {bundle_path}")
-    
+
     # Create temporary directory for extraction
-    temp_dir = tempfile.mkdtemp()
+    tmp_base = _repo_root / "data" / "tmp"
+    tmp_base.mkdir(parents=True, exist_ok=True)
+    temp_dir = tempfile.mkdtemp(dir=tmp_base)
     try:
         # Extract tarball
         with tarfile.open(bundle_path, 'r:gz') as tar:
             tar.extractall(path=temp_dir)
-        
+
         # Create bundle object
         bundle = MLDataBundle()
-        
+
         # Load .npy files
         npy_files = {
             'molar_labels': 'molar_labels.npy',
@@ -392,8 +470,11 @@ def load_ml_bundle(bundle_path):
             'labels': 'labels.npy',
             'free_outputs': 'free_outputs.npy',
         }
-        
+        wanted = set(npy_files) if arrays is None else set(arrays)
+
         for attr_name, filename in npy_files.items():
+            if attr_name not in wanted:
+                continue  # not requested - never touched on disk or in RAM
             file_path = Path(temp_dir) / filename
             if file_path.exists():
                 setattr(bundle, attr_name, np.load(file_path))
@@ -453,7 +534,9 @@ def save_ml_bundle(bundle, output_path):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
     # Create temporary directory for staging
-    temp_dir = tempfile.mkdtemp()
+    tmp_base = _repo_root / "data" / "tmp"
+    tmp_base.mkdir(parents=True, exist_ok=True)
+    temp_dir = tempfile.mkdtemp(dir=tmp_base)
     try:
         # Helper to get attribute or dict key
         def get_attr(obj, name, default=None):
