@@ -18,28 +18,19 @@ import pandas as pd
 import torch
 from pathlib import Path
 from typing import Optional, Sequence, Tuple, Union, Dict, Any
-import sys
 import time
 import tqdm
 
-file_path = str(Path(__file__).parent)
-if file_path not in sys.path:
-    sys.path.insert(0, file_path)
-module_path = str(Path(__file__).parent.parent)
-if module_path not in sys.path:
-    sys.path.insert(0, module_path)
-# print(f"Module path added to sys.path: {module_path}")
+from .EOS_arithmetic.hefesto_vec import compute as hefesto_compute, load_control
 
-from engine.EOS_arithmetic.hefesto_vec import compute as hefesto_compute, load_control
-
-from config.constants import OXIDE_MOLAR_MASSES as oxide_molar_masses, ptt_longs, ptt_order_oxides, ptt_to_short, ptt_oxide_indexer, HeFESTo_snames_long
+from ..config.constants import OXIDE_MOLAR_MASSES as oxide_molar_masses, ptt_longs, ptt_order_oxides, ptt_to_short, ptt_oxide_indexer, HeFESTo_snames_long
 
 ferric_to_ferrous_ratio =  (2*oxide_molar_masses['FeO'])/oxide_molar_masses['Fe2O3']
 snames_dict = {name: i for i, name in enumerate(HeFESTo_snames_long)}
 
-from NN import _load_temperature_model
-from emulator import NN_MELTS
-from utils.math_utils import Normalizer, get_T as _reference_adiabat
+from .NN import _load_temperature_model
+from .emulator import NN_MELTS
+from ..utils.math_utils import Normalizer, get_T as _reference_adiabat
 
 
 def _eval_adiabat_poly(
@@ -675,7 +666,7 @@ class EmulatorAPI:
     def _load_emulator(model_path: Union[str, Path], device: str, verbose: bool = True) -> Optional[NN_MELTS]:
         """Load and wrap a checkpoint as NN_MELTS emulator, or return None with a warning."""
         import warnings
-        from engine.NN import rebuild_MELTS_model
+        from .NN import rebuild_MELTS_model
 
         model_path = Path(model_path)
         if not model_path.exists():

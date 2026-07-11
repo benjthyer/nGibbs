@@ -259,7 +259,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             # Vary proportions of equilibrium assemblages, one row-chunk at a time -
             # `self.table1[:, mass_indices]` across every row is a strided read/write
             # over the whole (row-major) memmap; chunking keeps each pass contiguous.
-            for start in range(0, total_rows, chunk_size):
+            for start in tqdm(range(0, total_rows, chunk_size), desc = "Chunking Molar Feature Calculations...", leave=False):
                 end = min(start + chunk_size, total_rows)
                 chunk_t1 = self.table1[start:end]
                 mass_multipliers = np.random.uniform(*bounds, size=(end - start, num_phases))

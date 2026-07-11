@@ -10,13 +10,9 @@ import pandas as pd
 from pathlib import Path
 from typing import List, Dict, Set, Tuple, Optional, Any
 import json
-import sys
 
-mod_root = Path(__file__).parent.parent
-sys.path.insert(0, str(mod_root))
-
-from config.constants import default_Elkeys, all_Elkeys, get_oxide_molar_mass
-from utils.math_utils import Normalizer
+from .constants import default_Elkeys, all_Elkeys, get_oxide_molar_mass
+from ..utils.math_utils import Normalizer
 
 # Make torch optional for alphamelts in WSL
 try:

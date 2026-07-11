@@ -9,16 +9,10 @@ import time
 import numpy as np
 import torch
 import pandas as pd
-from pathlib import Path
-import sys
-
-mod_root = Path(__file__).parent.parent
-# print(mod_root)
-sys.path.insert(0, str(mod_root))
 
 # Import utility functions
-from  utils.math_utils import QFM_fO2, Fe2O3_FeO_ratio, QFM_fO2_torch, Normalizer
-from config.constants import OXIDE_MOLAR_MASSES as oxide_molar_masses, ptt_longs, ptt_order_oxides, ptt_to_short, ptt_oxide_indexer
+from ..utils.math_utils import QFM_fO2, Fe2O3_FeO_ratio, QFM_fO2_torch, Normalizer
+from ..config.constants import OXIDE_MOLAR_MASSES as oxide_molar_masses, ptt_longs, ptt_order_oxides, ptt_to_short, ptt_oxide_indexer
 
 ferric_to_ferrous_ratio =  (2*oxide_molar_masses['FeO'])/oxide_molar_masses['Fe2O3']
 
