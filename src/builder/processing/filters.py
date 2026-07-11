@@ -675,7 +675,7 @@ def insanity_filter_npy(file_prefix, ml_indexer, tolerance=1e-3, bulk_tol_frac=1
             Path(f"{file_prefix}free_outputs.npy"),
             log_dir / 'free_outputs_first20000.csv',
             max_rows=max_rows,
-            columns=getattr(ml_indexer, 'freeOutputs', None),
+            columns=getattr(ml_indexer, 'free_outputs', None),
         )
         print(f"[INSANITY FILTER] Exported failure CSV previews to {log_dir}")
 

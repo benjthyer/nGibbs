@@ -96,7 +96,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
     upsample_cfg = config['upsampling']
     resampling_cfg = config['resampling']
     feature_names_cfg = config.get('featureNames')
-    free_outputs_cfg = config.get('freeOutputs')
+    free_outputs_cfg = config.get('free_outputs', config.get('freeOutputs'))
     if 'logfO2-QFM(System_main)' in feature_names_cfg:
         OXYGEN = 'open'
         print("fO2 Feature Passed: Open System Oxygen")
@@ -140,7 +140,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
     if feature_names_cfg is not None:
         resampling_kwargs['featureNames'] = feature_names_cfg
     if free_outputs_cfg is not None:
-        resampling_kwargs['freeOutputs'] = free_outputs_cfg
+        resampling_kwargs['free_outputs'] = free_outputs_cfg
     
     MELTSModel = MELTSModel or dataset_cfg['MELTSModel']
     Date = Date or dataset_cfg['Date']
@@ -564,7 +564,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         def close_memmap_attrs(obj, obj_name):
             """Close memory map attributes of a MELTS object."""
             memmap_attrs = ['table', 'features', 'labels', 'binarylabels', 'masslabels', 
-                           'molarlabels', 'freeOutputs', 'molar', 'table1', 'blurredbinaries']
+                           'molarlabels', 'free_outputs', 'molar', 'table1', 'blurredbinaries']
             closed_count = 0
             for attr in memmap_attrs:
                 if hasattr(obj, attr):

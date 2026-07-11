@@ -320,9 +320,9 @@ def main() -> None:
     if selected_output_names_2 != selected_output_names:
         raise ValueError("FCNN1 and FCNN2 selected_output_names do not match")
 
-    available_output_names = list(getattr(bundle.ml_indexer, "freeOutputs", []) or [])
+    available_output_names = list(getattr(bundle.ml_indexer, "free_outputs", []) or [])
     if not available_output_names:
-        raise ValueError("Bundle ml_indexer.freeOutputs is missing or empty")
+        raise ValueError("Bundle ml_indexer.free_outputs is missing or empty")
 
     y_true = _select_outputs(free_outputs, available_output_names, selected_output_names)
 

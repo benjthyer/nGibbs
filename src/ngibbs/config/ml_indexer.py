@@ -524,7 +524,7 @@ class MLIndexer:
         Notes
         -----
         Files created:
-        - indexer_metadata.json: Configuration (components_in_phases, Elkeys, do_bulk, featureNames, freeOutputs)
+        - indexer_metadata.json: Configuration (components_in_phases, Elkeys, do_bulk, featureNames, free_outputs)
         - indexer_structure.json: All dictionary mappings (indices, phases, detail mappings)
         - indexer_arrays.npz: All numpy arrays (indices, matrices, mappings, normalizer state)
         
@@ -549,7 +549,7 @@ class MLIndexer:
             'all_phases': self.all_phases,
             'compositionally_variable_phases': self.compositionally_variable_phases,
             'featureNames': getattr(self, 'featureNames', None),  # May not exist
-            'freeOutputs': getattr(self, 'freeOutputs', None),     # May not exist
+            'free_outputs': getattr(self, 'free_outputs', None),     # May not exist
             'has_feature_normalizer': self.feature_normalizer is not None,
             'has_output_normalizer': self.output_normalizer is not None,
             'molar_epsilon': getattr(self, 'molar_epsilon', None),
@@ -677,8 +677,9 @@ def load_ml_indexer_from_state(directory: str) -> 'MLIndexer':
     # Restore optional attributes
     if metadata.get('featureNames') is not None:
         indexer.featureNames = metadata['featureNames']
-    if metadata.get('freeOutputs') is not None:
-        indexer.freeOutputs = metadata['freeOutputs']
+    legacy_free_outputs = metadata.get('free_outputs', metadata.get('freeOutputs'))
+    if legacy_free_outputs is not None:
+        indexer.free_outputs = legacy_free_outputs
     
     # === RESTORE STRUCTURE DICTIONARIES ===
     # Convert lists back to numpy arrays

@@ -30,15 +30,15 @@ from ngibbs.utils.math_utils import Normalizer
 from builder.processing.BigMetaTable import BigMetaTable
 
 #featureNames = ['Pressure(System_main)', 'Temperature(System_main)', 'logfO2-QFM(System_main)']
-#freeOutputs = ['viscocity(System_main)', 'liq H (kJ)(melts-liquid)', 'Temperature(System_main)']
-#freeOutputs = None
+#free_outputs = ['viscocity(System_main)', 'liq H (kJ)(melts-liquid)', 'Temperature(System_main)']
+#free_outputs = None
 
 
 
 
 
 def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=False, featureNames=["Pressure(System_main)", "Temperature(System_main)"],
-                            freeOutputs=None, indexer=None, config_path=None, bundle_name=None, chunk_size=None,
+                            free_outputs=None, indexer=None, config_path=None, bundle_name=None, chunk_size=None,
                             deep_filter_kwargs=None, insanity_filter_kwargs=None):
 
     """Builds features and labels for training. Converts MELTS tables to .npy files fit for ML work.
@@ -144,7 +144,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
 
     #if hasattr(indexer, 'ml_indexer'):
     indexer.ml_indexer.featureNames = featureNames
-    indexer.ml_indexer.freeOutputs = freeOutputs
+    indexer.ml_indexer.free_outputs = free_outputs
     
     # Extract all needed indices and matrices from the indexer
     label_indices_comp = indexer.label_indices_comp
@@ -179,9 +179,9 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     
     # Optional free outputs: indices for arbitrary labels not constrained by phase equilibria
     free_output_indices = []
-    if freeOutputs is not None:
-        if len(freeOutputs) > 0:
-            free_output_indices = [ _feature_to_index(n) for n in freeOutputs ]
+    if free_outputs is not None:
+        if len(free_outputs) > 0:
+            free_output_indices = [ _feature_to_index(n) for n in free_outputs ]
     
     num_rows = np.shape(self.table)[0]
     total_rows = np.shape(self.table)[0]
@@ -197,8 +197,8 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
         del self.masslabels
         del self.table1
         del self.molar
-        if hasattr(self, 'freeOutputs'):
-            del self.freeOutputs
+        if hasattr(self, 'free_outputs'):
+            del self.free_outputs
         gc.collect()
         
     new_file = self.filename + '_temp.npy'
@@ -252,8 +252,8 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     
     
     # Allocate free outputs memmap if requested
-    if freeOutputs is not None and len(free_output_indices) > 0:
-        self.freeOutputs = np.lib.format.open_memmap(
+    if free_outputs is not None and len(free_output_indices) > 0:
+        self.free_outputs = np.lib.format.open_memmap(
             self.filename + 'free_outputs.npy',
             mode='w+',
             dtype=np.float32,
@@ -377,15 +377,15 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
                     self.masslabels[out_start:out_end] = self.table1[start:end, mass_indices]
 
                 # --- Free outputs (if any): replicate values from original table across resamples
-                if freeOutputs is not None and len(free_output_indices) > 0:
+                if free_outputs is not None and len(free_output_indices) > 0:
                     #print(f"Building free outputs for rows {start}:{end} (sample {i})")
                     for k, fidx in enumerate(free_output_indices):
                         if isinstance(fidx, tuple):
                             num_col = self.table[start:end, fidx[0]].astype(np.float64)
                             den_col = self.table[start:end, fidx[1]].astype(np.float64)
-                            self.freeOutputs[out_start:out_end, k] = np.where(den_col != 0, num_col / den_col, 0.0).astype(np.float32)
+                            self.free_outputs[out_start:out_end, k] = np.where(den_col != 0, num_col / den_col, 0.0).astype(np.float32)
                         else:
-                            self.freeOutputs[out_start:out_end, k] = self.table[start:end, fidx]
+                            self.free_outputs[out_start:out_end, k] = self.table[start:end, fidx]
 
                 # --- Features (bulk chemistry in elements normalized to 1)
                 #print(f"Building features for rows {start}:{end} (sample {i})")
@@ -429,8 +429,8 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             print(f"Finished sample {i} of {len(resample_bounds)}. Flushing memmaps to disk...")
             self.binarylabels.flush()
             self.masslabels.flush()
-            if freeOutputs is not None and len(free_output_indices) > 0:
-                self.freeOutputs.flush()
+            if free_outputs is not None and len(free_output_indices) > 0:
+                self.free_outputs.flush()
             self.features.flush()
             self.molarlabels.flush()
             self.labels.flush()
@@ -478,8 +478,8 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     finally: #Close Memmaps
         print("Closing memmaps and cleaning up...")
         del self.binarylabels, self.masslabels, self.features, self.labels, self.table1, self.molarlabels
-        if hasattr(self, 'freeOutputs'):
-            del self.freeOutputs
+        if hasattr(self, 'free_outputs'):
+            del self.free_outputs
         gc.collect()
 
     indexer_dir = self.filename + 'ml_indexer'
@@ -538,7 +538,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     if config_path:
         config_basename = Path(config_path).name
         file_mappings[str(config_path)] = config_basename
-    if freeOutputs is not None:
+    if free_outputs is not None:
         file_mappings[self.filename + 'free_outputs.npy'] = 'free_outputs.npy'
     
     # Add stats file
@@ -1060,7 +1060,7 @@ def main():
         resample_bounds=args.resample_bounds,
         clear_old_tables=args.clear_old_tables,
         featureNames=args.feature_names,
-        freeOutputs=args.free_outputs,
+        free_outputs=args.free_outputs,
         config_path=args.config_path,
         bundle_name=args.bundle_name,
         chunk_size=args.resample_chunk_size,

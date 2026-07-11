@@ -457,10 +457,10 @@ def main() -> None:
     # Identify temperature column and S feature index from first checkpoint's metadata
     first_payload = torch.load(args.checkpoints[0], map_location="cpu", weights_only=False)
     temperature_label: str = first_payload.get("temperature_label", "")
-    available_output_names = list(getattr(bundle.ml_indexer, "freeOutputs", []) or [])
+    available_output_names = list(getattr(bundle.ml_indexer, "free_outputs", []) or [])
     if not temperature_label or temperature_label not in available_output_names:
         raise ValueError(
-            f"Temperature label '{temperature_label}' not found in bundle freeOutputs. "
+            f"Temperature label '{temperature_label}' not found in bundle free_outputs. "
             f"Available: {available_output_names}"
         )
     temp_col = available_output_names.index(temperature_label)

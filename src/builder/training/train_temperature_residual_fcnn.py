@@ -753,7 +753,7 @@ def main() -> None:
     parser.add_argument(
         "--temperature-label",
         default=TEMPERATURE_LABEL_DEFAULT,
-        help=f"Name of temperature output in bundle freeOutputs (default: {TEMPERATURE_LABEL_DEFAULT})",
+        help=f"Name of temperature output in bundle free_outputs (default: {TEMPERATURE_LABEL_DEFAULT})",
     )
     parser.add_argument("--hidden-dims", nargs="+", default=["256", "128", "64"])
     parser.add_argument("--epochs", type=int, default=150)
@@ -858,12 +858,12 @@ def main() -> None:
     valid_bundle = _load_and_validate_bundle(bundle_paths["valid"], "valid")
 
     # Locate temperature output column
-    available_output_names = list(getattr(train_bundle.ml_indexer, "freeOutputs", []) or [])
+    available_output_names = list(getattr(train_bundle.ml_indexer, "free_outputs", []) or [])
     if not available_output_names:
-        raise ValueError("ml_indexer.freeOutputs is missing or empty in train bundle")
+        raise ValueError("ml_indexer.free_outputs is missing or empty in train bundle")
     if args.temperature_label not in available_output_names:
         raise ValueError(
-            f"Temperature label '{args.temperature_label}' not found in freeOutputs. "
+            f"Temperature label '{args.temperature_label}' not found in free_outputs. "
             f"Available: {available_output_names}"
         )
     temp_output_idx = available_output_names.index(args.temperature_label)

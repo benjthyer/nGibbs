@@ -10,12 +10,12 @@ Bundle layout produced by resampling_to_datasets():
                      columns 0..n_features-1  → state variable inputs (P, T, S, ...)
                      columns n_features..     → bulk chemistry (element fractions)
   free_outputs.npy   shape (N, n_free_outputs)
-  ml_indexer/        directory with featureNames / freeOutputs stored in metadata
+  ml_indexer/        directory with featureNames / free_outputs stored in metadata
 
 The swap:
   - column ``demote`` in features  → replaces matching column in free_outputs
   - column ``promote`` in free_outputs → replaces matching column in features
-  - ml_indexer.featureNames / freeOutputs are updated to match
+  - ml_indexer.featureNames / free_outputs are updated to match
 
 Usage
 -----
@@ -68,7 +68,7 @@ def remap_bundle(input_path: Path, demote: str, promote: str, output_path: Path)
         Name currently in featureNames to move into free_outputs.
         Format: 'Component(Phase)'  e.g. 'S(System_main)'
     promote : str
-        Name currently in freeOutputs to move into features.
+        Name currently in free_outputs to move into features.
         Format: 'Component(Phase)'  e.g. 'Temperature(System_main)'
     output_path : Path
         Destination .tar.gz path (created or overwritten).
@@ -87,14 +87,14 @@ def remap_bundle(input_path: Path, demote: str, promote: str, output_path: Path)
         if not free_outputs_path.exists():
             raise FileNotFoundError(
                 f"Bundle '{input_path.name}' has no free_outputs.npy.\n"
-                "Rebuild the bundle with the variable you want to promote listed in freeOutputs."
+                "Rebuild the bundle with the variable you want to promote listed in free_outputs."
             )
         free_outputs = np.load(free_outputs_path)
 
         # Load indexer to get current name lists
         indexer = load_ml_indexer_from_state(tmp / 'ml_indexer')
         feature_names = list(indexer.featureNames or [])
-        free_output_names = list(indexer.freeOutputs or [])
+        free_output_names = list(indexer.free_outputs or [])
 
         demote_n = _norm(demote)
         promote_n = _norm(promote)
@@ -109,7 +109,7 @@ def remap_bundle(input_path: Path, demote: str, promote: str, output_path: Path)
             )
         if promote_n not in norm_free:
             raise ValueError(
-                f"'{promote}' not in freeOutputs: {free_output_names}\n"
+                f"'{promote}' not in free_outputs: {free_output_names}\n"
                 "Use the exact 'Component(Phase)' string stored in the bundle."
             )
 
@@ -129,7 +129,7 @@ def remap_bundle(input_path: Path, demote: str, promote: str, output_path: Path)
         new_free_names[oi] = feature_names[fi]
 
         indexer.featureNames = new_feature_names
-        indexer.freeOutputs = new_free_names
+        indexer.free_outputs = new_free_names
 
         # Write updated arrays back to temp dir
         np.save(tmp / 'features.npy', new_features)
@@ -148,7 +148,7 @@ def remap_bundle(input_path: Path, demote: str, promote: str, output_path: Path)
 
         print(f"  -> {output_path.name}")
         print(f"     features    : {new_feature_names}")
-        print(f"     freeOutputs : {new_free_names}")
+        print(f"     free_outputs : {new_free_names}")
 
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -197,7 +197,7 @@ def main():
     )
     parser.add_argument(
         '--promote', required=True,
-        help="Free-output name (in freeOutputs) to move into features. "
+        help="Free-output name (in free_outputs) to move into features. "
              "Format: 'Component(Phase)', e.g. 'Temperature(System_main)'",
     )
     parser.add_argument(

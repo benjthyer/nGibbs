@@ -22,7 +22,7 @@ featureNames: # Non-chemical features to include in the dataset
   - 'S(System_main)' # Isentropic 
   
 
-freeOutputs: # Non-chemical labels to predict. These are used for training the saturation predictor and as auxiliary outputs for the encoder.
+free_outputs: # Non-chemical labels to predict. These are used for training the saturation predictor and as auxiliary outputs for the encoder.
   - 'Temperature(System_main)' 
   #- 'S(System_main)'
   - 'dVdP*10^6(System_main)' # COMPRESSIBILITY

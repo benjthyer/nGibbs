@@ -248,7 +248,7 @@ def _select_outputs(
 ) -> Tuple[np.ndarray, List[str], List[int]]:
     if len(available_names) != free_outputs.shape[1]:
         raise ValueError(
-            "Mismatch between ml_indexer.freeOutputs names and free_outputs columns: "
+            "Mismatch between ml_indexer.free_outputs names and free_outputs columns: "
             f"{len(available_names)} names vs {free_outputs.shape[1]} columns."
         )
 
@@ -555,9 +555,9 @@ def main() -> None:
     test_bundle = _load_and_validate_bundle(bundle_paths["test"], "test")
     valid_bundle = _load_and_validate_bundle(bundle_paths["valid"], "valid")
 
-    available_output_names = list(getattr(train_bundle.ml_indexer, "freeOutputs", []) or [])
+    available_output_names = list(getattr(train_bundle.ml_indexer, "free_outputs", []) or [])
     if not available_output_names:
-        raise ValueError("ml_indexer.freeOutputs is missing or empty in train bundle")
+        raise ValueError("ml_indexer.free_outputs is missing or empty in train bundle")
 
     y_train_denorm, selected_output_names, selected_output_indices = _select_outputs(
         train_bundle.free_outputs,

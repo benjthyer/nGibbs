@@ -73,7 +73,7 @@ def load_ML_data(Trainpath, only_VP=None, feature_normalizer=None):
     # Cheap presence check (tar member names only, no extraction) purely for the
     # diagnostic below - free_outputs is never loaded into RAM here regardless,
     # since nothing downstream consumes it yet (see note below). Previously this
-    # was checked via getattr(train_data, 'freeOutputs', ...) - the wrong
+    # was checked via getattr(train_data, 'free_outputs', ...) - the wrong
     # (camelCase) attribute name, so it silently always evaluated to False
     # whether or not the bundle actually had one.
     with tarfile.open(bundle_path, 'r:gz') as tar:
@@ -113,7 +113,7 @@ def load_ML_data(Trainpath, only_VP=None, feature_normalizer=None):
     print(f"Label Shape: {labelMap.shape}")
     print(f"Mole Shape: {moleMap.shape}")
     if has_free_outputs:
-        print(f"Free Outputs Shape: {train_data.freeOutputs.shape}")
+        print(f"Free Outputs Shape: {train_data.free_outputs.shape}")
 
     # ============================================================================
     # Apply only_VP restriction if specified
@@ -336,7 +336,7 @@ def load_ML_data_auto(Trainpath, only_VP=None, molar_epsilon=0,
         Log-scaling epsilon for mole labels - see load_ML_data. Changing this
         from a previous call invalidates the cached workspace and triggers a
         rebuild.
-    ram_threshold_bytes : int, default 4 GiB
+    ram_threshold_bytes : int, default 8 GiB
         If the workspace's 4 arrays total at or below this many bytes,
         return a full in-RAM TensorDatasetFour (as load_ML_data does). Above
         it, return a ChunkedMemmapTrainLoader instead. Measured against the

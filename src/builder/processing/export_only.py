@@ -36,7 +36,7 @@ def _close_memmaps(obj) -> int:
         "binarylabels",
         "masslabels",
         "molarlabels",
-        "freeOutputs",
+        "free_outputs",
         "molar",
         "table1",
         "blurredbinaries",
