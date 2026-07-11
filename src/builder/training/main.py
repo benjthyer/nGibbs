@@ -468,8 +468,8 @@ def main() -> None:
         lr = float(episode_cfg["learning_rate"])
         eps = float(episode_cfg.get("eps", 1E-8))
         amsgrad = bool(episode_cfg.get("amsgrad", True))
-        dropout_step_up = float(episode_cfg.get("dropout_step_up", 0.05))
-        dropout_step_down = float(episode_cfg.get("dropout_step_down", 0.02))
+        dropout_step_up = float(episode_cfg.get("dropout_step_up", 0.02))
+        dropout_step_down = float(episode_cfg.get("dropout_step_down", 0.01))
         noise_step_up = float(episode_cfg.get("noise_step_up", 0.002))
         noise_step_down = float(episode_cfg.get("noise_step_down", 0.001))
 
