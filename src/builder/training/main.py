@@ -350,7 +350,7 @@ def main() -> None:
     # dataset and an async chunked memmap loader based on the workspace's actual
     # (uncompressed) size - see builder.training.dataset_workspace and
     # config["ram_threshold_gb"] in config/defaults.yaml.
-    ram_threshold_bytes = float(config.get("ram_threshold_gb", 4)) * 1024 ** 3
+    ram_threshold_bytes = float(config.get("ram_threshold_gb", 8)) * 1024 ** 3
     train_set, ml_indexer = load_ML_data_auto(
         train_bundle, only_VP=only_vp, ram_threshold_bytes=ram_threshold_bytes,
         batch_size=int(config["batch_size"]),

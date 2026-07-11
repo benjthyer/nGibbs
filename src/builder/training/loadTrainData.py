@@ -112,8 +112,8 @@ def load_ML_data(Trainpath, only_VP=None, feature_normalizer=None):
     print(f"Binary Shape: {binaryMap.shape}")
     print(f"Label Shape: {labelMap.shape}")
     print(f"Mole Shape: {moleMap.shape}")
-    if has_free_outputs:
-        print(f"Free Outputs Shape: {train_data.free_outputs.shape}")
+    #if has_free_outputs: # now nonetype, not used. 
+    #    print(f"Free Outputs Shape: {train_data.free_outputs.shape}")
 
     # ============================================================================
     # Apply only_VP restriction if specified

@@ -1,6 +1,6 @@
-tarname:  HeFESTo_Mars_Profiles_NPT_JCC1_retro   #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
+tarname:  HeFESTo_Mars_Profiles_NPs_JCC_retro   #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
     
-warm_start:  HeFESTo_Mars_Profiles_NPT_JCC1_train8 #pGeoDynamicsIsentropicNoCrApr20_train1 #None #pGeoDynamicsIsothemalNoCrMar11_train6 #None #pGeoDynPTNoCrBinaries #None # 102CrMoleLinear
+warm_start:  HeFESTo_Mars_Profiles_NPs_JCC_train8 #pGeoDynamicsIsentropicNoCrApr20_train1 #None #pGeoDynamicsIsothemalNoCrMar11_train6 #None #pGeoDynPTNoCrBinaries #None # 102CrMoleLinear
 
 
 tune7: 
