@@ -19,6 +19,8 @@ from ..utils.string_utils import pull_letter, pull_number_range, apply_type_conv
 
 # Import constants and mappings from config (fallbacks)
 from ..config.constants import TYPE_CONVERSION_MAP
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 """from nMELTS.config import (
     Elkeys as DEFAULT_ELKEYS,
     label_indices as DEFAULT_LABEL_INDICES,
@@ -513,7 +515,7 @@ class MidLevelNetwork(TunableModel):
         
         # Create temporary directory for zip contents (kept on disk, not a RAM-backed /tmp)
         import tempfile
-        tmp_base = mod_root.parent.parent / "data" / "tmp"
+        tmp_base = REPO_ROOT / "data" / "tmp"
         tmp_base.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=tmp_base) as temp_dir:
             temp_path = Path(temp_dir)
@@ -1114,7 +1116,7 @@ def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = 
     
     # Extract to temporary directory and load (kept on disk, not a RAM-backed /tmp)
     import tempfile
-    tmp_base = mod_root.parent.parent / "data" / "tmp"
+    tmp_base = REPO_ROOT / "data" / "tmp"
     tmp_base.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=tmp_base) as temp_dir:
         temp_path = Path(temp_dir)

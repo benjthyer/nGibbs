@@ -311,7 +311,7 @@ def load_ML_data(Trainpath, only_VP=None, feature_normalizer=None):
 
 
 def load_ML_data_auto(Trainpath, only_VP=None, molar_epsilon=0,
-                       ram_threshold_bytes=4 * 1024 ** 3, workspace_dir=None,
+                       ram_threshold_bytes=8 * 1024 ** 3, workspace_dir=None,
                        chunk_size=1_000_000, batch_size=1024, chunk_rows=1_000_000):
     """
     Load Train data via the cached, pre-transformed working directory

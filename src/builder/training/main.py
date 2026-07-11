@@ -345,9 +345,7 @@ def main() -> None:
     roots = _resolve_train_roots(tarname)
     train_bundle = _resolve_bundle_path(f"{tarname}_Train", roots)
     test_bundle = _resolve_bundle_path(f"{tarname}_Test", roots)
-    bundle_yaml_text, stats_text = _read_bundle_metadata(train_bundle)
-    if bundle_yaml_text:
-        processing_yaml_text = bundle_yaml_text
+    processing_yaml_text, stats_text = _read_bundle_metadata(train_bundle)
     # Train: cached/transformed workspace, auto-toggling between a full in-RAM
     # dataset and an async chunked memmap loader based on the workspace's actual
     # (uncompressed) size - see builder.training.dataset_workspace and
