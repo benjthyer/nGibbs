@@ -28,7 +28,7 @@ if base_path not in sys.path:
 from recipes import settings
 import ngibbs.engine.NN as NN
 
-from builder.training.loadTrainData import load_ML_data
+from builder.training.loadTrainData import load_ML_data, load_ML_data_auto
 from builder.training.optimizer_factory import normalize_scheduler_name
 from builder.training.trainer import train_Lower_MELTS, train_Upper_MELTS, symmetric_rel_l1, symmetric_rel_l2
 from builder.training.tuners import tune_Lower_MELTS, tune_Upper_MELTS
@@ -348,8 +348,23 @@ def main() -> None:
     bundle_yaml_text, stats_text = _read_bundle_metadata(train_bundle)
     if bundle_yaml_text:
         processing_yaml_text = bundle_yaml_text
-    train_set, ml_indexer = load_ML_data(train_bundle, only_VP=only_vp)
-    test_set, _ = load_ML_data(test_bundle, only_VP=only_vp)
+    # Train: cached/transformed workspace, auto-toggling between a full in-RAM
+    # dataset and an async chunked memmap loader based on the workspace's actual
+    # (uncompressed) size - see builder.training.dataset_workspace and
+    # config["ram_threshold_gb"] in config/defaults.yaml.
+    ram_threshold_bytes = float(config.get("ram_threshold_gb", 4)) * 1024 ** 3
+    train_set, ml_indexer = load_ML_data_auto(
+        train_bundle, only_VP=only_vp, ram_threshold_bytes=ram_threshold_bytes,
+        batch_size=int(config["batch_size"]),
+    )
+    # Test: confirmed small enough to always load fully in RAM. Inherits Train's
+    # feature_normalizer (fit bounds) rather than fitting its own - the model
+    # expects every input normalized the same way it was trained on; normalizing
+    # Test independently from its own min/max would silently feed the model
+    # differently-scaled inputs at eval time. (Test's own feature_bounds.json,
+    # if present, is just a diagnostic of Test's own P/T/fO2 range - not used
+    # here.)
+    test_set, _ = load_ML_data(test_bundle, only_VP=only_vp, feature_normalizer=ml_indexer.feature_normalizer)
 
     print(f"MOLAR EPSILON FROM LOADED DATA: {ml_indexer.molar_epsilon}")
 

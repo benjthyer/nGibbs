@@ -349,6 +349,12 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
             TrainMELTS.filename = TrainName
             train_bundle = train_dir / get_bundle_name('Train')
 
+            # One-time out-of-core shuffle so later out-of-core/chunked training
+            # readers never have to worry about row-order structure (e.g. upsampled
+            # rows resample_rare_phase appends as a block at the end of the table).
+            print("Shuffling training row order (one-time, out-of-core)...")
+            TrainMELTS.shuffle_rows(chunk_size=chunk_size)
+
             print("Running resampling to datasets for training data...")
             if upsample:
                 train_bundle_path = resampling_to_datasets(

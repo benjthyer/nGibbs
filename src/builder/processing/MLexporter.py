@@ -493,6 +493,11 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
         output_dir=Path(self.filename).parent,
         chunk_size=chunk_size
     )
+    # generate_dataset_stats() also writes a "{stem}_feature_bounds.json"
+    # companion (featureNames' min/max) next to stats_path - same stem, so
+    # derive its path the same way rather than changing generate_dataset_stats'
+    # return signature.
+    feature_bounds_path = Path(self.filename).parent / f"{Path(self.filename).stem}_feature_bounds.json"
 
     # Apply deep/insanity filters directly to the exported .npy files, before
     # packaging - filtering the finished .tar.gz instead would mean extracting
@@ -503,6 +508,8 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
 
         if stats_path and stats_path.exists():
             os.replace(stats_path, stats_path.with_name(f"{stats_path.stem}_prefilter.txt"))
+        if feature_bounds_path.exists():
+            os.replace(feature_bounds_path, feature_bounds_path.with_name(f"{feature_bounds_path.stem}_prefilter.json"))
 
         if deep_filter_kwargs is not None:
             print("Applying deep_filter to unpacked dataset (pre-packaging)...")
@@ -537,6 +544,10 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     # Add stats file
     if stats_path and stats_path.exists():
         file_mappings[str(stats_path)] = 'stats.txt'
+
+    # Add feature bounds file (featureNames' min/max - see generate_dataset_stats)
+    if feature_bounds_path.exists():
+        file_mappings[str(feature_bounds_path)] = 'feature_bounds.json'
 
     bundle_base = self.filename.split('_working')[0]
     if bundle_name:
@@ -956,7 +967,26 @@ def generate_dataset_stats(dataset_name, ml_indexer, output_dir=None, chunk_size
         f.write("\n")
         f.write("=" * 80 + "\n")
 
+    # Machine-readable companion to the "CONDITION BOUNDS" section above -
+    # featureNames' min/max are an immutable property of this dataset, so they
+    # belong here (computed once, during preprocessing) rather than being
+    # rescanned by every training run that loads this bundle. Same stem as
+    # stats_file so callers that already derive stats_file's path (e.g.
+    # resampling_to_datasets) can derive this one identically.
+    feature_bounds_file = output_dir / f"{dataset_path.stem}_feature_bounds.json"
+    with open(feature_bounds_file, 'w') as f:
+        json.dump(
+            {
+                "featureNames": list(ml_indexer.featureNames),
+                "min": [float(v) for v in cond_min],
+                "max": [float(v) for v in cond_max],
+            },
+            f,
+            indent=2,
+        )
+
     print(f"Generated statistics file: {stats_file}")
+    print(f"Generated feature bounds file: {feature_bounds_file}")
     return stats_file
 
 

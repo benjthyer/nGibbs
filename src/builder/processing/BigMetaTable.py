@@ -29,7 +29,7 @@ if src_path not in sys.path:
 
 # Import from refactored modules
 from builder.indexer import DatasetIndexer
-from ngibbs.utils.file_utils import move_file, chunked_mask_copy
+from ngibbs.utils.file_utils import move_file, chunked_mask_copy, chunked_permutation_copy
 
 
 def _log_mem(label):
@@ -592,6 +592,59 @@ class BigMetaTable():
             self._filter_metadata_rows(keep_mask)
             self.save_txt()
 
+    def shuffle_rows(self, seed=None, chunk_size=None):
+        """Permute every row into a random order, once, out-of-core.
+
+        Rewrites self.table (and self.blurredbinaries, if present) via
+        `chunked_permutation_copy` (ngibbs.utils.file_utils) - RAM-bounded
+        regardless of table size, though the read side is a scattered gather
+        rather than a sequential scan, so this pays a real one-time IO cost.
+        That cost buys every future *sequential/chunked* read against this
+        table a guarantee that row order carries no structure to worry about -
+        e.g. `resample_rare_phase` appends upsampled rows as a block at the
+        end of the table, which would otherwise make any fixed contiguous
+        chunk unrepresentative of the whole dataset. Intended to run once,
+        right before `resampling_to_datasets()`, on tables a later out-of-core
+        training data loader will read in fixed-size chunks.
+
+        Parameters
+        ----------
+        seed : int, optional
+            Seed for the row permutation (reproducibility). None (default)
+            draws fresh entropy.
+        chunk_size : int, optional
+            Row-chunk size for the underlying chunked_permutation_copy passes.
+            Defaults to self.chunk_size.
+        """
+        if chunk_size is None:
+            chunk_size = self.chunk_size
+        n = self.table.shape[0]
+        permutation = np.random.default_rng(seed).permutation(n)
+
+        if self.blurredbinaries is not None:
+            assert np.shape(self.blurredbinaries)[0] == n, "Shape of binary and main tables are not equal!"
+            binary_name = self.filename + 'blurredbinaries.npy'
+            temp_binary_filename = self.filename + 'blurredbinaries_temp.npy'
+            chunked_permutation_copy(self.blurredbinaries, temp_binary_filename, permutation, chunk_size)
+
+            del self.blurredbinaries
+            gc.collect()
+            os.replace(temp_binary_filename, binary_name)
+            self.blurredbinaries = np.load(binary_name, mmap_mode='r+')
+
+        temp_filename = self.filename + '_temp.npy'
+        chunked_permutation_copy(self.table, temp_filename, permutation, chunk_size)
+
+        del self.table
+        gc.collect()
+        os.replace(temp_filename, self.memmap_file)
+        self.table = np.load(self.memmap_file, mmap_mode='r+')
+
+        # Metadata arrays are small and already fully in RAM (see
+        # _filter_metadata_rows) - fancy-indexing them with the full
+        # permutation array reorders them the same way, no chunking needed.
+        self._filter_metadata_rows(permutation)
+        self.save_txt()
 
     def save(self, name=None, save_csv = True):
         if name is None:
