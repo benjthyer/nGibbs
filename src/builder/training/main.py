@@ -684,10 +684,17 @@ def main() -> None:
                         amsgrad=amsgrad
                     )
                 
-                # Reload and update best_model for next episode (warm-start)
-                best_model = NN.rebuild_MELTS_model(str(dict_filepath))
-                print(f"Saved trained model to {dict_filepath}")
-                last_best_model_path = dict_filepath
+                # train_Lower_MELTS/train_Upper_MELTS only call model.save() when an
+                # epoch beats the pre-episode baseline (see trainer.py), so dict_filepath
+                # may not exist here. best_model (passed in and mutated in place) already
+                # holds the best-epoch weights in memory regardless - reload from disk only
+                # to pick up the saved checkpoint's config/ml_indexer when one was written.
+                if dict_filepath.exists():
+                    best_model = NN.rebuild_MELTS_model(str(dict_filepath))
+                    print(f"Saved trained model to {dict_filepath}")
+                    last_best_model_path = dict_filepath
+                else:
+                    print(f"No improvement in episode {episode_key}; carrying forward previous best model without a new checkpoint.")
                 
             finally:
                 restore_output(original_stdout)
