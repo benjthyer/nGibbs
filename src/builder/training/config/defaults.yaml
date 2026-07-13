@@ -20,7 +20,7 @@ only_vp: null
 # fully into RAM (today's behavior). Above it, use the async chunked memmap
 # loader instead (see builder.training.dataset_workspace). Raise this if you
 # have more RAM to spare, or lower it to force the chunked path for testing.
-ram_threshold_gb: 4
+ram_threshold_gb: 8
 ######### training:
 epochs: 20
 learning_rate: 0.001
