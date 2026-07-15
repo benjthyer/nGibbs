@@ -1,5 +1,5 @@
 {
-  "bundle": "data/MLready/HeFESTo/HeFESTo_Mars_Profiles_NPs_JCC_Test.tar.gz",
+  "bundle": "data/MLready/HeFESTo/HeFESTo_Mars_Profiles_NPs_JCC_retro_Test.tar.gz",
   "n_samples": 65536,
   "temperature_label": "T(K)(System_main)",
   "s_min": 1.75,
@@ -10,10 +10,10 @@
       "input_kind": "emulator_path",
       "temperature_label": "T(K)(System_main)",
       "n_samples": 65536,
-      "mae_residual_K": 1.2612570524215698,
-      "mse_residual_K2": 4.738400459289551,
-      "mae_temperature_K": 1.2612571716308594,
-      "mse_temperature_K2": 4.738399505615234,
+      "mae_residual_K": 1.2520724534988403,
+      "mse_residual_K2": 4.624086380004883,
+      "mae_temperature_K": 1.2520724534988403,
+      "mse_temperature_K2": 4.624085426330566,
       "T_true_mean": 1509.1485595703125,
       "T_residual_true_mean": -0.2023397833108902,
       "T_residual_true_std": 27.431772232055664
