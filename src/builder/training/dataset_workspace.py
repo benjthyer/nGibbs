@@ -254,7 +254,7 @@ class ChunkedMemmapTrainLoader:
     Chunk boundaries use a random per-epoch start offset (plus a shuffled
     chunk visit order), so a row's chunk-neighbors vary epoch to epoch - on
     top of the one-time on-disk shuffle already applied during processing
-    (see BigMetaTable.shuffle_rows).
+    (see MLexporter.shuffle_bundle_rows).
 
     Yields the same 4-tuple shape as TensorDatasetFour + DataLoader:
     (features, binary_labels, labels, molar_labels).

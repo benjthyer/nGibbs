@@ -25,9 +25,24 @@ if src_path not in sys.path:
 from recipes.settings import internal_train_dir, external_train_dir, external_base
 from ngibbs.utils.string_utils import pull_number
 from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
-from ngibbs.utils.file_utils import load_ml_bundle, MLDataBundle
+from ngibbs.utils.file_utils import load_ml_bundle, MLDataBundle, chunked_permutation_copy
 from ngibbs.utils.math_utils import Normalizer
+from ngibbs.config.ml_indexer import load_ml_indexer_from_state
 from builder.processing.BigMetaTable import BigMetaTable
+
+# Row-aligned arrays that may be present in an ML-ready bundle. Every one that
+# actually exists gets shuffled with the *same* permutation in shuffle_bundle_rows,
+# to keep rows aligned across arrays. Not all bundles have mass_labels/free_outputs
+# (the latter is optional; the former is always written by resampling_to_datasets
+# today, but guarded here in case of older/hand-built bundles).
+_ROW_ALIGNED_ARRAYS = (
+    "features.npy",
+    "labels.npy",
+    "binary_labels.npy",
+    "molar_labels.npy",
+    "mass_labels.npy",
+    "free_outputs.npy",
+)
 
 #featureNames = ['Pressure(System_main)', 'Temperature(System_main)', 'logfO2-QFM(System_main)']
 #free_outputs = ['viscocity(System_main)', 'liq H (kJ)(melts-liquid)', 'Temperature(System_main)']
@@ -988,6 +1003,101 @@ def generate_dataset_stats(dataset_name, ml_indexer, output_dir=None, chunk_size
     print(f"Generated statistics file: {stats_file}")
     print(f"Generated feature bounds file: {feature_bounds_file}")
     return stats_file
+
+
+def shuffle_bundle_rows(bundle_path, seed=None, chunk_size=1_000_000):
+    """Shuffle every row-aligned array in an already-packaged ML-ready bundle,
+    in place, out-of-core.
+
+    This is the same one-time out-of-core shuffle previously run against the
+    raw (pre-filter, pre-resample) BigMetaTable via BigMetaTable.shuffle_rows(),
+    moved to run here instead: on the small, already deep_filter/insanity_filter/
+    resampling_to_datasets-trimmed bundle, rather than on the far larger table
+    that produced it. On out-of-core-sized tables the old call site meant every
+    chunked read was a fully-random gather across a file many times larger than
+    RAM, with effectively zero page-cache locality - a pathological I/O pattern
+    that could take substantially longer than shuffling the finished bundle.
+
+    Parameters
+    ----------
+    bundle_path : str or Path
+        Path to the .tar.gz ML-ready bundle to shuffle in place.
+    seed : int, optional
+        Seed for the row permutation (reproducibility). None (default) draws
+        fresh entropy.
+    chunk_size : int, optional
+        Row-chunk size for the underlying chunked_permutation_copy passes and
+        the stats regeneration scan.
+
+    Returns
+    -------
+    Path
+        `bundle_path`, unchanged (the bundle is shuffled in place).
+    """
+    bundle_path = Path(bundle_path)
+    extract_dir = Path(tempfile.mkdtemp(dir=bundle_path.parent))
+
+    try:
+        with tarfile.open(bundle_path, "r:gz") as tar:
+            original_names = [m.name for m in tar.getmembers() if m.isfile()]
+            tar.extractall(path=extract_dir)
+
+        present_arrays = [name for name in _ROW_ALIGNED_ARRAYS if (extract_dir / name).exists()]
+
+        n_rows = np.load(extract_dir / "features.npy", mmap_mode="r").shape[0]
+        rng = np.random.default_rng(seed)
+        permutation = rng.permutation(n_rows)
+        print(f"[shuffle_bundle_rows] Shuffling {n_rows:,} rows in {bundle_path.name} (seed={seed})...")
+
+        for name in present_arrays:
+            src_path = extract_dir / name
+            src = np.load(src_path, mmap_mode="r")
+            tmp_path = extract_dir / f"_shuffled_{name}"
+            chunked_permutation_copy(src, tmp_path, permutation, chunk_size=chunk_size)
+            del src
+            gc.collect()
+            tmp_path.replace(src_path)
+            print(f"[shuffle_bundle_rows]   shuffled {name}")
+
+        print("[shuffle_bundle_rows] Regenerating stats.txt + feature_bounds.json...")
+        ml_indexer = load_ml_indexer_from_state(str(extract_dir / "ml_indexer"))
+        dataset_name = str(extract_dir) + "/"
+        stats_path = generate_dataset_stats(
+            dataset_name=dataset_name,
+            ml_indexer=ml_indexer,
+            output_dir=extract_dir,
+            chunk_size=chunk_size,
+        )
+        feature_bounds_path = extract_dir / f"{Path(dataset_name).stem}_feature_bounds.json"
+
+        # Repack: shuffled arrays + regenerated stats/feature_bounds under their
+        # canonical arcnames, plus every other member the original bundle had
+        # (e.g. a copied processing.yaml, ml_indexer/) carried through unchanged.
+        handled_top_names = set(present_arrays) | {"stats.txt", "feature_bounds.json"}
+        with tarfile.open(bundle_path, "w:gz") as tar:
+            for name in present_arrays:
+                tar.add(extract_dir / name, arcname=name)
+            if stats_path and Path(stats_path).exists():
+                tar.add(stats_path, arcname="stats.txt")
+            if feature_bounds_path.exists():
+                tar.add(feature_bounds_path, arcname="feature_bounds.json")
+            indexer_dir = extract_dir / "ml_indexer"
+            if indexer_dir.is_dir():
+                tar.add(indexer_dir, arcname="ml_indexer")
+                handled_top_names.add("ml_indexer")
+            for name in original_names:
+                top_name = Path(name).parts[0] if name else name
+                if top_name in handled_top_names:
+                    continue
+                member_path = extract_dir / name
+                if member_path.exists():
+                    tar.add(member_path, arcname=name)
+
+        print(f"[shuffle_bundle_rows] Done shuffling {bundle_path}")
+    finally:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+
+    return bundle_path
 
 
 def _parse_resample_bounds(value):

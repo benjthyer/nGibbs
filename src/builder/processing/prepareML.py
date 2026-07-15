@@ -39,7 +39,7 @@ from recipes.settings import internal_data_dir, external_data_dir, external_base
 from ngibbs.utils.file_utils import delete_files_with_keyword, move_files_with_extension, get_baseline_files, clear_new_files
 
 # Exporter functions
-from builder.processing.MLexporter import resampling_to_datasets, make_harkers, make_Tplots
+from builder.processing.MLexporter import resampling_to_datasets, make_harkers, make_Tplots, shuffle_bundle_rows
 
 # Perhaps migrate the chemistry filters to their own module?
 # deep_filter/bundle_insanity_filter are no longer called directly here - filtering now
@@ -341,12 +341,6 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
             TrainMELTS.filename = TrainName
             train_bundle = train_dir / get_bundle_name('Train')
 
-            # One-time out-of-core shuffle so later out-of-core/chunked training
-            # readers never have to worry about row-order structure (e.g. upsampled
-            # rows resample_rare_phase appends as a block at the end of the table).
-            print("Shuffling training row order (one-time, out-of-core)...")
-            TrainMELTS.shuffle_rows(chunk_size=chunk_size)
-
             if upsample:
                 train_bundle_path = resampling_to_datasets(
                     TrainMELTS,
@@ -368,6 +362,15 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
                     **resampling_kwargs,
                 )
                 train_bundle_path = ensure_bundle_in_train_dir(train_bundle_path)
+
+            # One-time out-of-core shuffle, run here (post-packaging, on the
+            # already deep_filter/insanity_filter/resampling-trimmed bundle)
+            # rather than on the raw pre-filter table, so later out-of-core/
+            # chunked training readers never have to worry about row-order
+            # structure (e.g. upsampled rows resample_rare_phase appends as a
+            # block at the end of the table) - see MLexporter.shuffle_bundle_rows.
+            print("Shuffling training row order (one-time, out-of-core, post-packaging)...")
+            shuffle_bundle_rows(train_bundle_path, chunk_size=chunk_size)
 
             TrainIndexer = deepcopy(TrainMELTS.indexer)  # Capture indexer for consistency with validation/test dataset
 

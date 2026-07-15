@@ -11,7 +11,7 @@ dataset: #EXPECTED FILENAME: "nMELTS/data/MELTStables/{MELTSModel}/{'MELTS' if M
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
-outname: 120SedAssimilation_Cr     # Base name for output folder (without extension). Auto-Generated if blank
+outname: 120SedAssimilationClosed_Cr     # Base name for output folder (without extension). Auto-Generated if blank
 
 performance:
   chunk_size: 400000          # Number of rows to process at once. Larger = faster, but more memory intensive. Adjust based on available RAM.

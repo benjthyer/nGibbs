@@ -329,8 +329,7 @@ class DatasetIndexer:
         self._look_for_illegal_oxides()
         self._look_for_dead_phases()
         self._build_components_in_phases() # Build compositional indices
-        self._build_mass_indices()
-        self._build_ml_indexer()
+        self._build_ml_indexer()  # Also builds mass_indices, via expose_ml_indexer_attributes()
 
     def _build_ml_indexer(self):
         
@@ -344,6 +343,7 @@ class DatasetIndexer:
 
     def expose_ml_indexer_attributes(self):
         # Expose ML indexer attributes on DatasetIndexer for compatibility. Just in case ml_indexer is changed underneath indexer
+        self._build_mass_indices()  # Depends on ml_indexer.all_phases, so must be rebuilt whenever ml_indexer is (re)assigned
         self.label_indices = self.ml_indexer.label_indices
         self.label_names = self.ml_indexer.label_names
         self.detail_label_indices = self.ml_indexer.detail_label_indices
@@ -446,22 +446,27 @@ class DatasetIndexer:
         
     
     def _build_mass_indices(self):
-        """Find all mass column indices."""
+        """Find each phase's mass column index, in ml_indexer.all_phases order.
+
+        Must track ml_indexer.all_phases (not just self.MELTS_indices minus
+        EXCLUDED_PHASES) so that len(mass_indices) == nphases and the ordering
+        matches mass_phasedict - callers like resample_rare_phase index mass
+        columns by phase position and assume that alignment. This also keeps
+        mass_indices correct if ml_indexer is later swapped for one built from
+        a different (e.g. training) phase set - see expose_ml_indexer_attributes.
+        """
         mass_indices_list = []
-        
-        # Get solid phases that aren't excluded 
-        # Liquid has diferent labels unfortunately, so we need to handle it separately: phases_in_order + ['melts-liquid']
-        phases_with_mass = set()
-        for phase in self.MELTS_indices.keys():
-            if phase not in self.EXCLUDED_PHASES:
-                phases_with_mass.add(phase)
-        
-        for phase, components in self.MELTS_indices.items():
-            if phase in phases_with_mass:
-                for component, idx in components.items():
-                    if 'mass' in component.lower() or 'moles' in component.lower():
-                        mass_indices_list.append(idx)
-        
+
+        for phase in self.ml_indexer.all_phases:
+            components = self.MELTS_indices.get(phase)
+            if components is None:
+                continue
+            mass_col = components.get('liq mass (gm)') if phase == 'melts-liquid' else components.get('mass (gm)')
+            if mass_col is None:
+                mass_col = components.get('mass(gm)')
+            if mass_col is not None:
+                mass_indices_list.append(mass_col)
+
         self.mass_indices = np.array(mass_indices_list, dtype=int)
 
     def _look_for_illegal_oxides(self):

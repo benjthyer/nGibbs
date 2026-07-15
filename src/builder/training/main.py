@@ -215,6 +215,38 @@ def _stage_allowed(selected_stage: str, stage_name: str) -> bool:
     return selected_stage == stage_name
 
 
+def _dataset_n_rows(train_set: Any) -> int:
+    """Row count for either trainData type load_ML_data_auto can return:
+    TensorDatasetFour.__len__ already gives rows, but ChunkedMemmapTrainLoader's
+    __len__ gives an approximate *batch* count at whatever batch_size it was
+    last constructed/updated with (see load_ML_data_auto docstring) - go
+    through its workspace.n_rows instead so this is exact and independent of
+    that loader's current batch_size."""
+    workspace = getattr(train_set, "workspace", None)
+    if workspace is not None and hasattr(workspace, "n_rows"):
+        return int(workspace.n_rows)
+    return len(train_set)
+
+
+_ONECYCLE_STEP_PADDING = 1.08  # OneCycleLR raises once stepped past steps_per_epoch*epochs,
+# and our estimate can run a bit under the real per-epoch batch count - notably
+# ChunkedMemmapTrainLoader's __len__ is only approximate (each background-prefetched
+# chunk yields its own trailing partial batch, so the real total varies a few % epoch
+# to epoch - see its docstring). Pad rather than risk an overrun crash near the end
+# of training.
+
+
+def _onecycle_steps_per_epoch(train_set: Any, batch_size: int, max_N: float) -> int:
+    """Batches OneCycleLR should expect per epoch, given the actual dataset
+    size and this episode's batch_size - capped by max_N since train_Lower_MELTS/
+    train_Upper_MELTS break out of the epoch early once max_N samples are seen.
+    Padded by _ONECYCLE_STEP_PADDING since this is an estimate, not an exact count."""
+    steps = -(-_dataset_n_rows(train_set) // batch_size)  # ceil division
+    if max_N != np.inf:
+        steps = min(steps, -(-int(max_N) // batch_size))
+    return max(int(np.ceil(steps * _ONECYCLE_STEP_PADDING)), 1)
+
+
 def _best_loss_from_tune_results(results: Any) -> Optional[float]:
     if not isinstance(results, list) or not results:
         return None
@@ -497,6 +529,39 @@ def main() -> None:
         sat_alpha = float(sat_cfg["weight"])
         criterion = _loss_fn_from_type(chem_cfg["type"])
 
+        # scheduler: is mandatory on every train* episode in every existing recipe,
+        # but plenty of tune* episodes omit it (this file's own tune8 included) -
+        # previously that was fine since only the training branch read this key.
+        # Default to "no scheduler" (matches create_scheduler's pre-existing
+        # `if scheduler else SchedulerWrapper()` no-op) rather than requiring every
+        # recipe's tune episodes to grow a scheduler block.
+        scheduler_cfg = episode_cfg.get("scheduler")
+        if scheduler_cfg:
+            scheduler_name = normalize_scheduler_name(scheduler_cfg["type"])
+            scheduler_kwargs = dict(scheduler_cfg["args"])  # copy - about to mutate, and episode_cfg may be reused
+        else:
+            scheduler_name = None
+            scheduler_kwargs = {}
+
+        if scheduler_name == "onecyclelr":
+            # steps_per_epoch/epochs drive OneCycleLR's total step count; a
+            # hand-maintained YAML value silently drifts from the real batch
+            # count whenever the dataset, batch_size, or max_N changes, so
+            # derive both here instead of trusting the config. Also applies to
+            # tuning trials now (see tuners.py's baseline + per-trial calls,
+            # which already forward scheduler/scheduler_kwargs unchanged) -
+            # each trial gets the same steps_per_epoch, since Param_Dict only
+            # varies model/regularization hyperparameters, never batch_size.
+            computed_steps = _onecycle_steps_per_epoch(train_set, batch_size, max_N)
+            if scheduler_kwargs.get("steps_per_epoch") != computed_steps or scheduler_kwargs.get("epochs") != Epochs:
+                print(
+                    f"[{episode_key}] OneCycleLR: overriding steps_per_epoch="
+                    f"{scheduler_kwargs.get('steps_per_epoch')!r} -> {computed_steps}, "
+                    f"epochs={scheduler_kwargs.get('epochs')!r} -> {Epochs}"
+                )
+            scheduler_kwargs["steps_per_epoch"] = computed_steps
+            scheduler_kwargs["epochs"] = Epochs
+
         if episode_type == 'tune':
             # ===== TUNING EPISODE =====
 
@@ -534,6 +599,8 @@ def main() -> None:
                         trainData=train_set,
                         testData=test_set,
                         lr=lr,
+                        scheduler=scheduler_name,
+                        scheduler_kwargs=scheduler_kwargs,
                         Epochs=Epochs,
                         batch_size=batch_size,
                         early_stopping_patience=ESP,
@@ -555,6 +622,8 @@ def main() -> None:
                         trainData=train_set,
                         testData=test_set,
                         lr=lr,
+                        scheduler=scheduler_name,
+                        scheduler_kwargs=scheduler_kwargs,
                         Epochs=Epochs,
                         batch_size=batch_size,
                         early_stopping_patience=ESP,
@@ -610,10 +679,6 @@ def main() -> None:
             if last_best_model_path is not None and last_best_model_path.exists():
                 print(f"Loading latest episode-best checkpoint: {last_best_model_path}")
                 best_model = NN.rebuild_MELTS_model(str(last_best_model_path), epsilon=ml_indexer.molar_epsilon)
-
-            scheduler_cfg = episode_cfg["scheduler"]
-            scheduler_name = normalize_scheduler_name(scheduler_cfg["type"])
-            scheduler_kwargs = scheduler_cfg["args"]
 
             # Set up logging
             logger = setup_training_logger(str(log_dir), episode_key, args.command)

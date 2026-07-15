@@ -22,7 +22,9 @@ from copy import deepcopy
 TEMP_MODELS_DIR = Path(__file__).parent / "temp_models"
 TEMP_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-# NO LR SCHEDULERS FOR TUNING.
+# Scheduler is optional (defaults to None/{} below, i.e. flat LR) - main.py now
+# passes one through when the episode's YAML configures it, so baseline and
+# every per-trial train_Lower_MELTS/train_Upper_MELTS call below share it.
 
 
 def _save_anchor_bundle(model, bundle_path):
