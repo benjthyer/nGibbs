@@ -11,6 +11,7 @@ from copy import deepcopy
 import os
 import gc
 import shutil
+import tempfile
 from pathlib import Path
 import yaml
 
@@ -52,7 +53,7 @@ from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
 
 
 
-def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsample=None,
+def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, outname=None, upsample=None,
                    preprocessed=None, subset=None, use_external=None, balance_function=None,
                    skip_train=False):
     """
@@ -72,6 +73,8 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         Date identifier for dataset naming (overrides config if both provided)
     Mode : str, optional
         Calculation mode string (overrides config if both provided)
+    outname : str, optional
+        Output bundle base name (overrides config's top-level `outname` if both provided)
     upsample : bool, optional
         Whether to upsample rare phases (overrides config if both provided)
     preprocessed : bool, optional
@@ -138,7 +141,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         raise ValueError("preprocessing.excluded_oxides must be a list of oxide names")
 
     plot_cfg = config.get('plot', {})
-    outname = config.get('outname', '').strip()
+    outname = (outname or config.get('outname', '')).strip()
 
     resampling_kwargs = {'chunk_size': chunk_size}
     if feature_names_cfg is not None:
@@ -169,7 +172,34 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         elif balance_func_name == 'balance_geodynamics':
             balance_function = filters.balance_geodynamics
         # else: balance_function remains None
+    else:
+        # balance_function was passed in directly (e.g. from a CLI override) rather
+        # than resolved from balance_cfg above - recover a name for it so the
+        # archived config below still records what actually ran.
+        balance_func_name = getattr(balance_function, '__name__', balance_cfg.get('function'))
 
+    # The bundle archiving below (resampling_to_datasets' config_path argument)
+    # copies the file at config_path verbatim into the .tar.gz - it has no idea
+    # about MELTSModel/Date/Mode/outname/subset/use_external/preprocessed/upsample/
+    # balance_function overrides applied above. Write out the config actually in
+    # effect and archive that instead, so the bundled yaml is a faithful record of
+    # what ran rather than a copy of the un-overridden file on disk.
+    effective_config = deepcopy(config)
+    effective_config.setdefault('dataset', {})
+    effective_config['dataset']['MELTSModel'] = MELTSModel
+    effective_config['dataset']['Date'] = Date
+    effective_config['dataset']['Mode'] = Mode
+    effective_config['dataset']['subset'] = subset
+    effective_config['dataset']['use_external'] = use_external
+    effective_config.setdefault('preprocessing', {})['preprocessed'] = preprocessed
+    effective_config.setdefault('upsampling', {})['enabled'] = upsample
+    effective_config.setdefault('balancing', {})['function'] = balance_func_name
+    effective_config['outname'] = outname
+
+    archive_config_dir = Path(tempfile.mkdtemp(prefix='ngibbs_processing_config_'))
+    archive_config_path = archive_config_dir / Path(config_path).name
+    with open(archive_config_path, 'w') as f:
+        yaml.safe_dump(effective_config, f, sort_keys=False)
 
     # Directory definitions
     REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -354,7 +384,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
                 train_bundle_path = resampling_to_datasets(
                     TrainMELTS,
                     resampling_cfg['train_bounds'],
-                    config_path=config_path,
+                    config_path=archive_config_path,
                     bundle_name=train_bundle,
                     deep_filter_kwargs=deep_filter_kwargs,
                     insanity_filter_kwargs=insanity_filter_kwargs,
@@ -364,7 +394,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
                 train_bundle_path = resampling_to_datasets(
                     TrainMELTS,
                     [[1, 1]],
-                    config_path=config_path,
+                    config_path=archive_config_path,
                     bundle_name=train_bundle,
                     deep_filter_kwargs=deep_filter_kwargs,
                     insanity_filter_kwargs=insanity_filter_kwargs,
@@ -480,7 +510,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         test_bundle_path = resampling_to_datasets(
             TestMELTS,
             resampling_cfg['test_bounds'],
-            config_path=config_path,
+            config_path=archive_config_path,
             bundle_name=test_bundle,
             deep_filter_kwargs=deep_filter_kwargs,
             insanity_filter_kwargs=insanity_filter_kwargs,
@@ -582,6 +612,9 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         deleted_count = clear_new_files(INTERNAL_DIR, baseline_files, protected_extensions=['.tar.gz'])
         print(f"[Cleanup] Removed {deleted_count} temporary files from {INTERNAL_DIR}")
 
+        if 'archive_config_dir' in locals():
+            shutil.rmtree(archive_config_dir, ignore_errors=True)
+
         return train_bundle_path, test_bundle_path
 
 
@@ -615,6 +648,8 @@ Examples:
                         help='Date identifier for dataset naming')
     parser.add_argument('--Mode', type=str, default=None,
                         help='Calculation mode (e.g., FxCrystCooling, BatchCooling)')
+    parser.add_argument('--outname', type=str, default=None,
+                        help='Output bundle base name (overrides config: outname)')
     parser.add_argument('--upsample', dest='upsample', action='store_true', default=None,
                         help='Enable rare phase upsampling')
     parser.add_argument('--no-upsample', dest='upsample', action='store_false',
@@ -649,6 +684,7 @@ Examples:
         MELTSModel=args.MELTSModel,
         Date=args.Date,
         Mode=args.Mode,
+        outname=args.outname,
         upsample=args.upsample if args.upsample is not None else None,
         preprocessed=args.preprocessed if args.preprocessed else None,
         subset=args.subset if args.subset else None,

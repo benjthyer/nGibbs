@@ -773,7 +773,7 @@ class MidLevelNetwork(TunableModel):
         i5 = sp['ulvospinel']
 
         # Extract components
-        if 'chromitte' in sp:
+        if 'chromite' in sp:
             i1 = sp['chromite']
             c1 = intensiveComponents[:, i1]
         else:
@@ -799,7 +799,8 @@ class MidLevelNetwork(TunableModel):
         if illegal.any():
             row_idx = torch.nonzero(illegal, as_tuple=False).squeeze(-1).to(torch.int)
 
-            # Define groups
+            # Define groups: 'a' scales {chromite, hercynite}, 'b' scales
+            # {magnetite, ulvospinel}, 'c' scales {spinel} (MgAl2O4).
             if i1 is not None:
                 cols_a = torch.tensor([i1, i2], device=intensiveComponents.device, dtype=torch.int)
             else:
@@ -829,60 +830,132 @@ class MidLevelNetwork(TunableModel):
             L2_c2 = intensiveComponents[row_idx][:, i2]
             L2_c3c5 = (2/3) * intensiveComponents[row_idx][:, i3] + 0.25 * intensiveComponents[row_idx][:, i5]
 
-            # Build coefficient matrices (batch, 3, 3)
-            # Order of unknowns: [a, b, c]
-            M = torch.zeros((row_idx.shape[0], 3, 3), device=intensiveComponents.device, dtype=intensiveComponents.dtype)
-            rhs = torch.zeros((row_idx.shape[0], 3), device=intensiveComponents.device, dtype=intensiveComponents.dtype)
+            # A/B/C are the three "pool" totals the 3x3 system below solves
+            # for jointly (via per-row scale factors a, b, c). Whenever one
+            # of them is ~0, its own scale factor multiplies ~0 regardless
+            # of value, so a whole matrix column vanishes and the joint
+            # system is singular -- no amount of retrying via
+            # polish_negative_spFe can fix this, since spFe only rescales
+            # pool *totals* (it never moves mass between pools), so a pool
+            # that's exactly 0 stays exactly 0 through any number of
+            # retries. Handle each axis-degenerate case directly with the
+            # reduced, well-posed system on just the pools that actually
+            # carry mass, and only fall through to the joint solve for rows
+            # where all three pools are present.
+            eps = 1e-8
+            A_zero = A.abs() < eps
+            B_zero = B.abs() < eps
+            C_zero = C.abs() < eps
+            n_zero = A_zero.to(torch.int) + B_zero.to(torch.int) + C_zero.to(torch.int)
 
-            # Equation 1: normalization
-            M[:, 0, 0] = A
-            M[:, 0, 1] = B
-            M[:, 0, 2] = C
-            rhs[:, 0] = A + B + C
+            a = torch.ones_like(A)
+            b = torch.ones_like(A)
+            c = torch.ones_like(A)
 
-            # Equation 2: 19 cC = a*(c1+c2) + b*(c3+2.25c5)
-            M[:, 1, 0] = L1_c1c2
-            M[:, 1, 1] = L1_c3c5
-            M[:, 1, 2] = -19 * C
-            rhs[:, 1] = 0.0
+            # C~=0 (no MgAl2O4 "spinel" end-member, e.g. a titanomagnetite-
+            # type Fe-Ti spinel): 19*C=0 can never exceed a non-negative
+            # pos1, so constraint 1 can't be why this row is illegal --
+            # only constraint 2 needs solving. Same algebra as
+            # polish_negative_spAl, just restricted to these rows.
+            sel = C_zero & ~A_zero & ~B_zero
+            if sel.any():
+                n_sel = int(sel.sum())
+                M2 = torch.zeros((n_sel, 2, 2), device=intensiveComponents.device, dtype=intensiveComponents.dtype)
+                rhs2 = torch.zeros((n_sel, 2), device=intensiveComponents.device, dtype=intensiveComponents.dtype)
+                M2[:, 0, 0] = A[sel]
+                M2[:, 0, 1] = B[sel]
+                rhs2[:, 0] = A[sel] + B[sel]
+                M2[:, 1, 0] = L2_c2[sel]
+                M2[:, 1, 1] = -L2_c3c5[sel]
+                sol2 = torch.linalg.solve(M2, rhs2)
+                a[sel], b[sel] = sol2[:, 0], sol2[:, 1]
 
-            # Equation 3: a*c2 + c*C = (2/3)b*c3 + (1/4)b*c5
-            M[:, 2, 0] = L2_c2
-            M[:, 2, 1] = -L2_c3c5
-            M[:, 2, 2] = C
-            rhs[:, 2] = 0.0
+            # B~=0 (no magnetite+ulvospinel, e.g. a Cr/Al-only spinel):
+            # neg2=0 can never exceed a non-negative pos2, so constraint 2
+            # can't be why this row is illegal -- only constraint 1 needs
+            # solving. Same algebra as polish_negative_spFe, restricted to
+            # these rows.
+            sel = B_zero & ~A_zero & ~C_zero
+            if sel.any():
+                n_sel = int(sel.sum())
+                M2 = torch.zeros((n_sel, 2, 2), device=intensiveComponents.device, dtype=intensiveComponents.dtype)
+                rhs2 = torch.zeros((n_sel, 2), device=intensiveComponents.device, dtype=intensiveComponents.dtype)
+                M2[:, 0, 0] = A[sel]
+                M2[:, 0, 1] = C[sel]
+                rhs2[:, 0] = A[sel] + C[sel]
+                M2[:, 1, 0] = L1_c1c2[sel]
+                M2[:, 1, 1] = -19 * C[sel]
+                sol2 = torch.linalg.solve(M2, rhs2)
+                a[sel], c[sel] = sol2[:, 0], sol2[:, 1]
 
-            # Solve batch of linear systems
-            try:
-                sol = torch.linalg.solve(M, rhs)  # shape (rows, 3). A wannabe pure MgAl2O3 makes a singular matrix. Handle this edge case with a simpler fix then recursion.
-            except:
-                lIDX = [i2, i3, i4, i5]
-                if i1 is not None:
-                    lIDX = [i1] + lIDX
-                rr_e, cc_e = torch.meshgrid(
-                    row_idx,
-                    torch.tensor(
-                        lIDX,
-                        dtype=torch.int,
-                        device=intensiveComponents.device,
-                    ),
-                    indexing="ij",
-                )
-                #print('SPINEL COMPOSITIONS:')
-                #print(intensiveComponents[rr_e, cc_e])
-                if trial == 2:
-                    raise ValueError('Negative Spinel Solve failed! Singular Matrix?')
-                intensiveComponents = self.polish_negative_spFe(intensiveComponents)
-                return  self.polish_negative_sp(intensiveComponents, trial = trial+1) # Retry after FeO solve
-            
-            a = sol[:, 0]
-            b = sol[:, 1]
-            c = sol[:, 2]
+            # Two or three pools ~=0 (e.g. a near-pure MgAl2O4 vertex with
+            # essentially no chromite/hercynite/Fe3+ at all, or a pure
+            # Fe-Ti-oxide row with no Al-bearing component whatsoever):
+            # there is nothing left to redistribute mass into or out of, so
+            # no rescaling can resolve the violation. Leave these rows
+            # unscaled (a=b=c=1) instead of feeding them into a solve (or a
+            # retry loop) that can never succeed.
 
-            # Apply scaling
+            # Apply the axis-degenerate fixes (and no-ops) now.
             intensiveComponents[rr_a, cc_a] = a[:, None] * intensiveComponents[rr_a, cc_a]
             intensiveComponents[rr_b, cc_b] = b[:, None] * intensiveComponents[rr_b, cc_b]
             intensiveComponents[rr_c, cc_c] = c[:, None] * intensiveComponents[rr_c, cc_c]
+
+            # Remaining rows: all three pools present, so the joint 3x3
+            # system is generically well-posed. This is the only case that
+            # still needs the batched solve (and its Fe-rebalance retry as a
+            # safety net for anything unexpected).
+            generic = n_zero == 0
+            if generic.any():
+                g_row_idx = row_idx[generic]
+                rr_a, cc_a = torch.meshgrid(g_row_idx, cols_a, indexing="ij")
+                rr_b, cc_b = torch.meshgrid(g_row_idx, cols_b, indexing="ij")
+                rr_c, cc_c = torch.meshgrid(g_row_idx, cols_c, indexing="ij")
+
+                Ag, Bg, Cg = A[generic], B[generic], C[generic]
+                L1_c1c2g, L1_c3c5g = L1_c1c2[generic], L1_c3c5[generic]
+                L2_c2g, L2_c3c5g = L2_c2[generic], L2_c3c5[generic]
+
+                # Build coefficient matrices (batch, 3, 3)
+                # Order of unknowns: [a, b, c]
+                M = torch.zeros((g_row_idx.shape[0], 3, 3), device=intensiveComponents.device, dtype=intensiveComponents.dtype)
+                rhs = torch.zeros((g_row_idx.shape[0], 3), device=intensiveComponents.device, dtype=intensiveComponents.dtype)
+
+                # Equation 1: normalization
+                M[:, 0, 0] = Ag
+                M[:, 0, 1] = Bg
+                M[:, 0, 2] = Cg
+                rhs[:, 0] = Ag + Bg + Cg
+
+                # Equation 2: 19 cC = a*(c1+c2) + b*(c3+2.25c5)
+                M[:, 1, 0] = L1_c1c2g
+                M[:, 1, 1] = L1_c3c5g
+                M[:, 1, 2] = -19 * Cg
+                rhs[:, 1] = 0.0
+
+                # Equation 3: a*c2 + c*C = (2/3)b*c3 + (1/4)b*c5
+                M[:, 2, 0] = L2_c2g
+                M[:, 2, 1] = -L2_c3c5g
+                M[:, 2, 2] = Cg
+                rhs[:, 2] = 0.0
+
+                # Solve batch of linear systems
+                try:
+                    sol = torch.linalg.solve(M, rhs)
+                except RuntimeError as e:
+                    if trial == 2:
+                        raise ValueError('Negative Spinel Solve failed! Singular Matrix?' + str(e))
+                    intensiveComponents = self.polish_negative_spFe(intensiveComponents)
+                    return  self.polish_negative_sp(intensiveComponents, trial = trial+1) # Retry after FeO solve
+
+                a_g = sol[:, 0]
+                b_g = sol[:, 1]
+                c_g = sol[:, 2]
+
+                # Apply scaling
+                intensiveComponents[rr_a, cc_a] = a_g[:, None] * intensiveComponents[rr_a, cc_a]
+                intensiveComponents[rr_b, cc_b] = b_g[:, None] * intensiveComponents[rr_b, cc_b]
+                intensiveComponents[rr_c, cc_c] = c_g[:, None] * intensiveComponents[rr_c, cc_c]
 
         return intensiveComponents
 

@@ -735,7 +735,7 @@ def prepare_HeFESTo_tree_fulladiabat(directory: Path, GEOROC_DIR: Path, control_
     mgo_col = 'MgO'
     with open(control_path, 'r', encoding='utf-8', errors='ignore') as handle:
         template_lines = [line.rstrip('\n') for line in handle]
-    mafic_df = georoc_df[pd.to_numeric(georoc_df[mgo_col], errors='coerce').fillna(0.0) > 20.0]
+    mafic_df = georoc_df[pd.to_numeric(georoc_df[mgo_col], errors='coerce').fillna(0.0) > 5.0]
     subset = mafic_df.sample(n=N, replace=True) # Multiply every element value by a random number between 0.95 and 1.05
     logfo2 = np.random.uniform(-6, 3, N) # logfO2 relative to FMQ
     logfe3_fe2 = (0.2*logfo2) - 1

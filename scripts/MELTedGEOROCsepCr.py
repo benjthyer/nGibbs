@@ -53,10 +53,10 @@ import time
 time.sleep(sleepytime)"""
 
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-input_date = 'July8Open'
+input_date = 'July9open'
 
 input_ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
-MELTSmodels = ['120']#, '120']#, '102'] # MELTS models to run. To add: MAGEmin
+MELTSmodels = ['102']#, '120']#, '102'] # MELTS models to run. To add: MAGEmin
 FXes = ['Batch']#, 'FxCryst']
 Prange = None # Auto if None, for lithosphere/aesthenospere (p)
 
@@ -74,8 +74,8 @@ simcycle = 50 # How many simulations to run per iteration
 # Check that arguments are valid
 
 # Tunable: final table row count for each memmap (~30x scale-up target).
-target_rows_train = 45_000_000
-target_rows_valid = 0#_500_000 # Change pipeline later to keep all this as test, no 3rd valid split. Existing set is fine
+target_rows_train = 50_000_000
+target_rows_valid = 2_000_000 # Change pipeline later to keep all this as test, no 3rd valid split. Existing set is fine
 #batch_file = MELTSModel + 'batch'
 
 for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']): 

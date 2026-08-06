@@ -823,7 +823,13 @@ def generate_dataset_stats(dataset_name, ml_indexer, output_dir=None, chunk_size
 
     ElToOx = ml_indexer.ElToOx
     MM_ox = ml_indexer.MM[:len(ml_indexer.Elkeys), :len(ml_indexer.Elkeys)]
-    oxide_names = ml_indexer.Oxides
+    # ElToOx/MM_ox are both sized len(Elkeys) x len(Elkeys) (the reconstructed-from-
+    # elements oxide space), which is ml_indexer.WRkeys - not ml_indexer.Oxides. The
+    # two only coincide when every Elkey maps to a distinct oxide 1:1 (closed-system
+    # iron, tracked as separate Fe/Fe3 elements); in open-system (buffered) mode,
+    # Oxides carries an extra trailing 'Fe2O3' entry (needed elsewhere to read the
+    # raw liquid wt% column) that has no corresponding column here.
+    oxide_names = ml_indexer.WRkeys
     n_oxide_cols = len(oxide_names)
 
     liquid_idx = None

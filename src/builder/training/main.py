@@ -46,6 +46,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["all", "lower", "upper", "finetune"],
         help="Training stage name",
     )
+    parser.add_argument(
+        "--tarname",
+        default=None,
+        help="Override tarname from config (base filename used to locate Train/Test bundles and name checkpoints)",
+    )
     return parser
 
 """import time
@@ -359,6 +364,8 @@ def main() -> None:
         overrides = yaml.safe_load(handle) or {}
 
     config = _deep_update(deepcopy(defaults), overrides)
+    if args.tarname:
+        config["tarname"] = args.tarname
     #print(config)
     config_yaml_text = yaml.safe_dump(config, sort_keys=False)
     training_yaml_text = _read_text_file(Path(args.config))

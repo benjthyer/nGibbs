@@ -5,41 +5,29 @@
 # DATASET SELECTION
 # ============================================================================
 dataset: #EXPECTED FILENAME: "nMELTS/data/MELTStables/{MELTSModel}/{'MELTS' if MELTSModel in ['102', '110', '120', 'p'] else ''}{MELTSModel}_<Train/Valid>set{Date}{Mode}"
-  MELTSModel: '120'          # MELTS model version: '102', '110', '120', 'p'. Affects which directory dataproducts are read from and written to
-  Date: 'July4ClosedSedIgNoCr'               # Date identifier for dataset naming
+  MELTSModel: '102'          # MELTS model version: '102', '110', '120', 'p'. Affects which directory dataproducts are read from and written to
+  Date: 'July9closedCr'               # Date identifier for dataset naming
   Mode: 'BatchCooling'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
-outname: 120SedAssimilation_NoCr     # Base name for output folder (without extension). Auto-Generated if blank
+outname: 102Closed_Cr_NPT    # Base name for output folder (without extension). Auto-Generated if blank
 
-# ============================================================================
-# PERFORMANCE
-# ============================================================================
 performance:
-  # Row-chunk size used throughout BigMetaTable/MLexporter/DatasetIndexer for
-  # every large-table scan, copy, filter, and resample operation (report_phase_
-  # abundances, filter_inconsistent_phase_data, delete/split, resample_rare_phase,
-  # resampling_to_datasets, the zero-sum exclusion scans, etc.) Higher = fewer,
-  # bigger chunks = faster (less per-chunk Python/tqdm overhead) but more peak
-  # RAM per chunk (roughly chunk_size * num_columns * 4 bytes for a float32
-  # table). Lower = slower but safer on tight memory. 100_000 rows at ~150
-  # columns is ~60 MB/chunk; 500_000 rows is ~300 MB/chunk. Tune this up if you
-  # have RAM to spare and want faster runs, back down if you see memory pressure.
-  chunk_size: 100000
+  chunk_size: 400000          # Number of rows to process at once. Larger = faster, but more memory intensive. Adjust based on available RAM.
 
 # ============================================================================
 # NON-CHEMICAL FEATURE AND LABEL CONFIGURATION (format: attribute(phase): e.g. 'Pressure(System_main)')
 # ============================================================================
 featureNames: # Non-chemical features to include in the dataset
   - 'Pressure(System_main)'
-  - 'Temperature(System_main)'
+  - 'Temperature(System_main)' 
+  #- 'logfO2-QFM(System_main)'
 
   #- 'S(System_main)' # Isentropic 
   
 
 free_outputs: # Non-chemical labels to predict. These are used for training the saturation predictor and as auxiliary outputs for the encoder.
-  #- 'Temperature(System_main)' 
   - 'S(System_main) / mass(System_main)' # Specific entropy (J/g-K)
   #- 'T(K)(System_main)'
   #- 'VS(km/s)(System_main)'
@@ -104,9 +92,9 @@ upsampling:
     hornblende:
       n_resamples: 1
       multiplier_bounds: [0.9, 1.1]
-    graphite:
-      n_resamples: 1
-      multiplier_bounds: [0.9, 1.1]
+    #graphite:
+    #  n_resamples: 1
+    #  multiplier_bounds: [0.9, 1.1]
     # For test set - tighter bounds (no/ weak resampling suggested, just augmentation)
     # Use same phase names as above with tighter multiplier_bounds
     test_set_phases:
@@ -134,9 +122,9 @@ upsampling:
       hornblende:
         n_resamples: 1
         multiplier_bounds: [0.99, 1.01]
-      graphite:
-        n_resamples: 1
-        multiplier_bounds: [0.99, 1.01]
+      #graphite:
+      #  n_resamples: 1
+      #  multiplier_bounds: [0.99, 1.01]
 # ============================================================================
 # RESAMPLING TO DATASETS - Feature/Label Generation
 # ============================================================================
@@ -203,4 +191,4 @@ deep_filter:
   bulk_oxide_bounds: {}
   
   # Processing batch size for "deep" filtering, which targets .npy data products. 
-  batch_size: 200000
+  batch_size: 400000
