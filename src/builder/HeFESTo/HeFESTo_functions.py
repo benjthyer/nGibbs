@@ -549,7 +549,7 @@ def _build_oxide_wt_from_row(row: pd.Series) -> Dict[str, float]:
         value = row.get(col_name, 0.0)
         if pd.isna(value):
             value = 0.0
-        wt[oxide] = float(value)
+        wt[oxide] = float(value)*np.random.normal(1.0, 0.1)  # Add random noise to search more continuous composition space
 
     for oxide in ['SiO2', 'MgO', 'FeO']:
         if wt[oxide] > 0.0:
@@ -692,12 +692,14 @@ def _normalize_total_moles(element_moles: Dict[str, float], target_total_moles: 
 def prepare_HeFESTo_tree_fulladiabat(directory: Path, GEOROC_DIR: Path, control_path: Path, N: int) -> None:
     """Prepare a BatchNNNN/SimulationN directory tree for HeFESTo isentrope runs.
 
-    Samples N bulk compositions from the GEOROC/PetDB database (filtering for
-    MgO > 20 wt% to target mantle-relevant peridotites), speciates iron across
-    a Fe³⁺/Fetotal grid from 0 to 10%, converts oxide wt% to element moles
-    (normalized to 24 total moles), and writes per-simulation ``control`` and
-    ``ad.in`` files. Simulations are grouped into batches of 1000 in
-    ``BatchNNNN/`` subdirectories for SLURM array job submission.
+    Samples N bulk compositions from the GEOROC/PetDB database as 30% pure
+    ultramafic (MgO > 20 wt%), 20% pure mafic (5 < MgO ≤ 20 wt%), and 50%
+    linear mixtures of a mafic and an ultramafic end-member with ultramafic
+    fraction α ~ U(0, 1). Iron is then speciated across a Fe³⁺/Fetotal grid
+    from 0 to 10%, oxide wt% is converted to element moles (normalized to 24
+    total moles), and per-simulation ``control`` and ``ad.in`` files are
+    written. Simulations are grouped into batches of 1000 in ``BatchNNNN/``
+    subdirectories for SLURM array job submission.
 
     The P–T path in each ``ad.in`` file is an isentrope computed from a random
     mantle potential temperature (Tp ∈ [1473, 1923] K) using ``get_S`` and
@@ -735,8 +737,32 @@ def prepare_HeFESTo_tree_fulladiabat(directory: Path, GEOROC_DIR: Path, control_
     mgo_col = 'MgO'
     with open(control_path, 'r', encoding='utf-8', errors='ignore') as handle:
         template_lines = [line.rstrip('\n') for line in handle]
-    mafic_df = georoc_df[pd.to_numeric(georoc_df[mgo_col], errors='coerce').fillna(0.0) > 5.0]
-    subset = mafic_df.sample(n=N, replace=True) # Multiply every element value by a random number between 0.95 and 1.05
+    mgo_numeric = pd.to_numeric(georoc_df[mgo_col], errors='coerce').fillna(0.0)
+    ultramafic_df = georoc_df[mgo_numeric > 20.0]
+    mafic_df = georoc_df[(mgo_numeric > 5.0) & (mgo_numeric <= 20.0)]
+
+    # Composition split: 30% ultramafic, 20% mafic, 50% mixtures of the two
+    N_ultra = int(round(N * 0.3))
+    N_mafic = int(round(N * 0.2))
+    N_mix = N - N_ultra - N_mafic
+
+    ultra_pure = ultramafic_df.sample(n=N_ultra, replace=True).reset_index(drop=True)
+    mafic_pure = mafic_df.sample(n=N_mafic, replace=True).reset_index(drop=True)
+    mix_ultra = ultramafic_df.sample(n=N_mix, replace=True).reset_index(drop=True)
+    mix_mafic = mafic_df.sample(n=N_mix, replace=True).reset_index(drop=True)
+    mix_alphas = np.random.uniform(0.0, 1.0, N_mix)  # ultramafic fraction in mixture
+
+    # Build spec list: (category, row_a, row_b_or_None, alpha_or_None). ``category``
+    # records which pool(s) the spec was drawn from so a rejected sample (see
+    # MAX_COMPOSITION_ATTEMPTS below) can be redrawn from the same pool(s).
+    specs: List[Tuple] = (
+        [('ultra', row, None, None) for _, row in ultra_pure.iterrows()] +
+        [('mafic', row, None, None) for _, row in mafic_pure.iterrows()] +
+        [('mix', mix_ultra.iloc[i], mix_mafic.iloc[i], mix_alphas[i]) for i in range(N_mix)]
+    )
+    order = rng.permutation(N)
+    specs = [specs[i] for i in order]
+
     logfo2 = np.random.uniform(-6, 3, N) # logfO2 relative to FMQ
     logfe3_fe2 = (0.2*logfo2) - 1
     fe3_fe2 = 10**logfe3_fe2
@@ -748,7 +774,7 @@ def prepare_HeFESTo_tree_fulladiabat(directory: Path, GEOROC_DIR: Path, control_
     element_rows: List[List[float]] = []
     wts: List[str] = []
 
-    for sim_idx, (_, row) in enumerate(subset.iterrows()):
+    for sim_idx, spec in enumerate(specs):
         if simulations_in_batch >= 1000:
             batch_number += 1
             batch_dir = _next_available_batch_dir(directory, batch_number)
@@ -760,14 +786,115 @@ def prepare_HeFESTo_tree_fulladiabat(directory: Path, GEOROC_DIR: Path, control_
         simulations_in_batch += 1
 
         ratio = float(fe3_fet_grid[sim_idx])
-        base_oxide_wt = _build_oxide_wt_from_row(row)
-        speciated_wt = _speciate_iron_and_normalize(base_oxide_wt, ratio)
-        wt_debug = ', '.join(f'{key}={value:.4f}' for key, value in speciated_wt.items())
+        category, row_a, row_b, alpha = spec
+
+        # Reject and redraw compositions that end up too iron-rich (FeOT > 30
+        # wt%) or too silica-poor (SiO2 < 25 wt%) for HeFESTo to handle
+        # robustly. The first attempt uses the pre-sampled spec; subsequent
+        # attempts redraw fresh row(s) from the same pool(s) the spec came from.
+        MAX_COMPOSITION_ATTEMPTS = 25
+        for attempt in range(MAX_COMPOSITION_ATTEMPTS):
+            if attempt > 0:
+                if category == 'ultra':
+                    row_a = ultramafic_df.sample(n=1).iloc[0]
+                elif category == 'mafic':
+                    row_a = mafic_df.sample(n=1).iloc[0]
+                else:  # 'mix'
+                    row_a = ultramafic_df.sample(n=1).iloc[0]
+                    row_b = mafic_df.sample(n=1).iloc[0]
+                    alpha = float(np.random.uniform(0.0, 1.0))
+
+            if row_b is None:
+                # Pure mafic or pure ultramafic
+                base_oxide_wt = _build_oxide_wt_from_row(row_a)
+            else:
+                # Linear mixture: alpha = ultramafic fraction, (1-alpha) = mafic fraction
+                ultra_oxide = _build_oxide_wt_from_row(row_a)
+                mafic_oxide = _build_oxide_wt_from_row(row_b)
+                base_oxide_wt = {
+                    key: float(alpha) * ultra_oxide.get(key, 0.0) + (1.0 - float(alpha)) * mafic_oxide.get(key, 0.0)
+                    for key in set(ultra_oxide) | set(mafic_oxide)
+                }
+
+            # Build element moles with total Fe treated as fully ferrous (Fe3+/FeT = 0)
+            # for now. The target fe3_fet ratio is applied further below, on the
+            # *final* total Fe -- i.e. after the random Fe/Cr/Ca/Al/Si/Mg perturbation
+            # -- since HeFESTo's control file has no separate Fe3+ element and can only
+            # be told the intended oxidation state via the bulk O/Fe ratio. Speciating
+            # before that perturbation would bake the oxidation signal into a Fe
+            # budget that then gets overwritten, diluting (and effectively
+            # randomizing) the intended fe3_fet signal.
+            unspeciated_wt = _speciate_iron_and_normalize(base_oxide_wt, 0.0)
+            element_moles = _oxide_wt_to_element_moles(unspeciated_wt)
+
+            # Normalize to total moles = 1, then perturb Fe/Cr/Ca/Al/Si/Mg to add
+            # compositional diversity beyond the GEOROC end-members. Each
+            # perturbation also adjusts O to preserve mass balance for the default
+            # oxide it represents (FeO: O:Fe=1, Cr2O3: O:Cr=1.5, CaO: O:Ca=1,
+            # Al2O3: O:Al=1.5, SiO2: O:Si=2, MgO: O:Mg=1) -- otherwise cations are
+            # added/removed with no matching oxygen, which distorts the bulk O
+            # budget (and, for Fe, would swamp the oxidation-state signal applied
+            # just below).
+            element_moles = _normalize_total_moles(element_moles, 1.0)
+
+            mg_val = element_moles.get('Mg', 0.0)
+
+            d_fe = float(np.random.uniform(0.00, 0.05))*float(np.random.uniform()>0.3) # Add Fe to some compositions, but not all
+            d_cr = float(np.random.uniform(0.0, 0.01))
+            d_si = float(np.random.uniform(-0.5/24, 2.0/24)) # Read these values off of norm 24 histograms
+            d_mg = float(np.random.uniform(1.5/24, 2.75/24)) * (mg_val < 1.5/24)
+            d_mg += float(np.random.uniform(0.25/24, 2.0/24))
+            d_ca = -(float(np.random.uniform(0.0, 0.1)) * (element_moles.get('Ca', 0.0) > 0.1))
+            d_al = -(float(np.random.uniform(0.0, 0.05)) * (element_moles.get('Al', 0.0) > 0.05))
+
+            element_moles['Fe'] = element_moles.get('Fe', 0.0) + d_fe
+            element_moles['Cr'] = element_moles.get('Cr', 0.0) + d_cr
+            element_moles['Ca'] = element_moles.get('Ca', 0.0) + d_ca
+            element_moles['Al'] = element_moles.get('Al', 0.0) + d_al
+            element_moles['Si'] = element_moles.get('Si', 0.0) + d_si
+            element_moles['Mg'] = element_moles.get('Mg', 0.0) + d_mg
+            element_moles['O'] = (
+                element_moles.get('O', 0.0)
+                + 1.0 * d_fe   # FeO baseline for the added Fe (ferrous by default)
+                + 1.5 * d_cr   # Cr2O3
+                + 1.0 * d_ca   # CaO
+                + 1.5 * d_al   # Al2O3
+                + 2.0 * d_si   # SiO2
+                + 1.0 * d_mg   # MgO
+            )
+
+            # Apply the target Fe3+/FeT ratio now, on the final total Fe, by adding
+            # the extra oxygen that a Fe2O3 (vs FeO) stoichiometry requires beyond
+            # the FeO baseline just added above: 1.5 O per Fe3+ atom instead of 1.0
+            # O per Fe2+ atom, i.e. +0.5 O per Fe3+ atom. This is algebraically
+            # identical to speciating the final Fe budget directly through
+            # _speciate_iron_and_normalize.
+            fe_total = element_moles.get('Fe', 0.0)
+            element_moles['O'] = element_moles.get('O', 0.0) + 0.5 * ratio * fe_total
+
+            element_moles = _normalize_total_moles(element_moles, target_total_moles)
+
+            # Reject compositions that are too iron-rich or too silica-poor for
+            # HeFESTo, and redraw. Checked on the final (post-perturbation,
+            # 24-mole) composition, since that's what actually gets written out.
+            bulk_comp_wt, _, _ = _compute_bulk_from_elements(element_moles)
+            feot_wt = bulk_comp_wt['FeO'] + bulk_comp_wt['Fe2O3'] * (
+                2.0 * OXIDE_MOLAR_MASSES['FeO'] / OXIDE_MOLAR_MASSES['Fe2O3']
+            )
+            sio2_wt = bulk_comp_wt['SiO2']
+            if feot_wt <= 30.0 and sio2_wt >= 25.0:
+                break
+        else:
+            print(
+                f'Sim {sim_idx+1}: no composition satisfied FeOT<=30%, SiO2>=25% '
+                f'after {MAX_COMPOSITION_ATTEMPTS} attempts; using last draw '
+                f'(FeOT={feot_wt:.2f}%, SiO2={sio2_wt:.2f}%)'
+            )
+
+        wt_debug = ', '.join(f'{key}={value:.4f}' for key, value in element_moles.items())
         print(f'Sim {sim_idx+1} Fe3/FeT={ratio:.4f} -> {wt_debug}')
         wts.append(wt_debug)
 
-        element_moles = _oxide_wt_to_element_moles(speciated_wt)
-        element_moles = _normalize_total_moles(element_moles, target_total_moles)
         element_rows.append([element_moles[key] for key in element_keys])
 
         control_copy_path = sim_dir / 'control'
@@ -1008,6 +1135,8 @@ def plot_bulk_compositions(
     - **Row 1** – scatter plots of SiO2, FeO_T, CaO, and Al2O3 vs MgO (wt%).
     - **Row 2** – histograms of the four major element mole counts
       (Si, Mg, Fe, O) on the 24-mole scale used by HeFESTo.
+    - **Row 3** – Si vs Mg (cation mole fraction) scatter, with Mg = 0.9·Si
+      and Mg = 1.1·Si reference lines.
 
     Parameters
     ----------
@@ -1069,7 +1198,7 @@ def plot_bulk_compositions(
     )
 
     # ── Figure ────────────────────────────────────────────────────────────────
-    fig, axes = plt.subplots(3, 4, figsize=(16, 12))
+    fig, axes = plt.subplots(4, 4, figsize=(16, 15))
     fig.suptitle(
         f'Bulk compositions  —  {len(df):,} simulations  —  {workspace_dir}',
         fontsize=10,
@@ -1100,11 +1229,30 @@ def plot_bulk_compositions(
         ('Cr_mol', 'Cr (cation mol fraction)'),
         ('O_mol',  'O (mol / cation mol)'),
     ]
-    for ax, (col, xlabel) in zip(axes[1:].flat, hist_specs):
+    for ax, (col, xlabel) in zip(axes[1:3].flat, hist_specs):
         ax.hist(df[col], bins=50, color='steelblue', alpha=0.75, edgecolor='none')
         ax.set_xlabel(xlabel)
         ax.set_ylabel('Count')
         ax.grid(True, linewidth=0.4, alpha=0.5, axis='y')
+
+    # Row 3: Si vs Mg (cation mole fraction), with Mg/Si = 0.9 and 1.1 reference lines
+    ax_simg = axes[3, 0]
+    si_mol = df['Si_mol']
+    mg_mol = df['Mg_mol']
+    ax_simg.scatter(si_mol, mg_mol, s=3, alpha=0.35, color='steelblue', rasterized=True)
+
+    line_color = '#eb6834'  # categorical slot 2 (orange), per repo dataviz palette
+    x_ref = np.array([si_mol.min(), si_mol.max()])
+    ax_simg.plot(x_ref, 0.9 * x_ref, linestyle='--', linewidth=1.6, color=line_color, label='Mg = 0.9·Si')
+    ax_simg.plot(x_ref, 1.1 * x_ref, linestyle=':', linewidth=2.0, color=line_color, label='Mg = 1.1·Si')
+    ax_simg.set_xlim(x_ref[0], x_ref[1])
+    ax_simg.set_xlabel('Si (cation mol fraction)')
+    ax_simg.set_ylabel('Mg (cation mol fraction)')
+    ax_simg.grid(True, linewidth=0.4, alpha=0.5)
+    ax_simg.legend(loc='best', fontsize=8, frameon=False)
+
+    for ax in axes[3, 1:]:
+        ax.axis('off')
 
     fig.tight_layout()
 

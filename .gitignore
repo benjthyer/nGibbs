@@ -1,6 +1,12 @@
 # NumPy array files
 *.npy
 
+# pictures
+*.png
+*.jpg
+*.pdf
+*.svg
+
 # empty files
 emptyfile.txt
 
@@ -170,6 +176,7 @@ dmypy.json
 #Packaging
 Packaging nGibbs for Integration into PetThermoTools
 build
+src/ngibbs/_version.py
 
 
 # Temporary files
