@@ -109,6 +109,13 @@ class HeFESToParams:
     # Indexed identically to snames / apar rows.
     site_data: List[List[Tuple[str, int]]] = field(default_factory=list)
 
+    # Raw formula strings (oxygen included), indexed like snames.  Needed by
+    # metamorphic.py to build the bulk-composition constraint matrix s(ic, i).
+    formulas: List[str] = field(default_factory=list)
+
+    # Directory the species / PHASE parameter files were read from.
+    param_dir: str = ''
+
 
 def load_control(control_path: str, param_dir_override: str | None = None) -> HeFESToParams:
     """Parse a HeFESTo control file and load all species parameters.
@@ -264,6 +271,8 @@ def load_control(control_path: str, param_dir_override: str | None = None) -> He
         lphase=np.asarray(lphase, dtype=np.int32),
         spec_index=spec_index,
         site_data=site_data,
+        formulas=formulas,
+        param_dir=param_dir,
     )
 
 

@@ -191,6 +191,14 @@ def compute(
             Kr        = agg['Kr'],
             Gv        = agg['Gv'],
             Gr        = agg['Gr'],
+            # Isomorphic aggregate derivative properties (fort.59 columns).
+            # Feed these to metamorphic.add_metamorphic() to obtain the
+            # phase-change-corrected fort.56 values.
+            KTr       = agg['KTr'],
+            alpagg    = agg['alpagg'],
+            cpagg     = agg['cpagg'],
+            volagg    = agg['volagg'],
+            wmagg     = agg['wmagg'],
             V         = V_full,
             converged = _expand(sol['converged'], fill=True).astype(bool),
             _K    = _expand(props['K']),
@@ -200,6 +208,10 @@ def compute(
             _Cp   = _expand(props['Cp']),
             _rho  = _expand(props['rho']),
             _S    = _expand_safe(S_r),  # per-species entropy (B, S) J/mol/K
+            # Per-phase intermediates for aggregate.apply_fast_metamorphic():
+            # lets the velocity chain be redone with the order-disorder K_T
+            # softening without re-running the EOS.
+            phase_cache = agg['phase_cache'],
         )
 
 
@@ -350,6 +362,15 @@ def _compute_torch(P, T, X, params: HeFESToParams, *,
         Kr        = _np(agg['Kr']),
         Gv        = _np(agg['Gv']),
         Gr        = _np(agg['Gr']),
+        # Isomorphic aggregate derivative properties (fort.59 columns) — kept in
+        # step with the numpy branch so metamorphic.add_metamorphic() works on a
+        # GPU result too.  phase_cache is already host-side numpy.
+        KTr       = _np(agg['KTr']),
+        alpagg    = _np(agg['alpagg']),
+        cpagg     = _np(agg['cpagg']),
+        volagg    = _np(agg['volagg']),
+        wmagg     = _np(agg['wmagg']),
+        phase_cache = agg['phase_cache'],
         V         = _np(V_full_t),
         converged = _np(_exp(sol['converged'].to(dtype=torch.float64), fill=1.0)).astype(bool),
         _K    = _np(_exp(props['K'])),

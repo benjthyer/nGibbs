@@ -22,7 +22,15 @@ import numpy as np
 
 from .constants import Rgas
 from .dos_tables import Heat_vec, Ener_vec, Helm_vec, Heat_torch, Ener_torch, Helm_torch
-import torch
+
+# torch is optional: every *_torch routine below imports it locally, matching the
+# lazy-import convention used by the rest of this package.  Keeping it optional
+# here means the numpy path (and the metamorphic module, which is pure numpy)
+# works on installs without torch.
+try:                                    # pragma: no cover
+    import torch
+except ImportError:                     # pragma: no cover
+    torch = None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Internal helper: compute mode weights (su, qo, aniso mask)

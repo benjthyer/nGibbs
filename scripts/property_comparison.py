@@ -3,7 +3,7 @@
 Picks N random, complete simulation directories from a HeFESTo workspace (e.g.
 data/HeFESToWorkspace/JiChingSims/), reads each simulation's composition
 (params.json) and (P, T, S) profile, and compares three ways of computing
-bulk properties (density, VP, VS, entropy) at the same conditions:
+bulk properties (density, VP, VS, entropy, Cp, KS) at the same conditions:
 
   1. HeFESTo ground truth   — read directly from fort.56 (the real simulation output).
   2. Emulator                — phase equilibria (component moles, and for the
@@ -62,14 +62,27 @@ REQUIRED_FILES = ['control', 'fort.56', 'fort.61', 'fort.68', 'fort.99', 'params
 ELEMENT_KEYS = ['Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O']
 
 # HeFESTo-vec EOS property key -> (fort.56 column, axis label).
-# Kh/Gh (Hill-averaged moduli from the vectorized EOS) are intentionally
-# excluded: fort.56's KS(GPa) uses a different aggregation scheme, so the two
-# are not directly comparable (see test_hefesto_assemblage_benchmark_vectorized_emulated.py).
+#
+# Cp and KS used to be excluded here, on the grounds that "fort.56's KS(GPa)
+# uses a different aggregation scheme".  That is now understood: fort.56's KS is
+# `bstot`, the *metamorphic* (phase-change-softened) aggregate modulus, not the
+# isomorphic VRH Hill `Kh`.  Comparing Kh against it gives ~30% mean error;
+# comparing KStot gives 0.016%.  Same story for cp -> cptot.
+#
+# Likewise VP: fort.56's VP carries the intra-phase order-disorder relaxation,
+# so the comparable key is `Vp_fast`, not the isomorphic `Vp` (which is biased
+# high by up to 0.26% in the lower mantle).  VS is unaffected — the shear
+# modulus has no metamorphic term — so plain 'Vs' is correct.
+#
+# Requesting any of cptot/KStot/Vp_fast makes the API run the metamorphic pass;
+# see HeFESToAPI._METAMORPHIC_KEYS.
 PROPERTY_MAP = {
-    'rho': ('rho(g/cm^3)', 'rho (g/cm3)'),
-    'Vp':  ('VP(km/s)',    'VP (km/s)'),
-    'Vs':  ('VS(km/s)',    'VS (km/s)'),
-    'S':   ('S(J/g/K)',    'S (J/g/K)'),
+    'rho':     ('rho(g/cm^3)', 'rho (g/cm3)'),
+    'Vp_fast': ('VP(km/s)',    'VP (km/s)'),
+    'Vs':      ('VS(km/s)',    'VS (km/s)'),
+    'S':       ('S(J/g/K)',    'S (J/g/K)'),
+    'cptot':   ('cp(J/g/K)',   'Cp (J/g/K)'),
+    'KStot':   ('KS(GPa)',     'KS (GPa)'),
 }
 
 # HeFESTo_Parameters_010123 embedded in the control files points at the
@@ -139,6 +152,80 @@ def compute_error_stats(gt_vals: np.ndarray, pred_vals: np.ndarray):
     return abs_err, rel_err
 
 
+# Set by main() when --diagnose is passed: adds the per-species derivatives the
+# trace-species diagnostics need.  They cost nothing extra — the metamorphic
+# solve already computes them — but they are (B, nspec), so they are only
+# requested when actually wanted.
+DIAGNOSE = False
+
+
+def property_names() -> list:
+    names = list(PROPERTY_MAP.keys())
+    if DIAGNOSE:
+        names += ['dndt', 'sspeca']
+    return names
+
+
+def to_full_species(component_moles: np.ndarray) -> np.ndarray:
+    """Component moles (emulator label space) -> full (B, nspec) species array.
+
+    Mirrors what HeFESToAPI.get_property_hefesto_vectorized_from_assemblage does
+    internally, so the diagnostics below see exactly the array the EOS sees.
+    """
+    cm = np.asarray(component_moles, dtype=np.float64)
+    X = np.zeros((cm.shape[0], HeFESToEmulatorCPU.hefesto_params.nspec), dtype=np.float64)
+    X[:, HeFESToEmulatorCPU.PropertyIDX] = cm
+    return X
+
+
+def diagnose_trace_species(result: dict, mode: str) -> None:
+    """Report whether trace species are driving the latent-heat term.
+
+    The metamorphic Cp/KS terms come from a dn/dT solve in which a species that
+    is the sole occupant of an otherwise-absent phase is completely
+    unregularised (its mole fraction within that phase is ~1, so the ideal
+    configurational penalty never fires).  Such a species carries no mass or
+    volume, so it is invisible in rho/Vp/Vs and in the phase proportions, but it
+    can dominate cpmet and produce a spurious Cp spike or drag a transition to
+    higher pressure.
+
+    hefesto_vec.prune_active_set guards against this, but only if
+    HeFESToAPI.metamorphic_nsmall_rel sits ABOVE the noise floor of whatever
+    produced the moles.  This function measures that floor so the threshold can
+    be set from evidence.  Read `min depletion` first: it is threshold-free.
+    """
+    from src.ngibbs.engine.EOS_arithmetic.hefesto_vec import trace_species_leverage
+
+    nsmall = HeFESToEmulatorCPU.metamorphic_nsmall_rel
+    # Leverage is reported at a FIXED 1e-3 reference, not at nsmall: measuring it
+    # at the threshold that just did the pruning always returns ~0 and would hide
+    # a species sitting just above the threshold.  min depletion is threshold-free.
+    LEV_REF = 1.0e-3
+    print(f"\n  trace-species diagnostics  (metamorphic_nsmall_rel = {nsmall:.0e})")
+    print(f"    {'source':22s} {'min nonzero':>12s} {'#below thresh':>14s} "
+          f"{'leverage@1e-3':>14s} {'min depletion':>14s}")
+    for key, label in (('gt_internal', 'GT assemblage'),
+                       (f'{mode}_emulator', f'{mode} emulator')):
+        props = result.get(key) or {}
+        cm = props.get('component_moles')
+        if cm is None or 'dndt' not in props:
+            print(f"    {label:22s} {'(not captured — rerun with --diagnose)':>50s}")
+            continue
+        X = to_full_species(cm)
+        tot = X.sum(axis=1, keepdims=True)
+        nz = X[X > 0]
+        d = trace_species_leverage(props['dndt'], X, props['sspeca'],
+                                   result['T_k'], nsmall_rel=LEV_REF)
+        n_trace = int(((X > 0) & (X < nsmall * tot)).sum())
+        print(f"    {label:22s} {nz.min() if nz.size else 0:12.2e} {n_trace:14d} "
+              f"{d['leverage'].max():14.4f} {np.min(d['depletion_K']):11.2e} K")
+    print("    Read 'min depletion' first — it is the threshold-free indicator.")
+    print("    healthy: >~ 1e-1 K.   pathological: <~ 1e-2 K (a species depleting")
+    print("    itself in microkelvins is an unregularised trace species, not physics).")
+    print("    If the emulator row is bad and the GT row is not, set")
+    print("    --nsmall-rel above the emulator's 'min nonzero' and rerun.")
+
+
 def load_ground_truth(sim_dir: Path) -> dict:
     """Ground-truth bulk properties (fort.56) plus the real phase-equilibria
     assemblage (fort.99) run through the internal HeFESTo-vec property calculator.
@@ -156,8 +243,9 @@ def load_ground_truth(sim_dir: Path) -> dict:
     gt_internal_props = HeFESToEmulatorCPU.get_property_hefesto_vectorized_from_assemblage(
         torch.tensor(gt_component_moles, dtype=torch.float64),
         torch.tensor(PT, dtype=torch.float64),
-        property_names=list(PROPERTY_MAP.keys()),
+        property_names=property_names(),
     )
+    gt_internal_props['component_moles'] = gt_component_moles
 
     return {
         'sim_dir': sim_dir,
@@ -183,11 +271,13 @@ def run_isothermal_emulator(gt: dict, composition: Dict[str, float]) -> dict:
     component_moles = _to_numpy(out['component_moles']).astype(np.float64)
 
     PT = np.stack([P_gpa, T_k], axis=1)
-    return HeFESToEmulatorCPU.get_property_hefesto_vectorized_from_assemblage(
+    props = HeFESToEmulatorCPU.get_property_hefesto_vectorized_from_assemblage(
         torch.tensor(component_moles, dtype=torch.float64),
         torch.tensor(PT, dtype=torch.float64),
-        property_names=list(PROPERTY_MAP.keys()),
+        property_names=property_names(),
     )
+    props['component_moles'] = component_moles
+    return props
 
 
 def run_isentropic_emulator(gt: dict, composition: Dict[str, float]) -> dict:
@@ -212,9 +302,10 @@ def run_isentropic_emulator(gt: dict, composition: Dict[str, float]) -> dict:
     props = HeFESToEmulatorCPU.get_property_hefesto_vectorized_from_assemblage(
         torch.tensor(component_moles, dtype=torch.float64),
         torch.tensor(PT, dtype=torch.float64),
-        property_names=list(PROPERTY_MAP.keys()),
+        property_names=property_names(),
     )
     props['T_emulated'] = T_emulated
+    props['component_moles'] = component_moles
     return props
 
 
@@ -225,6 +316,7 @@ def compare_simulation(sim_dir: Path) -> dict:
         'sim_dir': sim_dir,
         'composition': composition,
         'P_gpa': gt['P_gpa'],
+        'T_k': gt['T_k'],
         'fort56': gt['fort56'],
         'gt_internal': gt['gt_internal'],
         'isothermal_emulator': run_isothermal_emulator(gt, composition),
@@ -242,7 +334,10 @@ def plot_comparison(results: list, mode: str, save_path: str) -> None:
     n_cols = len(prop_keys) + (1 if show_T_panel else 0)
     n_sims = len(results)
 
-    fig, axes = plt.subplots(n_sims, n_cols, figsize=(3.6 * n_cols, 3.2 * n_sims), squeeze=False)
+    # Panel width shrinks as columns are added so the figure stays legible when
+    # the metamorphic properties (Cp, KS) push the grid to 6-7 columns.
+    col_w = 3.6 if n_cols <= 5 else 3.0
+    fig, axes = plt.subplots(n_sims, n_cols, figsize=(col_w * n_cols, 3.2 * n_sims), squeeze=False)
 
     for row, result in enumerate(results):
         P = result['P_gpa']
@@ -307,7 +402,7 @@ def print_error_summary(results: list, mode: str) -> None:
                 pred_vals = get_prop_array(result, source_key, prop)
                 abs_err, rel_err = compute_error_stats(gt_vals, pred_vals)
                 print(
-                    f'    {prop:>4s} ({label})  mean_abs_err={abs_err.mean():.4g}  '
+                    f'    {prop:>8s} ({label})  mean_abs_err={abs_err.mean():.4g}  '
                     f'mean_rel_err={rel_err.mean() * 100:.3f}%  max_rel_err={rel_err.max() * 100:.3f}%'
                 )
         if mode == 'isentropic':
@@ -315,9 +410,11 @@ def print_error_summary(results: list, mode: str) -> None:
             T_em = result['isentropic_emulator']['T_emulated']
             abs_err, rel_err = compute_error_stats(T_gt, T_em)
             print(
-                f'    {"T":>4s} (T (K))  mean_abs_err={abs_err.mean():.4g}  '
+                f'    {"T":>8s} (T (K))  mean_abs_err={abs_err.mean():.4g}  '
                 f'mean_rel_err={rel_err.mean() * 100:.3f}%  max_rel_err={rel_err.max() * 100:.3f}%'
             )
+        if DIAGNOSE:
+            diagnose_trace_species(result, mode)
 
 
 if __name__ == '__main__':
@@ -330,9 +427,18 @@ if __name__ == '__main__':
                          help='Explicit simulation directory names (e.g. model_000167 model_000012), '
                               'overriding random sampling. Use this — not --seed — to guarantee '
                               'property_comparison.py and phase_comparison.py compare the same simulations.')
+    parser.add_argument('--diagnose', action='store_true',
+                         help='report whether trace species are driving the metamorphic '
+                              'Cp/KS terms. Use this to read off your emulator\'s noise '
+                              'floor and set HeFESToAPI.metamorphic_nsmall_rel from it.')
+    parser.add_argument('--nsmall-rel', type=float, default=None,
+                         help='override HeFESToAPI.metamorphic_nsmall_rel, the active-set '
+                              'smallness threshold for the metamorphic solve (fraction of '
+                              'total moles). Must exceed the emulator noise floor.')
     parser.add_argument('--save-path-isothermal', type=str, default='property_comparison_isothermal.png')
     parser.add_argument('--save-path-isentropic', type=str, default='property_comparison_isentropic.png')
     args = parser.parse_args()
+    DIAGNOSE = args.diagnose
 
     workspace_dir = REPO_ROOT / args.workspace
     chosen = select_sim_dirs(workspace_dir, sims=args.sims, n=args.n, seed=args.seed)
@@ -349,6 +455,9 @@ if __name__ == '__main__':
         str(chosen[0] / 'control'), param_dir_override=str(PARAM_DIR)
     )
     HeFESToEmulatorCPU.hefesto_npz_path = None
+    if args.nsmall_rel is not None:
+        HeFESToEmulatorCPU.metamorphic_nsmall_rel = args.nsmall_rel
+        print(f'metamorphic_nsmall_rel = {args.nsmall_rel:.0e}')
 
     results = [compare_simulation(d) for d in chosen]
 

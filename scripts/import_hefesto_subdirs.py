@@ -10,6 +10,13 @@ For each discovered workspace directory:
          delete that simulation directory.
      - Otherwise, delete files named 'fort.29' and 'qout' when present.
 2) Run import_HeFESTo_components() on that workspace.
+3) Tally simulations whose fort.99 carried stray HeFESTo diagnostic lines.
+
+HeFESTo writes diagnostic lines ("WARNING: Phase Rule", "Invalid Solut") into
+fort.99 itself. Read as data rows they shift every row below them down by one,
+so the assemblage stops lining up with fort.56's P-T grid and phase transitions
+appear one pressure step late. The reader now drops those lines, and reports
+which files it dropped them from; this script just tallies that as it goes.
 """
 
 from __future__ import annotations
@@ -31,6 +38,7 @@ if str(SRC_DIR) not in sys.path:
 from builder.HeFESTo.HeFESTo_functions import import_HeFESTo_components  # noqa: E402
 from builder.indexer import DatasetIndexer, generate_column_headers_hefesto  # noqa: E402
 from ngibbs.config.constants import COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO  # noqa: E402
+from ngibbs.utils.file_utils import get_dropped_rows, reset_dropped_rows  # noqa: E402
 
 
 _SIM_DIR_PATTERN = re.compile(r'^simulation\d+$', flags=re.IGNORECASE)
@@ -134,6 +142,17 @@ def parse_args() -> argparse.Namespace:
             'literally; if omitted, no phase-change CSV is written.'
         ),
     )
+    parser.add_argument(
+        '--phase-change-offset-only',
+        action='store_true',
+        help=(
+            'Restrict the phase-change CSV to simulations whose fort.99 was '
+            'offset by stray HeFESTo diagnostic lines. Their phase boundaries '
+            'were detected one pressure step late, so windows resampled from '
+            'them straddle the wrong interval; this gives exactly the set that '
+            'needs regenerating. The main CSV (--dataname) is unaffected.'
+        ),
+    )
     return parser.parse_args()
 
 
@@ -155,6 +174,7 @@ def main() -> int:
     total_faults = 0
     total_deleted_dirs = 0
     total_deleted_files = 0
+    total_shifted_sims = 0
 
     dataname = args.dataname
     phase_change_dataname = args.phase_change_dataname
@@ -164,12 +184,20 @@ def main() -> int:
         total_deleted_dirs += deleted_dirs
         total_deleted_files += deleted_files
 
+        # The reader records every file it dropped stray rows from, so the count
+        # is a by-product of the parse the import already does.
+        reset_dropped_rows()
+
         _, malformed_ids, empty_ids = import_HeFESTo_components(
             workspace_dir=str(workspace_dir),
             indexer=indexer,
             dataname=dataname,
             phase_change_dataname=phase_change_dataname,
+            phase_change_offset_only=args.phase_change_offset_only,
         )
+
+        shifted = {p for p in get_dropped_rows() if p.endswith('fort.99')}
+        total_shifted_sims += len(shifted)
 
         n_faults = int(len(malformed_ids) + len(empty_ids))
         total_faults += n_faults
@@ -178,12 +206,14 @@ def main() -> int:
         print(f'  Deleted control-only Simulation dirs: {deleted_dirs}')
         print(f'  Deleted fort.29/qout files: {deleted_files}')
         print(f'  Fault simulation IDs count: {n_faults}')
+        print(f'  Simulations with offset fort.99: {len(shifted)}')
 
     print('Summary:')
     print(f'  Workspaces processed: {len(workspace_dirs)}')
     print(f'  Deleted control-only Simulation dirs: {total_deleted_dirs}')
     print(f'  Deleted fort.29/qout files: {total_deleted_files}')
     print(f'  Total fault simulation IDs: {total_faults}')
+    print(f'  Total simulations with offset fort.99: {total_shifted_sims}')
 
     return 0
 

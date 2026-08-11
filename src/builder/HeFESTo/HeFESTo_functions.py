@@ -59,6 +59,7 @@ try:
         PHASE_ABBREVIATION_OVERRIDES,
         COMPONENT_ABBREVIATION_OVERRIDES,
         _safe_read_ws_table,
+        get_dropped_rows,
         _resolve_phase_name_from_abbr,
         _resolve_component_name_from_abbr,
         _build_reverse_component_phase_map,
@@ -75,6 +76,7 @@ except ImportError:
             PHASE_ABBREVIATION_OVERRIDES,
             COMPONENT_ABBREVIATION_OVERRIDES,
             _safe_read_ws_table,
+            get_dropped_rows,
             _resolve_phase_name_from_abbr,
             _resolve_component_name_from_abbr,
             _build_reverse_component_phase_map,
@@ -1551,8 +1553,12 @@ def prepare_HeFESTo_single_composition_directory(
         handle.write('\n'.join(control_lines) + '\n')
 
 
-def _safe_read_ws_table(path: str, skiprows: int = 0) -> pd.DataFrame:
-    return pd.read_csv(path, sep=r'\s+', engine='python', skiprows=skiprows)
+# NOTE: a local `_safe_read_ws_table` used to be defined here.  It shadowed the
+# one imported from ngibbs.utils.file_utils at the top of this module, so every
+# fort.* read in this file silently used a copy that admits HeFESTo's
+# interleaved diagnostic lines ("WARNING: Phase Rule", "Invalid Solut") as data
+# rows -- shifting fort.99 against the fort.56 P-T grid by one pressure step.
+# It has been removed so the canonical, row-filtering implementation is used.
 
 
 def load_fort99_component_moles_and_labels(sim_dir: str, indexer) -> Tuple[np.ndarray, np.ndarray]:
@@ -1878,6 +1884,7 @@ def import_HeFESTo_components(
     indexer,
     dataname: str = 'DefaultHeFESTostorage.csv',
     phase_change_dataname: Optional[str] = None,
+    phase_change_offset_only: bool = False,
 ):
     """
     Parse HeFESTo SimulationN directories into one CSV table.
@@ -1901,6 +1908,14 @@ def import_HeFESTo_components(
         Optional output CSV path for rows that bound fort.99 component
         zero/non-zero transitions. A boundary includes the transition row
         and its immediately previous row, using tolerance 1e-6.
+    phase_change_offset_only : bool, default=False
+        Restrict the phase-change CSV to simulations whose fort.99 carried
+        stray HeFESTo diagnostic lines, i.e. the ones whose assemblage was
+        shifted one pressure step against the fort.56 P-T grid. Their phase
+        boundaries were detected one step late, so any window resampled from
+        them straddles the wrong interval. This yields exactly the set that
+        needs regenerating, leaving correctly-placed windows untouched.
+        ``dataname`` is unaffected and still receives every simulation.
 
     A checkpoint text file is written next to ``dataname`` after each flushed
     batch of 128 simulations. If the import is restarted and that checkpoint
@@ -1975,6 +1990,9 @@ def import_HeFESTo_components(
             rho_df = _safe_read_ws_table(fort61_path, skiprows=0)
             vol_df = _safe_read_ws_table(fort68_path, skiprows=0)
             comp_df = _safe_read_ws_table(fort99_path, skiprows=0)
+            # The read above records the file if it had to drop stray rows, so
+            # this costs nothing beyond a dict lookup.
+            sim_was_offset = fort99_path in get_dropped_rows()
 
             nrows = min(len(sys_df), len(rho_df), len(vol_df), len(comp_df))
             if nrows <= 0:
@@ -2074,7 +2092,11 @@ def import_HeFESTo_components(
                 _safe_assign(out, indexer, phase_name, 'total moles', total_values)
 
             phase_change_boundary_rows: List[int] = []
-            if phase_change_dataname is not None and nrows > 1:
+            want_phase_change = (
+                phase_change_dataname is not None
+                and (sim_was_offset or not phase_change_offset_only)
+            )
+            if want_phase_change and nrows > 1:
                 if not hasattr(indexer, 'phaseToCompMap'):
                     raise ValueError('Indexer must expose phaseToCompMap for phase-change export')
                 if not hasattr(indexer, 'label_indices') or not hasattr(indexer, 'label_names'):
@@ -2114,7 +2136,7 @@ def import_HeFESTo_components(
                     phase_change_boundary_rows.append(int(row_idx))
 
             data_blocks.append(out)
-            if phase_change_dataname is not None and len(phase_change_boundary_rows) > 0:
+            if want_phase_change and len(phase_change_boundary_rows) > 0:
                 phase_change_blocks.append(out[phase_change_boundary_rows, :])
 
             processed_since_flush += 1

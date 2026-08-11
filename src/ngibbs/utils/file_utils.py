@@ -7,6 +7,7 @@ Extracted from Legacy/BackEnds/EmulatorLibrary.py
 import os
 import shutil
 import gc
+import warnings
 from pathlib import Path
 import tarfile
 import tempfile
@@ -726,8 +727,60 @@ COMPONENT_ABBREVIATION_OVERRIDES: Dict[str, str] = {
 }
 
 
+# Files from which _safe_read_ws_table dropped stray rows, path -> row count.
+# Recorded as a by-product of the read that already happens, so callers can
+# report how many simulations were affected without re-walking the tree.
+_DROPPED_ROWS: Dict[str, int] = {}
+
+
+def reset_dropped_rows() -> None:
+    """Clear the dropped-row tally (call before a batch to get per-batch counts)."""
+    _DROPPED_ROWS.clear()
+
+
+def get_dropped_rows() -> Dict[str, int]:
+    """Return {file path: rows dropped} since the last :func:`reset_dropped_rows`."""
+    return dict(_DROPPED_ROWS)
+
+
 def _safe_read_ws_table(path: str, skiprows: int = 0) -> pd.DataFrame:
-    return pd.read_csv(path, sep=r'\s+', engine='python', skiprows=skiprows)
+    """Read a whitespace-delimited HeFESTo fort.* table.
+
+    HeFESTo interleaves diagnostic lines into its output tables, e.g.
+
+        WARNING: Phase Rule      0.00000   220.00122   27    8    0
+        Invalid Solut 0.00000 ...
+
+    ``pd.read_csv`` happily admits these as *data* rows (short rows are
+    NaN-padded), which silently shifts every subsequent row down by one.  For
+    fort.99 that means the assemblage no longer lines up with the P-T grid in
+    fort.56: properties get evaluated one pressure step behind, and any phase
+    transition appears one step LATE.
+
+    This is easy to miss because it barely moves rho/Vp/Vs — they are smooth in
+    composition — while it badly distorts the metamorphic Cp/K_S terms, which
+    depend on dn/dT and so are most sensitive exactly at a transition.  It hits
+    21% of the JiChingSims models (83/402), and the two cases where the stray
+    line appears mid-file are worse still, since only part of the profile shifts.
+
+    Rows whose first field is not numeric are therefore dropped, and the index
+    is reset so positional slicing stays aligned with fort.56.
+    """
+    df = pd.read_csv(path, sep=r'\s+', engine='python', skiprows=skiprows)
+    if df.shape[1] == 0:
+        return df
+    first_numeric = pd.to_numeric(df.iloc[:, 0], errors='coerce').notna()
+    n_bad = int((~first_numeric).sum())
+    if n_bad:
+        _DROPPED_ROWS[str(path)] = n_bad
+        warnings.warn(
+            f'{path}: dropped {n_bad} non-numeric row(s) (HeFESTo diagnostic '
+            f'lines such as "WARNING: Phase Rule"). Left in place these shift '
+            f'the table against the fort.56 P-T grid.',
+            RuntimeWarning, stacklevel=2,
+        )
+        df = df.loc[first_numeric].reset_index(drop=True)
+    return df
 
 
 def _resolve_phase_name_from_abbr(phase_abbr: str) -> str:

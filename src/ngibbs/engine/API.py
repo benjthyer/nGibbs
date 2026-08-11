@@ -21,7 +21,13 @@ from typing import Optional, Sequence, Tuple, Union, Dict, Any
 import time
 import tqdm
 
-from .EOS_arithmetic.hefesto_vec import compute as hefesto_compute, load_control
+from .EOS_arithmetic.hefesto_vec import (
+    compute as hefesto_compute,
+    load_control,
+    build_tables as hefesto_build_tables,
+    add_metamorphic as hefesto_add_metamorphic,
+    NSMALL_REL,
+)
 
 from ..config.constants import OXIDE_MOLAR_MASSES as oxide_molar_masses, ptt_longs, ptt_order_oxides, ptt_to_short, ptt_oxide_indexer, HeFESTo_snames_long
 
@@ -1605,6 +1611,42 @@ class HeFESToAPI(EmulatorAPI):
     # avoid OOM on systems where GPU VRAM is the bottleneck.
     _EOS_BATCH_SIZE: int = 2 ** 15
 
+    # ── Metamorphic (phase-change / latent-heat) properties ──────────────────
+    # Requesting any of these from get_property_hefesto_vectorized_from_assemblage
+    # triggers the extra dn/dT, dn/dP solve.  Callers that only want the
+    # isomorphic quantities (rho, Vp, Vs, S, Kh, ...) pay nothing.
+    #
+    # The velocity keys are here because HeFESTo's reported VP/VB are NOT
+    # isomorphic: they carry the intra-phase order-disorder relaxation (see
+    # aggregate.apply_fast_metamorphic).  'Vp'/'Vb' therefore stay isomorphic
+    # for backwards compatibility, and the corrected values are exposed under
+    # explicit names.
+    _METAMORPHIC_KEYS = frozenset({
+        'alptot', 'cptot', 'cvtot', 'gamtot', 'KTtot', 'KStot',
+        'alpiso', 'cpiso', 'cviso', 'gamiso', 'KTiso', 'KSiso',
+        'alpmet', 'cpmet', 'bmet',
+        'dndt', 'dndp', 'sspeca', 'vspeca',
+        'deltaent', 'deltavol', 'ClapeyronSlope',
+    })
+    # Subset that additionally needs the per-phase order-disorder ("fast") pass.
+    # Active-set smallness threshold for the metamorphic solve, as a fraction of
+    # total moles.  This is load-bearing when the composition comes from the
+    # emulator: an NN never emits exact zeros, and a trace species that is the
+    # sole occupant of an otherwise-absent phase is completely unregularised in
+    # the dn/dT solve, producing Cp spikes that are invisible in rho/Vp/Vs.
+    # See hefesto_vec.metamorphic.prune_active_set.
+    #
+    # It must sit ABOVE the emulator's absolute noise floor on component moles.
+    # Raise it if you see Cp/KS spikes on emulated assemblages that are absent
+    # from the fort.99 ground truth.
+    metamorphic_nsmall_rel: float = NSMALL_REL
+
+    _FAST_KEYS = frozenset({
+        'Vp_fast', 'Vb_fast', 'Kh_fast', 'Kv_fast', 'Kr_fast',
+        'dndt_fast', 'dndp_fast',
+        'bmet_fast_phases', 'alpmet_fast_phases', 'cpmet_fast_phases',
+    })
+
     def _compute_bulk_EOS_properties(
         self,
         component_moles: torch.Tensor,
@@ -1661,6 +1703,27 @@ class HeFESToAPI(EmulatorAPI):
             Gh    GPa         shear modulus (VRH Hill)
             Kv/Kr GPa         Voigt / Reuss adiabatic bulk moduli
             Gv/Gr GPa         Voigt / Reuss shear moduli
+
+        Metamorphic (phase-change) outputs, shape (B,) — computed only if
+        requested, since they cost an extra dn/dT, dn/dP linear solve:
+            cptot  J/g/K      isobaric heat capacity  (fort.56 'cp')
+            KStot  GPa        adiabatic bulk modulus  (fort.56 'KS')
+            KTtot  GPa        isothermal bulk modulus (fort.56 'btot')
+            alptot 1/K        thermal expansivity     (fort.56 'alpha'/1e5)
+            cvtot, gamtot     isochoric Cp, Gruneisen
+            *iso              the same quantities without the phase-change term
+                              (fort.59), for isolating the metamorphic part
+            alpmet, cpmet, bmet, deltaent, deltavol, ClapeyronSlope
+            dndt, dndp  (B, nspec)   the underlying composition derivatives
+
+        Order-disorder ('fast') outputs, shape (B,) — these cost a second solve:
+            Vp_fast, Vb_fast  km/s   velocities WITH the intra-phase relaxation
+            Kh_fast, Kv_fast, Kr_fast  GPa
+
+        Note that 'Vp'/'Vb' remain the *isomorphic* velocities.  HeFESTo's
+        fort.56 VP/VB include the order-disorder relaxation, so 'Vp_fast' is the
+        one to compare against fort.56 — plain 'Vp' is biased high by up to
+        0.26% in the lower mantle.  Vs is identical either way.
 
         Per-species outputs (shape (B, nspec)) — useful for diagnostics:
             V     cm³/mol     converged molar volume
@@ -1721,12 +1784,59 @@ class HeFESToAPI(EmulatorAPI):
         if self.verbose:
             print(f"HeFESTo EOS for {B} assemblages took {time.time() - t0:.2f} s")
 
+        # Metamorphic pass, only if something asked for it.
+        wanted = set(property_names)
+        need_fast = bool(wanted & self._FAST_KEYS)
+        if need_fast or (wanted & self._METAMORPHIC_KEYS):
+            t1 = time.time()
+            met = hefesto_add_metamorphic(
+                result, X_input, T, P, self._get_metamorphic_tables(),
+                include_fast=need_fast,
+                nsmall_rel=self.metamorphic_nsmall_rel,
+            )
+            if need_fast:
+                # add_metamorphic overwrites Vp/Vb/Kh/Kv/Kr in-place with the
+                # softened values.  Re-key them so 'Vp' keeps meaning the
+                # isomorphic velocity for every existing caller.
+                for key in ('Vp', 'Vb', 'Kh', 'Kv', 'Kr'):
+                    if key in met:
+                        met[f'{key}_fast'] = met.pop(key)
+                met.pop('Vs', None)          # unchanged by construction
+                for key in ('Vp_iso', 'Vb_iso', 'Kh_iso'):
+                    met.pop(key, None)       # identical to result[key]
+            result.update(met)
+            if self.verbose:
+                print(f"  metamorphic terms took {time.time() - t1:.2f} s"
+                      f"{' (incl. order-disorder pass)' if need_fast else ''}")
+
         try:
             return {prop: result[prop] for prop in property_names}
         except KeyError as e:
             raise ValueError(
-                f"Unknown property {e}. Available keys: {list(result.keys())}"
+                f"Unknown property {e}. Available keys: {sorted(result.keys())}"
             ) from e
+
+    def _get_metamorphic_tables(self):
+        """Static tables for the metamorphic solve, built once and cached.
+
+        Depends only on the parameter set and species list, not on P/T/X, so a
+        single build serves every batch (and every chunk of a staged batch).
+
+        The parameter directory is taken from ``hefesto_params.param_dir``, not
+        from ``self._param_dir``: scripts routinely swap ``hefesto_params`` out
+        after construction to override a stale control-file path (see
+        scripts/property_comparison.py), and the tables must be read from the
+        same parameter set the EOS is using.  The cache is keyed on the params
+        object so that swap invalidates it.
+        """
+        params = self.hefesto_params
+        cached = getattr(self, '_metamorphic_tables', None)
+        if cached is not None and cached[0] is params:
+            return cached[1]
+        param_dir = getattr(params, 'param_dir', '') or self._param_dir
+        tables = hefesto_build_tables(params, param_dir)
+        self._metamorphic_tables = (params, tables)
+        return tables
 
 
 class MELTSAPI:
