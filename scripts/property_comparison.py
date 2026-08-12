@@ -2,7 +2,7 @@
 
 Picks N random, complete simulation directories from a HeFESTo workspace (e.g.
 data/HeFESToWorkspace/JiChingSims/), reads each simulation's composition
-(params.json) and (P, T, S) profile, and compares three ways of computing
+(control) and (P, T, S) profile, and compares three ways of computing
 bulk properties (density, VP, VS, entropy, Cp, KS) at the same conditions:
 
   1. HeFESTo ground truth   — read directly from fort.56 (the real simulation output).
@@ -34,7 +34,6 @@ is produced.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 from typing import Dict, List
@@ -51,14 +50,15 @@ for _p in (str(REPO_ROOT), str(SRC_ROOT)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from src.ngibbs.engine.API import HeFESToMarsEmulatorCPU as HeFESToEmulatorCPU
-from src.ngibbs.engine.EOS_arithmetic.hefesto_vec import load_control
+from src.ngibbs.engine.API import HeFESToEmulatorCPU as HeFESToEmulatorCPU
+from src.ngibbs.engine.EOS_arithmetic.hefesto_vec import load_control, compute_within_phase_frac
 from builder.HeFESTo.HeFESTo_functions import (
     extract_bulk_properties_from_simulation_dir,
     load_fort99_componentMoles,
 )
+from src.ngibbs.utils.file_utils import _parse_control_file
 
-REQUIRED_FILES = ['control', 'fort.56', 'fort.61', 'fort.68', 'fort.99', 'params.json']
+REQUIRED_FILES = ['control', 'fort.56', 'fort.61', 'fort.68', 'fort.99']
 ELEMENT_KEYS = ['Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O']
 
 # HeFESTo-vec EOS property key -> (fort.56 column, axis label).
@@ -87,7 +87,7 @@ PROPERTY_MAP = {
 
 # HeFESTo_Parameters_010123 embedded in the control files points at the
 # original run machine (macOS) — override with the local copy.
-PARAM_DIR = REPO_ROOT / 'recipes' / 'HeFESTo_Parameters_010123'
+PARAM_DIR = SRC_ROOT / 'ngibbs' / 'engine' / 'EOS_arithmetic' / 'HeFESTo_Parameters_010123'
 
 
 def _to_numpy(x) -> np.ndarray:
@@ -97,10 +97,18 @@ def _to_numpy(x) -> np.ndarray:
 
 
 def find_complete_sim_dirs(workspace_dir: Path) -> List[Path]:
-    return sorted(
+    if not workspace_dir.exists():
+        raise ValueError(f'Workspace directory {workspace_dir} does not exist')
+    out = sorted(
         d for d in workspace_dir.glob('model_*')
         if all((d / f).exists() for f in REQUIRED_FILES)
     )
+    if len(out) == 0:
+        return sorted(
+            d for d in workspace_dir.glob('Simulation*')
+            if all((d / f).exists() for f in REQUIRED_FILES)
+        )
+    return out
 
 
 def select_sim_dirs(workspace_dir: Path, sims: List[str] = None, n: int = 3, seed: int = None) -> List[Path]:
@@ -128,9 +136,8 @@ def select_sim_dirs(workspace_dir: Path, sims: List[str] = None, n: int = 3, see
 
 
 def load_composition(sim_dir: Path) -> Dict[str, float]:
-    with open(sim_dir / 'params.json') as f:
-        params = json.load(f)
-    return {k: float(params[k]) for k in ELEMENT_KEYS}
+    element_moles, _ = _parse_control_file(str(sim_dir / 'control'))
+    return {k: float(element_moles[k]) for k in ELEMENT_KEYS}
 
 
 def get_prop_array(result: dict, source: str, prop: str) -> np.ndarray:
@@ -226,6 +233,26 @@ def diagnose_trace_species(result: dict, mode: str) -> None:
     print("    --nsmall-rel above the emulator's 'min nonzero' and rerun.")
 
 
+def _expand_chem_out_to_components(chem_out: np.ndarray, indexer) -> np.ndarray:
+    """Expand the emulator's 'chem_out' output (within-phase mole fraction,
+    but only for the compositionally-variable subset of components) back to
+    full (B, C) component space.
+
+    chem_out is itself a slice of a full (B, C) within-phase-fraction array
+    (see NN_MELTS.forwardMB/forwardNN: it computes componentMoles/phaseMoles
+    summed over phases -- which, since each component belongs to exactly one
+    phase, is just that phase's within-phase fraction in full C-space -- then
+    slices to compositionally_variable_subset). The complement (components of
+    single-member, "pure" phases) is missing because it's trivially 1.0: a
+    phase's sole member IS its own whole phase.
+    """
+    B = chem_out.shape[0]
+    full = np.ones((B, len(indexer.label_names)), dtype=np.float64)
+    vc = np.asarray(indexer.compositionally_variable_subset, dtype=np.int64)
+    full[:, vc] = chem_out
+    return full
+
+
 def load_ground_truth(sim_dir: Path) -> dict:
     """Ground-truth bulk properties (fort.56) plus the real phase-equilibria
     assemblage (fort.99) run through the internal HeFESTo-vec property calculator.
@@ -239,11 +266,20 @@ def load_ground_truth(sim_dir: Path) -> dict:
     indexer = HeFESToEmulatorCPU.isothermal_emulator.ml_indexer
     gt_component_moles = load_fort99_componentMoles(str(sim_dir), indexer)[:n]
 
+    # Within-phase mole fraction, computed directly from the true assemblage
+    # (no network output to reuse here, unlike the emulator paths below) --
+    # this is a quality-of-EOS-reconstruction check, not a speed-sensitive
+    # path, so a plain per-phase division is fine.
+    gt_within_phase_frac = compute_within_phase_frac(
+        gt_component_moles, list(indexer.label_indices.values())
+    )
+
     PT = np.stack([P_gpa, T_k], axis=1)
     gt_internal_props = HeFESToEmulatorCPU.get_property_hefesto_vectorized_from_assemblage(
         torch.tensor(gt_component_moles, dtype=torch.float64),
         torch.tensor(PT, dtype=torch.float64),
         property_names=property_names(),
+        within_phase_frac=torch.tensor(gt_within_phase_frac, dtype=torch.float64),
     )
     gt_internal_props['component_moles'] = gt_component_moles
 
@@ -267,14 +303,24 @@ def run_isothermal_emulator(gt: dict, composition: Dict[str, float]) -> dict:
     headers = ['P(GPa)(System_main)', 'T(K)(System_main)'] + comp_headers
 
     with torch.no_grad():
-        out = HeFESToEmulatorCPU.ForwardMB(features, headers=headers, outputs=['component_moles'])
+        out = HeFESToEmulatorCPU.ForwardMB(
+            features, headers=headers, outputs=['component_moles', 'chem_out']
+        )
     component_moles = _to_numpy(out['component_moles']).astype(np.float64)
+    # Within-phase mole fraction is already computed as part of this same
+    # forward pass -- reuse it directly rather than re-deriving it from
+    # component_moles by division.
+    within_phase_frac = _expand_chem_out_to_components(
+        _to_numpy(out['chem_out']).astype(np.float64),
+        HeFESToEmulatorCPU.isothermal_emulator.ml_indexer,
+    )
 
     PT = np.stack([P_gpa, T_k], axis=1)
     props = HeFESToEmulatorCPU.get_property_hefesto_vectorized_from_assemblage(
         torch.tensor(component_moles, dtype=torch.float64),
         torch.tensor(PT, dtype=torch.float64),
         property_names=property_names(),
+        within_phase_frac=torch.tensor(within_phase_frac, dtype=torch.float64),
     )
     props['component_moles'] = component_moles
     return props
@@ -293,16 +339,21 @@ def run_isentropic_emulator(gt: dict, composition: Dict[str, float]) -> dict:
 
     with torch.no_grad():
         out = HeFESToEmulatorCPU.ForwardMB(
-            features, headers=headers, outputs=['component_moles', 'temperature']
+            features, headers=headers, outputs=['component_moles', 'chem_out', 'temperature']
         )
     component_moles = _to_numpy(out['component_moles']).astype(np.float64)
     T_emulated = _to_numpy(out['temperature']).reshape(-1).astype(np.float64)
+    within_phase_frac = _expand_chem_out_to_components(
+        _to_numpy(out['chem_out']).astype(np.float64),
+        HeFESToEmulatorCPU.isentropic_emulator.ml_indexer,
+    )
 
     PT = np.stack([P_gpa, T_emulated], axis=1)
     props = HeFESToEmulatorCPU.get_property_hefesto_vectorized_from_assemblage(
         torch.tensor(component_moles, dtype=torch.float64),
         torch.tensor(PT, dtype=torch.float64),
         property_names=property_names(),
+        within_phase_frac=torch.tensor(within_phase_frac, dtype=torch.float64),
     )
     props['T_emulated'] = T_emulated
     props['component_moles'] = component_moles

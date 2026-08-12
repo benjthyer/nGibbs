@@ -95,7 +95,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -812,12 +812,42 @@ def combine_totals(*,
 
 # Default active-set smallness threshold, as a fraction of total system moles. 1E-6
 # See prune_active_set() for why this exists and how to choose it.
-NSMALL_REL = 1E-3 #1E-3
+NSMALL_REL = 1E-3#4E-4 #1E-3
+
+
+def compute_within_phase_frac(n: np.ndarray, phase_members: Sequence[Sequence[int]]) -> np.ndarray:
+    """Each species' mole fraction *within its own phase* (0 where that phase
+    is entirely absent).
+
+    This is the quantity HeFESTo's own ideal-configurational-entropy penalty
+    actually scales with (``~RT/x``, x = within-phase mole fraction) -- not
+    absolute abundance. A species sitting at within_phase_frac ~= 1 is
+    receiving essentially no regularisation regardless of how small the whole
+    phase is, which is the root cause prune_active_set's single-component
+    sweep (below) targets. See its docstring for the full mechanism.
+
+    Works in whatever column space ``phase_members`` groups: pass full
+    (B, nspec) species moles with HeFESToParams.phase_members for the
+    ground-truth/internal-EOS path, or (B, C) ML-component moles with
+    ml_indexer.label_indices.values() for anything upstream of PropertyIDX.
+    """
+    n = np.maximum(np.asarray(n, dtype=np.float64), 0.0)
+    frac = np.zeros_like(n)
+    for members in phase_members:
+        if len(members) == 0:
+            continue
+        idx = np.asarray(members, dtype=np.int64)
+        tot = n[:, idx].sum(axis=1, keepdims=True)
+        frac[:, idx] = np.where(tot > 0, n[:, idx] / np.maximum(tot, 1e-300), 0.0)
+    return frac
 
 
 def prune_active_set(n: np.ndarray,
                      tables: MetamorphicTables,
-                     nsmall_rel: float = NSMALL_REL) -> np.ndarray:
+                     nsmall_rel: float = NSMALL_REL,
+                     within_phase_frac: Optional[np.ndarray] = None,
+                     single_component_dominance: float = 0.98,
+                     single_component_nsmall_rel: Optional[float] = None) -> np.ndarray:
     """Zero out species that are present only at trace level.
 
     Why this is necessary
@@ -868,6 +898,31 @@ def prune_active_set(n: np.ndarray,
     amount is split across several members so that no single member's mole
     fraction is small.
 
+    The single-component sweep
+    ---------------------------
+    The two tests above only look at a phase's share of the *whole system*.
+    That misses a distinct case that turned out to be at least as common in
+    practice: a phase that mostly reacts out and leaves ONE surviving member
+    behind (e.g. a spinel-group phase where sp/hc/picr all go to exactly zero
+    but a magnetite-spinel endmember lingers at 0.1-0.2% of the system for
+    several GPa/simulation steps -- see the nGibbs Simulation754 Cp
+    investigation). That survivor is precisely the "sole occupant of an
+    otherwise absent phase" pathology described above: with no phase-mates to
+    be diluted against, its within-phase mole fraction sits near 1 and it gets
+    essentially zero configurational regularisation, however small the phase's
+    total is -- and its total can easily sit ABOVE the ordinary nsmall_rel
+    floor (which was tuned for numerical noise, not for real, slowly-decaying
+    residual phases), so the two sweeps above don't catch it.
+
+    ``within_phase_frac`` (see :func:`compute_within_phase_frac`) makes this
+    testable directly instead of inferring it from smallness alone: a species
+    with within_phase_frac >= single_component_dominance IS that lone
+    survivor, regardless of how large or small its phase happens to be. Such a
+    species is only pruned if its phase is ALSO small relative to
+    ``single_component_nsmall_rel`` -- a deliberately looser bar than
+    ``nsmall_rel`` (default: 5x), since a lone-survivor phase is dangerous at
+    abundances an ordinarily-mixed phase would be fine at.
+
     Parameters
     ----------
     n : (B, S) array
@@ -875,6 +930,18 @@ def prune_active_set(n: np.ndarray,
     nsmall_rel : float
         Threshold as a fraction of each row's total moles.  Set to 0 to disable
         (reproducing the raw behaviour, e.g. to reproduce an old result).
+    within_phase_frac : (B, S) array, optional
+        Each species' mole fraction within its own phase (see
+        :func:`compute_within_phase_frac`). When given, enables the
+        single-component sweep described above. When omitted, only the plain
+        total-system-fraction tests run (previous behaviour).
+    single_component_dominance : float
+        A species counts as a lone phase-survivor when its within_phase_frac
+        is at least this (default 0.98).
+    single_component_nsmall_rel : float, optional
+        Smallness threshold (fraction of total system moles) applied only to
+        phases flagged by single_component_dominance. Defaults to
+        ``5 * nsmall_rel`` when not given.
 
     Returns
     -------
@@ -898,6 +965,24 @@ def prune_active_set(n: np.ndarray,
         idx = np.asarray(members, dtype=np.int64)
         ph_total = n[:, idx].sum(axis=1, keepdims=True)
         n[:, idx] = np.where(ph_total < thresh, 0.0, n[:, idx])
+
+    # Single-component sweep: a phase's lone surviving member gets no
+    # configurational dilution regardless of absolute size, so hold it to a
+    # looser (but still finite) smallness bar than an ordinarily-mixed phase.
+    if within_phase_frac is not None:
+        single_thresh = (
+            single_component_nsmall_rel if single_component_nsmall_rel is not None
+            else 5.0 * nsmall_rel
+        ) * total
+        wpf = np.asarray(within_phase_frac, dtype=np.float64)
+        for members in tables.phase_members:
+            if len(members) == 0:
+                continue
+            idx = np.asarray(members, dtype=np.int64)
+            ph_total = n[:, idx].sum(axis=1, keepdims=True)
+            lone_survivor = (wpf[:, idx] >= single_component_dominance).any(axis=1, keepdims=True)
+            drop = lone_survivor & (ph_total > 0) & (ph_total < single_thresh)
+            n[:, idx] = np.where(drop, 0.0, n[:, idx])
 
     return n
 
@@ -961,7 +1046,10 @@ def add_metamorphic(result: Dict[str, np.ndarray],
                     tables: MetamorphicTables,
                     *,
                     include_fast: bool = False,
-                    nsmall_rel: float = NSMALL_REL) -> Dict[str, np.ndarray]:
+                    nsmall_rel: float = NSMALL_REL,
+                    within_phase_frac: Optional[np.ndarray] = None,
+                    single_component_dominance: float = 0.98,
+                    single_component_nsmall_rel: Optional[float] = None) -> Dict[str, np.ndarray]:
     """Augment a ``compute()`` result with metamorphic (phase-change) totals.
 
     Parameters
@@ -977,6 +1065,10 @@ def add_metamorphic(result: Dict[str, np.ndarray],
         :func:`prune_active_set`, which explains why this is load-bearing when
         ``n`` comes from an emulator rather than from HeFESTo's own minimiser.
         Pass 0 to disable.
+    within_phase_frac, single_component_dominance, single_component_nsmall_rel
+        Forwarded to :func:`prune_active_set`'s single-component sweep -- see
+        there for what they do. ``within_phase_frac`` omitted disables that
+        sweep (previous behaviour).
     include_fast : bool
         Also compute the intra-phase order-disorder ("fast") terms that
         physub.f:414-431 folds into the *per-phase* adiabatic modulus, and
@@ -1000,7 +1092,12 @@ def add_metamorphic(result: Dict[str, np.ndarray],
     ``Vs`` is unaffected -- the shear modulus carries no metamorphic term.
     Set ``include_fast=True`` to get ``bmet_fast`` per phase for that path.
     """
-    n = prune_active_set(n, tables, nsmall_rel=nsmall_rel)
+    n = prune_active_set(
+        n, tables, nsmall_rel=nsmall_rel,
+        within_phase_frac=within_phase_frac,
+        single_component_dominance=single_component_dominance,
+        single_component_nsmall_rel=single_component_nsmall_rel,
+    )
     active = n > 0.0
 
     S_spec_vib = result['_S']          # (B, S) J/mol/K, no mixing term

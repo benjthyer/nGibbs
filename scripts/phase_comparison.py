@@ -17,7 +17,6 @@ is produced.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 from typing import Dict, List
@@ -35,7 +34,7 @@ for _p in (str(REPO_ROOT), str(SRC_ROOT)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from src.ngibbs.engine.API import HeFESToMarsEmulatorCPU as HeFESToEmulatorCPU
+from src.ngibbs.engine.API import HeFESToEmulatorCPU as HeFESToEmulatorCPU
 from src.builder.plotting import phase_colors, build_ordered_phases, draw_phase_stack
 from builder.HeFESTo.HeFESTo_functions import (
     extract_bulk_properties_from_simulation_dir,
@@ -43,12 +42,13 @@ from builder.HeFESTo.HeFESTo_functions import (
     _safe_read_ws_table,
     _resolve_component_name_from_abbr,
 )
+from src.ngibbs.utils.file_utils import _parse_control_file
 
 # A component contributing less than this fraction of a row's total assemblage
 # moles is treated as numerical noise rather than a genuinely unrepresented phase.
 MISSING_PHASE_FRACTION_THRESHOLD = 1.0e-3
 
-REQUIRED_FILES = ['control', 'fort.56', 'fort.61', 'fort.68', 'fort.99', 'params.json']
+REQUIRED_FILES = ['control', 'fort.56', 'fort.61', 'fort.68', 'fort.99']
 ELEMENT_KEYS = ['Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O']
 
 
@@ -59,10 +59,18 @@ def _to_numpy(x) -> np.ndarray:
 
 
 def find_complete_sim_dirs(workspace_dir: Path) -> List[Path]:
-    return sorted(
+    if not workspace_dir.exists():
+        raise ValueError(f'Workspace directory {workspace_dir} does not exist')
+    out = sorted(
         d for d in workspace_dir.glob('model_*')
         if all((d / f).exists() for f in REQUIRED_FILES)
     )
+    if len(out) == 0:
+        return sorted(
+        d for d in workspace_dir.glob('Simulation*')
+        if all((d / f).exists() for f in REQUIRED_FILES)
+    )
+    return out
 
 
 def select_sim_dirs(workspace_dir: Path, sims: List[str] = None, n: int = 3, seed: int = None) -> List[Path]:
@@ -90,9 +98,8 @@ def select_sim_dirs(workspace_dir: Path, sims: List[str] = None, n: int = 3, see
 
 
 def load_composition(sim_dir: Path) -> Dict[str, float]:
-    with open(sim_dir / 'params.json') as f:
-        params = json.load(f)
-    return {k: float(params[k]) for k in ELEMENT_KEYS}
+    element_moles, _ = _parse_control_file(str(sim_dir / 'control'))
+    return {k: float(element_moles[k]) for k in ELEMENT_KEYS}
 
 
 def normalize_phase_moles(phase_moles: np.ndarray) -> np.ndarray:

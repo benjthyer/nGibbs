@@ -26,6 +26,7 @@ from .EOS_arithmetic.hefesto_vec import (
     load_control,
     build_tables as hefesto_build_tables,
     add_metamorphic as hefesto_add_metamorphic,
+    compute_within_phase_frac,
     NSMALL_REL,
 )
 
@@ -344,8 +345,21 @@ class InputParser:
         # Clip to valid range: 0 <= Fe3+ <= Fe_total
         fe3_moles = np.clip(fe3_moles, 0.0, fe_total).astype(np.float32)
 
+        # 'Fe' and 'Fe3' are disjoint ferrous-only/ferric-only pools in the
+        # model's compositional basis (compToEl gives every component either
+        # a pure 'Fe' or a pure 'Fe3' formula, never both -- see
+        # HeFESToEmulatorCPU.get_property_hefesto_vectorized_from_assemblage).
+        # Subtract the estimated ferric fraction out of 'Fe' so the two
+        # columns partition, rather than double-count, the true total Fe.
+        # Leaving 'Fe' at its original total here would inflate the bulk
+        # mass-balance target that polish_masses corrects the predicted
+        # assemblage against by exactly fe3_moles, biasing every predicted
+        # assemblage iron-rich relative to the true composition.
+        updated_values = values.astype(np.float32, copy=True)
+        updated_values[:, fe_idx] = fe_total - fe3_moles
+
         o_idx = header_map['O']
-        updated_values = np.delete(values, o_idx, axis=1).astype(np.float32, copy=False)
+        updated_values = np.delete(updated_values, o_idx, axis=1)
         updated_values = np.insert(updated_values, o_idx, fe3_moles, axis=1).astype(np.float32, copy=False)
 
         updated_headers = list(headers)
@@ -1567,6 +1581,26 @@ class HeFESToAPI(EmulatorAPI):
 
         self.PropertyIDX = np.array([snames_dict[name] for name in self.isothermal_emulator.ml_indexer.label_names])
 
+        # Known label collision: this model's ml_indexer.label_names has the
+        # string 'magnetite' at BOTH ml component index 4 (3rd member of the
+        # 'spinel' phase group -- physically HeFESTo's 'smag', the spinel-
+        # solid-solution magnetite endmember) and index 56 (5th member of
+        # 'ferropericlase' -- physically 'mag', plain oxide-phase magnetite).
+        # Confirmed by matching phase position: ML 'spinel' = [spinel,
+        # hercynite, magnetite, picro-chromite] lines up 1:1 with physics
+        # phase 'sp' = [sp, hc, smag, picr]. snames_dict['magnetite'] can only
+        # resolve to one species (63, 'mag'), so index 4 was silently mapped
+        # to the same species as index 56 -- X[:, PropertyIDX] = component_moles
+        # then drops index 4's contribution whenever both are nonzero. The
+        # root cause is a stale COMPONENT_ABBREVIATION_OVERRIDES['smag'] entry
+        # (ngibbs/utils/file_utils.py) that produced this label at the time
+        # this model's label metadata was generated; fixed there for future
+        # models, but that fix cannot retroactively change this checkpoint's
+        # saved label_names, so it's corrected here too.
+        _label_names = self.isothermal_emulator.ml_indexer.label_names
+        if len(_label_names) > 4 and _label_names[4] == 'magnetite':
+            self.PropertyIDX[4] = snames_dict['magnetite-spinel']
+
         # Load vectorised HeFESTo EOS params if a control file is provided
         _eos_dir = Path(__file__).parent / "EOS_arithmetic"
         if control_path is None:
@@ -1641,6 +1675,17 @@ class HeFESToAPI(EmulatorAPI):
     # from the fort.99 ground truth.
     metamorphic_nsmall_rel: float = NSMALL_REL
 
+    # Single-component-phase sweep (see hefesto_vec.metamorphic.prune_active_set):
+    # catches a phase's lone surviving member -- e.g. a spinel-group phase
+    # where every other endmember has gone to exactly zero but one leftover
+    # component lingers at trace level for many GPa/steps. That survivor
+    # carries no configurational regularisation (nothing else in its phase to
+    # be diluted against), independent of how small metamorphic_nsmall_rel is
+    # set to. Only engages when within_phase_frac is supplied to
+    # get_property_hefesto_vectorized_from_assemblage.
+    metamorphic_single_component_dominance: float = 0.98
+    metamorphic_single_component_nsmall_rel: Optional[float] = None  # default: 5x metamorphic_nsmall_rel
+
     _FAST_KEYS = frozenset({
         'Vp_fast', 'Vb_fast', 'Kh_fast', 'Kv_fast', 'Kr_fast',
         'dndt_fast', 'dndp_fast',
@@ -1689,6 +1734,7 @@ class HeFESToAPI(EmulatorAPI):
         component_moles: torch.Tensor,
         PT: torch.Tensor,
         property_names: Sequence[str] = ('rho', 'Vp', 'Vs', 'S'),
+        within_phase_frac: Optional[torch.Tensor] = None,
     ) -> Dict[str, np.ndarray]:
         """
         Compute bulk EOS properties using the vectorised HeFESTo EOS.
@@ -1745,6 +1791,24 @@ class HeFESToAPI(EmulatorAPI):
             Columns: [P (GPa), T (K)].
         property_names : sequence of str
             Keys to return from the compute output dict.
+        within_phase_frac : torch.Tensor, shape (B, C), optional
+            Each component's mole fraction *within its own phase* -- same
+            column space as ``component_moles``. Enables prune_active_set's
+            single-component sweep (see
+            hefesto_vec.metamorphic.compute_within_phase_frac / .prune_active_set),
+            which catches a phase's lone surviving member -- e.g. every other
+            spinel-group endmember at exactly zero but one leftover component
+            lingering at trace level -- that ordinary total-system-fraction
+            pruning misses because that survivor's phase share can sit above
+            metamorphic_nsmall_rel even though it carries no configurational
+            regularisation. For the emulator, pass 'chem_out' (already computed
+            per forward pass, so this is free) expanded back to component
+            space via ml_indexer.variedToAllComp. When omitted, it is derived
+            for you from ``component_moles`` itself via a direct
+            moles-over-phase-total division -- correct, but redundant with (and
+            noisier than) a genuine intensive-label output, so prefer passing
+            the real one when you have it. Only used when a metamorphic
+            property is requested.
 
         Returns
         -------
@@ -1774,6 +1838,19 @@ class HeFESToAPI(EmulatorAPI):
         X_input = np.zeros((B, self.hefesto_params.nspec), dtype=np.float64)
         X_input[:, self.PropertyIDX] = cm_np
 
+        if within_phase_frac is not None:
+            if torch.is_tensor(within_phase_frac):
+                wpf_np = within_phase_frac.detach().cpu().numpy().astype(np.float64)
+            else:
+                wpf_np = np.asarray(within_phase_frac, dtype=np.float64)
+            within_phase_frac_full = np.zeros((B, self.hefesto_params.nspec), dtype=np.float64)
+            within_phase_frac_full[:, self.PropertyIDX] = wpf_np
+        else:
+            # Computed lazily below, only if a metamorphic property is actually
+            # requested (this is cheap either way, but no need to pay it for
+            # rho/Vp/Vs/S-only calls).
+            within_phase_frac_full = None
+
         eos_device = self.device.type if hasattr(self.device, 'type') else str(self.device)
         t0 = time.time()
         result = hefesto_compute(
@@ -1788,11 +1865,18 @@ class HeFESToAPI(EmulatorAPI):
         wanted = set(property_names)
         need_fast = bool(wanted & self._FAST_KEYS)
         if need_fast or (wanted & self._METAMORPHIC_KEYS):
+            if within_phase_frac_full is None:
+                within_phase_frac_full = compute_within_phase_frac(
+                    X_input, self.hefesto_params.phase_members
+                )
             t1 = time.time()
             met = hefesto_add_metamorphic(
                 result, X_input, T, P, self._get_metamorphic_tables(),
                 include_fast=need_fast,
                 nsmall_rel=self.metamorphic_nsmall_rel,
+                within_phase_frac=within_phase_frac_full,
+                single_component_dominance=self.metamorphic_single_component_dominance,
+                single_component_nsmall_rel=self.metamorphic_single_component_nsmall_rel,
             )
             if need_fast:
                 # add_metamorphic overwrites Vp/Vb/Kh/Kv/Kr in-place with the
@@ -1968,9 +2052,9 @@ _models_dir = _this_file_dir / "TrainedModels" / "HeFESTo_Adiabats"
 _HeFESTo_Mars_dir = _this_file_dir / "TrainedModels" / "HeFESTo_Mars"
 
 
-adiabat_NPT_path = _models_dir / "HeFESTo_adiabats_NPT.tar"
-adiabat_NPS_path = _models_dir / "HeFESTo_adiabats_NPS.tar"
-adiabat_TfromS_path = _models_dir / "T_from_S_HeFESTo_UMadiabats.pt"
+adiabat_NPT_path = _models_dir / "HeFESTo_Earth_Adiabat_NPT.tar"
+adiabat_NPS_path = _models_dir / "HeFESTo_Earth_Adiabat_NPS.tar"
+adiabat_TfromS_path = _models_dir / "Residual_T_from_S_NN.pt"
 # print(f"[INFO] Looking for HeFESTo model at: {adiabat_NPT_path}")
 
 MELTS102_dir = _this_file_dir / "TrainedModels" / "MELTS102"

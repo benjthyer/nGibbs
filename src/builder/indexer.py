@@ -464,6 +464,8 @@ class DatasetIndexer:
             mass_col = components.get('liq mass (gm)') if phase == 'melts-liquid' else components.get('mass (gm)')
             if mass_col is None:
                 mass_col = components.get('mass(gm)')
+            if mass_col is None:
+                mass_col = components.get('total (moles)')  # HeFESTo phases track abundance in moles, not grams
             if mass_col is not None:
                 mass_indices_list.append(mass_col)
 

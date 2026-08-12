@@ -12,6 +12,11 @@ checked for existing output: if it contains any file besides control/ad.in,
 it's assumed to already be run and is skipped. This makes it safe to re-run
 this script on a tree that a previous run only partially completed.
 
+Every SimulationN directory needs a control file. ad.in is only required
+when control's P-T path flag (field 6 of its first line) is -1, meaning
+HeFESTo reads the path from ad.in; other control configurations embed the
+P-T range directly in control and don't need an ad.in at all.
+
 Requires the HeFESTo runtime environment (Benv activated, LD_LIBRARY_PATH /
 LIBRARY_PATH set, as in ClusterHeFESTo.sh) to already be set up in the shell
 this script is launched from -- it is inherited by the worker processes.
@@ -50,13 +55,35 @@ def is_already_run(sim_dir: Path) -> bool:
     return len(file_names - INPUT_FILES) > 0
 
 
+def control_requires_adin(control_path: Path) -> bool:
+    """True if this control file's P-T path flag tells HeFESTo to read ad.in.
+
+    The first line of a HeFESTo control file is a comma-separated run_code;
+    field index 6 is -1 when the P-T path is supplied via ad.in, and some
+    other value when the P-T range is embedded directly in control (in
+    which case no ad.in is needed at all).
+    """
+    with control_path.open('r', encoding='utf-8', errors='ignore') as f:
+        first_line = f.readline()
+    fields = [v.strip() for v in first_line.split(',')]
+    if len(fields) <= 6:
+        return False
+    try:
+        return float(fields[6]) == -1
+    except ValueError:
+        return False
+
+
 def partition_simulation_dirs(
     sim_dirs: list[Path],
 ) -> tuple[list[Path], list[Path], list[Path]]:
     """Split sim_dirs into (to_run, already_run, missing_inputs)."""
     to_run, already_run, missing_inputs = [], [], []
     for sim_dir in sim_dirs:
-        if not (sim_dir / 'control').is_file() or not (sim_dir / 'ad.in').is_file():
+        control_path = sim_dir / 'control'
+        if not control_path.is_file():
+            missing_inputs.append(sim_dir)
+        elif control_requires_adin(control_path) and not (sim_dir / 'ad.in').is_file():
             missing_inputs.append(sim_dir)
         elif is_already_run(sim_dir):
             already_run.append(sim_dir)
@@ -164,10 +191,10 @@ def main() -> None:
 
     print(f'Found {len(sim_dirs)} SimulationN directories under {base_dir}')
     print(f'  Already run (skipping):        {len(already_run)}')
-    print(f'  Missing control/ad.in (skipping): {len(missing_inputs)}')
+    print(f'  Missing required inputs (skipping): {len(missing_inputs)}')
     print(f'  To run:                        {len(to_run)}')
     for sim_dir in missing_inputs:
-        print(f'  ! Missing control/ad.in, skipping: {sim_dir}')
+        print(f'  ! Missing control (or ad.in when required), skipping: {sim_dir}')
     print()
 
     returncode = run_parallel(

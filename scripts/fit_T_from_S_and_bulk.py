@@ -42,7 +42,8 @@ if repo_src not in sys.path:
 
 from builder.processing.BigMetaTable import BigMetaTable
 
-KEEP_RANGE = [1.75, 2.9]  # Only keep rows with S in this range for fitting
+KEEP_RANGE = [1.75, 3.5]# 2.9]  # Only keep rows with S in this range for fitting
+P_MAX_DEFAULT = None  # No pressure upper bound by default; override with --p-max
 
 
 def _load_table(path: Path) -> pd.DataFrame:
@@ -81,7 +82,15 @@ def _find_column(df: pd.DataFrame, *, exact: list[str], prefixes: list[str], lab
     )
 
 
-def fit_T_from_S_and_bulk(csv_path: Path, out_dir: Path) -> None:
+def compute_T_from_S_and_bulk_regression(csv_path: Path, p_max: float | None = P_MAX_DEFAULT) -> dict:
+    """Load, filter, fit, and return everything needed to report on or plot the fit.
+
+    Shared by the CLI fitting entry point below and by plotting scripts, so the
+    fitted model and the plotted data can never drift apart.
+
+    p_max: if given, drop rows with P >= p_max before fitting. None (default)
+    applies no pressure bound.
+    """
     df = _load_table(csv_path)
 
     t_col = _find_column(
@@ -113,7 +122,9 @@ def fit_T_from_S_and_bulk(csv_path: Path, out_dir: Path) -> None:
 
     keep_cols = [t_col, s_col, p_col] + bulk_cols
     data = df[keep_cols].dropna()
-    in_range = (data[s_col] > KEEP_RANGE[0]) & (data[s_col] < KEEP_RANGE[1]) & (data[p_col] < 25)
+    in_range = (data[s_col] > KEEP_RANGE[0]) & (data[s_col] < KEEP_RANGE[1])
+    if p_max is not None:
+        in_range &= data[p_col] < p_max
     data = data[in_range]
     n = len(data)
 
@@ -141,9 +152,44 @@ def fit_T_from_S_and_bulk(csv_path: Path, out_dir: Path) -> None:
     b0 = float(model.intercept_)
     coefs = [float(v) for v in model.coef_]
 
+    return {
+        "data": data,
+        "n": n,
+        "t_col": t_col,
+        "s_col": s_col,
+        "p_col": p_col,
+        "bulk_cols": bulk_cols,
+        "t": t,
+        "s": s,
+        "p": p,
+        "bulk": bulk,
+        "feature_names": feature_names,
+        "X": X,
+        "model": model,
+        "t_pred": t_pred,
+        "r2": r2,
+        "b0": b0,
+        "coefs": coefs,
+    }
+
+
+def fit_T_from_S_and_bulk(csv_path: Path, out_dir: Path, p_max: float | None = P_MAX_DEFAULT) -> None:
+    result = compute_T_from_S_and_bulk_regression(csv_path, p_max=p_max)
+    t_col = result["t_col"]
+    s_col = result["s_col"]
+    bulk_cols = result["bulk_cols"]
+    n = result["n"]
+    feature_names = result["feature_names"]
+    b0 = result["b0"]
+    coefs = result["coefs"]
+    r2 = result["r2"]
+
+    p_bound_str = "none" if p_max is None else f"< {p_max:g} GPa"
+
     print("--- Temperature Regression Results ---")
     print(f"CSV:        {csv_path}")
     print(f"Rows used:  {n}")
+    print(f"P bound:    {p_bound_str}")
     print(f"T column:   '{t_col}'")
     print(f"S column:   '{s_col}'")
     print(f"Bulk cols:  {bulk_cols}")
@@ -168,6 +214,7 @@ def fit_T_from_S_and_bulk(csv_path: Path, out_dir: Path) -> None:
         "Temperature regression: T = f(S, bulk composition elements)",
         f"CSV: {csv_path}",
         f"Rows used: {n}",
+        f"P bound: {p_bound_str}",
         f"R^2: {r2:.12g}",
         "",
         f"Model: T = b0 + {terms}",
@@ -206,13 +253,22 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Directory to write the coefficient file (defaults to same dir as CSV).",
     )
+    parser.add_argument(
+        "--p-max",
+        type=float,
+        default=P_MAX_DEFAULT,
+        help=(
+            "Drop rows with P >= this value (GPa) before fitting. "
+            "Default: no pressure bound."
+        ),
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     out_dir = args.out_dir if args.out_dir is not None else args.csv.parent
-    fit_T_from_S_and_bulk(args.csv, out_dir)
+    fit_T_from_S_and_bulk(args.csv, out_dir, p_max=args.p_max)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,6 @@
-tarname: HeFESTo_Mars_Profiles_NPT    #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
+tarname: HeFESTo_Earth_Adiabat_NPT_nosep    #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
     
 warm_start: None #pGeoDynamicsIsentropicNoCrApr20_train1 #None #pGeoDynamicsIsothemalNoCrMar11_train6 #None #pGeoDynPTNoCrBinaries #None # 102CrMoleLinear
-
 
   
 encoderLayerUp: 1
@@ -20,16 +19,16 @@ description: ""
 tune1: # find best encoder geometry 
   #best_loss: 7.45870
   strategy: lower # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
-  batch_size: 1024 
+  batch_size: 16384
   epochs: 5
   #learning_rate: 1E-3
   scheduler:
-  type: OneCycleLR #CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
-  args:
-    #T_max: 10 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
-    max_lr: 1E-3
-    epochs: 6
-    steps_per_epoch: 1960
+    type: OneCycleLR #CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
+    args:
+      #T_max: 10 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
+      max_lr: 1E-3
+      epochs: 6
+      steps_per_epoch: 1960
   early_stopping_patience: 2
   #max_N: 5E5
   tune_params: # These go in the specified order
@@ -45,15 +44,15 @@ tune1: # find best encoder geometry
 tune2: # initialize encoder and sat heads 
   strategy: lower # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
   sweep: true
-  batch_size: 1024 
+  batch_size: 16384
   epochs: 5
   scheduler:
-  type: OneCycleLR #CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
-  args:
-    #T_max: 10 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
-    max_lr: 1E-3
-    epochs: 6
-    steps_per_epoch: 1960
+    type: OneCycleLR #CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
+    args:
+      #T_max: 10 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
+      max_lr: 1E-3
+      epochs: 6
+      steps_per_epoch: 1960
   early_stopping_patience: 2
   #max_N: 5E5
   inherit_loss: True # Whether to inherit loss config from previous training stage when tuning
@@ -71,19 +70,21 @@ tune2: # initialize encoder and sat heads
 tune3: #Find best middle brain geometry
   #best_loss: 8.6477
   strategy: upper #
-  batch_size: 1024 
+  batch_size: 16384
   epochs: 5
   #learning_rate: 1E-3
   early_stopping_patience: 2
+  lowWD: 0 # No WD for frozen layers
 
-  type: OneCycleLR #CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
-  args:
-    #T_max: 10 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
-    max_lr: 1E-3
-    epochs: 6
-    steps_per_epoch: 1960
+  scheduler:
+    type: OneCycleLR #CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
+    args:
+      #T_max: 10 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
+      max_lr: 1E-3
+      epochs: 6
+      steps_per_epoch: 1960
 
-  tune_params: 
+  tune_params:
     middleLayer: [[1,0], [1,1], [2,2], [3,2], [2,0], [2,1]]
   
   loss_config:
@@ -109,17 +110,19 @@ tune4: # initialize middle brain and chemistry heads with best geometry from tun
   inherit_loss: True # Whether to inherit loss config from previous training stage when tuning
   sweep: true
   strategy: upper #
-  batch_size: 1024 
+  batch_size: 16384
   epochs: 5
   #learning_rate: 1E-3
   early_stopping_patience: 2
+  lowWD: 0 # No WD for frozen layers
 
-  type: OneCycleLR #CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
-  args:
-    #T_max: 10 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
-    max_lr: 1E-3
-    epochs: 6
-    steps_per_epoch: 1960
+  scheduler:
+    type: OneCycleLR #CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
+    args:
+      #T_max: 10 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
+      max_lr: 1E-3
+      epochs: 6
+      steps_per_epoch: 1960
 
   tune_params: # These go in the specified order
       highWD: [0, 1e-4, 1e-3, 1e-2]
@@ -151,7 +154,7 @@ tune4: # initialize middle brain and chemistry heads with best geometry from tun
 tune5: # Initialize mole heads
   strategy: upper # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
   sweep: true
-  batch_size: 1024 
+  batch_size: 16384
   epochs: 5
   early_stopping_patience: 2
   scheduler:
@@ -189,7 +192,7 @@ tune5: # Initialize mole heads
 
 train1: # Increase number for another layer of training
   strategy: upper # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
-  batch_size: 1024 
+  batch_size: 16384
   epochs: 70
   learning_rate: 5E-4
   early_stopping_patience: 20
@@ -220,13 +223,13 @@ train1: # Increase number for another layer of training
 
 tune6: # No dropout for models with bulk loss (breaks it for some reason), so let's investigate other regularization options
   strategy: upper # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
-  batch_size: 1024 
+  batch_size: 16384
   epochs: 7
   learning_rate: 5E-4
   early_stopping_patience: 4
   max_N: 5E5
+  lowWD: 0 # No WD for frozen layers
   tune_params:
-    lowWD: [0, 1e-6, 1e-5, 1e-4, 1e-3]
     highWD: [0, 1e-4, 1e-3, 1e-2]
     noise: [0, 0.005, 0.01, 0.02, 0.05]
 
@@ -247,7 +250,7 @@ tune6: # No dropout for models with bulk loss (breaks it for some reason), so le
 
 train5: # Increase number for another layer of training
   strategy: finetune # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
-  batch_size: 1024 
+  batch_size: 16384
   epochs: 70
   learning_rate: 5E-4
   early_stopping_patience: 20
@@ -279,7 +282,7 @@ train5: # Increase number for another layer of training
 
 train6: # Increase number for another layer of training
   strategy: finetune # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
-  batch_size: 1024 
+  batch_size: 16384
   lowWD: 0 # No WD for frozen layers
   epochs: 70
   learning_rate: 5E-4
@@ -314,7 +317,7 @@ tune7:
   #best_loss: 7.45870
   strategy: finetune # Train encoder and saturation predictor, all else frozen. 
   sweep: true
-  batch_size: 1024 
+  batch_size: 16384
   epochs: 15
   loss_config:
     binary:
@@ -340,7 +343,7 @@ tune7:
 
 train7: # Increase number for another layer of training
   strategy: finetune # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
-  batch_size: 1024 
+  batch_size: 16384
   epochs: 70
   learning_rate: 5E-4
   early_stopping_patience: 25
@@ -373,7 +376,7 @@ train7: # Increase number for another layer of training
 tune8: # No dropout for models with bulk loss (breaks it for some reason), so let's investigate other regularization options
   strategy: upper # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
   sweep: true
-  batch_size: 1024 
+  batch_size: 16384
   epochs: 7
   learning_rate: 5E-4
   early_stopping_patience: 4
@@ -400,7 +403,7 @@ tune8: # No dropout for models with bulk loss (breaks it for some reason), so le
   
 train8: # Increase number for another layer of training
   strategy: finetune # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
-  batch_size: 1024 
+  batch_size: 16384
   lowWD: 0 # No WD for frozen layers
   epochs: 50
   learning_rate: 5E-4
@@ -435,7 +438,7 @@ train8: # Increase number for another layer of training
 tune9: # No dropout for models with bulk loss (breaks it for some reason), so let's investigate other regularization options
   strategy: finetune # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
   sweep: true
-  batch_size: 1024 
+  batch_size: 16384
   epochs: 7
   learning_rate: 5E-4
   early_stopping_patience: 4

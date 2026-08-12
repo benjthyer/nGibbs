@@ -449,7 +449,7 @@ def _build_predicted_labels(
         for start in range(0, features_raw.shape[0], batch_size):
             stop = min(start + batch_size, features_raw.shape[0])
             features_t = torch.tensor(features_raw[start:stop], dtype=torch.float32, device=device)
-            predicted = emulator.forwardNN(
+            predicted = emulator.forwardMB(
                 features_t,
                 Normalize=True,
                 WtPercent=False,

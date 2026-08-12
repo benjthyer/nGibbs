@@ -35,6 +35,7 @@ Usage
 """
 
 import argparse
+import json
 import shutil
 import tarfile
 import tempfile
@@ -56,7 +57,39 @@ def _norm(name: str) -> str:
     return name.strip()
 
 
-def remap_bundle(input_path: Path, demote: str, promote: str, output_path: Path) -> None:
+def _compute_feature_bounds(features: np.ndarray, feature_names: list) -> dict:
+    """Min/max over the physical feature columns (0..len(feature_names)-1),
+    matching the layout MLexporter.generate_dataset_stats() writes."""
+    n = len(feature_names)
+    physical = features[:, :n]
+    return {
+        "featureNames": list(feature_names),
+        "min": [float(v) for v in np.min(physical, axis=0)],
+        "max": [float(v) for v in np.max(physical, axis=0)],
+    }
+
+
+def _patch_stats_condition_bounds(stats_text: str, bounds: dict) -> str:
+    """Replace just the CONDITION BOUNDS table in stats.txt with `bounds`, in
+    the exact "{name:>20} {min:15.2f} {max:15.2f}" layout
+    MLexporter.generate_dataset_stats() writes. Every other section (phase
+    abundances, oxide bounds, liquid fraction) is untouched - the swap doesn't
+    change those, so there's no need to rescan the dataset to refresh them."""
+    lines = stats_text.splitlines(keepends=True)
+    header_idx = next(i for i, l in enumerate(lines) if l.strip() == "CONDITION BOUNDS")
+    rows_start = header_idx + 3  # skip the section's own dash / column-header / dash lines
+    rows_end = rows_start
+    while rows_end < len(lines) and lines[rows_end].strip():
+        rows_end += 1
+    new_rows = [
+        f"{name:>20} {lo:15.2f} {hi:15.2f}\n"
+        for name, lo, hi in zip(bounds['featureNames'], bounds['min'], bounds['max'])
+    ]
+    return ''.join(lines[:rows_start] + new_rows + lines[rows_end:])
+
+
+def remap_bundle(input_path: Path, demote: str, promote: str, output_path: Path,
+                  bounds_override: dict = None) -> dict:
     """
     Swap one feature and one free output in a single bundle.
 
@@ -72,6 +105,20 @@ def remap_bundle(input_path: Path, demote: str, promote: str, output_path: Path)
         Format: 'Component(Phase)'  e.g. 'Temperature(System_main)'
     output_path : Path
         Destination .tar.gz path (created or overwritten).
+    bounds_override : dict, optional
+        A feature_bounds.json payload (featureNames/min/max) to write into this
+        bundle verbatim instead of recomputing bounds from its own data. Used so
+        Test/Valid splits inherit the Train split's bounds rather than fitting
+        their own - the normalizer built from feature_bounds.json must match
+        across splits, the same way Test/Valid already inherit Train's fitted
+        feature_normalizer at training time (see dataset_workspace.py).
+
+    Returns
+    -------
+    dict
+        The feature_bounds.json payload written into this bundle (either
+        ``bounds_override``, or freshly computed from this bundle's own data
+        when no override is given).
     """
     tmp_base = _repo_root / "data" / "tmp"
     tmp_base.mkdir(parents=True, exist_ok=True)
@@ -140,6 +187,26 @@ def remap_bundle(input_path: Path, demote: str, promote: str, output_path: Path)
         shutil.rmtree(indexer_dir, ignore_errors=True)
         indexer.save(str(indexer_dir))
 
+        # feature_bounds.json is not just carried through unchanged: the swap put
+        # a differently-scaled quantity (e.g. entropy) into the column that used
+        # to hold the demoted quantity's own bounds (e.g. temperature), which
+        # would badly mis-normalize training inputs downstream. Recompute it from
+        # this bundle's own (post-swap) data, unless the caller supplied another
+        # split's bounds to inherit instead.
+        bounds = bounds_override if bounds_override is not None else _compute_feature_bounds(
+            new_features, new_feature_names
+        )
+        with open(tmp / 'feature_bounds.json', 'w') as f:
+            json.dump(bounds, f, indent=2)
+
+        # stats.txt's CONDITION BOUNDS table carries the same stale
+        # name/min/max otherwise - patch it in place from the same `bounds`
+        # rather than rescanning the dataset for a section that's cheap to
+        # derive from what we already computed.
+        stats_path = tmp / 'stats.txt'
+        if stats_path.exists():
+            stats_path.write_text(_patch_stats_condition_bounds(stats_path.read_text(), bounds))
+
         # Repack everything into the output bundle
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with tarfile.open(output_path, 'w:gz') as tar:
@@ -149,6 +216,11 @@ def remap_bundle(input_path: Path, demote: str, promote: str, output_path: Path)
         print(f"  -> {output_path.name}")
         print(f"     features    : {new_feature_names}")
         print(f"     free_outputs : {new_free_names}")
+        print(f"     feature_bounds: "
+              f"{'inherited from Train' if bounds_override is not None else 'recomputed'} "
+              f"-> {dict(zip(bounds['featureNames'], zip(bounds['min'], bounds['max'])))}")
+
+        return bounds
 
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -228,27 +300,56 @@ def main():
     print(f"Remapping basis:  '{args.demote}'  →→  features")
     print(f"                  '{args.promote}'  →→  free_outputs\n")
 
-    for src in sources:
-        # Derive output path
+    def _split_tag(path):
+        for tag in ('_Train', '_Test', '_Valid'):
+            if path.name.endswith(tag + '.tar.gz'):
+                return tag
+        return None
+
+    def _dst_for(src):
         if args.output:
             if is_stem:
-                # Preserve the split suffix (_Train / _Test / _Valid)
-                for tag in ('_Train', '_Test', '_Valid'):
-                    if src.name.endswith(tag + '.tar.gz'):
-                        dst = Path(args.output + tag + '.tar.gz')
-                        break
-                else:
-                    dst = Path(args.output + '.tar.gz')
-            else:
-                dst = Path(args.output)
-                if not str(dst).endswith('.tar.gz'):
-                    dst = Path(str(dst) + '.tar.gz')
-        else:
-            stem = src.name.replace('.tar.gz', '')
-            dst = src.parent / f"{stem}_remapped.tar.gz"
+                tag = _split_tag(src)
+                if tag:
+                    return Path(args.output + tag + '.tar.gz')
+                return Path(args.output + '.tar.gz')
+            dst = Path(args.output)
+            if not str(dst).endswith('.tar.gz'):
+                dst = Path(str(dst) + '.tar.gz')
+            return dst
+        stem = src.name.replace('.tar.gz', '')
+        return src.parent / f"{stem}_remapped.tar.gz"
+
+    dst_by_src = {src: _dst_for(src) for src in sources}
+
+    # Recompute feature_bounds.json once (from Train's own post-swap data) and
+    # reuse it verbatim for Test/Valid, so every split is normalized against the
+    # same bounds - mirrors how Test/Valid already inherit Train's fitted
+    # feature_normalizer at training time rather than fitting their own.
+    if is_stem:
+        train_srcs = [s for s in sources if _split_tag(s) == '_Train']
+        other_srcs = [s for s in sources if _split_tag(s) != '_Train']
+        if not train_srcs:
+            print(
+                "Warning: no *_Train bundle among inputs; each bundle's "
+                "feature_bounds.json will be recomputed independently from its "
+                "own data, so splits may not share identical normalization "
+                "bounds.\n"
+            )
+        ordered_sources = train_srcs + other_srcs
+    else:
+        ordered_sources = sources
+
+    train_bounds = None
+    for src in ordered_sources:
+        dst = dst_by_src[src]
+        override = train_bounds if (is_stem and _split_tag(src) != '_Train') else None
 
         print(f"Processing: {src.name}")
-        remap_bundle(src, args.demote, args.promote, dst)
+        bounds = remap_bundle(src, args.demote, args.promote, dst, bounds_override=override)
+
+        if is_stem and _split_tag(src) == '_Train':
+            train_bounds = bounds
 
     print("\nDone.")
 

@@ -169,6 +169,140 @@ def make_PT_path_martian(S, P, func, P_lit, cold_temp = 220, out_path=None):
     save_fixed_width_table(AdIn, out_path=out_path)
 
 
+_EARTH_ADIABAT_ELEMENT_KEYS = ('Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O')
+_EARTH_ADIABAT_P_HEADER = 'P(GPa)(System_main)'
+_EARTH_ADIABAT_S_HEADER = 'S(J/g/K)(System_main)'
+
+# Rough constant pressure gradient used to place boundary-layer transition
+# points from a depth range (~9 GPa over the top 250 km of mantle).
+KM_PER_GPA = 250.0 / 9.0
+
+# Approximate core-mantle boundary pressure (GPa).
+CMB_PRESSURE_GPA = 135.0
+
+
+def _predict_adiabat_temperature(P, S: float, element_moles: Dict[str, float]) -> np.ndarray:
+    """Predict adiabatic temperature(s) via the Earth_Adiabats NN emulator.
+
+    Wraps ``HeFESToEmulatorCPU.ForwardNN`` (isentropic model) with a fixed
+    entropy and bulk composition, sweeping over one or more pressures.
+    Headers must be the emulator's exact canonical feature names -- the
+    short aliases (e.g. ``'P(GPa)'``) are silently zero-filled instead of
+    matched, which would make every prediction collapse to the P=0 value.
+
+    Parameters
+    ----------
+    P : array-like
+        Pressure(s) in GPa.
+    S : float
+        Mantle entropy (J/g/K), held fixed across all pressures.
+    element_moles : dict
+        Bulk composition as element moles (Si, Mg, Fe, Ca, Al, Na, Cr, O).
+
+    Returns
+    -------
+    np.ndarray
+        Predicted temperatures (K), one per input pressure.
+    """
+    from ngibbs.engine.API import HeFESToEmulatorCPU
+
+    if HeFESToEmulatorCPU is None:
+        raise RuntimeError(
+            'HeFESToEmulatorCPU (Earth_Adiabats emulator) is not available; '
+            'check model files under TrainedModels/HeFESTo_Adiabats.'
+        )
+
+    P = np.atleast_1d(np.asarray(P, dtype=np.float32))
+    comp_row = np.array([[element_moles[k] for k in _EARTH_ADIABAT_ELEMENT_KEYS]], dtype=np.float32)
+    input_array = np.concatenate(
+        [P.reshape(-1, 1), np.full((len(P), 1), S, dtype=np.float32), np.tile(comp_row, (len(P), 1))],
+        axis=1,
+    )
+    headers = [_EARTH_ADIABAT_P_HEADER, _EARTH_ADIABAT_S_HEADER] + list(_EARTH_ADIABAT_ELEMENT_KEYS)
+    output = HeFESToEmulatorCPU.ForwardNN(input_array, headers=headers, outputs=['temperature'])
+    return output['temperature'].detach().cpu().numpy().reshape(-1)
+
+
+def make_PT_path_surface(
+    S: float,
+    P,
+    element_moles: Dict[str, float],
+    surface_temp: float = 300.0,
+    out_path=None,
+) -> None:
+    """Generate an ``ad.in`` PT path spanning only the conductive surface lid.
+
+    ``P`` is assumed to already be restricted to the lid itself (surface to
+    the lithosphere-asthenosphere transition). Temperature is a straight
+    line in P from ``surface_temp`` at ``min(P)`` to the ``Earth_Adiabats``
+    NN emulator's isentropic prediction at ``max(P)`` (the base of the lid,
+    where it hands off to the whole-mantle adiabat dataset).
+
+    Parameters
+    ----------
+    S : float
+        Mantle entropy (J/g/K) used to query the adiabat temperature at the
+        base of the lid.
+    P : array-like
+        Pressures (GPa) along the path, from the surface to the lid base.
+    element_moles : dict
+        Bulk composition (element moles) used to query the NN emulator.
+    surface_temp : float, default=300.0
+        Surface temperature anchor (K) at the shallowest pressure in ``P``.
+    out_path : str or Path, optional
+        Output file path. If ``None`` the table is not written to disk.
+    """
+    P = np.asarray(P, dtype=np.float64)
+    P_min, P_max = float(P.min()), float(P.max())
+    T_base = float(_predict_adiabat_temperature(np.array([P_max]), S, element_moles)[0])
+
+    AdIn = np.zeros((len(P), 3))  # Middle column unused
+    AdIn[:, 0] = P
+    AdIn[:, 2] = surface_temp + (T_base - surface_temp) * ((P - P_min) / (P_max - P_min))
+    AdIn[:, 2] = AdIn[:, 2] + np.random.normal(0, 5, size=len(P))
+    save_fixed_width_table(AdIn, out_path=out_path)
+
+
+def make_PT_path_cmb(
+    S: float,
+    P,
+    element_moles: Dict[str, float],
+    cmb_temp: float,
+    out_path=None,
+) -> None:
+    """Generate an ``ad.in`` PT path spanning only the conductive CMB boundary layer.
+
+    ``P`` is assumed to already be restricted to the boundary layer itself
+    (where it hands off from the whole-mantle adiabat dataset, down to the
+    core). Temperature is a straight line in P from the ``Earth_Adiabats``
+    NN emulator's isentropic prediction at ``min(P)`` (the top of the
+    boundary layer) to ``cmb_temp`` at ``max(P)`` (the core-mantle boundary).
+
+    Parameters
+    ----------
+    S : float
+        Mantle entropy (J/g/K) used to query the adiabat temperature at the
+        top of the boundary layer.
+    P : array-like
+        Pressures (GPa) along the path, from the top of the boundary layer
+        to the CMB.
+    element_moles : dict
+        Bulk composition (element moles) used to query the NN emulator.
+    cmb_temp : float
+        Mantle-side CMB temperature anchor (K) at the deepest pressure in ``P``.
+    out_path : str or Path, optional
+        Output file path. If ``None`` the table is not written to disk.
+    """
+    P = np.asarray(P, dtype=np.float64)
+    P_min, P_max = float(P.min()), float(P.max())
+    T_top = float(_predict_adiabat_temperature(np.array([P_min]), S, element_moles)[0])
+
+    AdIn = np.zeros((len(P), 3))  # Middle column unused
+    AdIn[:, 0] = P
+    AdIn[:, 2] = T_top + (cmb_temp - T_top) * ((P - P_min) / (P_max - P_min))
+    AdIn[:, 2] = AdIn[:, 2] + np.random.normal(0, 5, size=len(P))
+    save_fixed_width_table(AdIn, out_path=out_path)
+
 
 def make_T_from_coef_file(coef_path: str):
     """Build a T(P, S, *, Si, Mg, Fe, Ca, Al, Na, Cr, O) function from a regression file.
@@ -1112,6 +1246,416 @@ def prepare_HeFESTo_tree_Mars(directory: Path, GEOROC_DIR: Path, control_path: P
             func = get_T_mars_simple,
             out_path=sim_dir / 'ad.in',
             )
+
+def prepare_HeFESTo_tree_surface(directory: Path, GEOROC_DIR: Path, control_path: Path, N: int) -> None:
+    """Prepare a BatchNNNN/SimulationN directory tree for HeFESTo surface-lid runs.
+
+    Variant of ``prepare_HeFESTo_tree_fulladiabat`` restricted to the
+    conductive lid only: each simulation's ``ad.in`` runs from the surface
+    (P ~ 0) down to a randomly sampled lithosphere-asthenosphere transition
+    between 0 and 250 km depth (~0-9 GPa), sampled in ~1 GPa increments,
+    with temperature a straight line in P from 300 K at the surface to the
+    ``Earth_Adiabats`` NN emulator's adiabat temperature at the transition
+    (see ``make_PT_path_surface`` / ``_predict_adiabat_temperature``). This
+    intentionally does *not* continue into the adiabatic mantle below the
+    transition -- it is meant to complement a separate whole-mantle adiabat
+    dataset (e.g. from ``prepare_HeFESTo_tree_fulladiabat``), not duplicate it.
+
+    Composition sampling and Fe speciation are otherwise identical to
+    ``prepare_HeFESTo_tree_fulladiabat``.
+
+    Parameters
+    ----------
+    directory : Path
+        Root directory under which ``BatchNNNN/`` subdirectories are created.
+    GEOROC_DIR : Path
+        Path to a GEOROC/PetDB CSV file with oxide wt% columns.
+    control_path : Path
+        Path to a HeFESTo control template file (a shallow-mantle template,
+        e.g. ``shallowHeFESTo``, is appropriate since the boundary-layer
+        physics of interest sits at low pressure).
+    N : int
+        Total number of simulations to generate.
+    """
+
+    directory = Path(directory)
+    GEOROC_DIR = Path(GEOROC_DIR)
+    control_path = Path(control_path)
+    if not control_path.exists() or not control_path.is_file():
+        raise FileNotFoundError(f'Control template not found: {control_path}')
+    directory.mkdir(parents=True, exist_ok=True)
+
+    batch_dir = _next_available_batch_dir(directory, 1)
+    batch_dir.mkdir(parents=True, exist_ok=False)
+    simulations_in_batch = 0
+    batch_number = int(batch_dir.name.removeprefix('Batch'))
+
+    Mps = 273 + 1200 + np.random.uniform(0, 1, N) * (1650 - 1200)  # mantle potential temperatures
+    target_total_moles = 24.0
+
+    georoc_df = pd.read_csv(GEOROC_DIR)
+    mgo_col = 'MgO'
+    with open(control_path, 'r', encoding='utf-8', errors='ignore') as handle:
+        template_lines = [line.rstrip('\n') for line in handle]
+    mgo_numeric = pd.to_numeric(georoc_df[mgo_col], errors='coerce').fillna(0.0)
+    ultramafic_df = georoc_df[mgo_numeric > 20.0]
+    mafic_df = georoc_df[(mgo_numeric > 5.0) & (mgo_numeric <= 20.0)]
+
+    # Composition split: 30% ultramafic, 20% mafic, 50% mixtures of the two
+    N_ultra = int(round(N * 0.3))
+    N_mafic = int(round(N * 0.2))
+    N_mix = N - N_ultra - N_mafic
+
+    ultra_pure = ultramafic_df.sample(n=N_ultra, replace=True).reset_index(drop=True)
+    mafic_pure = mafic_df.sample(n=N_mafic, replace=True).reset_index(drop=True)
+    mix_ultra = ultramafic_df.sample(n=N_mix, replace=True).reset_index(drop=True)
+    mix_mafic = mafic_df.sample(n=N_mix, replace=True).reset_index(drop=True)
+    mix_alphas = np.random.uniform(0.0, 1.0, N_mix)  # ultramafic fraction in mixture
+
+    specs: List[Tuple] = (
+        [('ultra', row, None, None) for _, row in ultra_pure.iterrows()] +
+        [('mafic', row, None, None) for _, row in mafic_pure.iterrows()] +
+        [('mix', mix_ultra.iloc[i], mix_mafic.iloc[i], mix_alphas[i]) for i in range(N_mix)]
+    )
+    order = rng.permutation(N)
+    specs = [specs[i] for i in order]
+
+    logfo2 = np.random.uniform(-6, 3, N)  # logfO2 relative to FMQ
+    logfe3_fe2 = (0.2 * logfo2) - 1
+    fe3_fe2 = 10 ** logfe3_fe2
+    fe3_fet_grid = fe3_fe2 / (1 + fe3_fe2)  # Convert to Fe3+/Fetotal
+    element_keys = np.array(['Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O'])
+
+    # Each simulation covers only the conductive lid: a small near-surface
+    # jitter (P0) down to a lithosphere-asthenosphere transition sampled
+    # 0-250 km deeper (~0-9 GPa), sampled in ~1 GPa increments.
+    P0s = np.random.uniform(0, 0.3, size=N)
+    depth_below_surface_km = np.random.uniform(0.0, 250.0, N)
+    P_trans = P0s + depth_below_surface_km / KM_PER_GPA
+    n_steps = np.maximum(np.round(P_trans - P0s).astype(int) - 1, 0)
+    run_code = [
+        [float(P0s[i]), float(P_trans[i]), int(n_steps[i]), 0, 0, 0, -1, 0, 0, 0, 0]
+        for i in range(N)
+    ]  # ad.in files made downstream
+
+    element_rows: List[List[float]] = []
+    wts: List[str] = []
+
+    for sim_idx, spec in enumerate(specs):
+        if simulations_in_batch >= 1000:
+            batch_number += 1
+            batch_dir = _next_available_batch_dir(directory, batch_number)
+            batch_dir.mkdir(parents=True, exist_ok=False)
+            simulations_in_batch = 0
+
+        sim_dir = batch_dir / f'Simulation{simulations_in_batch + 1}'
+        sim_dir.mkdir(parents=True, exist_ok=True)
+        simulations_in_batch += 1
+
+        ratio = float(fe3_fet_grid[sim_idx])
+        category, row_a, row_b, alpha = spec
+
+        MAX_COMPOSITION_ATTEMPTS = 25
+        for attempt in range(MAX_COMPOSITION_ATTEMPTS):
+            if attempt > 0:
+                if category == 'ultra':
+                    row_a = ultramafic_df.sample(n=1).iloc[0]
+                elif category == 'mafic':
+                    row_a = mafic_df.sample(n=1).iloc[0]
+                else:  # 'mix'
+                    row_a = ultramafic_df.sample(n=1).iloc[0]
+                    row_b = mafic_df.sample(n=1).iloc[0]
+                    alpha = float(np.random.uniform(0.0, 1.0))
+
+            if row_b is None:
+                base_oxide_wt = _build_oxide_wt_from_row(row_a)
+            else:
+                ultra_oxide = _build_oxide_wt_from_row(row_a)
+                mafic_oxide = _build_oxide_wt_from_row(row_b)
+                base_oxide_wt = {
+                    key: float(alpha) * ultra_oxide.get(key, 0.0) + (1.0 - float(alpha)) * mafic_oxide.get(key, 0.0)
+                    for key in set(ultra_oxide) | set(mafic_oxide)
+                }
+
+            unspeciated_wt = _speciate_iron_and_normalize(base_oxide_wt, 0.0)
+            element_moles = _oxide_wt_to_element_moles(unspeciated_wt)
+            element_moles = _normalize_total_moles(element_moles, 1.0)
+
+            mg_val = element_moles.get('Mg', 0.0)
+
+            d_fe = float(np.random.uniform(0.00, 0.05)) * float(np.random.uniform() > 0.3)
+            d_cr = float(np.random.uniform(0.0, 0.01))
+            d_si = float(np.random.uniform(-0.5 / 24, 2.0 / 24))
+            d_mg = float(np.random.uniform(1.5 / 24, 2.75 / 24)) * (mg_val < 1.5 / 24)
+            d_mg += float(np.random.uniform(0.25 / 24, 2.0 / 24))
+            d_ca = -(float(np.random.uniform(0.0, 0.1)) * (element_moles.get('Ca', 0.0) > 0.1))
+            d_al = -(float(np.random.uniform(0.0, 0.05)) * (element_moles.get('Al', 0.0) > 0.05))
+
+            element_moles['Fe'] = element_moles.get('Fe', 0.0) + d_fe
+            element_moles['Cr'] = element_moles.get('Cr', 0.0) + d_cr
+            element_moles['Ca'] = element_moles.get('Ca', 0.0) + d_ca
+            element_moles['Al'] = element_moles.get('Al', 0.0) + d_al
+            element_moles['Si'] = element_moles.get('Si', 0.0) + d_si
+            element_moles['Mg'] = element_moles.get('Mg', 0.0) + d_mg
+            element_moles['O'] = (
+                element_moles.get('O', 0.0)
+                + 1.0 * d_fe
+                + 1.5 * d_cr
+                + 1.0 * d_ca
+                + 1.5 * d_al
+                + 2.0 * d_si
+                + 1.0 * d_mg
+            )
+
+            fe_total = element_moles.get('Fe', 0.0)
+            element_moles['O'] = element_moles.get('O', 0.0) + 0.5 * ratio * fe_total
+
+            element_moles = _normalize_total_moles(element_moles, target_total_moles)
+
+            bulk_comp_wt, _, _ = _compute_bulk_from_elements(element_moles)
+            feot_wt = bulk_comp_wt['FeO'] + bulk_comp_wt['Fe2O3'] * (
+                2.0 * OXIDE_MOLAR_MASSES['FeO'] / OXIDE_MOLAR_MASSES['Fe2O3']
+            )
+            sio2_wt = bulk_comp_wt['SiO2']
+            if feot_wt <= 30.0 and sio2_wt >= 25.0:
+                break
+        else:
+            print(
+                f'Sim {sim_idx+1}: no composition satisfied FeOT<=30%, SiO2>=25% '
+                f'after {MAX_COMPOSITION_ATTEMPTS} attempts; using last draw '
+                f'(FeOT={feot_wt:.2f}%, SiO2={sio2_wt:.2f}%)'
+            )
+
+        wt_debug = ', '.join(f'{key}={value:.4f}' for key, value in element_moles.items())
+        print(f'Sim {sim_idx+1} Fe3/FeT={ratio:.4f} -> {wt_debug}')
+        wts.append(wt_debug)
+
+        element_rows.append([element_moles[key] for key in element_keys])
+
+        control_copy_path = sim_dir / 'control'
+        shutil.copy2(control_path, control_copy_path)
+        updated_control_lines = _build_control_lines(
+            template_lines=template_lines,
+            element_values=element_moles,
+            run_code=run_code[sim_idx],
+        )
+        with open(control_copy_path, 'w', encoding='utf-8') as handle:
+            handle.write('\n'.join(updated_control_lines) + '\n')
+
+        make_PT_path_surface(
+            S=get_S(T=Mps[sim_idx], Ca=element_moles['Ca']),
+            P=np.linspace(run_code[sim_idx][0], run_code[sim_idx][1], run_code[sim_idx][2] + 2),
+            element_moles=element_moles,
+            surface_temp=300.0,
+            out_path=sim_dir / 'ad.in',
+        )
+
+
+def prepare_HeFESTo_tree_cmb(directory: Path, GEOROC_DIR: Path, control_path: Path, N: int) -> None:
+    """Prepare a BatchNNNN/SimulationN directory tree for HeFESTo CMB-boundary-layer runs.
+
+    Variant of ``prepare_HeFESTo_tree_fulladiabat`` restricted to the
+    conductive thermal boundary layer only: each simulation's ``ad.in`` runs
+    from a randomly sampled transition 100-300 km above the CMB down to the
+    core at 135 GPa, sampled in ~1 GPa increments, with temperature a
+    straight line in P from the ``Earth_Adiabats`` NN emulator's adiabat
+    temperature at the transition down to a randomly sampled mantle-side CMB
+    temperature between 3500 K and 5000 K (see ``make_PT_path_cmb`` /
+    ``_predict_adiabat_temperature``). This intentionally does *not* extend
+    upward into the adiabatic mantle above the transition -- it is meant to
+    complement a separate whole-mantle adiabat dataset (e.g. from
+    ``prepare_HeFESTo_tree_fulladiabat``), not duplicate it.
+
+    Composition sampling and Fe speciation are otherwise identical to
+    ``prepare_HeFESTo_tree_fulladiabat``.
+
+    Parameters
+    ----------
+    directory : Path
+        Root directory under which ``BatchNNNN/`` subdirectories are created.
+    GEOROC_DIR : Path
+        Path to a GEOROC/PetDB CSV file with oxide wt% columns.
+    control_path : Path
+        Path to a HeFESTo control template file (a deep-mantle template,
+        e.g. ``deepHeFESTo``, is appropriate since the boundary-layer physics
+        of interest sits at high pressure).
+    N : int
+        Total number of simulations to generate.
+    """
+
+    directory = Path(directory)
+    GEOROC_DIR = Path(GEOROC_DIR)
+    control_path = Path(control_path)
+    if not control_path.exists() or not control_path.is_file():
+        raise FileNotFoundError(f'Control template not found: {control_path}')
+    directory.mkdir(parents=True, exist_ok=True)
+
+    batch_dir = _next_available_batch_dir(directory, 1)
+    batch_dir.mkdir(parents=True, exist_ok=False)
+    simulations_in_batch = 0
+    batch_number = int(batch_dir.name.removeprefix('Batch'))
+
+    Mps = 273 + 1200 + np.random.uniform(0, 1, N) * (1650 - 1200)  # mantle potential temperatures
+    target_total_moles = 24.0
+
+    georoc_df = pd.read_csv(GEOROC_DIR)
+    mgo_col = 'MgO'
+    with open(control_path, 'r', encoding='utf-8', errors='ignore') as handle:
+        template_lines = [line.rstrip('\n') for line in handle]
+    mgo_numeric = pd.to_numeric(georoc_df[mgo_col], errors='coerce').fillna(0.0)
+    ultramafic_df = georoc_df[mgo_numeric > 20.0]
+    mafic_df = georoc_df[(mgo_numeric > 5.0) & (mgo_numeric <= 20.0)]
+
+    # Composition split: 30% ultramafic, 20% mafic, 50% mixtures of the two
+    N_ultra = int(round(N * 0.3))
+    N_mafic = int(round(N * 0.2))
+    N_mix = N - N_ultra - N_mafic
+
+    ultra_pure = ultramafic_df.sample(n=N_ultra, replace=True).reset_index(drop=True)
+    mafic_pure = mafic_df.sample(n=N_mafic, replace=True).reset_index(drop=True)
+    mix_ultra = ultramafic_df.sample(n=N_mix, replace=True).reset_index(drop=True)
+    mix_mafic = mafic_df.sample(n=N_mix, replace=True).reset_index(drop=True)
+    mix_alphas = np.random.uniform(0.0, 1.0, N_mix)  # ultramafic fraction in mixture
+
+    specs: List[Tuple] = (
+        [('ultra', row, None, None) for _, row in ultra_pure.iterrows()] +
+        [('mafic', row, None, None) for _, row in mafic_pure.iterrows()] +
+        [('mix', mix_ultra.iloc[i], mix_mafic.iloc[i], mix_alphas[i]) for i in range(N_mix)]
+    )
+    order = rng.permutation(N)
+    specs = [specs[i] for i in order]
+
+    logfo2 = np.random.uniform(-6, 3, N)  # logfO2 relative to FMQ
+    logfe3_fe2 = (0.2 * logfo2) - 1
+    fe3_fe2 = 10 ** logfe3_fe2
+    fe3_fet_grid = fe3_fe2 / (1 + fe3_fe2)  # Convert to Fe3+/Fetotal
+    element_keys = np.array(['Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O'])
+
+    # Each simulation covers only the CMB boundary layer: a transition
+    # sampled 100-300 km above the CMB down to a small jitter around the
+    # core pressure (135 GPa), sampled in ~1 GPa increments.
+    T_cmbs = np.random.uniform(3500.0, 5000.0, N)  # mantle-side CMB temperatures
+    P_cores = CMB_PRESSURE_GPA + np.random.uniform(0, 1, size=N)
+    depth_above_cmb_km = np.random.uniform(100.0, 300.0, N)
+    P_trans = P_cores - depth_above_cmb_km / KM_PER_GPA
+    n_steps = np.maximum(np.round(P_cores - P_trans).astype(int) - 1, 0)
+    run_code = [
+        [float(P_trans[i]), float(P_cores[i]), int(n_steps[i]), 0, 0, 0, -1, 0, 0, 0, 0]
+        for i in range(N)
+    ]  # ad.in files made downstream
+
+    element_rows: List[List[float]] = []
+    wts: List[str] = []
+
+    for sim_idx, spec in enumerate(specs):
+        if simulations_in_batch >= 1000:
+            batch_number += 1
+            batch_dir = _next_available_batch_dir(directory, batch_number)
+            batch_dir.mkdir(parents=True, exist_ok=False)
+            simulations_in_batch = 0
+
+        sim_dir = batch_dir / f'Simulation{simulations_in_batch + 1}'
+        sim_dir.mkdir(parents=True, exist_ok=True)
+        simulations_in_batch += 1
+
+        ratio = float(fe3_fet_grid[sim_idx])
+        category, row_a, row_b, alpha = spec
+
+        MAX_COMPOSITION_ATTEMPTS = 25
+        for attempt in range(MAX_COMPOSITION_ATTEMPTS):
+            if attempt > 0:
+                if category == 'ultra':
+                    row_a = ultramafic_df.sample(n=1).iloc[0]
+                elif category == 'mafic':
+                    row_a = mafic_df.sample(n=1).iloc[0]
+                else:  # 'mix'
+                    row_a = ultramafic_df.sample(n=1).iloc[0]
+                    row_b = mafic_df.sample(n=1).iloc[0]
+                    alpha = float(np.random.uniform(0.0, 1.0))
+
+            if row_b is None:
+                base_oxide_wt = _build_oxide_wt_from_row(row_a)
+            else:
+                ultra_oxide = _build_oxide_wt_from_row(row_a)
+                mafic_oxide = _build_oxide_wt_from_row(row_b)
+                base_oxide_wt = {
+                    key: float(alpha) * ultra_oxide.get(key, 0.0) + (1.0 - float(alpha)) * mafic_oxide.get(key, 0.0)
+                    for key in set(ultra_oxide) | set(mafic_oxide)
+                }
+
+            unspeciated_wt = _speciate_iron_and_normalize(base_oxide_wt, 0.0)
+            element_moles = _oxide_wt_to_element_moles(unspeciated_wt)
+            element_moles = _normalize_total_moles(element_moles, 1.0)
+
+            mg_val = element_moles.get('Mg', 0.0)
+
+            d_fe = float(np.random.uniform(0.00, 0.05)) * float(np.random.uniform() > 0.3)
+            d_cr = float(np.random.uniform(0.0, 0.01))
+            d_si = float(np.random.uniform(-0.5 / 24, 2.0 / 24))
+            d_mg = float(np.random.uniform(1.5 / 24, 2.75 / 24)) * (mg_val < 1.5 / 24)
+            d_mg += float(np.random.uniform(0.25 / 24, 2.0 / 24))
+            d_ca = -(float(np.random.uniform(0.0, 0.1)) * (element_moles.get('Ca', 0.0) > 0.1))
+            d_al = -(float(np.random.uniform(0.0, 0.05)) * (element_moles.get('Al', 0.0) > 0.05))
+
+            element_moles['Fe'] = element_moles.get('Fe', 0.0) + d_fe
+            element_moles['Cr'] = element_moles.get('Cr', 0.0) + d_cr
+            element_moles['Ca'] = element_moles.get('Ca', 0.0) + d_ca
+            element_moles['Al'] = element_moles.get('Al', 0.0) + d_al
+            element_moles['Si'] = element_moles.get('Si', 0.0) + d_si
+            element_moles['Mg'] = element_moles.get('Mg', 0.0) + d_mg
+            element_moles['O'] = (
+                element_moles.get('O', 0.0)
+                + 1.0 * d_fe
+                + 1.5 * d_cr
+                + 1.0 * d_ca
+                + 1.5 * d_al
+                + 2.0 * d_si
+                + 1.0 * d_mg
+            )
+
+            fe_total = element_moles.get('Fe', 0.0)
+            element_moles['O'] = element_moles.get('O', 0.0) + 0.5 * ratio * fe_total
+
+            element_moles = _normalize_total_moles(element_moles, target_total_moles)
+
+            bulk_comp_wt, _, _ = _compute_bulk_from_elements(element_moles)
+            feot_wt = bulk_comp_wt['FeO'] + bulk_comp_wt['Fe2O3'] * (
+                2.0 * OXIDE_MOLAR_MASSES['FeO'] / OXIDE_MOLAR_MASSES['Fe2O3']
+            )
+            sio2_wt = bulk_comp_wt['SiO2']
+            if feot_wt <= 30.0 and sio2_wt >= 25.0:
+                break
+        else:
+            print(
+                f'Sim {sim_idx+1}: no composition satisfied FeOT<=30%, SiO2>=25% '
+                f'after {MAX_COMPOSITION_ATTEMPTS} attempts; using last draw '
+                f'(FeOT={feot_wt:.2f}%, SiO2={sio2_wt:.2f}%)'
+            )
+
+        wt_debug = ', '.join(f'{key}={value:.4f}' for key, value in element_moles.items())
+        print(f'Sim {sim_idx+1} Fe3/FeT={ratio:.4f} -> {wt_debug}')
+        wts.append(wt_debug)
+
+        element_rows.append([element_moles[key] for key in element_keys])
+
+        control_copy_path = sim_dir / 'control'
+        shutil.copy2(control_path, control_copy_path)
+        updated_control_lines = _build_control_lines(
+            template_lines=template_lines,
+            element_values=element_moles,
+            run_code=run_code[sim_idx],
+        )
+        with open(control_copy_path, 'w', encoding='utf-8') as handle:
+            handle.write('\n'.join(updated_control_lines) + '\n')
+
+        make_PT_path_cmb(
+            S=get_S(T=Mps[sim_idx], Ca=element_moles['Ca']),
+            P=np.linspace(run_code[sim_idx][0], run_code[sim_idx][1], run_code[sim_idx][2] + 2),
+            element_moles=element_moles,
+            cmb_temp=float(T_cmbs[sim_idx]),
+            out_path=sim_dir / 'ad.in',
+        )
+
 
 def _find_all_control_files(workspace_dir: str) -> List[str]:
     """Return sorted paths to every ``control`` file inside a SimulationN dir at any depth."""

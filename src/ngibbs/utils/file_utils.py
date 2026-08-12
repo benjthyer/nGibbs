@@ -718,7 +718,6 @@ COMPONENT_ABBREVIATION_OVERRIDES: Dict[str, str] = {
     'hlpv': 'ferric-bridgmanite-ls',
     'fapv': 'ferric-al-bridgmanite',
     'crpv': 'cr-bridgmanite',
-    'smag': 'magnetite',
     'fea': 'alpha-iron',
     'feg': 'gamma-iron',
     'fee': 'epsilon-iron',

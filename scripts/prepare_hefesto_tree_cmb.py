@@ -1,0 +1,74 @@
+"""
+CLI wrapper for preparing a HeFESTo CMB conductive boundary-layer simulation tree.
+
+This script copies the control template into SimulationN folders, rewrites the
+control file per simulation, and writes each simulation's ad.in path. Each
+ad.in covers only the conductive boundary layer itself: from a randomly
+sampled transition 100-300 km above the CMB (temperature predicted with the
+Earth_Adiabats NN emulator) down to the core at 135 GPa, ending at a randomly
+sampled mantle-side CMB temperature (3500-5000 K). This is meant to
+complement a separate whole-mantle adiabat dataset, not duplicate it.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+
+repo_root = Path(__file__).resolve().parents[1]
+src_root = repo_root / 'src'
+if str(repo_root) not in sys.path:
+	sys.path.insert(0, str(repo_root))
+if str(src_root) not in sys.path:
+	sys.path.insert(0, str(src_root))
+
+from builder.HeFESTo.HeFESTo_functions import (  # noqa: E402
+	prepare_HeFESTo_tree_cmb,
+)
+
+
+def parse_args() -> argparse.Namespace:
+	parser = argparse.ArgumentParser(
+		description='Prepare a HeFESTo CMB-boundary-layer SimulationN tree and per-run ad.in files.',
+	)
+	parser.add_argument(
+		'--directory',
+		type=Path,
+		required=True,
+		help='Output directory where SimulationN folders will be created.',
+	)
+	parser.add_argument(
+		'--georoc-dir',
+		type=Path,
+		required=True,
+		help='Path to the GEOROC CSV file used to sample compositions.',
+	)
+	parser.add_argument(
+		'--control-path',
+		type=Path,
+		required=True,
+		help='Path to the HeFESTo control template file (a deep-mantle template, e.g. deepHeFESTo).',
+	)
+	parser.add_argument(
+		'--n',
+		type=int,
+		required=True,
+		help='Number of simulations to create.',
+	)
+	return parser.parse_args()
+
+
+def main() -> None:
+	args = parse_args()
+	prepare_HeFESTo_tree_cmb(
+		directory=args.directory,
+		GEOROC_DIR=args.georoc_dir,
+		control_path=args.control_path,
+		N=args.n,
+	)
+
+
+if __name__ == '__main__':
+	main()
