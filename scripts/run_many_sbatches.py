@@ -59,6 +59,7 @@ mkdir -p logs
 source $HOME/HeFESTo/Benv/bin/activate
 export LD_LIBRARY_PATH=$HOME/HeFESTo/lib64:$LD_LIBRARY_PATH
 export LIBRARY_PATH=$HOME/HeFESTo/lib64:$LIBRARY_PATH
+export OPENBLAS_NUM_THREADS=1
 
 # Navigate to this simulation's directory
 ACTIVE_DIR=Simulation${{SLURM_ARRAY_TASK_ID}}
