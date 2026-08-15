@@ -105,12 +105,12 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
             except:
                 trials = [trials]
 
-        # --- Handle Encoder Layers (paired parameter) ---
+        # --- Handle Encoder Layers (paired parameter) --- Archetectrural type
         if parameter == 'encoderLayer':
             trials.append([Model.encoderLayerUp, Model.encoderLayerDown]) # ensure current state represented
             trials = np.array(trials)
             trials = np.unique(trials, axis=0)
-            complexity_score = trials[:, 0] - 0.75 * trials[:, 1]
+            complexity_score = trials[:, 0] - 0.66 * trials[:, 1]
             trials = trials[np.argsort(complexity_score)]
             zero_idx = np.where(
                 np.all(trials == np.array([anchor_config['encoderLayerUp'], anchor_config['encoderLayerDown']]), axis=1)
@@ -398,12 +398,12 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
             except:
                 trials = [trials]
 
-        # --- Handle middleBrain Layers (paired parameter) ---
+        # --- Handle middleBrain Layers (paired parameter) --- archetectural type
         if parameter == 'middleLayer':
             trials.append([active_config['middleLayerUp'], active_config['middleLayerDown']]) # ensure current state represented
             trials = np.array(trials)
             trials = np.unique(trials, axis=0)
-            complexity_score = trials[:, 0] - 0.75 * trials[:, 1]
+            complexity_score = trials[:, 0] - 0.66 * trials[:, 1]
             trials = trials[np.argsort(complexity_score)]
             zero_idx = np.where(
                 np.all(trials == np.array([active_config['middleLayerUp'], active_config['middleLayerDown']]), axis=1)

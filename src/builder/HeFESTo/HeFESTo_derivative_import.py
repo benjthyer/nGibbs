@@ -40,8 +40,9 @@ except ImportError:
     )
 
 from .HeFESTo_functions import (
-    _list_simulation_dirs, _safe_assign, _write_block_to_csv,
-    _ensure_existing_csv_headers_match,
+    _checkpoint_path_for_csv, _ensure_existing_csv_headers_match,
+    _list_simulation_dirs, _read_checkpoint_sim_id, _remove_file_if_exists,
+    _safe_assign, _write_block_to_csv, _write_checkpoint_sim_id,
 )
 from .HeFESTo_derivative_recovery import recover_derivatives, write_fort42
 
@@ -185,7 +186,7 @@ def import_HeFESTo_derivatives(
     dndp_dataname: str = 'DefaultHeFESTo_dndP.csv',
     dndt_dataname: str = 'DefaultHeFESTo_dndT.csv',
     manifest_name: Optional[str] = None,
-    normalise: bool = True,
+    normalise: bool = False,
     flush_every: int = 128,
     recover: bool = True,
     param_dir: Optional[str] = None,
@@ -228,6 +229,8 @@ def import_HeFESTo_derivatives(
     sim_dirs = _list_simulation_dirs(workspace_dir)
     cols, headers, placements = derivative_schema(indexer)
     width = indexer.get_max_index() + 1
+    checkpoint_path = _checkpoint_path_for_csv(dndp_dataname)
+    resume_after_sim_id = _read_checkpoint_sim_id(checkpoint_path)
 
     for name in (dndp_dataname, dndt_dataname):
         _ensure_existing_csv_headers_match(name, headers)
@@ -238,6 +241,7 @@ def import_HeFESTo_derivatives(
     dt_blocks: List[np.ndarray] = []
     manifest: List[dict] = []
     since_flush = 0
+    last_flushed_sim_id: Optional[int] = resume_after_sim_id
 
     def _flush():
         if dp_blocks:
@@ -250,6 +254,9 @@ def import_HeFESTo_derivatives(
         dt_blocks.clear()
 
     for sim_id, sim_dir in sim_dirs:
+        if resume_after_sim_id is not None and sim_id <= resume_after_sim_id:
+            continue
+
         control_path = os.path.join(sim_dir, 'control')
         f56 = os.path.join(sim_dir, 'fort.56')
         f61 = os.path.join(sim_dir, 'fort.61')
@@ -372,13 +379,19 @@ def import_HeFESTo_derivatives(
         since_flush += 1
         if since_flush >= flush_every:
             _flush()
+            _write_checkpoint_sim_id(checkpoint_path, sim_id)
+            last_flushed_sim_id = sim_id
             since_flush = 0
 
     _flush()
+    if last_flushed_sim_id is not None:
+        _write_checkpoint_sim_id(checkpoint_path, last_flushed_sim_id)
 
     if manifest_name is not None:
         pd.DataFrame(manifest).to_csv(manifest_name, mode='a', index=False,
                                       header=not os.path.exists(manifest_name))
+
+    _remove_file_if_exists(checkpoint_path)
 
     return passed_ids, malformed_ids, missing42_ids, recovered_ids
 

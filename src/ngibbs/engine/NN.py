@@ -1155,7 +1155,7 @@ class MidLevelNetwork(TunableModel):
             return logits, chem_out*zero_mask, zero_mask, logMoles, reconBulk # Training, return zero mask for loss masking of intensive chemistries"""
 
 
-def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = None, load_prefixes=None):
+def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = None, load_prefixes=None, model_class=None):
     """
     Load MidLevelNetwork from zip package created by MidLevelNetwork.save().
     
@@ -1169,6 +1169,10 @@ def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = 
     substitutions : dict, optional
         Architecture parameter overrides. Applied after loading config.
         Useful for building upper model on lower model weights.
+    model_class : type, optional
+        Class to reconstruct. Defaults to MidLevelNetwork. Pass e.g. ContinuousModel to
+        load a continuous-saturation checkpoint -- the zip layout is identical, so only
+        the constructor differs and nothing about packaging changes.
     low_only : bool, default=False
         If True, only load encoder and saturation heads (lower model components).
         Useful for warm-starting upper model training.
@@ -1215,7 +1219,11 @@ def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = 
         
         # print(f"ml_indexer.molar_epsilon = {ml_indexer.molar_epsilon}")
         # === Create model with loaded config ===
-        model = MidLevelNetwork(**config)
+        cls = model_class if model_class is not None else MidLevelNetwork
+        # `model_class` is recorded in config by classes that support it; drop it before
+        # construction so it never has to appear in a constructor signature.
+        config.pop('model_class', None)
+        model = cls(**config)
         
         # === Load state_dict ===
         state_dict_path = temp_path / 'state_dict.pt'
@@ -1228,8 +1236,9 @@ def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = 
             # Load full model
             model.load_state_dict(saved_state_dict, strict=False)
 
-        model.molar_epsilon.fill_(float(model.ml_indexer.molar_epsilon))
-    
+        if hasattr(model, 'molar_epsilon'):
+            model.molar_epsilon.fill_(float(model.ml_indexer.molar_epsilon))
+
     return model
 
 

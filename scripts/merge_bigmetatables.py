@@ -11,6 +11,13 @@ Table B is reindexed to match: its columns are reordered to line up with A's,
 any column A has that B lacks is filled with 0, and any column B has that A
 lacks is an error (B cannot introduce columns unknown to A).
 
+Derivative sidecars (`<base>_dndP.npy`/`.csv`, `<base>_dndT.npy`/`.csv`) are
+picked up automatically by BigMetaTable if either input has them, and are
+merged in parallel to the main table (same row concat as the main copy). A
+side lacking a given sidecar is NaN-filled for its rows, matching the
+importer's convention for unavailable derivatives. A column-count mismatch
+between A's and B's sidecar is an error.
+
 Usage:
     python scripts/merge_bigmetatables.py --table-a <base_a> --table-b <base_b> --output <merged_base>
 
@@ -37,6 +44,7 @@ if repo_src not in sys.path:
     sys.path.insert(0, repo_src)
 
 from builder.processing.BigMetaTable import BigMetaTable
+from builder.processing import sidecar
 
 
 def _validate_extensionless(value: str, arg_name: str) -> str:
@@ -194,6 +202,35 @@ def _build_merged_table(table_a: BigMetaTable, table_b: BigMetaTable, output_nam
     else:
         print("Not merging blurred boundaries")
 
+    # Derivative sidecars (dn/dP, dn/dT). Already row-aligned to their own main
+    # table (BigMetaTable.attach asserts this at load time), so merging is a plain
+    # row concat like blurredbinaries above. Unlike blurredbinaries, presence is
+    # allowed to differ between A and B - the missing side is NaN-filled, matching
+    # the importer's own convention for unavailable derivatives (see sidecar.py's
+    # module docstring).
+    for attr, suffix in sidecar.SIDECAR_SPECS:
+        arr_a = getattr(table_a, attr, None)
+        arr_b = getattr(table_b, attr, None)
+        if arr_a is None and arr_b is None:
+            continue
+        if arr_a is not None and arr_b is not None and arr_a.shape[1] != arr_b.shape[1]:
+            raise ValueError(f"Sidecar '{attr}' column mismatch between Table A and Table B.")
+        n_cols_sc = arr_a.shape[1] if arr_a is not None else arr_b.shape[1]
+        dtype_sc = arr_a.dtype if arr_a is not None else arr_b.dtype
+        if arr_a is None or arr_b is None:
+            missing_side = "A" if arr_a is None else "B"
+            print(f"Merging sidecar '{attr}' (Table {missing_side} lacks it - NaN-filled)...")
+        else:
+            print(f"Merging sidecar '{attr}'...")
+        merged_sc = np.lib.format.open_memmap(
+            f"{output_name}{suffix}.npy", mode='w+', dtype=dtype_sc,
+            shape=(rows_a + rows_b, n_cols_sc),
+        )
+        merged_sc[:rows_a] = arr_a if arr_a is not None else np.nan
+        merged_sc[rows_a:] = arr_b if arr_b is not None else np.nan
+        merged_sc.flush()
+        del merged_sc
+
     meta_rows = len(table_a.metadata) + len(table_b.metadata)
     assert merged.shape[0] == meta_rows, "Metadata length does not equal table rows!"
     with open(f"{output_name}.txt", "w") as f:
@@ -205,6 +242,11 @@ def _build_merged_table(table_a: BigMetaTable, table_b: BigMetaTable, output_nam
         del table_a.blurredbinaries
     if table_b.blurredbinaries is not None:
         del table_b.blurredbinaries
+    for attr, _ in sidecar.SIDECAR_SPECS:
+        if getattr(table_a, attr, None) is not None:
+            delattr(table_a, attr)
+        if getattr(table_b, attr, None) is not None:
+            delattr(table_b, attr)
     gc.collect()
 
     table_a._clear_metadata_rows()
@@ -249,6 +291,11 @@ def main() -> None:
     csv_note = {"full": f"{output_name}.csv (full)", "header": f"{output_name}.csv (header only)",
                 "none": "no .csv"}[args.csv_output]
     print(f"Saved outputs: {output_name}.npy, {csv_note}, and {output_name}.txt")
+
+    sidecar_paths = [f"{output_name}{suffix}.npy" for _, suffix in sidecar.SIDECAR_SPECS
+                      if os.path.exists(f"{output_name}{suffix}.npy")]
+    if sidecar_paths:
+        print(f"Saved sidecars: {', '.join(sidecar_paths)}")
 
     _warn_missing(missing_in_b, when="after merge")
 

@@ -121,9 +121,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--manifest', type=str, default=None,
                    help='Per-simulation provenance CSV (rows, N_el, offset flag). '
                         'Default: <dataname stem>_deriv_manifest.csv')
-    p.add_argument('--no-normalise', action='store_true',
-                   help='Write raw mol/GPa and mol/K instead of dividing by the run '
-                        'element total. Only correct if the model consumes unnormalised moles.')
+    p.add_argument('--normalise', action='store_true',
+                   help='Divide derivatives by the run element total. OFF by default '
+                        'and should stay off: the main import writes fort.99 moles raw, '
+                        'so raw fort.42 values are the ones on the matching scale. '
+                        'Normalising only the derivatives puts them 1/23.6 below their '
+                        'own moles, which nothing downstream would catch.')
     p.add_argument('--deep-phase-change-dataname', type=str, default=None,
                    help='Collect phase-change bounds from a workspace that is ALREADY '
                         'a phase-change resample, i.e. each simulation is a P-T grid. '
@@ -214,7 +217,7 @@ def main() -> int:
         passed, bad, no42, recovered = import_HeFESTo_derivatives(
             workspace_dir=str(ws), indexer=indexer,
             dndp_dataname=dndp_name, dndt_dataname=dndt_name,
-            manifest_name=manifest, normalise=not args.no_normalise,
+            manifest_name=manifest, normalise=args.normalise,
             recover=not args.no_recover, param_dir=args.param_dir,
             recover_nsmall_rel=args.recover_nsmall_rel,
             write_recovered=args.write_recovered_fort42)

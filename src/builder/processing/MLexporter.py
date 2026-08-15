@@ -29,6 +29,7 @@ from ngibbs.utils.file_utils import load_ml_bundle, MLDataBundle, chunked_permut
 from ngibbs.utils.math_utils import Normalizer
 from ngibbs.config.ml_indexer import load_ml_indexer_from_state
 from builder.processing.BigMetaTable import BigMetaTable
+from .guardrails import assert_identity_multipliers, assert_alias_safe  # guardrails
 
 # Row-aligned arrays that may be present in an ML-ready bundle. Every one that
 # actually exists gets shuffled with the *same* permutation in shuffle_bundle_rows,
@@ -54,7 +55,8 @@ _ROW_ALIGNED_ARRAYS = (
 
 def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=False, featureNames=["Pressure(System_main)", "Temperature(System_main)"],
                             free_outputs=None, indexer=None, config_path=None, bundle_name=None, chunk_size=None,
-                            deep_filter_kwargs=None, insanity_filter_kwargs=None):
+                            deep_filter_kwargs=None, insanity_filter_kwargs=None,
+                            alias_table1='auto'):
 
     """Builds features and labels for training. Converts MELTS tables to .npy files fit for ML work.
     Self: BigMetaTable Instance.
@@ -78,6 +80,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
         files in place before packaging (kwargs forwarded as-is, e.g.
         tolerance, bulk_tol_frac, batch_size).
     """
+    assert_identity_multipliers(resample_bounds, 'resampling_to_datasets')
 
     if chunk_size is None:
         chunk_size = getattr(self, 'chunk_size', 100_000)
@@ -216,18 +219,32 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             del self.free_outputs
         gc.collect()
         
-    new_file = self.filename + '_temp.npy'
-    self.table1 = np.lib.format.open_memmap(
-            new_file,
-            mode='w+',
-            dtype=self.table.dtype,
-            shape=self.table.shape
-    )
+    # table1 exists so the resampling loop can mutate mass columns without touching the
+    # original. With multipliers pinned to [1, 1] that loop is a no-op for HeFESTo (see
+    # assert_alias_safe), so the copy is pure cost -- prohibitive at 90 GB. Alias instead.
+    _alias_table1 = (alias_table1 == 'auto'
+                     and str(getattr(self, 'Model', '')).upper() == 'HEFESTO'
+                     and all(float(b[0]) == 1.0 and float(b[1]) == 1.0
+                             for b in resample_bounds)) or alias_table1 is True
+    if _alias_table1:
+        assert_alias_safe(resample_bounds, getattr(self, 'Model', None),
+                          'resampling_to_datasets(alias_table1)')
+        print('[table1] aliasing self.table1 -> self.table (identity multipliers, '
+              'HeFESTo): skipping the full-table copy')
+        self.table1 = self.table
+    else:
+        new_file = self.filename + '_temp.npy'
+        self.table1 = np.lib.format.open_memmap(
+                new_file,
+                mode='w+',
+                dtype=self.table.dtype,
+                shape=self.table.shape
+        )
 
-    # Copy data one row-chunk at a time, so this never holds the whole table's worth of
-    # dirty pages in RAM before anything reaches disk. This is done to avoid mutating the
-    # original table during resampling.
-    self._chunked_copy_into(self.table, self.table1, chunk_size=chunk_size)
+        # Copy data one row-chunk at a time, so this never holds the whole table's worth of
+        # dirty pages in RAM before anything reaches disk. This is done to avoid mutating the
+        # original table during resampling.
+        self._chunked_copy_into(self.table, self.table1, chunk_size=chunk_size)
 
     if self.blurredbinaries is None:
         binary_source = None  # derived per-chunk below from self.table; never held in full
@@ -288,14 +305,16 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             # Vary proportions of equilibrium assemblages, one row-chunk at a time -
             # `self.table1[:, mass_indices]` across every row is a strided read/write
             # over the whole (row-major) memmap; chunking keeps each pass contiguous.
-            for start in tqdm(range(0, total_rows, chunk_size), desc = "Chunking Molar Feature Calculations...", leave=False):
+            for start in ([] if _alias_table1 else
+                          tqdm(range(0, total_rows, chunk_size), desc = "Chunking Molar Feature Calculations...", leave=False)):
                 end = min(start + chunk_size, total_rows)
                 chunk_t1 = self.table1[start:end]
                 mass_multipliers = np.random.uniform(*bounds, size=(end - start, num_phases))
                 chunk_t1[:, mass_indices] *= mass_multipliers
                 chunk_t1[:, mass_indices] *= 100/np.sum(chunk_t1[:, mass_indices], axis=1, keepdims=True)
                 self.table1[start:end] = chunk_t1
-            self.table1.flush()
+            if not _alias_table1:
+                self.table1.flush()
 
             # Get molar quantities
             self.retrieve_component_moles()
@@ -492,7 +511,12 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
        
     finally: #Close Memmaps
         print("Closing memmaps and cleaning up...")
-        del self.binarylabels, self.masslabels, self.features, self.labels, self.table1, self.molarlabels
+        if _alias_table1:
+            # an alias of self.table -- deleting it would drop the caller's table
+            self.table1 = None
+            del self.binarylabels, self.masslabels, self.features, self.labels, self.molarlabels
+        else:
+            del self.binarylabels, self.masslabels, self.features, self.labels, self.table1, self.molarlabels
         if hasattr(self, 'free_outputs'):
             del self.free_outputs
         gc.collect()

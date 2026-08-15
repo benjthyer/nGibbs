@@ -30,6 +30,10 @@ if src_path not in sys.path:
 # Import from refactored modules
 from builder.indexer import DatasetIndexer
 from ngibbs.utils.file_utils import move_file, chunked_mask_copy
+from .guardrails import (  # guardrails: see module docstring
+    assert_identity_multipliers, assert_no_derivative_sidecars,
+)
+from . import sidecar as _sidecar  # dn/dP, dn/dT tables carried parallel to self.table
 
 
 def _log_mem(label):
@@ -315,6 +319,7 @@ class BigMetaTable():
         # --- Handle blurred binaries
         if os.path.exists(filename + 'blurredbinaries.npy'):
             self.blurredbinaries = np.load(filename + 'blurredbinaries.npy', mmap_mode='r+')
+
             if self.blurredbinaries.shape[0] != self.table.shape[0]:
                 print('Blurred binaries have differing rows than main table! Deleting Blurredbinaries')
                 del self.blurredbinaries
@@ -325,6 +330,12 @@ class BigMetaTable():
 
         self.csv_file = self.filename + '.csv'
         self.filename = filename + '_working'
+
+        # --- Handle derivative sidecars (dn/dP, dn/dT). Located from the ORIGINAL
+        # --- base name, since that is what the importer wrote; absent sidecars leave
+        # --- the attributes at None and every path below keeps its previous behaviour.
+        _sidecar.attach(self, filename, memmap_mode=memmap_mode,
+                        chunk_size=self.chunk_size)
         self.memmap_file = self.filename + '.npy'
         self.txt_file = self.filename + '.txt'
 
@@ -575,6 +586,9 @@ class BigMetaTable():
             # Update reference to new memmap in read mode
             self.blurredbinaries = np.load(binary_name, mmap_mode='r+')
 
+        # Derivative sidecars follow the identical mask.
+        _sidecar.apply_mask(self, keep_mask, chunk_size)
+
         # Prepare output memmap
         temp_filename = self.filename + '_temp.npy'
         self._chunked_mask_copy(self.table, temp_filename, keep_mask, chunk_size)
@@ -598,6 +612,7 @@ class BigMetaTable():
         np.save(name + '.npy', self.table)
         if self.blurredbinaries is not None:
             np.save(name + 'blurredbinaries.npy', self.blurredbinaries)
+        _sidecar.save(self, name)
         if save_csv:
             self.save_csv_streaming(name = name)
         with open(name + '.txt', 'w') as f:
@@ -685,6 +700,10 @@ class BigMetaTable():
         
         # Build new BigMetaTable
         new_table = BigMetaTable(new_filename, Model=self.Model, OXYGEN=self.OXYGEN)
+
+        # Derivative sidecars: moved rows onto the new table, kept rows filtered here.
+        _sidecar.split_into(self, new_table, move_mask, keep_mask, new_filename,
+                            self.chunk_size)
         
         # Move BlurredBinaries, one row-chunk at a time (see _chunked_mask_copy)
         if self.blurredbinaries is not None:
@@ -788,6 +807,10 @@ class BigMetaTable():
         
         # Build new BigMetaTable
         new_table = BigMetaTable(new_filename, Model=self.Model, OXYGEN=self.OXYGEN)
+
+        # Derivative sidecars: moved rows onto the new table, kept rows filtered here.
+        _sidecar.split_into(self, new_table, move_mask, keep_mask, new_filename,
+                            self.chunk_size)
         
         # Move BlurredBinaries, one row-chunk at a time (see _chunked_mask_copy)
         if self.blurredbinaries is not None:
@@ -1175,11 +1198,10 @@ class BigMetaTable():
         chunk-wise so that case stays memory-bounded instead of materializing an
         "all matching rows" array that can be a large fraction of the whole table.
         """
+        assert_identity_multipliers(multiplier_bounds, 'resample_rare_phase')
         if chunk_size is None:
             chunk_size = self.chunk_size
         min_multiplier, max_multiplier = multiplier_bounds
-        if min_multiplier >= max_multiplier:
-            raise ValueError("Invalid multiplier bounds: min must be less than max.")
         if not isinstance(n_resamples, int) or n_resamples < 1:
             raise ValueError("n_resamples must be a positive integer.")
 
@@ -1236,12 +1258,14 @@ class BigMetaTable():
         # by `_append_metadata_rows` at the end (cheap: booleans, same size as
         # the old table's row count either way).
         rare_mask_chunks = []
+        repeat_plan = []          # (start, end, chunk_mask, n_resamples) for the sidecars
         write_ptr = old_rows
         for start in range(0, old_rows, chunk_size):
             end = min(start + chunk_size, old_rows)
             table_chunk = self.table[start:end]
             chunk_mask = table_chunk[:, phase_column] > 0
             rare_mask_chunks.append(chunk_mask)
+            repeat_plan.append((start, end, chunk_mask, n_resamples))
             if not chunk_mask.any():
                 continue
 
@@ -1270,6 +1294,11 @@ class BigMetaTable():
 
         new_table.flush()
         rare_mask = np.concatenate(rare_mask_chunks)
+
+        # Sidecars grow by duplicating the same rows. Multipliers are guarded to
+        # [1, 1], so a duplicated row's derivatives are simply the originals.
+        _sidecar.grow_with_repeats(self, new_total, old_rows, repeat_plan, chunk_size)
+
         del self.table, new_table
         if has_binaries:
             new_binary_table.flush()
@@ -1293,6 +1322,7 @@ class BigMetaTable():
         self._append_metadata_rows(rare_mask, n_resamples)
         
     def separate_analcime(self):
+        assert_no_derivative_sidecars(self, 'separate_analcime')
         
         """Used to move leucite data to analcime columns when leucite component < 0.4 (indicating Na/H2O rich analcime)"""
 
@@ -1376,6 +1406,7 @@ class BigMetaTable():
             self.delete(np.unique(conflict_rows).astype(int))
 
     def separate_k_feldspar(self):
+        assert_no_derivative_sidecars(self, 'separate_k_feldspar')
         """
         Move plagioclase data to k-feldspar columns when orthoclase fraction > 0.5.
 
@@ -1510,6 +1541,7 @@ class BigMetaTable():
         Creates:
             self.molar: memmap array (n_rows, n_components) with absolute component moles, normalized to sum(element moles) = 1
         """
+        assert_identity_multipliers(multiplier_bounds, 'retrieve_component_moles')
         if chunk_size is None:
             chunk_size = self.chunk_size
         # ========== Extract indexer data ==========
@@ -1534,6 +1566,20 @@ class BigMetaTable():
             dtype=np.float32,
             shape=(total_rows, num_cols)
         )
+
+        # Molar-space twins of the derivative sidecars. Multipliers are guarded to 1,
+        # so these carry the same linear selection the moles do; if that guard is ever
+        # lifted the same per-row factor must be applied to both, since n and dn/dP are
+        # each homogeneous of degree 1 in the bulk amount.
+        self.dmolar = {}
+        for _attr, _suffix, _arr in _sidecar.items(self):
+            if _arr.shape[0] != total_rows:
+                raise AssertionError(
+                    f'retrieve_component_moles: sidecar {_attr} has {_arr.shape[0]} rows '
+                    f'against table1 {total_rows}')
+            self.dmolar[_attr] = np.lib.format.open_memmap(
+                self.filename + f'component_moles_{_attr}.npy',
+                mode='w+', dtype=np.float32, shape=(total_rows, num_cols))
 
         phases = list(label_indices.keys())
 
