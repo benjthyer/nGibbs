@@ -9,6 +9,7 @@ import shutil
 import gc
 import warnings
 from pathlib import Path
+import json
 import tarfile
 import tempfile
 import pickle
@@ -408,6 +409,13 @@ def clear_new_files(directory, baseline_files, protected_extensions=None, dry_ru
     
     return deleted_count
 
+# Arrays a bundle may legitimately lack: `free_outputs` was always optional, and the two
+# derivative arrays are absent from every bundle exported before derivative support. A
+# missing one is reported through `MLDataBundle.has_derivatives`, not raised here -- the
+# loud failure belongs in the trainer, where it can name the config key that asked for them.
+_OPTIONAL_ARRAYS = ('free_outputs', 'dndp_labels', 'dndt_labels')
+
+
 class MLDataBundle:
     """Container for ML dataset bundle loaded from .tar.gz file."""
     def __init__(self):
@@ -417,7 +425,17 @@ class MLDataBundle:
         self.features = None
         self.labels = None
         self.free_outputs = None
+        # Composition derivatives on the component (species) axis. None for a bundle
+        # exported before derivative support -- `has_derivatives` is the flag training
+        # should branch on rather than testing for None in three different places.
+        self.dndp_labels = None
+        self.dndt_labels = None
+        self.derivative_stats = None
         self.ml_indexer = None
+
+    @property
+    def has_derivatives(self):
+        return self.dndp_labels is not None and self.dndt_labels is not None
 
 
 def load_ml_bundle(bundle_path, arrays=None):
@@ -433,7 +451,8 @@ def load_ml_bundle(bundle_path, arrays=None):
         Path to the .tar.gz bundle file
     arrays : iterable of str, optional
         Which arrays to actually load into RAM (any of 'molar_labels',
-        'binary_labels', 'mass_labels', 'features', 'labels', 'free_outputs').
+        'binary_labels', 'mass_labels', 'features', 'labels', 'free_outputs',
+        'dndp_labels', 'dndt_labels').
         Arrays not listed are left as None on the returned bundle and never
         read off disk - use this to skip arrays nothing downstream needs
         (e.g. 'mass_labels' is unused by every current training/inference
@@ -470,6 +489,8 @@ def load_ml_bundle(bundle_path, arrays=None):
             'features': 'features.npy',
             'labels': 'labels.npy',
             'free_outputs': 'free_outputs.npy',
+            'dndp_labels': 'dndp_labels.npy',
+            'dndt_labels': 'dndt_labels.npy',
         }
         wanted = set(npy_files) if arrays is None else set(arrays)
 
@@ -479,8 +500,14 @@ def load_ml_bundle(bundle_path, arrays=None):
             file_path = Path(temp_dir) / filename
             if file_path.exists():
                 setattr(bundle, attr_name, np.load(file_path))
-            elif attr_name != 'free_outputs':
+            elif attr_name not in _OPTIONAL_ARRAYS:
                 raise FileNotFoundError(f"Expected file not found in bundle: {filename}")
+
+        # Present only in bundles exported with derivative support; absence is normal and
+        # is what `bundle.has_derivatives` reports.
+        stats_json = Path(temp_dir) / 'derivative_stats.json'
+        if stats_json.exists():
+            bundle.derivative_stats = json.loads(stats_json.read_text())
         
         # Load ml_indexer state directory (preferred)
         indexer_dir = Path(temp_dir) / 'ml_indexer'

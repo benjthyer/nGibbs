@@ -149,6 +149,21 @@ class ContinuousModel(nn.Module):
     save = MidLevelNetwork.save
     _set_indexer = TunableModel._set_indexer
 
+    # ---- interop with builder/training/trainer.py ------------------------------------
+    # The training loop asks the model what its parts are called rather than assuming.
+    # `None` means "this architecture has no such head, by design": freezing it is a
+    # no-op, whereas an unrecognised name is still an error. That distinction is what
+    # lets an existing recipe's `which_heads_to_freeze: [sat_head, encoder, mole_head]`
+    # run unmodified against a model that has no saturation head.
+    head_aliases = {
+        'sat_head': None,
+        'prior_sat_head': None,
+        'middleBrain': 'encoder',
+        'chem_head': 'chem_heads',
+    }
+    upper_regularization_config_key = 'mole_regularization'
+    lower_regularization_config_key = 'encoder_regularization'
+
     def __init__(self,
                  encoderLayerUp: int = 2,
                  encoderLayerDown: int = 1,
@@ -314,7 +329,19 @@ class ContinuousModel(nn.Module):
         self.register_buffer('compToEl', torch.tensor(self.compToOx_raw @ self.oxToEl_raw, dtype=torch.float))
 
     # ---------------------------------------------------------------- forward
-    def forward(self, x, detailed: bool = False, **_ignored):
+    def network_component_moles(self, x):
+        """The network body, up to but NOT including the mass-balance projection.
+
+        Split out so a JVP can target it without dragging `MassBalanceProjector`'s
+        `linalg.solve` into the tangent graph. Measured: a JVP through the full `forward`
+        costs 12,807 ms against 29 ms for this -- 440x -- and it buys nothing, because at
+        the projection's fixed point its Jacobian is exactly the orthogonal projector onto
+        `null(A_Omega^T)`, which `tangent_project` below applies analytically.
+
+        Returns `(componentMoles_raw, chem_out, m, phaseMoles, phaseProportions)`;
+        `forward` continues from the first of these, so there is one definition of the
+        body.
+        """
         n_feat = len(self.ml_indexer.featureNames)
         b_target = x[:, n_feat:]
         inf_mask = ((b_target == 0).to(torch.float32)
@@ -335,7 +362,69 @@ class ContinuousModel(nn.Module):
 
         compMultipliers = phaseMoles @ self.phaseToCompMap
         phaseProportions = chem_out @ self.variedToAllComp + self.fixed_phaseToCompMap
-        componentMoles = phaseProportions * compMultipliers
+        return (phaseProportions * compMultipliers, chem_out, m, phaseMoles,
+                phaseProportions)
+
+    def tangent_project(self, dn, n, tikhonov: Optional[float] = None):
+        """Project a component-mole tangent onto `null(A_Omega^T)`.
+
+        The bulk `b` is fixed along a scan and normalised to one element mole, so the
+        element totals are constants of the motion and every true tangent satisfies
+        `A^T dn = 0` exactly -- verified against HeFESTo's own `fort.42` at 7e-8, which is
+        its printed precision. Enforcing it here injects that structure rather than asking
+        the network to rediscover it: on an untrained net the projection moves the raw
+        tangent by 70% and drops `||A^T dn||` from 1.8e-2 to 1.1e-8.
+
+        `Omega = (n > 0)` restricts the correction to phases that are actually present, so
+        a zeroed phase cannot be revived by a mass-balance correction. It is piecewise
+        constant and so contributes no gradient, which is correct: `clamp` already gives
+        `dn/dP = 0` for an absent phase, matching HeFESTo.
+        """
+        lam_reg = self.projector.tikhonov if tikhonov is None else float(tikhonov)
+        A = self.compToEl                                   # (C, E)
+        eye = torch.eye(A.shape[1], dtype=dn.dtype, device=dn.device).unsqueeze(0)
+        A_om = A.T.unsqueeze(0) * (n > 0).to(dn.dtype).unsqueeze(1)      # (B, E, C)
+        M = A_om @ A_om.transpose(1, 2) + lam_reg * eye
+        lam = torch.linalg.solve(M, (dn @ A).unsqueeze(-1))
+        return dn - (A_om.transpose(1, 2) @ lam).squeeze(-1)
+
+    def derivative_outputs(self, x, feature_indices, project: bool = True):
+        """Forward-mode tangents of the component moles w.r.t. chosen input features.
+
+        One JVP per direction, each giving all C components at once -- a
+        Jacobian-*vector* product, which is what forward mode is for. Reverse mode would
+        need one backward per component: measured at B=128, C=62, forward mode for both
+        P and T plus the backward costs 76 ms/step against ~383 ms for the reverse-mode
+        Jacobian alone, and that gap grows linearly in C.
+
+        Returns `(value_tuple, [tangent_per_direction])` where `value_tuple` is the primal
+        `network_component_moles` output, taken from the first JVP so it costs nothing.
+
+        Caveat worth knowing: each direction is a separate forward, so a stochastic layer
+        (dropout) draws a fresh mask per direction and injects noise straight into the
+        derivative target. Prefer `dropout0` and `layernorm` over `batchnorm` for
+        derivative episodes -- batch norm also makes the tangent batch-coupled, which is
+        not a property the physics has.
+        """
+        primal, tangents = None, []
+        for idx in feature_indices:
+            v = torch.zeros_like(x)
+            v[:, int(idx)] = 1.0
+            out, dout = torch.func.jvp(lambda z: self.network_component_moles(z), (x,), (v,))
+            if primal is None:
+                primal = out
+            tangents.append(dout[0])
+        n = primal[0]
+        if project:
+            tangents = [self.tangent_project(t, n) for t in tangents]
+        return primal, tangents
+
+    def forward(self, x, detailed: bool = False, **_ignored):
+        n_feat = len(self.ml_indexer.featureNames)
+        b_target = x[:, n_feat:]
+
+        componentMoles, chem_out, m, phaseMoles, phaseProportions = \
+            self.network_component_moles(x)
 
         componentMoles, resid = self.projector(componentMoles, self.compToEl, b_target)
         reconBulkUnNormed = componentMoles @ self.compToEl
@@ -346,6 +435,41 @@ class ContinuousModel(nn.Module):
             return (chem_out, m, reconBulk, componentMoles / totals.unsqueeze(-1),
                     phaseProportions, phaseMoles, resid)
         return chem_out, m, reconBulk
+
+    # ------------------------------------------------------- training-loop interface
+    def transform_mole_targets(self, m_batch):
+        """Datasets store moles as `log10(n + molar_epsilon)`, which is MidLevelNetwork's
+        output space. This model's mole output is a *signed* saturation in linear moles,
+        so the target is un-logged rather than the network being asked to reproduce a
+        transform that has no defined value at n = 0 -- the one place the continuity this
+        class exists for actually matters.
+
+        `molar_epsilon = 0` means the dataset is already linear (see NN.py's
+        `logMoles = phaseMoles` fallback), so pass it through.
+        """
+        eps = float(self.ml_indexer.molar_epsilon)
+        if eps == 0:
+            return m_batch
+        return torch.clamp(torch.pow(10.0, m_batch) - eps, min=0.0)
+
+    def upper_forward(self, x, binaries=None):
+        """Adapter consumed by `builder.training.trainer._upper_forward`.
+
+        `binaries` never enters the network -- it only builds the chemistry loss mask, so
+        supervision uses ground-truth support while the forward pass stays gate-free.
+        `mole_mask` is all ones on purpose: the gated model could only be supervised
+        where a phase was present, but here the value at and below zero is the whole
+        point, so absent phases are supervised toward zero rather than ignored.
+        """
+        chem, m, bulk = self.forward(x)
+        chem_mask = (torch.ones_like(chem) if binaries is None
+                     else binaries[:, self.comp_binaries] @ self.comp_mappings)
+        return {'logits': None,
+                'chem': chem * chem_mask,
+                'chem_mask': chem_mask,
+                'mole': m,
+                'bulk': bulk,
+                'mole_mask': torch.ones_like(m)}
 
 
 def load_continuous_from_zip(zip_path, substitutions=None, epsilon=None,

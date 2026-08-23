@@ -1581,6 +1581,14 @@ class BigMetaTable():
                 self.filename + f'component_moles_{_attr}.npy',
                 mode='w+', dtype=np.float32, shape=(total_rows, num_cols))
 
+        # (phase, component) -> sidecar column, resolved once. Keyed on BOTH, because
+        # component names are not unique across phases: `magnetite` belongs to `spinel`
+        # and to `ferropericlase`, and a name-only key silently folds them together.
+        dmolar_cols = {}
+        if self.dmolar:
+            for _attr in self.dmolar:
+                dmolar_cols[_attr] = _sidecar.component_columns(self, _attr, self.indexer)
+
         phases = list(label_indices.keys())
 
         # ========== Process one row-chunk at a time, every phase within it ==========
@@ -1594,6 +1602,10 @@ class BigMetaTable():
             chunk = self.table1[start:end]
             chunk_len = end - start
             molar_chunk = np.zeros((chunk_len, num_cols), dtype=np.float32)
+            # NaN, not zero: a component this chunk's phases never write is genuinely
+            # unknown, and zero would read downstream as a measured "does not change".
+            dmolar_chunks = {a: np.full((chunk_len, num_cols), np.nan, dtype=np.float32)
+                             for a in self.dmolar}
 
             for phase in phases:
                 # Generate random multipliers for resampling (1.0 for no resampling)
@@ -1619,6 +1631,24 @@ class BigMetaTable():
                         component_moles = chunk[:, component_col_indices]
 
                         molar_chunk[:, phase_label_inds] = component_moles * phase_multipliers
+
+                        # Derivative twins, same selection and same destination slots.
+                        # `dn/dP` and `n` are each homogeneous of degree 1 in bulk amount,
+                        # so the identical multiplier keeps the pair consistent (and it is
+                        # guarded to 1 anyway). NaN rows -- simulations that never wrote a
+                        # fort.42 -- propagate untouched; the trainer masks on isfinite,
+                        # which is why they must not be zero-filled here.
+                        for _attr, _chunkarr in dmolar_chunks.items():
+                            _cols = dmolar_cols[_attr]
+                            _src = [_cols.get((phase, cname)) for cname in component_names]
+                            if any(c is None for c in _src):
+                                missing = [n for n, c in zip(component_names, _src) if c is None]
+                                raise KeyError(
+                                    f'sidecar {_attr} has no column for {phase} components '
+                                    f'{missing}; the shadow table and the indexer disagree, '
+                                    f're-run import_HeFESTo_derivatives.')
+                            _sc = getattr(self, _attr)[start:end][:, np.array(_src)]
+                            _chunkarr[:, phase_label_inds] = _sc * phase_multipliers
 
                     # --- CASE 1: MELTS solid phases (olivine, pyroxene, etc.) ---
                     else:
@@ -1737,6 +1767,9 @@ class BigMetaTable():
 
             self.molar[start:end] = molar_chunk
             self.molar.flush()
+            for _attr, _chunkarr in dmolar_chunks.items():
+                self.dmolar[_attr][start:end] = _chunkarr
+                self.dmolar[_attr].flush()
 
     def recover_untracked_phases(self):
         """

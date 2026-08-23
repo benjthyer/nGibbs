@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Dict, Optional
+from typing import Dict, NamedTuple, Optional
 
 import torch
 import numpy as np
@@ -89,6 +89,112 @@ def _set_adaptive_dropout_rate(model: nn.Module, dropout_rate: float) -> None:
         module.p = dropout_rate
 
 
+# --------------------------------------------------------------------------- #
+#  Model adapters
+# --------------------------------------------------------------------------- #
+# The upper loop below drives an arbitrary network through the three hooks in this
+# section. A model opts into the general path by defining `upper_forward`; a model that
+# does not (i.e. MidLevelNetwork) keeps the exact legacy call, unpack and masks, so its
+# behaviour is unchanged. Nothing here inspects a class name, so a new architecture is
+# supported by adding methods to that class, not by editing this file.
+
+
+class UpperBatch(NamedTuple):
+    """One forward pass, named. `logits=None` means the architecture has no saturation
+    head, and the saturation term is then dropped from the loss rather than zeroed with
+    a fake tensor -- a zero BCE would read as 'perfectly classified' in the printout."""
+    logits: Optional[torch.Tensor]
+    chem: torch.Tensor
+    chem_mask: torch.Tensor
+    mole: torch.Tensor
+    bulk: torch.Tensor
+    mole_mask: Optional[torch.Tensor]   # None -> derive from ground-truth binaries
+
+
+def _upper_forward(model, x_batch, b_batch) -> UpperBatch:
+    fn = getattr(model, 'upper_forward', None)
+    if fn is None:
+        logits, chem, chem_mask, mole, bulk = model(x_batch, binaries=b_batch, NN_only=True)
+        return UpperBatch(logits, chem, chem_mask, mole, bulk, None)
+
+    out = fn(x_batch, binaries=b_batch)
+    missing = {'chem', 'chem_mask', 'mole', 'bulk'} - set(out)
+    if missing:
+        raise KeyError(f"{type(model).__name__}.upper_forward() omitted {sorted(missing)}")
+    return UpperBatch(out.get('logits'), out['chem'], out['chem_mask'],
+                      out['mole'], out['bulk'], out.get('mole_mask'))
+
+
+def _mole_targets(model, m_batch):
+    """Datasets store moles in MidLevelNetwork's output space (log10(n + molar_epsilon)).
+    A model that predicts something else declares the conversion instead of the dataset
+    being rebuilt per architecture."""
+    fn = getattr(model, 'transform_mole_targets', None)
+    return m_batch if fn is None else fn(m_batch)
+
+
+def _regularization_spec(model, which='upper'):
+    """Which config key holds this model's dropout/normalisation spec for this half of
+    training. MidLevelNetwork says nothing and gets the historical names."""
+    key = getattr(model, f'{which}_regularization_config_key', None)
+    if key is None:
+        key = 'high_regularization' if which == 'upper' else 'low_regularization'
+    return str(model.config.get(key, 'none'))
+
+
+def _resolve_heads_to_freeze(model, names):
+    """Map requested head names onto this model's modules.
+
+    A model declares `head_aliases` to rename its equivalents, or maps a name to None to
+    say 'this architecture has no such head, by design' -- e.g. a continuous-saturation
+    model has no `sat_head` because saturation is not a separate output. A name that is
+    neither present nor declared absent still raises, so a typo in a recipe is still an
+    error rather than a silently unfrozen head.
+    """
+    aliases = getattr(model, 'head_aliases', {})
+    resolved = []
+    for name in names:
+        target = aliases.get(name, name)
+        if target is None:
+            print(f"Head '{name}' is absent by design in {type(model).__name__}; nothing to freeze.")
+            continue
+        if not hasattr(model, target):
+            raise ValueError(f"{type(model).__name__} has no head named '{target}'"
+                             f"{'' if target == name else f' (requested as {name!r})'} to freeze.")
+        resolved.append(target)
+    return resolved
+
+
+def _upper_loss(model, out: UpperBatch, x_batch, b_batch, y_batch, m_batch, feature_offset,
+                criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
+                compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha):
+    """Single definition of the upper objective, shared by the training step and the
+    evaluation pass. These were two copies of the same twenty lines; a change to one that
+    missed the other would silently score models against a different loss than it trained
+    them on."""
+    loss_sat = (criterion_sat(out.logits, b_batch) if out.logits is not None
+                else torch.zeros((), device=x_batch.device, dtype=x_batch.dtype))
+
+    bulk_target = x_batch[:, feature_offset:]
+    chem_loss_raw = criterion_chem(out.chem, y_batch)
+    mole_loss_raw = criterion_mole(out.mole, _mole_targets(model, m_batch))
+    bulk_loss_raw = criterion_bulk(out.bulk, bulk_target)
+
+    bulk_zero_mask = (bulk_target != 0).to(torch.float)
+    mole_zero_mask = (out.mole_mask if out.mole_mask is not None
+                      else (b_batch > 0.5).to(torch.float)).detach()
+
+    chem_loss = (chem_loss_raw * out.chem_mask * compWeights).sum() / (out.chem_mask * compWeights).sum().clamp(min=1)
+    mole_loss = (mole_loss_raw * mole_zero_mask * binWeights).sum() / (mole_zero_mask * binWeights).sum().clamp(min=1)
+    bulk_loss = (bulk_loss_raw * bulk_zero_mask).sum() / bulk_zero_mask.sum().clamp(min=1)
+
+    # Scale loss to be large wrt Epsilon for optimizer stability.
+    total = 1E4 * (sat_alpha * loss_sat + chem_alpha * chem_loss + mole_alpha * mole_loss)
+    if bulk_alpha != 0:   # Bulk can be numerically unstable, so it stays opt-in.
+        total = total + 1E4 * bulk_alpha * bulk_loss
+    return total, loss_sat, chem_loss, mole_loss, bulk_loss
+
+
 def _weighted_binary_loss_gt_positive_only(
     logits: torch.Tensor,
     targets: torch.Tensor,
@@ -143,22 +249,17 @@ def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, cri
     running_mole_loss = 0
     running_bulk_loss = 0
     N = 0
+    out = None
     with torch.no_grad():
         for batch_idx, (x_batch, b_batch, y_batch, m_batch) in enumerate(test_loader):
             x_batch, b_batch, y_batch, m_batch = x_batch.to(device, non_blocking=True), b_batch.to(device, non_blocking=True), y_batch.to(device, non_blocking=True), m_batch.to(device, non_blocking=True)
-            logits, chem_preds, chem_zero_mask, mole_preds, bulk_preds = model(x_batch, binaries=b_batch, NN_only=True)
+            out = _upper_forward(model, x_batch, b_batch)
 
-            loss_sat = criterion_sat(logits, b_batch)
-
-            chem_loss_raw = criterion_chem(chem_preds, y_batch)
-            mole_loss_raw = criterion_mole(mole_preds, m_batch)
-            bulk_loss_raw = criterion_bulk(bulk_preds, x_batch[:, feature_offset:])
-            bulk_zero_mask = (x_batch[:, feature_offset:] != 0).to(torch.float)
-            mole_zero_mask = (b_batch > 0.5).to(torch.float)
-
-            chem_loss_masked = (chem_loss_raw * chem_zero_mask * compWeights).sum() / (chem_zero_mask * compWeights).sum().clamp(min=1)
-            mole_loss_masked = (mole_loss_raw * mole_zero_mask * binWeights).sum() / (mole_zero_mask * binWeights).sum().clamp(min=1)
-            bulk_loss_masked = (bulk_loss_raw * bulk_zero_mask).sum() / bulk_zero_mask.sum().clamp(min=1)
+            loss, loss_sat, chem_loss_masked, mole_loss_masked, bulk_loss_masked = _upper_loss(
+                model, out, x_batch, b_batch, y_batch, m_batch, feature_offset,
+                criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
+                compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
+            )
 
             batch_size_curr = x_batch.size(0)
             running_sat_loss += loss_sat.item() * batch_size_curr
@@ -166,18 +267,14 @@ def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, cri
             running_chem_loss += chem_loss_masked.item() * batch_size_curr
             running_bulk_loss += bulk_loss_masked.item() * batch_size_curr
 
-            if bulk_alpha == 0:
-                loss = 1E4 * (sat_alpha * loss_sat + chem_alpha * chem_loss_masked + mole_alpha * mole_loss_masked)
-            else:
-                loss = 1E4 * (sat_alpha * loss_sat + chem_alpha * chem_loss_masked + mole_alpha * mole_loss_masked + bulk_alpha * bulk_loss_masked)
-
             running_test_loss += loss.item() * batch_size_curr
             N += batch_size_curr
             if N > max_N:
                 break
 
     avg_test_loss = running_test_loss / N
-    print(f"[TEST] Running Saturation Loss: {running_sat_loss/N:.3e}\tRunning Chem Loss: {running_chem_loss/N:.3e}")
+    sat_str = 'n/a (no saturation head)' if (out is None or out.logits is None) else f'{running_sat_loss/N:.3e}'
+    print(f"[TEST] Running Saturation Loss: {sat_str}\tRunning Chem Loss: {running_chem_loss/N:.3e}")
     print(f"[TEST] Running Molar Loss: {running_mole_loss/N:.3e}\tRunning Bulk Loss: {running_bulk_loss/N:.3e}")
     return avg_test_loss
 
@@ -231,9 +328,10 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     optimizer = create_optimizer(model, lr=lr, lowWD=model.config['lowWD'])
     wrappedScheduler = create_scheduler(optimizer, scheduler, **scheduler_kwargs) if scheduler else SchedulerWrapper()
 
-    if 'dropout' in model.config['low_regularization'].lower(): # Only use adaptive dropout if we're not using bulk loss.
-        dropout_rate, max_drop = pull_number_range(model.config['low_regularization'].lower())
-        print(f"dropout in {model.config['low_regularization']}: {dropout_rate} -> {max_drop}")
+    lower_reg = _regularization_spec(model, 'lower')
+    if 'dropout' in lower_reg.lower(): # Only use adaptive dropout if we're not using bulk loss.
+        dropout_rate, max_drop = pull_number_range(lower_reg.lower())
+        print(f"dropout in {lower_reg}: {dropout_rate} -> {max_drop}")
         _set_adaptive_dropout_rate(model, dropout_rate)
     else:
         dropout_rate = 0
@@ -398,22 +496,20 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     # freeze heads based on which_heads_to_freeze
     for p in model.parameters():
         p.requires_grad = True
-    for frozen_head in which_heads_to_freeze:
-        if hasattr(model, frozen_head):
-            print(f"Freezing head: {frozen_head}")
-            for p in getattr(model, frozen_head).parameters():
-                p.requires_grad = False
-        else:
-            raise ValueError(f"Warning: Model does not have a head named '{frozen_head}' to freeze.")
-    
+    for frozen_head in _resolve_heads_to_freeze(model, which_heads_to_freeze):
+        print(f"Freezing head: {frozen_head}")
+        for p in getattr(model, frozen_head).parameters():
+            p.requires_grad = False
+
     noise = model.config['noise']
     optimizer = create_optimizer(model, lr=lr, highWD=model.config['highWD'], lowWD=model.config['lowWD'], amsgrad=amsgrad, eps=eps)
     wrappedScheduler = create_scheduler(optimizer, scheduler, **scheduler_kwargs) if scheduler else SchedulerWrapper()
             
 
-    if 'dropout' in model.config['high_regularization'].lower():
-        dropout_rate, configured_max = pull_number_range(model.config['high_regularization'].lower())
-        print(f"dropout in {model.config['high_regularization']}: {dropout_rate} -> {configured_max}")
+    upper_reg = _regularization_spec(model, 'upper')
+    if 'dropout' in upper_reg.lower():
+        dropout_rate, configured_max = pull_number_range(upper_reg.lower())
+        print(f"dropout in {upper_reg}: {dropout_rate} -> {configured_max}")
         """if bulk_alpha != 0: # Need to limit max dropout to avoid NaNs. 
             max_drop = 0
             print(f'  Bulk loss enabled, disabling dropout (max_drop=0)')
@@ -464,50 +560,33 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         running_mole_loss = 0
         running_bulk_loss = 0
         N=0
+        out = None
         for batch_idx, (x_batch, b_batch, y_batch, m_batch) in enumerate(tqdm(train_loader, desc="Training", leave=False)):
 
             optimizer.zero_grad()
 
             x_batch, b_batch, y_batch, m_batch = x_batch.to(device, non_blocking=True), b_batch.to(device, non_blocking=True), y_batch.to(device, non_blocking=True), m_batch.to(device, non_blocking=True)
             
-            bulk_zero_mask = (x_batch != 0).to(torch.float) # Bulk zero mask different shape for training and testing because this mask is doubling as a filter for the noise
-            #x_batch = x_batch + torch.randn_like(x_batch) * 0.005 * bulk_zero_mask # Add Small Gaussian Noise to avoid overfitting during training Oct 14: Moved 0.002->0.005
+            # NOTE: the bulk mask is now built inside _upper_loss from the *post-noise*
+            # x_batch, identically to the evaluation path. Previously training built it
+            # from the pre-noise batch over the full feature vector and evaluation built
+            # it post-slice; both select the same entries (noise is multiplicative, so it
+            # cannot turn a zero non-zero), so this is a de-duplication, not a change.
             if noise != 0:
                 x_batch = x_batch + (x_batch * torch.randn_like(x_batch) * noise)
-            logits, chem_preds, chem_zero_mask, mole_preds, bulk_preds = model(x_batch, binaries=b_batch, NN_only = True)
+            out = _upper_forward(model, x_batch, b_batch)
 
-            # Binary saturation loss
-            loss_sat = criterion_sat(logits, b_batch) 
+            loss, loss_sat, chem_loss_masked, mole_loss_masked, bulk_loss_masked = _upper_loss(
+                model, out, x_batch, b_batch, y_batch, m_batch, feature_offset,
+                criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
+                compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
+            )
 
-            # Chemistry and mass losses: apply masks
-            chem_loss_raw = criterion_chem(chem_preds, y_batch)
-            mole_loss_raw = criterion_mole(mole_preds, m_batch)
-            bulk_loss_raw = criterion_bulk(bulk_preds, x_batch[:,feature_offset:])
-            #mole_zero_mask = (torch.sigmoid(logits) > 0.5).to(torch.float).detach() # Only use binary preds for masking when those neurons are free
-            mole_zero_mask = (b_batch > 0.5).to(torch.float).detach()
-
-            """if batch_idx == 0:
-                print(chem_loss_raw.device)
-                print(chem_zero_mask.device)
-                print(compWeights.device)"""
-
-            chem_loss_masked = (chem_loss_raw * chem_zero_mask * compWeights).sum() / (chem_zero_mask * compWeights).sum().clamp(min=1)
-            mole_loss_masked = (mole_loss_raw * mole_zero_mask * binWeights).sum() / (mole_zero_mask * binWeights).sum().clamp(min=1)
-            bulk_loss_masked = (bulk_loss_raw * bulk_zero_mask[:,feature_offset:]).sum() / (bulk_zero_mask[:,feature_offset:]).sum().clamp(min=1)
-            
             batch_size_curr = x_batch.size(0)
             running_sat_loss += loss_sat.item() * batch_size_curr
             running_mole_loss += mole_loss_masked.item() * batch_size_curr
             running_chem_loss += chem_loss_masked.item() * batch_size_curr
             running_bulk_loss += bulk_loss_masked.item() * batch_size_curr
-            
-            
-            if bulk_alpha == 0: # Scale loss to be large wrt to Epsilon for optimizer stability. 
-                loss = 1E4*(sat_alpha*loss_sat + chem_alpha*chem_loss_masked + mole_alpha*mole_loss_masked) # Bulk can be numerically unstable...
-            else:
-                loss = 1E4*(sat_alpha*loss_sat + chem_alpha*chem_loss_masked + mole_alpha*mole_loss_masked + bulk_alpha*bulk_loss_masked)
-
-            #print(f"Sat loss: {loss_sat.item()}, Chem loss: {chem_loss_masked.item()}")
 
             if not torch.isfinite(loss):
                 print("Non-finite loss detected!")
@@ -552,7 +631,8 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
         avg_train_loss = running_train_loss / N
 
-        print(f"[TRAIN] Running Saturation Loss: {running_sat_loss/(N):.3e}\tRunning Chem Loss: {running_chem_loss/(N):.3e}")
+        sat_str = 'n/a (no saturation head)' if (out is None or out.logits is None) else f'{running_sat_loss/(N):.3e}'
+        print(f"[TRAIN] Running Saturation Loss: {sat_str}\tRunning Chem Loss: {running_chem_loss/(N):.3e}")
         print(f"[TRAIN] Running Molar Loss: {running_mole_loss/(N):.3e}\tRunning Bulk Loss: {running_bulk_loss/(N):.3e}")
 
         print(f"[TRAIN] Running WEIGHTED Saturation Loss: {sat_alpha*running_sat_loss/(N):.3e}\tRunning Weighted Chem Loss: {chem_alpha*running_chem_loss/(N):.3e}")

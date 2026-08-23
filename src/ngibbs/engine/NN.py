@@ -1155,6 +1155,27 @@ class MidLevelNetwork(TunableModel):
             return logits, chem_out*zero_mask, zero_mask, logMoles, reconBulk # Training, return zero mask for loss masking of intensive chemistries"""
 
 
+def _resolve_model_class(config):
+    """Pick the class a checkpoint should be rebuilt as.
+
+    A config that records `model_class` names its own type, so a bundle round-trips
+    without the caller having to know which network wrote it -- that matters for the
+    tuners, which reload an anchor bundle dozens of times per sweep. Resolution is by
+    lookup in an explicit registry, never by importing whatever string is in the file.
+    Absent or unknown, the historical default stands.
+    """
+    name = config.get('model_class')
+    if not name:
+        return MidLevelNetwork
+    if name == 'MidLevelNetwork':
+        return MidLevelNetwork
+    if name == 'ContinuousModel':
+        from .NN_continuous import ContinuousModel   # local: NN_continuous imports NN
+        return ContinuousModel
+    raise ValueError(f"Checkpoint requests unknown model_class {name!r}. Register it in "
+                     f"NN._resolve_model_class or pass model_class= explicitly.")
+
+
 def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = None, load_prefixes=None, model_class=None):
     """
     Load MidLevelNetwork from zip package created by MidLevelNetwork.save().
@@ -1219,7 +1240,7 @@ def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = 
         
         # print(f"ml_indexer.molar_epsilon = {ml_indexer.molar_epsilon}")
         # === Create model with loaded config ===
-        cls = model_class if model_class is not None else MidLevelNetwork
+        cls = model_class if model_class is not None else _resolve_model_class(config)
         # `model_class` is recorded in config by classes that support it; drop it before
         # construction so it never has to appear in a constructor signature.
         config.pop('model_class', None)
@@ -1258,7 +1279,7 @@ def _load_matching_state_dict(model, saved_state_dict, load_prefixes=None):
     model.load_state_dict(model_dict, strict=False)
 
 
-def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only=False, ml_indexer=None, epsilon = None, load_prefixes=None):
+def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only=False, ml_indexer=None, epsilon = None, load_prefixes=None, model_class=None):
     """
     Load MELTS NN model from checkpoint file.
     
@@ -1277,6 +1298,10 @@ def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only=False, ml_ind
     low_only : bool, default=False
         If True, only load encoder and saturation heads (lower model components).
     ml_indexer : MlIndexer, optional. Necesary if loading legacy format without ml_indexer state. Ignored if ml_indexer state is present in checkpoint.
+    model_class : type, optional
+        Class to reconstruct. Defaults to MidLevelNetwork, or -- for a checkpoint whose
+        config records one -- the class named there, so a bundle round-trips to its own
+        type without the caller having to know which. Pass explicitly to override.
     Returns
     -------
     MidLevelNetwork
@@ -1294,7 +1319,7 @@ def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only=False, ml_ind
     # Check extension first: explicit .zip files should use zip loading
     if DictFilePath.suffix == '.zip':
         # print(f"Attempting to load model from .zip file: {DictFilePath}")
-        return load_model_from_zip(DictFilePath, substitutions=substitutions, low_only=low_only, epsilon=epsilon, load_prefixes=load_prefixes)
+        return load_model_from_zip(DictFilePath, substitutions=substitutions, low_only=low_only, epsilon=epsilon, load_prefixes=load_prefixes, model_class=model_class)
     
     # print(f"Attempting to load model from .pt file: {DictFilePath}")
 
@@ -1317,7 +1342,9 @@ def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only=False, ml_ind
         if epsilon is not None:
             configuration['ml_indexer'].molar_epsilon = epsilon
 
-        model = MidLevelNetwork(**configuration)
+        cls = model_class if model_class is not None else _resolve_model_class(configuration)
+        configuration.pop('model_class', None)
+        model = cls(**configuration)
         
         if low_only or load_prefixes is not None:  # Only load selected model components
             effective_prefixes = load_prefixes if load_prefixes is not None else ["encoder.", "sat_head."]
@@ -1325,7 +1352,8 @@ def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only=False, ml_ind
         else:
             model.load_state_dict(ckpt['state_dict'], strict=False)
 
-        model.molar_epsilon.fill_(float(model.ml_indexer.molar_epsilon))
+        if hasattr(model, 'molar_epsilon'):
+            model.molar_epsilon.fill_(float(model.ml_indexer.molar_epsilon))
         
         return model
     
@@ -1333,6 +1361,11 @@ def rebuild_MELTS_model(DictFilePath, substitutions=None, low_only=False, ml_ind
         # If legacy format failed and file is actually a zip, try zip format
         if zipfile.is_zipfile(DictFilePath):
             # print(f"Legacy format failed, attempting to load as zip format: {e}")
-            return load_model_from_zip(DictFilePath, substitutions=substitutions, low_only=low_only, epsilon=epsilon)
+            # NOTE: `load_prefixes` was previously dropped on this path. Since a bundle
+            # written by `.save()` is a zip, `torch.load` above always raises for it and
+            # this fallback is the *normal* route -- so every selective load silently
+            # became a full load, which then raised on any architectural substitution
+            # that changed a layer shape.
+            return load_model_from_zip(DictFilePath, substitutions=substitutions, low_only=low_only, epsilon=epsilon, load_prefixes=load_prefixes, model_class=model_class)
         else:
             raise e

@@ -63,7 +63,24 @@ if not os.path.exists(f'{Testfilename}.tar.gz') or use_external == True:
 # ============================================================================
 # LOAD TRAINING DATA
 # ============================================================================
-def load_ML_data(Trainpath, only_VP=None, feature_normalizer=None):
+def _assert_derivative_basis(ml_indexer):
+    """The derivative arrays live in the raw component basis; the chemistry labels get a
+    PxSp change of basis before training. Those only agree when PxSpTransform is the
+    identity -- which it is for HeFESTo (62x62, zero off-identity entries; it exists for
+    MELTS pyroxene/spinel recasting). If a database ever ships a non-identity transform,
+    the C-axis derivative target and the model's own component moles would sit in
+    different bases and the loss would be quietly wrong, so this is checked rather than
+    assumed."""
+    P = np.asarray(ml_indexer.PxSpTransform)
+    if not np.allclose(P, np.eye(P.shape[0])):
+        raise ValueError(
+            "Derivative supervision assumes PxSpTransform is the identity, but this "
+            "indexer's is not. The dn/dP arrays are in the raw component basis while the "
+            "chemistry labels are PxSp-transformed, so the two would not be comparable. "
+            "Apply the same transform to the derivative arrays before enabling this.")
+
+
+def load_ML_data(Trainpath, only_VP=None, feature_normalizer=None, with_derivatives='auto'):
 
     #sanity_check_bundle(Path(f'{Trainpath}.tar.gz')) # Good check. Cost time, so we skip for now, 
 
@@ -83,9 +100,24 @@ def load_ML_data(Trainpath, only_VP=None, feature_normalizer=None):
               "consume them - not loaded. (Loading/using free_outputs during training "
               "is planned to be configurable in the future.)")
 
+    # Derivative arrays, when the bundle has them. 'auto' takes them if present; True
+    # requires them and raises by name; False skips them even when present.
+    with tarfile.open(bundle_path, 'r:gz') as tar:
+        _names = set(tar.getnames())
+    has_deriv = ('dndp_labels.npy' in _names) and ('dndt_labels.npy' in _names)
+    if with_derivatives is True and not has_deriv:
+        raise FileNotFoundError(
+            f"{bundle_path} carries no dndp_labels/dndt_labels. Re-export it from a "
+            f"BigMetaTable with derivative sidecars attached, or set "
+            f"derivatives.enabled: false.")
+    use_deriv = has_deriv if with_derivatives == 'auto' else bool(with_derivatives)
+
     # mass_labels is unused by every current consumer; free_outputs is likewise
     # unused for now (see above) - neither is loaded into RAM.
-    train_data = load_ml_bundle(bundle_path, arrays=('features', 'binary_labels', 'labels', 'molar_labels'))
+    _wanted = ['features', 'binary_labels', 'labels', 'molar_labels']
+    if use_deriv:
+        _wanted += ['dndp_labels', 'dndt_labels']
+    train_data = load_ml_bundle(bundle_path, arrays=tuple(_wanted))
 
     ml_indexer = train_data.ml_indexer
     featureMap = train_data.features
@@ -112,6 +144,19 @@ def load_ML_data(Trainpath, only_VP=None, feature_normalizer=None):
     print(f"Binary Shape: {binaryMap.shape}")
     print(f"Label Shape: {labelMap.shape}")
     print(f"Mole Shape: {moleMap.shape}")
+    dndpMap = dndtMap = None
+    if use_deriv:
+        _assert_derivative_basis(ml_indexer)
+        dndpMap = train_data.dndp_labels
+        dndtMap = train_data.dndt_labels
+        print(f"dn/dP Shape: {dndpMap.shape}   dn/dT Shape: {dndtMap.shape}")
+        _finite = np.isfinite(dndpMap).all(axis=1)
+        print(f"Derivative coverage: {100 * _finite.mean():.1f}% of rows "
+              f"(NaN rows are simulations without a fort.42; the trainer masks them)")
+        if molar_epsilon:
+            print("[load_ML_data] NOTE: molar_epsilon is non-zero, so mole targets are "
+                  "log-scaled while derivative targets stay linear. ContinuousModel "
+                  "un-logs the mole target to match; the un-log is lossy near n = 0.")
     #if has_free_outputs: # now nonetype, not used. 
     #    print(f"Free Outputs Shape: {train_data.free_outputs.shape}")
 
@@ -200,6 +245,17 @@ def load_ML_data(Trainpath, only_VP=None, feature_normalizer=None):
         Trainmoles = torch.tensor(moleMap, device='cpu', dtype=torch.float)
     del moleMap
     gc.collect()
+
+    # Derivatives are NOT log-scaled: they are d(n)/dP of the linear moles, and the model
+    # un-logs the mole target rather than the reverse. NaN rows are preserved, not filled
+    # -- the trainer masks on isfinite, and a zero here would read as a measured "does not
+    # change" instead of "unknown".
+    Traindndp = Traindndt = None
+    if use_deriv:
+        Traindndp = torch.tensor(np.asarray(dndpMap), device='cpu', dtype=torch.float)
+        Traindndt = torch.tensor(np.asarray(dndtMap), device='cpu', dtype=torch.float)
+        del dndpMap, dndtMap
+        gc.collect()
 
     # free_outputs is never loaded (see note above), regardless of has_free_outputs -
     # kept as stable no-op values until loading/using them is made configurable.
@@ -296,23 +352,32 @@ def load_ML_data(Trainpath, only_VP=None, feature_normalizer=None):
     Trainbinaryfeatures = Trainbinaryfeatures[goodMap]
     Trainlabels = Trainlabels[goodMap]
     Trainmoles = Trainmoles[goodMap]
+    if use_deriv:
+        # The SAME row mask. Filtering the four and not the two would shift every
+        # derivative onto a different row's composition.
+        Traindndp = Traindndp[goodMap]
+        Traindndt = Traindndt[goodMap]
     print(f"Train Features: {Trainnormfeatures.size()}, Binaries {Trainbinaryfeatures.size()}, labels: {Trainlabels.size()}")
 
-    # Always TensorDatasetFour for now - free_outputs is never loaded (see note
-    # above), so there's nothing for TensorDatasetFive to hold even when the
-    # bundle has one.
+    # TensorDatasetFour, optionally with the two derivative arrays appended - it yields a
+    # 4-tuple without them and a 6-tuple with, and both training loops index rather than
+    # destructure. free_outputs is still never loaded (see note above), so
+    # TensorDatasetFive stays unused.
     full_train_set = TensorDatasetFour(
         features=Trainnormfeatures,
         binarylabels=Trainbinaryfeatures,
         labels=Trainlabels,
         molelabels=Trainmoles,
+        dndp=Traindndp,
+        dndt=Traindndt,
     )
     return full_train_set, ml_indexer
 
 
 def load_ML_data_auto(Trainpath, only_VP=None, molar_epsilon=0,
                        ram_threshold_bytes=8 * 1024 ** 3, workspace_dir=None,
-                       chunk_size=1_000_000, batch_size=1024, chunk_rows=1_000_000):
+                       chunk_size=1_000_000, batch_size=1024, chunk_rows=1_000_000,
+                       with_derivatives='auto'):
     """
     Load Train data via the cached, pre-transformed working directory
     (see builder.training.dataset_workspace), then decide - based on the
@@ -336,8 +401,12 @@ def load_ML_data_auto(Trainpath, only_VP=None, molar_epsilon=0,
         Log-scaling epsilon for mole labels - see load_ML_data. Changing this
         from a previous call invalidates the cached workspace and triggers a
         rebuild.
+    with_derivatives : 'auto' | True | False, default 'auto'
+        Carry dndp_labels/dndt_labels through the workspace when the bundle has them.
+        True requires them and raises by name. Part of the workspace fingerprint, so
+        changing it rebuilds rather than silently returning the wrong array set.
     ram_threshold_bytes : int, default 8 GiB
-        If the workspace's 4 arrays total at or below this many bytes,
+        If the workspace's arrays total at or below this many bytes,
         return a full in-RAM TensorDatasetFour (as load_ML_data does). Above
         it, return a ChunkedMemmapTrainLoader instead. Measured against the
         *uncompressed* workspace size, not the .tar.gz bundle size - those
@@ -358,14 +427,16 @@ def load_ML_data_auto(Trainpath, only_VP=None, molar_epsilon=0,
     (dataset_or_loader, ml_indexer)
         Either a TensorDatasetFour (small dataset) or a ChunkedMemmapTrainLoader
         (large dataset) - both are valid `trainData` arguments to
-        trainer.train_Lower_MELTS/train_Upper_MELTS, and both yield
-        (features, binary_labels, labels, molar_labels) batches.
+        trainer.train_Lower_MELTS/train_Upper_MELTS/sobolev.train_Upper_Sobolev, and both
+        yield (features, binary_labels, labels, molar_labels) batches, with
+        (dndp_labels, dndt_labels) appended when derivatives are carried.
     """
     from builder.training.dataset_workspace import get_or_build_train_workspace
 
     workspace = get_or_build_train_workspace(
         Trainpath, only_VP=only_VP, molar_epsilon=molar_epsilon,
         workspace_dir=workspace_dir, chunk_size=chunk_size,
+        with_derivatives=with_derivatives,
     )
 
     total_bytes = workspace.total_bytes()
@@ -379,11 +450,17 @@ def load_ML_data_auto(Trainpath, only_VP=None, molar_epsilon=0,
             binarylabels=torch.tensor(np.array(workspace.binary_labels), dtype=torch.float),
             labels=torch.tensor(np.array(workspace.labels), dtype=torch.float),
             molelabels=torch.tensor(np.array(workspace.molar_labels), dtype=torch.float),
+            dndp=(torch.tensor(np.array(workspace.dndp_labels), dtype=torch.float)
+                  if workspace.has_derivatives else None),
+            dndt=(torch.tensor(np.array(workspace.dndt_labels), dtype=torch.float)
+                  if workspace.has_derivatives else None),
         )
         return full_train_set, workspace.ml_indexer
 
     print("[load_ML_data_auto] Above RAM threshold - returning ChunkedMemmapTrainLoader")
     loader = build_chunked_train_loader(workspace, batch_size=batch_size, chunk_rows=chunk_rows)
+    # main.py's derivative gate prefers this attribute over probing a row.
+    loader.has_derivatives = workspace.has_derivatives
     return loader, workspace.ml_indexer
 
 

@@ -10,6 +10,11 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import re
+
+try:
+    from . import sidecar as _sidecar
+except ImportError:            # direct-script use
+    import sidecar as _sidecar
 import argparse
 import json
 
@@ -43,7 +48,52 @@ _ROW_ALIGNED_ARRAYS = (
     "molar_labels.npy",
     "mass_labels.npy",
     "free_outputs.npy",
+    # Derivative supervision. These MUST be listed here: shuffle_bundle_rows permutes
+    # every array in this tuple with one permutation, and an array left out would keep
+    # its original order while the rest moved -- silently pairing each row's derivative
+    # with a different row's composition.
+    "dndp_labels.npy",
+    "dndt_labels.npy",
 )
+
+def _derivative_stats(exporter, q=95.0, chunk=200_000):
+    """Per-component scale and coverage for the exported derivative arrays.
+
+    `scale` is the qth percentile of |value| per component, computed over rows that have
+    a derivative at all. The trainer divides by it, so a trace component is neither
+    drowned by forsterite nor amplified into the dominant term. A percentile rather than
+    the max because the max lands on a phase-boundary row where the true derivative is
+    genuinely enormous and is exactly the row you do not want setting the scale.
+
+    `coverage` is the fraction of rows carrying finite derivatives. Rows from simulations
+    that never wrote a fort.42 are NaN-filled rather than dropped, to keep the arrays
+    row-parallel with everything else in the bundle.
+    """
+    stats = {'coverage': 0.0, 'scale': {}, 'scale_median': 0.0, 'n_rows': 0}
+    for attr, arr in exporter.derivlabels.items():
+        n_rows, n_cols = arr.shape
+        acc = np.zeros((0, n_cols), dtype=np.float32)
+        finite_rows = 0
+        keep = []
+        for start in range(0, n_rows, chunk):
+            block = np.asarray(arr[start:start + chunk])
+            good = np.isfinite(block).all(axis=1)
+            finite_rows += int(good.sum())
+            if good.any():
+                # Reservoir of at most ~200k rows: the percentile is stable long before
+                # the whole table is read, and reading it all would defeat the memmap.
+                keep.append(block[good][:: max(1, int(good.sum() // 20000) or 1)])
+        acc = np.concatenate(keep) if keep else np.zeros((1, n_cols), dtype=np.float32)
+        sc = np.percentile(np.abs(acc), q, axis=0)
+        live = sc[sc > 0]
+        floor = float(np.median(live)) * 1e-3 if live.size else 1.0
+        sc = np.maximum(sc, max(floor, 1e-30))
+        stats['scale'][attr] = [float(v) for v in sc]
+        stats['coverage'] = finite_rows / max(n_rows, 1)
+        stats['n_rows'] = int(n_rows)
+        stats['scale_median'] = float(np.median(sc))
+    return stats
+
 
 #featureNames = ['Pressure(System_main)', 'Temperature(System_main)', 'logfO2-QFM(System_main)']
 #free_outputs = ['viscocity(System_main)', 'liq H (kJ)(melts-liquid)', 'Temperature(System_main)']
@@ -259,6 +309,28 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             dtype=np.float32,
             shape=(num_rows*len(resample_bounds), num_phases)
     )
+
+    # Composition derivatives, on the COMPONENT (species) axis rather than the phase axis.
+    # Contracting them with phaseToCompMap.T, as molar_labels does, would annihilate the
+    # n_phase * dx/dP term -- the change of a phase's endmember composition with pressure,
+    # which is what sets the width of a transition and which nothing else in the loss
+    # constrains. Present only when the BigMetaTable carries derivative sidecars, so a
+    # bundle built from a pre-derivative import is unchanged.
+    # Gated on the SIDECARS, not on self.dmolar: the molar-space twins are built inside
+    # retrieve_component_moles(), which runs later in the resample loop, so testing for
+    # them here would always be false and the arrays would never be allocated.
+    self.derivlabels = {}
+    _deriv_attrs = [a for a, _, _ in _sidecar.items(self)]
+    if _deriv_attrs:
+        for _attr in _deriv_attrs:
+            self.derivlabels[_attr] = np.lib.format.open_memmap(
+                self.filename + f'{_attr}_labels.npy',
+                mode='w+',
+                dtype=np.float32,
+                shape=(num_rows*len(resample_bounds), self.indexer.ml_indexer.ncomps)
+            )
+        print(f'[derivatives] exporting {sorted(self.derivlabels)} on the component axis '
+              f'({self.indexer.ml_indexer.ncomps} columns each)')
         
     self.binarylabels = np.lib.format.open_memmap( # Flags of present phases
             self.filename + 'binary_labels.npy',
@@ -438,6 +510,15 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
                 #print(f"Building molar labels for rows {start}:{end} (sample {i})")
                 self.molarlabels[out_start:out_end] = (molar_chunk / InTot_chunk) @ phaseToCompMap.T
 
+                # --- Derivative labels, divided by the SAME per-row element total.
+                # InTot is constant along a HeFESTo scan (the bulk is fixed), so
+                # d(n/InTot)/dP = (1/InTot) dn/dP exactly -- no quotient-rule term. NaN
+                # rows stay NaN; the trainer masks on isfinite rather than treating a
+                # missing derivative as a measured zero.
+                for _attr, _out in self.derivlabels.items():
+                    _out[out_start:out_end] = self.dmolar[_attr][start:end] / InTot_chunk
+
+
                 for phase, idx in label_indices.items(): # Move components into the right space. Using molar_chunk to support HeFESTo and MELTS with same code
                     if len(idx) == 1:
                         continue # Skip pure phases
@@ -579,6 +660,15 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
         file_mappings[str(config_path)] = config_basename
     if free_outputs is not None:
         file_mappings[self.filename + 'free_outputs.npy'] = 'free_outputs.npy'
+    for _attr in getattr(self, 'derivlabels', {}):
+        file_mappings[self.filename + f'{_attr}_labels.npy'] = f'{_attr}_labels.npy'
+    if getattr(self, 'derivlabels', None):
+        _dstats = _derivative_stats(self)
+        _dpath = Path(self.filename + 'derivative_stats.json')
+        _dpath.write_text(json.dumps(_dstats, indent=1))
+        file_mappings[str(_dpath)] = 'derivative_stats.json'
+        print(f"[derivatives] coverage {100*_dstats['coverage']:.1f}% of rows; "
+              f"scale median {_dstats['scale_median']:.3e}")
     
     # Add stats file
     if stats_path and stats_path.exists():

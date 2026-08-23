@@ -35,17 +35,45 @@ import torch
 
 WORKSPACE_DIR_DEFAULT = Path(__file__).parent / "dataset_workspace"
 _FINGERPRINT_FILE = "_fingerprint.json"
-_ARRAY_NAMES = ("features", "binary_labels", "labels", "molar_labels")
+_BASE_ARRAY_NAMES = ("features", "binary_labels", "labels", "molar_labels")
+# Composition derivatives, on the component axis. Optional: a bundle exported before
+# derivative support has none, and a workspace built without them is still valid -- the
+# fingerprint records which was built, so asking for them later triggers a rebuild rather
+# than silently handing back a 4-array workspace.
+_DERIV_ARRAY_NAMES = ("dndp_labels", "dndt_labels")
+_ARRAY_NAMES = _BASE_ARRAY_NAMES          # back-compat alias for external callers
+
+
+def _bundle_has_derivatives(bundle_path):
+    """Member-name check only -- no extraction."""
+    with tarfile.open(bundle_path, 'r:gz') as tar:
+        names = set(tar.getnames())
+    return all(f'{n}.npy' in names for n in _DERIV_ARRAY_NAMES)
 
 
 class WorkspaceHandle:
     """Open memmaps + metadata for a built training workspace."""
 
-    def __init__(self, workspace_dir, arrays, ml_indexer, n_rows):
+    def __init__(self, workspace_dir, arrays, ml_indexer, n_rows, array_names=None):
         self.workspace_dir = workspace_dir
         self.arrays = arrays  # name -> memmap
         self.ml_indexer = ml_indexer
         self.n_rows = n_rows
+        # Ordered, and the order IS the batch tuple order. Consumers iterate this rather
+        # than naming arrays, so adding an array later touches this list and nothing else.
+        self.array_names = list(array_names) if array_names is not None else list(arrays)
+
+    @property
+    def has_derivatives(self):
+        return all(n in self.arrays for n in _DERIV_ARRAY_NAMES)
+
+    @property
+    def dndp_labels(self):
+        return self.arrays.get('dndp_labels')
+
+    @property
+    def dndt_labels(self):
+        return self.arrays.get('dndt_labels')
 
     @property
     def features(self):
@@ -64,12 +92,16 @@ class WorkspaceHandle:
         return self.arrays['molar_labels']
 
     def total_bytes(self):
-        """Total bytes across the 4 workspace arrays - free to compute (shape
-        x dtype size from the memmap headers), no data read."""
+        """Total bytes across every workspace array - free to compute (shape
+        x dtype size from the memmap headers), no data read.
+
+        Counts the derivative arrays when present, so the RAM-fit decision in
+        load_ML_data_auto accounts for them and drops to the chunked loader sooner. That
+        is the intended behaviour: they are real memory, not bookkeeping."""
         return sum(arr.nbytes for arr in self.arrays.values())
 
 
-def _fingerprint_for(bundle_path, only_VP, molar_epsilon):
+def _fingerprint_for(bundle_path, only_VP, molar_epsilon, with_derivatives=False):
     stat = bundle_path.stat()
     return {
         "bundle_path": str(bundle_path.resolve()),
@@ -77,22 +109,42 @@ def _fingerprint_for(bundle_path, only_VP, molar_epsilon):
         "bundle_size": stat.st_size,
         "only_VP": list(only_VP) if only_VP is not None else None,
         "molar_epsilon": molar_epsilon,
+        # Part of the fingerprint so a workspace built without derivatives is rebuilt when
+        # they are asked for, instead of returning a 4-array handle that then fails deep
+        # inside the training loop.
+        "with_derivatives": bool(with_derivatives),
     }
 
 
 def get_or_build_train_workspace(bundle_path, only_VP=None, molar_epsilon=0,
-                                  workspace_dir=None, chunk_size=1_000_000):
+                                  workspace_dir=None, chunk_size=1_000_000,
+                                  with_derivatives='auto'):
     """Return a `WorkspaceHandle` for `bundle_path`, building (or rebuilding)
     the cached workspace first if it's missing or stale for the given
-    bundle/only_VP/molar_epsilon combination."""
+    bundle/only_VP/molar_epsilon/with_derivatives combination.
+
+    with_derivatives : 'auto' | True | False
+        'auto' carries the derivative arrays through when the bundle has them. True
+        requires them and raises by name if the bundle predates derivative export --
+        which is the behaviour a recipe with `derivatives.enabled: true` wants, since a
+        quiet fallback there means training the objective you were trying to replace.
+    """
     bundle_path = Path(bundle_path)
     if not str(bundle_path).endswith('.tar.gz'):
         bundle_path = Path(str(bundle_path) + '.tar.gz')
     if not bundle_path.exists():
         raise FileNotFoundError(f"Bundle not found: {bundle_path}")
 
+    have_deriv = _bundle_has_derivatives(bundle_path)
+    if with_derivatives is True and not have_deriv:
+        raise FileNotFoundError(
+            f"{bundle_path.name} carries no {list(_DERIV_ARRAY_NAMES)}; re-export it from a "
+            f"BigMetaTable with derivative sidecars attached, or set "
+            f"derivatives.enabled: false.")
+    use_deriv = have_deriv if with_derivatives == 'auto' else bool(with_derivatives)
+
     workspace_dir = Path(workspace_dir) if workspace_dir is not None else WORKSPACE_DIR_DEFAULT
-    fingerprint = _fingerprint_for(bundle_path, only_VP, molar_epsilon)
+    fingerprint = _fingerprint_for(bundle_path, only_VP, molar_epsilon, use_deriv)
     fp_path = workspace_dir / _FINGERPRINT_FILE
 
     reuse = False
@@ -109,18 +161,24 @@ def get_or_build_train_workspace(bundle_path, only_VP=None, molar_epsilon=0,
         if workspace_dir.exists():
             shutil.rmtree(workspace_dir)
         workspace_dir.mkdir(parents=True, exist_ok=True)
-        _build_workspace(bundle_path, workspace_dir, only_VP, molar_epsilon, chunk_size)
+        _build_workspace(bundle_path, workspace_dir, only_VP, molar_epsilon, chunk_size,
+                         use_deriv)
         fp_path.write_text(json.dumps(fingerprint, indent=2))
 
     from ngibbs.config.ml_indexer import load_ml_indexer_from_state
     ml_indexer = load_ml_indexer_from_state(str(workspace_dir / 'ml_indexer'))
 
-    arrays = {name: np.load(workspace_dir / f"{name}.npy", mmap_mode='r') for name in _ARRAY_NAMES}
+    names = list(_BASE_ARRAY_NAMES) + (list(_DERIV_ARRAY_NAMES) if use_deriv else [])
+    arrays = {name: np.load(workspace_dir / f"{name}.npy", mmap_mode='r') for name in names}
     n_rows = arrays['features'].shape[0]
-    return WorkspaceHandle(workspace_dir, arrays, ml_indexer, n_rows)
+    if use_deriv:
+        print(f"[dataset_workspace] Derivative arrays carried: "
+              f"{ {n: arrays[n].shape for n in _DERIV_ARRAY_NAMES} }")
+    return WorkspaceHandle(workspace_dir, arrays, ml_indexer, n_rows, array_names=names)
 
 
-def _build_workspace(bundle_path, workspace_dir, only_VP, molar_epsilon, chunk_size):
+def _build_workspace(bundle_path, workspace_dir, only_VP, molar_epsilon, chunk_size,
+                     with_derivatives=False):
     from ngibbs.config.ml_indexer import load_ml_indexer_from_state
     from ngibbs.utils.file_utils import chunked_mask_copy
     from ngibbs.utils.math_utils import Normalizer
@@ -233,6 +291,31 @@ def _build_workspace(bundle_path, workspace_dir, only_VP, molar_epsilon, chunk_s
         else:
             chunked_mask_copy(raw_molar, workspace_dir / 'molar_labels.npy', keep_mask, chunk_size)
 
+        # --- Derivative arrays: the SAME keep_mask, and deliberately NO log transform.
+        # molar_epsilon log-scales the mole target; the derivative target is d(n)/dP of
+        # the LINEAR moles, and the model un-logs the mole target at train time to match
+        # (ContinuousModel.transform_mole_targets). Log-scaling these too would be asking
+        # the network to reproduce d(log10(n+eps))/dP, which is singular exactly at n = 0
+        # -- the phase-out boundary the continuous model exists to get right.
+        #
+        # No PxSp transform either: it acts on the endmember-fraction labels, and these
+        # are component moles. It is the identity for HeFESTo in any case (verified), and
+        # the assertion in loadTrainData catches a database where it would not be.
+        raw_deriv = {}
+        if with_derivatives:
+            for name in _DERIV_ARRAY_NAMES:
+                src = extract_dir / f'{name}.npy'
+                if not src.exists():
+                    raise FileNotFoundError(
+                        f"{bundle_path.name} has no {name}.npy but the workspace was asked "
+                        f"to carry derivatives.")
+                raw_deriv[name] = np.load(src, mmap_mode='r')
+                chunked_mask_copy(raw_deriv[name], workspace_dir / f'{name}.npy',
+                                  keep_mask, chunk_size)
+            print(f"[dataset_workspace] Carried {list(_DERIV_ARRAY_NAMES)} through the "
+                  f"same out-of-bounds mask ({int(keep_mask.sum()):,} rows)")
+
+        del raw_deriv
         del tmp_features_ro, tmp_labels_ro, raw_features, raw_binary, raw_labels, raw_molar
         gc.collect()
         tmp_features_path.unlink()
@@ -256,8 +339,14 @@ class ChunkedMemmapTrainLoader:
     top of the one-time on-disk shuffle already applied during processing
     (see MLexporter.shuffle_bundle_rows).
 
-    Yields the same 4-tuple shape as TensorDatasetFour + DataLoader:
-    (features, binary_labels, labels, molar_labels).
+    Yields the same tuple shape as TrainingTensorDataset + DataLoader, in the workspace's
+    `array_names` order: (features, binary_labels, labels, molar_labels) and, when the
+    workspace carries them, (dndp_labels, dndt_labels) appended. Arity is not hard-coded
+    anywhere below -- every array is read, pinned, permuted and yielded by iterating that
+    list, so a future array is one entry in `_DERIV_ARRAY_NAMES` and nothing here changes.
+
+    The single permutation per chunk is what keeps a row's derivative attached to its own
+    composition. Permuting arrays independently would still train and still converge.
     """
 
     def __init__(self, workspace: WorkspaceHandle, batch_size, chunk_rows=1_000_000,
@@ -301,25 +390,21 @@ class ChunkedMemmapTrainLoader:
         # torch.from_numpy would share memory with the still-lazy memmap view, and
         # the real disk read would happen later on the main thread instead,
         # defeating the whole point of prefetching.
-        features = torch.from_numpy(np.array(self.workspace.features[start:end]))
-        binary = torch.from_numpy(np.array(self.workspace.binary_labels[start:end]))
-        labels = torch.from_numpy(np.array(self.workspace.labels[start:end]))
-        moles = torch.from_numpy(np.array(self.workspace.molar_labels[start:end]))
-        if self.pin_memory:
-            features = features.pin_memory()
-            binary = binary.pin_memory()
-            labels = labels.pin_memory()
-            moles = moles.pin_memory()
-        return features, binary, labels, moles
+        out = []
+        for name in self.workspace.array_names:
+            t = torch.from_numpy(np.array(self.workspace.arrays[name][start:end]))
+            out.append(t.pin_memory() if self.pin_memory else t)
+        return tuple(out)
 
     def _iterate_chunk_batches(self, chunk):
-        features, binary, labels, moles = chunk
-        n = features.shape[0]
+        n = chunk[0].shape[0]
+        # ONE permutation, applied to every array. Drawing a permutation per array would
+        # shuffle each independently and pair every row's derivative with a different
+        # row's composition -- which trains, converges, and is wrong.
         perm = torch.randperm(n)
         for start in range(0, n, self.batch_size):
-            end = min(start + self.batch_size, n)
-            idx = perm[start:end]
-            yield features[idx], binary[idx], labels[idx], moles[idx]
+            idx = perm[start:min(start + self.batch_size, n)]
+            yield tuple(t[idx] for t in chunk)
 
     def __iter__(self):
         bounds = self._chunk_bounds()

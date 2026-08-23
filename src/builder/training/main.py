@@ -31,10 +31,93 @@ import ngibbs.engine.NN as NN
 from builder.training.loadTrainData import load_ML_data, load_ML_data_auto
 from builder.training.optimizer_factory import normalize_scheduler_name
 from builder.training.trainer import train_Lower_MELTS, train_Upper_MELTS, symmetric_rel_l1, symmetric_rel_l2
+from builder.training.sobolev import train_Upper_Sobolev
 from builder.training.tuners import tune_Lower_MELTS, tune_Upper_MELTS
 from builder.training.logger import setup_training_logger, redirect_output, restore_output
 from ngibbs.utils.string_utils import apply_type_conversions
 from ngibbs.config.constants import TYPE_CONVERSION_MAP
+
+def _any_episode_wants_derivatives(config):
+    """Does any episode in this recipe set `derivatives.enabled`?
+
+    Checked once, up front, because the arrays are loaded once while the setting is
+    per-episode. Scans the global block and every episode override rather than assuming
+    inheritance, so an episode that turns derivatives on locally still gets them.
+    """
+    def _on(block):
+        return str((block or {}).get('enabled', False)).lower() in ('1', 'true', 'yes')
+
+    if _on(config.get('derivatives')):
+        return True
+    for key, value in config.items():
+        if isinstance(value, dict) and _on(value.get('derivatives')):
+            return True
+    return False
+
+
+def _derivative_settings(episode_cfg, train_set):
+    """Resolve the episode's `derivatives:` block and pick the upper trainer.
+
+    Returns `(train_fn, kwargs)`. Two rules, both deliberate:
+
+    * `enabled: true` against a dataset with no derivative arrays RAISES, naming the
+      bundle and the fix. It does not quietly fall back. A silent fallback is how a
+      fortnight-long run finishes having trained the objective you were trying to
+      replace, and the loss curve looks fine the whole time.
+    * The block being absent means `enabled: false`, so every existing recipe keeps
+      running `train_Upper_MELTS` untouched.
+    """
+    cfg = episode_cfg.get('derivatives') or {}
+    enabled = str(cfg.get('enabled', False)).lower() in ('1', 'true', 'yes')
+    if not enabled:
+        return train_Upper_MELTS, {}
+
+    has = getattr(train_set, 'has_derivatives', None)
+    if has is None:
+        probe = train_set[0] if hasattr(train_set, '__getitem__') else None
+        has = probe is not None and len(probe) >= 6
+    if not has:
+        raise ValueError(
+            "derivatives.enabled is true but the training data carries no dn/dP and "
+            "dn/dT arrays. Re-export the ML bundle with a BigMetaTable that has "
+            "derivative sidecars attached (see import_HeFESTo_derivatives and "
+            "scripts/check_derivatives.py), or set derivatives.enabled: false to train "
+            "the value-only objective. Refusing to fall back silently.")
+
+    kwargs = dict(
+        dndp_alpha=float(cfg.get('dndp_weight', 1.0)),
+        dndt_alpha=float(cfg.get('dndt_weight', 1.0)),
+        project_tangent=str(cfg.get('project_tangent', True)).lower() not in ('0', 'false', 'no'),
+        deriv_subsample=float(cfg.get('subsample', 1.0)),
+        huber_delta=float(cfg.get('huber_delta', 3.0)),
+    )
+    scale = getattr(train_set, 'derivative_scale', None)
+    if scale is not None:
+        kwargs['deriv_scale'] = scale
+    print(f"[derivatives] enabled: {kwargs}")
+    return train_Upper_Sobolev, kwargs
+
+
+def _model_class_from_config(config):
+    """Which network class this recipe builds. Defaults to the historical one, so an
+    existing YAML with no `model_class:` key behaves exactly as before."""
+    return NN._resolve_model_class({'model_class': config.get('model_class')})
+
+
+def _model_args_for(model_class):
+    """Constructor keyword names, read off the class rather than listed by hand.
+
+    The old hard-coded list silently dropped any config a new architecture introduced --
+    `moleLayerUp`, `head_order`, `massbalance_iters` would all have been ignored, and the
+    episode-rebuild check below would never notice them change. `ml_indexer` and `device`
+    are supplied separately.
+    """
+    import inspect
+    params = inspect.signature(model_class.__init__).parameters
+    return [name for name in params
+            if name not in ('self', 'ml_indexer', 'device')
+            and params[name].kind is not inspect.Parameter.VAR_KEYWORD]
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="nMELTS training CLI")
@@ -390,9 +473,16 @@ def main() -> None:
     # (uncompressed) size - see builder.training.dataset_workspace and
     # config["ram_threshold_gb"] in config/defaults.yaml.
     ram_threshold_bytes = float(config.get("ram_threshold_gb", 8)) * 1024 ** 3
+    # Load the derivative arrays only if some episode actually asks for them. They are two
+    # more (rows, ncomps) arrays, so carrying them for a run that never uses them wastes
+    # real memory and pushes the RAM-fit decision toward the chunked loader for nothing.
+    # `True` rather than `'auto'` when wanted, so a bundle that lacks them fails here --
+    # naming the bundle -- instead of at the first episode that needs them.
+    _wants_derivs = _any_episode_wants_derivatives(config)
     train_set, ml_indexer = load_ML_data_auto(
         train_bundle, only_VP=only_vp, ram_threshold_bytes=ram_threshold_bytes,
         batch_size=int(config["batch_size"]),
+        with_derivatives=True if _wants_derivs else False,
     )
     # Test: confirmed small enough to always load fully in RAM. Inherits Train's
     # feature_normalizer (fit bounds) rather than fitting its own - the model
@@ -401,7 +491,9 @@ def main() -> None:
     # differently-scaled inputs at eval time. (Test's own feature_bounds.json,
     # if present, is just a diagnostic of Test's own P/T/fO2 range - not used
     # here.)
-    test_set, _ = load_ML_data(test_bundle, only_VP=only_vp, feature_normalizer=ml_indexer.feature_normalizer)
+    test_set, _ = load_ML_data(test_bundle, only_VP=only_vp,
+                               feature_normalizer=ml_indexer.feature_normalizer,
+                               with_derivatives=True if _wants_derivs else False)
 
     print(f"MOLAR EPSILON FROM LOADED DATA: {ml_indexer.molar_epsilon}")
 
@@ -419,18 +511,10 @@ def main() -> None:
         print(f"Loaded warm-start config baseline from: {warm_start}")
     else:
         # Initialize model, pull relevant subset of configs to initialize model
-        model_config = {}
-        modelArgs = ['encoderLayerUp', 'encoderLayerDown',
-                 'middleLayerUp', 'middleLayerDown',
-                 'low_regularization', 'high_regularization', 
-                 'activation_leak', 'lowWD', 'highWD', 'noise',
-                 'description'
-                    ]
-               
-        for key, val in deepcopy(config).items():
-            if key in modelArgs:
-                model_config[key] = val
-        best_model = NN.MidLevelNetwork(**model_config, ml_indexer=ml_indexer)
+        model_class = _model_class_from_config(config)
+        modelArgs = _model_args_for(model_class)
+        model_config = {key: val for key, val in deepcopy(config).items() if key in modelArgs}
+        best_model = model_class(**model_config, ml_indexer=ml_indexer)
 
     # State for sequential episodes
     best_loss = None
@@ -453,18 +537,23 @@ def main() -> None:
         episode_cfg = apply_type_conversions(episode_cfg, TYPE_CONVERSION_MAP)
     
         # === Apply episode-specific model configuration ===
-        modelArgs = ['encoderLayerUp', 'encoderLayerDown',
-                     'middleLayerUp', 'middleLayerDown',
-                     'low_regularization', 'high_regularization', 
-                     'activation_leak', 'lowWD', 'highWD', 'noise',
-                     'description']
-        
+        # Whatever class the running model actually is -- a warm start reloads its own
+        # type via the config's `model_class`, so this follows the checkpoint.
+        model_class = type(best_model)
+        modelArgs = _model_args_for(model_class)
+
         # Check if any model parameters have changed in episode config
         model_config_changed = False
         new_model_config = {}
         for param in modelArgs:
             episode_val = episode_cfg.get(param)
             current_val = best_model.config.get(param)
+            if episode_val is None and current_val is None:
+                # A constructor keyword neither the recipe nor the checkpoint sets: leave
+                # it to the class default rather than forcing it to None. (The old
+                # hard-coded modelArgs list could not hit this; a signature-derived one
+                # can, e.g. MidLevelNetwork's `epsilon`.)
+                continue
             new_model_config[param] = episode_val if episode_val is not None else current_val
             if episode_val is not None and episode_val != current_val:
                 model_config_changed = True
@@ -475,7 +564,8 @@ def main() -> None:
             print(f"Rebuilding model with episode-specific configuration for {episode_key}")
             full_model_config = deepcopy(best_model.config)
             full_model_config.update(new_model_config)
-            new_model = NN.MidLevelNetwork(**full_model_config, ml_indexer=ml_indexer)
+            full_model_config = {k: v for k, v in full_model_config.items() if k in modelArgs}
+            new_model = model_class(**full_model_config, ml_indexer=ml_indexer)
             # Try to load weights from previous model (strict=False allows for architecture changes)
             try:
                 new_model.load_state_dict(best_model.state_dict(), strict=False)
@@ -515,6 +605,9 @@ def main() -> None:
         binWeights, compWeights = _build_phase_weights(ml_indexer, episode_cfg)
         which_heads_to_freeze = episode_cfg.get('which_heads_to_freeze', None)
         if which_heads_to_freeze is None: # what portion of model is frozen can be manually overridden, or is inferred from the strategy.
+            # These names are resolved against the model in trainer._resolve_heads_to_freeze:
+            # a class declares its own equivalents (or declares a head absent by design)
+            # via `head_aliases`, so these strategy names stay architecture-independent.
             if strategy == 'upper':
                 which_heads_to_freeze = ['sat_head', 'encoder', 'mole_head'] # Lower model and abundances turned off
             elif strategy == 'isolate':
@@ -624,7 +717,10 @@ def main() -> None:
                     if tuned_best_loss is not None:
                         best_loss = tuned_best_loss
                 else:
+                    _train_fn, _dkw = _derivative_settings(episode_cfg, train_set)
                     model, tune_results = tune_Upper_MELTS(
+                        train_fn=_train_fn,
+                        train_fn_kwargs=_dkw,
                         Model=best_model,
                         trainData=train_set,
                         testData=test_set,
@@ -722,10 +818,12 @@ def main() -> None:
                 else:
                     #raise ValueError('This temporary config works on lower model only')
                     #with torch.autograd.set_detect_anomaly(True):
-                    train_Upper_MELTS(
+                    _train_fn, _dkw = _derivative_settings(episode_cfg, train_set)
+                    _train_fn(
                         best_model,
                         train_set,
                         test_set,
+                        **_dkw,
                         scheduler=scheduler_name,
                         scheduler_kwargs=scheduler_kwargs,
                         criterion=criterion,
