@@ -62,6 +62,7 @@ try:
         get_dropped_rows,
         _resolve_phase_name_from_abbr,
         _resolve_component_name_from_abbr,
+        reconcile_component_name,
         _build_reverse_component_phase_map,
         _parse_control_file,
         _parse_fort56,
@@ -79,6 +80,7 @@ except ImportError:
             get_dropped_rows,
             _resolve_phase_name_from_abbr,
             _resolve_component_name_from_abbr,
+            reconcile_component_name,
             _build_reverse_component_phase_map,
             _parse_control_file,
             _parse_fort56,
@@ -92,7 +94,10 @@ except ImportError:
 import numpy as np
 import pandas as pd
 
-from src.ngibbs.utils.math_utils import get_S, get_T
+try:
+    from ngibbs.utils.math_utils import get_S, get_T
+except ImportError:                     # layout where only the repo root is on sys.path
+    from src.ngibbs.utils.math_utils import get_S, get_T
 
 from ngibbs.config.constants import (
     COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO,
@@ -2311,6 +2316,20 @@ def _compute_bulk_from_elements(element_moles: Dict[str, float]) -> Tuple[Dict[s
     return bulk_comp_wt, bulk_elements, system_mass
 
 
+#: (phase, component) pairs a caller asked to write but the schema has no column for.
+#: Recorded by `_safe_assign` so a naming drift surfaces as a report instead of a
+#: silently all-zero column -- which is exactly how `magnetite(spinel)` stayed empty.
+UNRESOLVED_ASSIGNMENTS: Dict[tuple, int] = {}
+
+
+def reset_unresolved_assignments() -> None:
+    UNRESOLVED_ASSIGNMENTS.clear()
+
+
+def get_unresolved_assignments() -> Dict[tuple, int]:
+    return dict(UNRESOLVED_ASSIGNMENTS)
+
+
 def _safe_assign(
     table: np.ndarray,
     indexer,
@@ -2324,6 +2343,11 @@ def _safe_assign(
         return
     col_idx = phase_map.get(component, None)
     if col_idx is None:
+        # Not silent any more. Several callers legitimately probe optional schema names
+        # ('moles', 'phase moles', ...), so this records rather than raises -- the
+        # component loop below is where an unresolved name becomes an error.
+        UNRESOLVED_ASSIGNMENTS[(str(phase), str(component))] = (
+            UNRESOLVED_ASSIGNMENTS.get((str(phase), str(component)), 0) + 1)
         return
     if add:
         table[:, col_idx] += values
@@ -2610,7 +2634,23 @@ def import_HeFESTo_components(
                     continue
                 values = pd.to_numeric(comp_df[comp_abbr], errors='coerce').fillna(0.0).to_numpy(dtype=float)
 
-                _safe_assign(out, indexer, phase_name, component_name, values)
+                # The resolved long name is not always the schema's key: 'smag' resolves
+                # to 'magnetite-spinel' while the column is 'magnetite(spinel)'. Writing
+                # the unreconciled name is a no-op -- that is how that column stayed zero
+                # while HeFESTo reported the species as up to 80% of the spinel phase.
+                schema_name = reconcile_component_name(
+                    indexer, phase_name, component_name, comp_abbr_str)
+                if schema_name is None:
+                    peak = float(np.nanmax(np.abs(values))) if values.size else 0.0
+                    if peak > 0:
+                        raise KeyError(
+                            f"fort.99 column '{comp_abbr_str}' resolves to "
+                            f"({component_name}, {phase_name}) but that phase has no such "
+                            f"column in the schema, and the species carries up to "
+                            f"{peak:.4e} mol. Refusing to drop it silently -- reconcile "
+                            f"HeFESTo_snames_long against COMPONENTS_IN_PHASES_HEFESTO.")
+                    continue
+                _safe_assign(out, indexer, phase_name, schema_name, values)
 
             # Compute total phase moles from component-space abundances.
             for phase_name, c_indices in getattr(indexer, 'label_indices', {}).items():

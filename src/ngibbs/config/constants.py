@@ -166,6 +166,41 @@ COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO: Dict[str, List[str]] = {
 }
 
 # Abbreviation mapping from table codes to short names.
+# Canonical component identity
+# ----------------------------
+# A component is identified by the pair (species, phase), NOT by species alone. The same
+# stoichiometric species legitimately belongs to more than one solution model -- magnetite
+# is an endmember of both `spinel` and `ferropericlase`, and in MELTS 15 further species
+# (diopside, jadeite, albite, ...) span two or more phases. `projections/compToOxV2.csv`
+# already encodes this correctly, keying 136 of its 147 rows as "<species> : <phase>".
+#
+# COMPONENT_KEY_SEP is that separator, promoted here so the rest of the codebase shares one
+# convention instead of inventing a second. Where a name in this module MUST disambiguate,
+# it uses the composite form; a bare name means "unambiguous, or phase supplied separately".
+#
+# The alternative -- renaming one of the two magnetites -- was considered and rejected: it
+# renames a mineral to encode a relationship the data files already express, it would have
+# to be repeated for the next collision, and the spinel magnetite is shared with MELTS so
+# only the ferropericlase one could move. This convention fixes the class, not the case.
+COMPONENT_KEY_SEP = ' : '
+
+
+def split_component_key(key):
+    """'magnetite : spinel' -> ('magnetite', 'spinel');  'forsterite' -> ('forsterite', None).
+
+    The single place this convention is parsed. Anything resolving a flat species list
+    against phase-scoped storage should go through here rather than pattern-matching a
+    hyphen -- `mg-wadsleyite` and `magnetite-spinel` are indistinguishable by shape, and
+    treating the second as disambiguated is exactly the bug that left `magnetite(spinel)`
+    an all-zero column in every imported HeFESTo table.
+    """
+    text = str(key)
+    if COMPONENT_KEY_SEP in text:
+        species, _, phase = text.partition(COMPONENT_KEY_SEP)
+        return species.strip(), phase.strip()
+    return text.strip(), None
+
+
 HEFESTO_ABBREVIATION_TO_SHORT_NAMES: Dict[str, str] = {
     'plg': 'plagioclase', #
     'sp': 'spinel', #
@@ -200,7 +235,10 @@ HEFESTO_ABBREVIATION_TO_SHORT_NAMES: Dict[str, str] = {
     'an': 'anorthite',
     'ab': 'albite',
     'hc': 'hercynite',
-    'smag': 'magnetite-spinel',
+    # Composite keys: these two species are the same compound in two different solution
+    # models, so the species name alone cannot address a storage column. Written in the
+    # same form `compToOxV2.csv` uses; consumers split with `split_component_key`.
+    'smag': 'magnetite : spinel',
     'picr': 'picro-chromite',
     'fo': 'forsterite',
     'fa': 'fayalite',
@@ -260,7 +298,7 @@ HEFESTO_ABBREVIATION_TO_SHORT_NAMES: Dict[str, str] = {
     'mw' : 'ferropericlase',#
     'wuls': 'wustite-ls',
     'anao': 'alpha-naalo2',
-    'mag': 'magnetite',
+    'mag': 'magnetite : ferropericlase',
     'mgcf': 'mg-ca-ferrite',
     'fecf': 'fe-ca-ferrite',
     'nacf': 'na-ca-ferrite',

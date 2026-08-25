@@ -54,7 +54,74 @@ _ROW_ALIGNED_ARRAYS = (
     # with a different row's composition.
     "dndp_labels.npy",
     "dndt_labels.npy",
+    "dndp_s_labels.npy",
+    "dnds_labels.npy",
 )
+
+# --------------------------------------------------------------------------- #
+#  Isentropic derivatives
+# --------------------------------------------------------------------------- #
+# HeFESTo reports dn/dP at fixed T and dn/dT at fixed P. An ISENTROPIC emulator takes
+# (P, S) as its inputs, and a loss differentiates the network with respect to its own
+# inputs -- so it needs dn/dP|_S and dn/dS|_P. Those are an exact, local change of
+# coordinates on the pair HeFESTo already gives, using only columns the main table
+# already carries (T, cp, alpha, rho). No new HeFESTo output is required.
+#
+#     dS/dT|_P = cp / T
+#     dS/dP|_T = -alpha * V            (Maxwell), with V = 1/rho
+#     dT/dP|_S = -(dS/dP|_T)/(dS/dT|_P) = alpha * V * T / cp      <- the adiabatic gradient
+#
+#     dn/dS|_P = (dn/dT|_P) * T / cp
+#     dn/dP|_S =  dn/dP|_T + (dn/dT|_P) * alpha * V * T / cp
+#
+# Units. The table stores alpha in 1e-5 K^-1 and rho in g/cm^3, so
+#     alpha * V = (alpha_col * 1e-5) / rho     [cm^3 / (g K)]
+# and 1 GPa*cm^3 = 1e9 Pa * 1e-6 m^3 = 1e3 J, giving
+#     alpha * V = alpha_col * 1e-2 / rho       [J / (g K GPa)]
+# S is J/(g K), so dn/dS lands in mol*g*K/J, which is mol per unit of the S feature.
+_ALPHA_V_UNIT = 1.0e-2          # (1e-5 K^-1) * (cm^3/g) -> J/(g K GPa)
+
+
+def _isentropic_derivatives(dndp_T, dndt_P, T, cp, alpha, rho):
+    """(dn/dP|_S, dn/dS|_P) from the constant-T / constant-P pair.
+
+    Rows whose `cp` or `T` is non-positive cannot be converted -- the coordinate change
+    divides by `cp/T` -- and are returned as NaN rather than as a large finite number.
+    The trainer already masks on `isfinite`, and a silently huge derivative on a handful
+    of rows would dominate a scaled Huber.
+
+    Also returns `dTdP_S`, the adiabatic gradient, purely so the caller can report it: it
+    is the one number in this conversion with a value you can recognise on sight
+    (~10-15 K/GPa in the upper mantle). If it comes out an order of magnitude off, the
+    `cp` column is not what this function assumes -- see the note in the exporter.
+    """
+    T = np.asarray(T, dtype=np.float64).reshape(-1, 1)
+    cp = np.asarray(cp, dtype=np.float64).reshape(-1, 1)
+    alpha = np.asarray(alpha, dtype=np.float64).reshape(-1, 1)
+    rho = np.asarray(rho, dtype=np.float64).reshape(-1, 1)
+
+    ok = (cp > 0) & (T > 0) & (rho > 0)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        alphaV = alpha * _ALPHA_V_UNIT / rho          # J/(g K GPa)
+        dTdP_S = alphaV * T / cp                      # K/GPa
+        T_over_cp = T / cp                            # g K^2 / J
+
+    dnds_P = dndt_P * T_over_cp
+    dndp_S = dndp_T + dndt_P * dTdP_S
+
+    bad = ~np.broadcast_to(ok, dndp_S.shape)
+    dnds_P = np.where(bad, np.nan, dnds_P)
+    dndp_S = np.where(bad, np.nan, dndp_S)
+    return dndp_S.astype(np.float32), dnds_P.astype(np.float32), dTdP_S.ravel()
+
+
+def _system_column(exporter, attr):
+    """A System_main column by name, or None. Names differ between databases, so a
+    missing one disables the isentropic pair rather than raising -- MELTS tables have no
+    `alpha(1e5_K^-1)` and never will."""
+    idx = exporter.indexer.MELTS_indices.get('System_main', {}).get(attr)
+    return None if idx is None else int(idx)
+
 
 def _derivative_stats(exporter, q=95.0, chunk=200_000):
     """Per-component scale and coverage for the exported derivative arrays.
@@ -106,13 +173,20 @@ def _derivative_stats(exporter, q=95.0, chunk=200_000):
 def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=False, featureNames=["Pressure(System_main)", "Temperature(System_main)"],
                             free_outputs=None, indexer=None, config_path=None, bundle_name=None, chunk_size=None,
                             deep_filter_kwargs=None, insanity_filter_kwargs=None,
-                            alias_table1='auto'):
+                            alias_table1='auto', isentropic_derivatives='auto'):
 
     """Builds features and labels for training. Converts MELTS tables to .npy files fit for ML work.
     Self: BigMetaTable Instance.
 
     Parameters
     ----------
+    isentropic_derivatives : {'auto', True, False}, default 'auto'
+        Also export dn/dP|S and dn/dS|P, derived from the isothermal sidecars via the
+        exact local change of coordinates alpha*V*T/cp. An ISENTROPIC emulator takes
+        (P, S) as inputs and the loss differentiates w.r.t. the model's own inputs, so
+        dn/dT is simply not the quantity it needs. 'auto' adds them when both isothermal
+        sidecars and the T/cp/alpha/rho columns are present; True raises naming what is
+        missing; False skips them.
     bundle_name : str, optional
         Optional .tar.gz filename to use for the final bundle (stored in the dataset directory).
     chunk_size : int, optional
@@ -321,8 +395,27 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     # them here would always be false and the arrays would never be allocated.
     self.derivlabels = {}
     _deriv_attrs = [a for a, _, _ in _sidecar.items(self)]
-    if _deriv_attrs:
-        for _attr in _deriv_attrs:
+
+    # Isentropic pair. Requires both isothermal sidecars AND the four System_main columns
+    # the change of coordinates needs. 'auto' adds them when everything is present;
+    # True demands them and names what is missing.
+    self._isentropic_cols = {k: _system_column(self, v) for k, v in
+                             (('T', 'T(K)'), ('cp', 'cp(J/g/K)'),
+                              ('alpha', 'alpha(1e5_K^-1)'), ('rho', 'rho(g/cm^3)'))}
+    _have_iso = (set(_deriv_attrs) >= {'dndp', 'dndt'}
+                 and all(v is not None for v in self._isentropic_cols.values()))
+    if isentropic_derivatives is True and not _have_iso:
+        missing = ([k for k, v in self._isentropic_cols.items() if v is None]
+                   or [a for a in ('dndp', 'dndt') if a not in _deriv_attrs])
+        raise ValueError(
+            f'isentropic_derivatives=True but this table cannot supply them; missing '
+            f'{missing}. dn/dP|S and dn/dS|P are a change of coordinates on the '
+            f'isothermal pair and need T, cp, alpha and rho from System_main.')
+    self._export_isentropic = bool(_have_iso) and isentropic_derivatives is not False
+    _all_attrs = list(_deriv_attrs) + (['dndp_s', 'dnds'] if self._export_isentropic else [])
+
+    if _all_attrs:
+        for _attr in _all_attrs:
             self.derivlabels[_attr] = np.lib.format.open_memmap(
                 self.filename + f'{_attr}_labels.npy',
                 mode='w+',
@@ -331,6 +424,10 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             )
         print(f'[derivatives] exporting {sorted(self.derivlabels)} on the component axis '
               f'({self.indexer.ml_indexer.ncomps} columns each)')
+        if self._export_isentropic:
+            print('[derivatives] isentropic pair enabled: dn/dP|S and dn/dS|P derived from '
+                  'the isothermal pair via alpha*V*T/cp')
+    self._dtdp_s_seen = []
         
     self.binarylabels = np.lib.format.open_memmap( # Flags of present phases
             self.filename + 'binary_labels.npy',
@@ -515,8 +612,28 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
                 # d(n/InTot)/dP = (1/InTot) dn/dP exactly -- no quotient-rule term. NaN
                 # rows stay NaN; the trainer masks on isfinite rather than treating a
                 # missing derivative as a measured zero.
-                for _attr, _out in self.derivlabels.items():
-                    _out[out_start:out_end] = self.dmolar[_attr][start:end] / InTot_chunk
+                for _attr in self.dmolar:
+                    self.derivlabels[_attr][out_start:out_end] = (
+                        self.dmolar[_attr][start:end] / InTot_chunk)
+
+                # --- Isentropic pair, from the SAME rows' thermodynamic columns. Built
+                # from the already-normalised isothermal pair, so the /InTot factor is
+                # inherited rather than re-applied.
+                if self._export_isentropic:
+                    _c = self._isentropic_cols
+                    _dp_s, _ds_p, _dtdp = _isentropic_derivatives(
+                        np.asarray(self.dmolar['dndp'][start:end]) / InTot_chunk,
+                        np.asarray(self.dmolar['dndt'][start:end]) / InTot_chunk,
+                        self.table[start:end, _c['T']],
+                        self.table[start:end, _c['cp']],
+                        self.table[start:end, _c['alpha']],
+                        self.table[start:end, _c['rho']],
+                    )
+                    self.derivlabels['dndp_s'][out_start:out_end] = _dp_s
+                    self.derivlabels['dnds'][out_start:out_end] = _ds_p
+                    _f = _dtdp[np.isfinite(_dtdp)]
+                    if _f.size:
+                        self._dtdp_s_seen.append(np.median(_f))
 
 
                 for phase, idx in label_indices.items(): # Move components into the right space. Using molar_chunk to support HeFESTo and MELTS with same code
@@ -669,6 +786,19 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
         file_mappings[str(_dpath)] = 'derivative_stats.json'
         print(f"[derivatives] coverage {100*_dstats['coverage']:.1f}% of rows; "
               f"scale median {_dstats['scale_median']:.3e}")
+        if getattr(self, '_dtdp_s_seen', None):
+            _g = float(np.median(self._dtdp_s_seen))
+            print(f"[derivatives] median adiabatic gradient dT/dP|S = {_g:.2f} K/GPa")
+            # The one recognisable number in the coordinate change. A mantle adiabat runs
+            # ~8-20 K/GPa; an order-of-magnitude miss means the `cp` column is not the
+            # equilibrium heat capacity this conversion assumes (i.e. it excludes the
+            # latent-heat term T*sum_i dn_i/dT * S_i), and the isentropic pair would then
+            # be wrong precisely at a phase transition -- the only place it matters.
+            if not (2.0 <= _g <= 60.0):
+                print(f"[derivatives] WARNING: {_g:.2f} K/GPa is outside the plausible "
+                      f"range for a silicate adiabat. Check that cp(J/g/K) is the "
+                      f"EQUILIBRIUM heat capacity, not the fixed-assemblage one, before "
+                      f"training on dndp_s/dnds.")
     
     # Add stats file
     if stats_path and stats_path.exists():

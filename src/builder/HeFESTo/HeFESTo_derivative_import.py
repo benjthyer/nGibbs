@@ -30,19 +30,22 @@ try:
     from ngibbs.utils.file_utils import (
         _safe_read_ws_table, get_dropped_rows, _parse_control_file, _parse_fort56,
         _resolve_component_name_from_abbr, _resolve_component_phase,
+        reconcile_component_name,
+        reconcile_component_name,
         _build_reverse_component_phase_map,
     )
 except ImportError:
     from src.ngibbs.utils.file_utils import (
         _safe_read_ws_table, get_dropped_rows, _parse_control_file, _parse_fort56,
         _resolve_component_name_from_abbr, _resolve_component_phase,
+        reconcile_component_name,
+        reconcile_component_name,
         _build_reverse_component_phase_map,
     )
 
 from .HeFESTo_functions import (
-    _checkpoint_path_for_csv, _ensure_existing_csv_headers_match,
-    _list_simulation_dirs, _read_checkpoint_sim_id, _remove_file_if_exists,
-    _safe_assign, _write_block_to_csv, _write_checkpoint_sim_id,
+    _list_simulation_dirs, _safe_assign, _write_block_to_csv,
+    _ensure_existing_csv_headers_match,
 )
 from .HeFESTo_derivative_recovery import recover_derivatives, write_fort42
 
@@ -229,8 +232,6 @@ def import_HeFESTo_derivatives(
     sim_dirs = _list_simulation_dirs(workspace_dir)
     cols, headers, placements = derivative_schema(indexer)
     width = indexer.get_max_index() + 1
-    checkpoint_path = _checkpoint_path_for_csv(dndp_dataname)
-    resume_after_sim_id = _read_checkpoint_sim_id(checkpoint_path)
 
     for name in (dndp_dataname, dndt_dataname):
         _ensure_existing_csv_headers_match(name, headers)
@@ -241,7 +242,6 @@ def import_HeFESTo_derivatives(
     dt_blocks: List[np.ndarray] = []
     manifest: List[dict] = []
     since_flush = 0
-    last_flushed_sim_id: Optional[int] = resume_after_sim_id
 
     def _flush():
         if dp_blocks:
@@ -254,9 +254,6 @@ def import_HeFESTo_derivatives(
         dt_blocks.clear()
 
     for sim_id, sim_dir in sim_dirs:
-        if resume_after_sim_id is not None and sim_id <= resume_after_sim_id:
-            continue
-
         control_path = os.path.join(sim_dir, 'control')
         f56 = os.path.join(sim_dir, 'fort.56')
         f61 = os.path.join(sim_dir, 'fort.61')
@@ -350,8 +347,22 @@ def import_HeFESTo_derivatives(
                 )
                 if phase_name is None:
                     continue
-                _safe_assign(out_dp, indexer, phase_name, component_name, dndp[:, k])
-                _safe_assign(out_dt, indexer, phase_name, component_name, dndt[:, k])
+                # Same reconciliation the component importer needs: 'smag' resolves to
+                # 'magnetite-spinel' while the schema key is 'magnetite'. Without it the
+                # spinel magnetite derivative column is written nowhere and stays zero,
+                # exactly as the abundance column did.
+                schema_name = reconcile_component_name(
+                    indexer, phase_name, component_name, abbr)
+                if schema_name is None:
+                    peak = float(np.nanmax(np.abs(dndp[:, k]))) if dndp.shape[0] else 0.0
+                    if peak > 0:
+                        raise KeyError(
+                            f"fort.42 species '{abbr}' resolves to ({component_name}, "
+                            f"{phase_name}) with no matching schema column, and carries up "
+                            f"to {peak:.4e} mol/GPa. Refusing to drop it silently.")
+                    continue
+                _safe_assign(out_dp, indexer, phase_name, schema_name, dndp[:, k])
+                _safe_assign(out_dt, indexer, phase_name, schema_name, dndt[:, k])
                 placed += 1
 
             dp_blocks.append(out_dp[:, cols])
@@ -379,19 +390,13 @@ def import_HeFESTo_derivatives(
         since_flush += 1
         if since_flush >= flush_every:
             _flush()
-            _write_checkpoint_sim_id(checkpoint_path, sim_id)
-            last_flushed_sim_id = sim_id
             since_flush = 0
 
     _flush()
-    if last_flushed_sim_id is not None:
-        _write_checkpoint_sim_id(checkpoint_path, last_flushed_sim_id)
 
     if manifest_name is not None:
         pd.DataFrame(manifest).to_csv(manifest_name, mode='a', index=False,
                                       header=not os.path.exists(manifest_name))
-
-    _remove_file_if_exists(checkpoint_path)
 
     return passed_ids, malformed_ids, missing42_ids, recovered_ids
 

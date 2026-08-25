@@ -821,6 +821,41 @@ def _resolve_component_name_from_abbr(component_abbr: str) -> str:
     return HEFESTO_ABBREVIATION_TO_SHORT_NAMES.get(component_abbr, component_abbr)
 
 
+def reconcile_component_name(indexer, phase, component_name, abbr=None):
+    """Map a resolved component name onto the key the schema uses for `phase`.
+
+    Since the naming tables adopted the composite convention this is a SPLIT, not a
+    guess: `HEFESTO_ABBREVIATION_TO_SHORT_NAMES['smag']` is `'magnetite : spinel'`, so the
+    species and its phase arrive together and the phase half is verified against the phase
+    being written rather than assumed.
+
+    Two fallbacks remain, both for names written before the convention existed:
+    the bare name as given, and the abbreviation itself. The old hyphen heuristic is gone --
+    `mg-wadsleyite` and `magnetite-spinel` have the same shape, and only one of them is
+    disambiguated, so shape could never have distinguished them reliably.
+
+    Returns the schema key, or None if nothing matches. Callers must treat None as an
+    error: a silent skip here is what left `magnetite(spinel)` all-zero in every imported
+    HeFESTo table, deleting every spinel-bearing assemblage downstream.
+    """
+    from ngibbs.config.constants import split_component_key
+
+    phase_map = getattr(indexer, 'MELTS_indices', {}).get(phase) or {}
+    species, key_phase = split_component_key(component_name) if component_name else (None, None)
+
+    if key_phase is not None and phase is not None and key_phase != phase:
+        # The name carries a phase and it is not the one being written. That is a genuine
+        # contradiction, not something to paper over by falling through to the bare name.
+        return None
+
+    candidates = [c for c in (species, str(component_name) if component_name else None,
+                              str(abbr).strip() if abbr is not None else None) if c]
+    for cand in candidates:
+        if cand in phase_map:
+            return cand
+    return None
+
+
 def _build_reverse_component_phase_map() -> Dict[str, List[str]]:
     reverse_map: Dict[str, List[str]] = {}
     for phase_name, comp_list in COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO.items():

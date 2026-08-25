@@ -32,6 +32,10 @@ from ngibbs.config.constants import (
     COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO,
     default_Elkeys,
     REQUIRED_ELEMENTS,
+    split_component_key,
+    COMPONENT_KEY_SEP,
+    HEFESTO_ABBREVIATION_TO_SHORT_NAMES,
+    HeFESTo_snames_short,
 )
 from ngibbs.config.ml_indexer import MLIndexer, ELEMENT_TO_OXIDE, OXIDE_TO_ELEMENT
 
@@ -176,7 +180,8 @@ class DatasetIndexer:
             'liq H (kJ)', 'liq S (J/K)', 'liq V (cc)', 'total (moles)'
             },
         OXYGEN = None, #'closed',
-        MODEL = 'MELTS'): 
+        MODEL = 'MELTS',
+        validate_registry = True): 
         #Elkeys: Optional[List[str]] = None):
         """
         Initialize indexer from column headers.
@@ -273,6 +278,33 @@ class DatasetIndexer:
         
         # Parse and build initial indices
         self._repopulate_indexer()
+
+        # Naming-registry invariants, checked once the schema exists. Two classes:
+        #
+        #   fatal    -- properties of the CODE's registries, independent of any dataset:
+        #               an abbreviation that resolves to a name no phase has a column for,
+        #               or two abbreviations landing on one column. Neither can be caused
+        #               by the data, so neither has a legitimate reason to be tolerated.
+        #               `smag -> 'magnetite-spinel'` was the first kind, and it silently
+        #               emptied `magnetite(spinel)` in every HeFESTo table ever imported.
+        #
+        #   advisory -- a (phase, species) in THIS dataset's header with no stoichiometry
+        #               row. That depends on the table you happen to be loading, so it
+        #               prints rather than raises.
+        #
+        # Both databases validate clean today (MELTS 0, HeFESTo 0), so the raise costs
+        # nothing now and catches the next drift immediately.
+        if validate_registry:
+            problems = self.validate_component_registry()
+            fatal = [p for p in problems if 'stoichiometry row' not in p]
+            advisory = [p for p in problems if 'stoichiometry row' in p]
+            for note in advisory:
+                print(f'[indexer] component registry advisory: {note}')
+            if fatal:
+                raise ValueError(
+                    'component registry is inconsistent -- these would silently discard '
+                    'or overwrite data at import:\n  ' + '\n  '.join(fatal) +
+                    '\n(construct with validate_registry=False to bypass)')
 
     def _populate_elkeys_from_bulk_comp(self):
         """
@@ -471,21 +503,113 @@ class DatasetIndexer:
 
         self.mass_indices = np.array(mass_indices_list, dtype=int)
 
+    def validate_component_registry(self, strict=False):
+        """Assert the naming registries agree, before any data is read.
+
+        Three invariants, each one the absence of which has already cost a silent bug:
+
+        1. every `(phase, species)` the schema exposes has a stoichiometry row in
+           compToOxV2, addressed by the composite key where the species is ambiguous;
+        2. every HeFESTo abbreviation resolves to a `(phase, species)` that the schema
+           actually has a column for -- `smag` resolving to a name the spinel phase does
+           not use is precisely how that column stayed all-zero;
+        3. the abbreviation map is injective, so two abbreviations cannot land on one
+           column and silently overwrite each other.
+
+        Returns a list of problem strings; raises instead when `strict`. Cheap enough to
+        run unconditionally at construction, and it turns a class of bug that previously
+        surfaced as "8.5% of assemblages fail bulk reconstruction" into a startup error
+        naming the offending pair.
+        """
+        problems: List[str] = []
+        stoich_keys = {str(k) for k in getattr(self, 'compToOx_df', pd.DataFrame()).index}
+        bare_keys = {split_component_key(k)[0] for k in stoich_keys}
+
+        skip = {'System_main', 'Bulk_comp', 'Bulk_comp_elements'}
+        # The indexer's own notion of what is not a component, plus the liquid's oxide
+        # columns. Hardcoding a shorter list here produced 21 false positives on MELTS --
+        # every `wt% SiO2`-style melts-liquid column -- which would have made a strict
+        # default unusable for the database that needs this check least.
+        state = set(getattr(self, 'STATE_VARIABLES', ())) | {
+            'moles', 'phase moles', 'total moles'}
+        for phase, comps in (self.MELTS_indices or {}).items():
+            if phase in skip:
+                continue
+            for comp in comps:
+                if comp in state or str(comp).startswith('wt% '):
+                    continue
+                composite = f'{comp}{COMPONENT_KEY_SEP}{phase}'
+                if composite not in stoich_keys and comp not in bare_keys:
+                    problems.append(f'no stoichiometry row for ({phase}, {comp})')
+
+        if str(getattr(self, 'MODEL', '')).upper() == 'HEFESTO':
+            # Only the abbreviations HeFESTo actually emits; the wider map carries names
+            # for species this database never writes, and those are not errors.
+            emitted = [a for a in HeFESTo_snames_short
+                       if a in HEFESTO_ABBREVIATION_TO_SHORT_NAMES]
+            all_columns = {c for phase, comps in (self.MELTS_indices or {}).items()
+                           if phase not in skip for c in comps}
+            seen: Dict[tuple, str] = {}
+            for abbr in emitted:
+                long_name = HEFESTO_ABBREVIATION_TO_SHORT_NAMES[abbr]
+                species, key_phase = split_component_key(long_name)
+
+                if key_phase is None:
+                    # A bare name is resolved to a phase at import time from the run's
+                    # control file, so the phase cannot be checked here -- but the SPECIES
+                    # must at least be a column somewhere, or its values can never land
+                    # anywhere no matter which phase it resolves to. This is the invariant
+                    # that catches the original fault: 'smag' -> 'magnetite-spinel' is not
+                    # a component of any phase, so every mole HeFESTo reported for it was
+                    # written nowhere and `magnetite(spinel)` stayed an all-zero column.
+                    if species not in all_columns:
+                        problems.append(
+                            f'{abbr!r} -> {long_name!r} is not a component of ANY phase; '
+                            f'its values would be silently discarded at import')
+                    continue
+
+                target = (key_phase, species)
+                if target in seen:
+                    problems.append(
+                        f'abbreviations {seen[target]!r} and {abbr!r} both resolve to '
+                        f'{target} -- one would overwrite the other')
+                seen[target] = abbr
+                phase_map = (self.MELTS_indices or {}).get(key_phase)
+                if phase_map is not None and species not in phase_map:
+                    problems.append(
+                        f'{abbr!r} -> {long_name!r} but phase {key_phase!r} has no '
+                        f'{species!r} column; its values would be written nowhere')
+
+        if problems and strict:
+            raise ValueError('component registry inconsistent:\n  ' + '\n  '.join(problems))
+        return problems
+
+
     def _look_for_illegal_oxides(self):
         """
         Identify and exclude components that use oxides outside self.Oxides.
         """
         # Identify components whose oxide usage is not a subset of self.Oxides
         for comp_full in self.compToOx_df.index:
-            comp_name = comp_full.split(' : ')[0].strip()
+            comp_name, key_phase = split_component_key(comp_full)
             row = self.compToOx_df.loc[comp_full]
             present_oxides = [col for col, val in row.items() if float(val) != 0]
             extra_oxides = [ox for ox in present_oxides if ox not in self.Oxides]
-            if extra_oxides:
-                self.components_with_extra_oxides[comp_name] = extra_oxides
-                for phase, components in self.MELTS_indices.items():
-                    if comp_name in components:
-                        self.EXCLUDED_COMPONENTS_BY_PHASE.setdefault(phase, set()).add(comp_name)
+            if not extra_oxides:
+                continue
+            self.components_with_extra_oxides[comp_name] = extra_oxides
+            # Honour the phase half of the key. This row describes ONE (species, phase)
+            # pair; excluding by bare name would take out every phase that happens to
+            # share the species. `magnetite : spinel` and `magnetite : ferropericlase`
+            # are separate rows with separate oxide sets, and 16 species in this file
+            # span more than one phase -- 15 of them in MELTS (diopside, jadeite,
+            # albite, ...). A bare-name exclusion is the same class of bug that left
+            # `magnetite(spinel)` empty, one layer down.
+            for phase, components in self.MELTS_indices.items():
+                if key_phase is not None and phase != key_phase:
+                    continue
+                if comp_name in components:
+                    self.EXCLUDED_COMPONENTS_BY_PHASE.setdefault(phase, set()).add(comp_name)
 
     def _look_for_dead_phases(self):
         """
