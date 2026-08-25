@@ -1,0 +1,101 @@
+####################################################################################
+# Continuous-saturation model with dn/dP + dn/dT supervision.
+#
+#   python src/builder/training/main.py train \
+#       --config recipes/training/HeFESToContinuousDerivs.yaml
+#
+# Requires a bundle exported from a BigMetaTable with derivative sidecars attached.
+# `derivatives.enabled: true` against a bundle without them RAISES rather than falling
+# back -- see docs/HOWTO_derivative_training.md.
+####################################################################################
+
+tarname: 'HeFESTo_Earth_Adiabat_NPT_derivs'   # loads <tarname>_Train.tar.gz and <tarname>_Test.tar.gz
+warm_start: none                        # no continuous checkpoint exists yet; start fresh
+
+######### data ####################################################################
+batch_size: 8192            # derivative training is ~3x a plain step; smaller batches help
+ram_threshold_gb: 26
+device: cuda
+
+######### derivatives #############################################################
+# Absent block == disabled, so every existing recipe is unaffected.
+derivatives:
+  enabled: True
+  dndp_weight: 1E-4         # normalised P spans [0,1], so dn/dx_norm is already the same
+  dndt_weight: 5E-4     # order of magnitude as n -- no hand-tuned global weight needed
+  project_tangent: true    # analytic null(A_omega^T) projection on the PREDICTION
+  subsample: 1.0           # fraction of each batch that gets the JVP; pure compute knob
+  huber_delta: 3.0         # in units of the per-component robust scale
+
+######### episodes ################################################################
+train1:   # smoke test: confirm the derivative term moves before committing to a long run
+  strategy: full
+  which_heads_to_freeze: []      # explicit: 'upper' would freeze mole_head, which is
+                                 # exactly what the derivative loss needs to train
+  epochs: 3
+  max_N: 2.0e5
+  learning_rate: 5.0e-4
+  early_stopping_patience: 3
+  loss_config:
+    binary:
+      weight: 0                  # ContinuousModel has no saturation head
+    chemistry:
+      type: symmetric_rel_l2
+      weight: 100
+    moles:
+      type: huber
+      weight: 50
+    bulk:
+      type: symmetric_rel_l2
+      weight: 0
+
+train2:   # the real run
+  strategy: full
+  which_heads_to_freeze: []
+  epochs: 80
+  learning_rate: 5.0e-4
+  early_stopping_patience: 20
+  max_N: null
+  scheduler:
+    type: CosineAnnealingLR
+    args:
+      T_max: 10
+  loss_config:
+    binary:
+      weight: 0
+    chemistry:
+      type: symmetric_rel_l2
+      weight: 100
+    moles:
+      type: huber
+      weight: 50
+    bulk:
+      type: symmetric_rel_l2
+      weight: 0
+
+# tune1:  # sweeps work against the derivative objective too -- tune_Upper_MELTS takes
+#         # train_fn, and main.py passes train_Upper_Sobolev when derivatives are on.
+#         # Losses are only comparable WITHIN a sweep; do not seed best_loss from a
+#         # value-only episode.
+#   strategy: full
+#   which_heads_to_freeze: []
+#   epochs: 5
+#   max_N: 3.0e5
+#   tune_params:
+#     moleLayer: [[1, 0], [2, 1], [3, 2]]
+#     mole_regularization: ['layernorm', 'layernormdropout0.0-0.2', 'none']
+#     highWD: [0, 1.0e-5, 1.0e-4]
+
+####################################################################################
+# Two settings that are not arbitrary:
+#
+# encoder_regularization / mole_regularization: prefer layernorm or none over batchnorm.
+#   Under forward-mode AD a batchnorm layer makes each row's tangent depend on the other
+#   rows in the batch, which is not a property the physics has. train_Upper_Sobolev warns
+#   if it sees batchnorm.
+#
+# dropout: each derivative direction is a separate forward and so draws its own mask,
+#   injecting noise straight into the derivative target. Start at 0. If you need
+#   regularisation, reach for weight decay or `noise` first -- `noise` perturbs only the
+#   value path by design.
+####################################################################################

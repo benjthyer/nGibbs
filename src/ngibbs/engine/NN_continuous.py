@@ -81,7 +81,7 @@ class MassBalanceProjector(nn.Module):
 
     def forward(self, n, compToEl, b_dir):
         E = compToEl.shape[1]
-        eye = torch.eye(E, dtype=n.dtype, device=n.device).unsqueeze(0)
+        eye64 = torch.eye(E, dtype=torch.float64, device=n.device).unsqueeze(0)
         At = compToEl.T.unsqueeze(0)
 
         for _ in range(self.iters):
@@ -90,8 +90,15 @@ class MassBalanceProjector(nn.Module):
             r = b_dir * tot - bl
             omega = (n > 0).to(n.dtype)
             A_om = At * omega.unsqueeze(1)
-            M = A_om @ A_om.transpose(1, 2) + self.tikhonov * eye
-            lam = torch.linalg.solve(M, r.unsqueeze(-1))
+            # Double precision from the regularizer onward, not just at solve time.
+            # Two supported elements can be exactly degenerate given the current active
+            # phases (two columns of A_om coincide), which + tikhonov*I is meant to
+            # rescue -- but a diagonal entry here commonly runs into the tens, where
+            # float32's ULP (~35 * 2^-23 ~= 4e-6) exceeds tikhonov=1e-6: adding the
+            # regularizer in float32 rounds it away to nothing on exactly the rows that
+            # need it, and torch.linalg.solve's LU path then reads M as truly singular.
+            M = (A_om @ A_om.transpose(1, 2)).double() + self.tikhonov * eye64
+            lam = torch.linalg.solve(M, r.unsqueeze(-1).double()).to(n.dtype)
             delta = (A_om.transpose(1, 2) @ lam).squeeze(-1)
             n = torch.clamp(n + self.damping * delta, min=0.0)
 
@@ -382,10 +389,14 @@ class ContinuousModel(nn.Module):
         """
         lam_reg = self.projector.tikhonov if tikhonov is None else float(tikhonov)
         A = self.compToEl                                   # (C, E)
-        eye = torch.eye(A.shape[1], dtype=dn.dtype, device=dn.device).unsqueeze(0)
+        eye64 = torch.eye(A.shape[1], dtype=torch.float64, device=dn.device).unsqueeze(0)
         A_om = A.T.unsqueeze(0) * (n > 0).to(dn.dtype).unsqueeze(1)      # (B, E, C)
-        M = A_om @ A_om.transpose(1, 2) + lam_reg * eye
-        lam = torch.linalg.solve(M, (dn @ A).unsqueeze(-1))
+        # Double precision from the regularizer onward: see the matching note in
+        # MassBalanceProjector.forward -- adding lam_reg in float32 rounds it away on
+        # large-magnitude rows, letting a genuinely near-degenerate element pair read
+        # as exactly singular to torch.linalg.solve's LU path.
+        M = (A_om @ A_om.transpose(1, 2)).double() + lam_reg * eye64
+        lam = torch.linalg.solve(M, (dn @ A).unsqueeze(-1).double()).to(dn.dtype)
         return dn - (A_om.transpose(1, 2) @ lam).squeeze(-1)
 
     def derivative_outputs(self, x, feature_indices, project: bool = True):

@@ -180,6 +180,21 @@ def _component_targets(model, y_batch, m_batch):
     return proportions * (moles @ model.phaseToCompMap)
 
 
+def _print_weighted_losses(tag, has_sat, raw, alphas):
+    """One row, every term scaled by its own alpha -- the shared 1E4 scale factor
+    (see `_upper_loss`/`total` above) is left out so the printed numbers stay
+    readable, but since every term shares it, the six alpha-weighted numbers are
+    directly comparable as relative contributions to what's actually being
+    optimized. Previously chem/mole/bulk/sat printed raw while dn/dP/dn/dT got an
+    ad hoc, differently-scaled "(weighted ...)" aside -- none of the six were on a
+    common footing.
+    """
+    sat_w = f"{alphas['sat']*raw['sat']:.3e}" if has_sat else 'n/a'.rjust(9)
+    print(f"[{tag}] weighted losses -- Sat {sat_w:>9}  Chem {alphas['chem']*raw['chem']:.3e}  "
+          f"Mole {alphas['mole']*raw['mole']:.3e}  Bulk {alphas['bulk']*raw['bulk']:.3e}  "
+          f"dn/dP {alphas['dndp']*raw['dndp']:.3e}  dn/dT {alphas['dndt']*raw['dndt']:.3e}")
+
+
 # --------------------------------------------------------------------------- #
 #  Evaluation
 # --------------------------------------------------------------------------- #
@@ -219,10 +234,15 @@ def _evaluate_sobolev(model, test_loader, feature_offset, criterion_sat, criteri
         if N > max_N:
             break
 
-    sat_str = 'n/a (no saturation head)' if (out is None or out.logits is None) else f"{tot['sat']/N:.3e}"
+    has_sat = out is not None and out.logits is not None
+    sat_str = 'n/a (no saturation head)' if not has_sat else f"{tot['sat']/N:.3e}"
     print(f"[TEST] Sat {sat_str}\tChem {tot['chem']/N:.3e}\tMole {tot['mole']/N:.3e}\t"
           f"Bulk {tot['bulk']/N:.3e}")
     print(f"[TEST] dn/dP {tot['dndp']/N:.3e}\tdn/dT {tot['dndt']/N:.3e}")
+    _print_weighted_losses(
+        'TEST', has_sat, {k: tot[k] / N for k in ('sat', 'chem', 'mole', 'bulk', 'dndp', 'dndt')},
+        {'sat': sat_alpha, 'chem': chem_alpha, 'mole': mole_alpha, 'bulk': bulk_alpha,
+         'dndp': dndp_alpha, 'dndt': dndt_alpha})
     return tot['loss'] / N
 
 
@@ -440,12 +460,15 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
             wrappedScheduler.step_batch()
 
         avg_train_loss = run['train'] / max(N, 1)
-        sat_str = 'n/a (no saturation head)' if (out is None or out.logits is None) \
-            else f"{run['sat']/N:.3e}"
+        has_sat = out is not None and out.logits is not None
+        sat_str = 'n/a (no saturation head)' if not has_sat else f"{run['sat']/N:.3e}"
         print(f"[TRAIN] Sat {sat_str}\tChem {run['chem']/N:.3e}\tMole {run['mole']/N:.3e}\t"
               f"Bulk {run['bulk']/N:.3e}")
-        print(f"[TRAIN] dn/dP {run['dndp']/N:.3e}\tdn/dT {run['dndt']/N:.3e}\t"
-              f"(weighted {dndp_alpha*run['dndp']/N:.3e} / {dndt_alpha*run['dndt']/N:.3e})")
+        print(f"[TRAIN] dn/dP {run['dndp']/N:.3e}\tdn/dT {run['dndt']/N:.3e}")
+        _print_weighted_losses(
+            'TRAIN', has_sat, {k: run[k] / N for k in ('sat', 'chem', 'mole', 'bulk', 'dndp', 'dndt')},
+            {'sat': sat_alpha, 'chem': chem_alpha, 'mole': mole_alpha, 'bulk': bulk_alpha,
+             'dndp': dndp_alpha, 'dndt': dndt_alpha})
 
         avg_test_loss = ev()
         print(f"Epoch {epoch+1:02d}: Train {avg_train_loss:.5f} | Test {avg_test_loss:.5f} "

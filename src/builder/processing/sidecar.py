@@ -63,16 +63,6 @@ def build_memmap_from_csv(csv_file: str, npy_file: str, chunk_size: int = 200_00
     return npy_file, at, header
 
 
-def base_of(table) -> str:
-    """Filename stem the sidecars live under.
-
-    `BigMetaTable.__init__` rewrites `self.filename` to `<name>_working`, but the
-    importer wrote the shadows under the original stem, so the base is recorded at
-    attach time rather than re-derived later.
-    """
-    return getattr(table, '_sidecar_base', None) or table.filename
-
-
 def attach(table, filename: str, memmap_mode: str = 'r+', chunk_size: int = 200_000,
            verbose: bool = True) -> List[str]:
     """Attach `<filename>_dndP` / `_dndT` to `table` as `.dndp` / `.dndt`.
@@ -80,8 +70,13 @@ def attach(table, filename: str, memmap_mode: str = 'r+', chunk_size: int = 200_
     Prefers an existing `.npy`; otherwise builds one from the CSV the importer wrote.
     Absent sidecars leave the attribute at None, so everything downstream degrades to
     the previous behaviour. Column headers land on `table.dndp_header` / `dndt_header`.
+
+    Called with the original (pre-`_working`) stem, since that is where the importer
+    wrote the shadows; `table.filename` is already rewritten to `<name>_working` by
+    the time this runs, and every write path below (`apply_mask`, `grow_with_repeats`)
+    targets `table.filename` rather than this original stem, so later filtering never
+    touches the raw file this attaches from.
     """
-    table._sidecar_base = filename
     found: List[str] = []
     for attr, suffix in SIDECAR_SPECS:
         setattr(table, attr, None)
@@ -123,11 +118,16 @@ def assert_aligned(table, where: str) -> None:
 
 
 def apply_mask(table, keep_mask: np.ndarray, chunk_size: int) -> None:
-    """Row-filter every sidecar with the same mask, mirroring `delete`."""
+    """Row-filter every sidecar with the same mask, mirroring `delete`.
+
+    Writes to `table.filename` (already `<name>_working` by the time this runs, same
+    as `delete()`'s own `self.memmap_file`), never to the original stem `attach()` read
+    from -- so filtering rewrites the working copy, not the raw import output.
+    """
     assert_aligned(table, 'apply_mask')
     for attr, suffix, arr in list(items(table)):
-        target = _npy_path(base_of(table), suffix)
-        tmp = target if not os.path.exists(target) else f'{base_of(table)}{suffix}_temp.npy'
+        target = _npy_path(table.filename, suffix)
+        tmp = target if not os.path.exists(target) else f'{table.filename}{suffix}_temp.npy'
         table._chunked_mask_copy(arr, tmp, keep_mask, chunk_size)
         setattr(table, attr, None)
         del arr
@@ -170,7 +170,7 @@ def grow_with_repeats(table, new_total: int, old_rows: int, repeat_plan, chunk_s
                 f'{old_rows} before growth.')
     handles = []
     for attr, suffix, arr in list(items(table)):
-        path = f'{base_of(table)}{suffix}_resampled.npy'
+        path = f'{table.filename}{suffix}_resampled.npy'
         new = np.lib.format.open_memmap(path, mode='w+', dtype=arr.dtype,
                                         shape=(new_total, arr.shape[1]))
         table._chunked_copy_into(arr, new, chunk_size=chunk_size)
@@ -193,8 +193,8 @@ def grow_with_repeats(table, new_total: int, old_rows: int, repeat_plan, chunk_s
         del new
         setattr(table, attr, None)
         gc.collect()
-        os.replace(path, _npy_path(base_of(table), suffix))
-        grown = np.load(_npy_path(base_of(table), suffix), mmap_mode='r+')
+        os.replace(path, _npy_path(table.filename, suffix))
+        grown = np.load(_npy_path(table.filename, suffix), mmap_mode='r+')
         if grown.shape[0] != new_total:
             raise AssertionError(
                 f'grow_with_repeats: sidecar {attr} grew to {grown.shape[0]} rows, '
@@ -205,6 +205,31 @@ def grow_with_repeats(table, new_total: int, old_rows: int, repeat_plan, chunk_s
 def save(table, name: str) -> None:
     for attr, suffix, arr in items(table):
         np.save(f'{name}{suffix}.npy', arr)
+
+
+def component_columns(table, attr: str, indexer) -> dict:
+    """(phase, component_name) -> column index into the `attr` sidecar array.
+
+    Mirrors the column layout `HeFESTo_derivative_import.derivative_schema` writes:
+    the shadow table's first two columns are the P(GPa)/T(K) keys, followed by every
+    (phase, component) placement in ascending order of its column index in the main
+    table. Recomputed here rather than imported, so sidecar.py does not pull in the
+    importer's heavier dependency chain (HeFESTo_functions, hefesto_vec, ...) just to
+    look up column positions.
+    """
+    skip = {'System_main', 'Bulk_comp', 'Bulk_comp_elements'}
+    component_names = {str(x) for x in getattr(indexer, 'label_names', [])}
+
+    placements = []
+    for phase_name, phase_map in indexer.MELTS_indices.items():
+        if phase_name in skip:
+            continue
+        for comp_name, idx in phase_map.items():
+            if comp_name in component_names:
+                placements.append((phase_name, comp_name, int(idx)))
+    placements.sort(key=lambda t: t[2])
+
+    return {(phase, comp): 2 + i for i, (phase, comp, _) in enumerate(placements)}
 
 
 def derivative_molar(table, chunk_slice, phase_label_inds, component_inds):
