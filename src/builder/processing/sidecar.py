@@ -44,7 +44,19 @@ def _csv_path(filename: str, suffix: str) -> str:
 
 
 def build_memmap_from_csv(csv_file: str, npy_file: str, chunk_size: int = 200_000):
-    """Stream a shadow CSV into a float32 memmap. Returns (path, n_rows, header)."""
+    """Stream a shadow CSV into a float32 memmap. Returns (path, n_rows, header).
+
+    The array is sized from a LINE count but filled from pandas RECORDS, and those two
+    disagree whenever the file carries a blank line (pandas skips them by default), a
+    stray fragment, or an embedded newline. The gap used to be left as the zeros
+    `open_memmap` initialises -- which read downstream as "this derivative is exactly
+    zero", a measured value, rather than as missing data. Verified: one blank line
+    produced an array one row too tall with a fabricated zero row at the end.
+
+    So the tail is NaN-filled (the trainer masks on `isfinite`) and any shortfall raises,
+    since a shadow table that silently gains rows also silently loses its alignment with
+    the main table.
+    """
     import pandas as pd
 
     header = list(pd.read_csv(csv_file, nrows=0).columns)
@@ -58,9 +70,19 @@ def build_memmap_from_csv(csv_file: str, npy_file: str, chunk_size: int = 200_00
         block = chunk.to_numpy(dtype=np.float32)
         mm[at:at + len(block)] = block
         at += len(block)
+    short = n_rows - at
+    if short > 0:
+        mm[at:] = np.nan          # never zeros: unwritten must not look measured
     mm.flush()
     del mm
     gc.collect()
+    if short > 0:
+        os.remove(npy_file)
+        raise ValueError(
+            f'{csv_file}: {n_rows:,} lines but only {at:,} parseable records '
+            f'({short:,} short). Blank lines and stray fragments are the usual cause. '
+            f'The sidecar would have been {short:,} rows taller than its own data and '
+            f'no longer row-parallel with the main table.')
     return npy_file, at, header
 
 

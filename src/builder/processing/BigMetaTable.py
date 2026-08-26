@@ -104,7 +104,8 @@ def strip_filename_suffixes(filename, suffixes=None):
 class BigMetaTable():
     def __init__(self, filename, read_dir=None, memmap_mode='r+', rebuild_memmap=False,
                  allow_differing_lengths=False, header=None, Model='MELTS', OXYGEN='closed',
-                 chunk_size=100_000):
+                 chunk_size=100_000,
+                 allow_truncated_csv=False):
 
         # Default row-chunk size for every large-table scan/copy/filter/resample
         # method below that doesn't get an explicit chunk_size argument (see YAML
@@ -176,7 +177,8 @@ class BigMetaTable():
             self.memmap_file = self.filename + '.npy'
             working_text = True
     
-            self._csv_to_memmap(chunk_size=self.chunk_size)
+            self._csv_to_memmap(chunk_size=self.chunk_size,
+                                allow_truncated_csv=allow_truncated_csv)
             self.table = np.load(self.memmap_file, mmap_mode=memmap_mode, allow_pickle=True)
             
             """# Save headers for future loading
@@ -444,8 +446,38 @@ class BigMetaTable():
         self._value_codes = np.append(self._value_codes, np.repeat(self._value_codes[source_selector], n_repeats))
         self._run_id_codes = np.append(self._run_id_codes, np.repeat(self._run_id_codes[source_selector], n_repeats))
 
-    def _csv_to_memmap(self, chunk_size=None):
-        """Convert CSV to memmap, storing header."""
+    @staticmethod
+    def _truncate_memmap(path, n_keep, num_cols, chunk_size):
+        """Rewrite a memmap at its honest height.
+
+        `.npy` stores the shape in a fixed header, so a short read cannot simply be
+        relabelled -- the array is copied, in chunks, into a correctly sized file. Only
+        reached on the truncated-load path, so the cost lands where something is already
+        wrong rather than on every import.
+        """
+        src = np.load(path, mmap_mode='r')
+        tmp = path + '.trunc'
+        dst = np.lib.format.open_memmap(tmp, mode='w+', dtype=np.float32,
+                                        shape=(n_keep, num_cols))
+        for start in range(0, n_keep, chunk_size):
+            end = min(start + chunk_size, n_keep)
+            dst[start:end] = src[start:end]
+        dst.flush()
+        del dst, src
+        gc.collect()
+        os.replace(tmp, path)
+        print(f'[INFO] memmap rewritten at {n_keep:,} rows')
+
+    def _csv_to_memmap(self, chunk_size=None, allow_truncated_csv=False):
+        """Convert CSV to memmap, storing header.
+
+        allow_truncated_csv : bool, default False
+            A row the reader cannot parse ends the read. By default that raises, because
+            the memmap is allocated at the CSV's line count and every row past the
+            failure would otherwise read as exact zeros -- data that looks measured and
+            is not. Set True to keep the good prefix instead, rewritten at its true
+            height so `self.table.shape[0]` never overstates what was read.
+        """
         if chunk_size is None:
             chunk_size = self.chunk_size
         t_start = time.time()
@@ -475,6 +507,7 @@ class BigMetaTable():
 
 
         valid_row_count = 0
+        first_bad = None
         skip_indices = []
 
         with open(self.csv_file, newline='') as f:
@@ -486,8 +519,14 @@ class BigMetaTable():
                 try:
                     values = [float(x) if x.strip() != '' else 0.0 for x in row]
                     assert len(values) == num_cols, f"Row {i} has {len(values)} columns, expected {num_cols}\nValues: {values}"
-                except:
-                    print(f"Failure at row {i}: {row}")
+                except Exception as exc:
+                    # This used to `break`, which stopped reading but left the memmap at
+                    # its ALLOCATED height -- so `self.table.shape[0]` kept reporting the
+                    # CSV's line count while every row past the failure was zeros that
+                    # nothing had written. A table that silently claims rows it does not
+                    # have is worse than one that refuses to load, and it also inflates
+                    # the number the sidecar row-parity check compares against.
+                    first_bad = (i, list(row)[:8], str(exc).split(chr(10))[0])
                     break
                 buffer.append(values)
                 
@@ -508,6 +547,23 @@ class BigMetaTable():
         memmap.flush()
         del memmap
         gc.collect()
+
+        if valid_row_count != nrows:
+            idx, sample, why = first_bad if first_bad else (valid_row_count, [], 'unknown')
+            msg = (f'{self.csv_file}: stopped after {valid_row_count:,} of {nrows:,} rows.\n'
+                   f'  first unreadable row {idx:,}: {sample}{"..." if sample else ""}\n'
+                   f'  reason: {why}\n'
+                   f'  The remaining {nrows - valid_row_count:,} rows of the memmap were '
+                   f'never written and would read as exact zeros -- fabricated data, not '
+                   f'missing data. Fix or truncate the CSV, or pass '
+                   f'allow_truncated_csv=True to load only the {valid_row_count:,} good '
+                   f'rows (which rewrites the memmap at the honest height -- you must '
+                   f'then truncate the .txt metadata and any _dndP/_dndT sidecars to the '
+                   f'same length, or their own parity checks will fire next).')
+            if not allow_truncated_csv:
+                raise ValueError(msg)
+            print('\n' + '!' * 78 + f'\nTRUNCATED LOAD\n{msg}\n' + '!' * 78 + '\n')
+            self._truncate_memmap(self.memmap_file, valid_row_count, num_cols, chunk_size)
             
     def save_csv_streaming(self, name, chunk_size=None):
         if chunk_size is None:
