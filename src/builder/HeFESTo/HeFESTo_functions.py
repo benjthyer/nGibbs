@@ -2321,6 +2321,18 @@ def _compute_bulk_from_elements(element_moles: Dict[str, float]) -> Tuple[Dict[s
 #: silently all-zero column -- which is exactly how `magnetite(spinel)` stayed empty.
 UNRESOLVED_ASSIGNMENTS: Dict[tuple, int] = {}
 
+#: (phase, resolved_name, abbr) -> (n_simulations, peak_moles) for fort.99 columns that
+#: carried real data but had nowhere to go. Reported at the end of every import.
+UNMAPPED_SPECIES: Dict[tuple, tuple] = {}
+
+
+def reset_unmapped_species() -> None:
+    UNMAPPED_SPECIES.clear()
+
+
+def get_unmapped_species() -> Dict[tuple, tuple]:
+    return dict(UNMAPPED_SPECIES)
+
 
 def reset_unresolved_assignments() -> None:
     UNRESOLVED_ASSIGNMENTS.clear()
@@ -2619,7 +2631,18 @@ def import_HeFESTo_components(
             if comp_df.shape[1] < 6:
                 raise ValueError('fort.99 has insufficient columns to parse components')
 
-            component_cols = list(comp_df.columns)[3:-2]
+            # fort.99 layout: three leading state columns (Pi, depth, Ti) then the
+            # species, then Gibbs and Quality. The trailing pair is dropped BY NAME
+            # rather than by position: a build that emits a different diagnostic tail
+            # would otherwise silently clip a real species off the end (or admit a
+            # non-species as one), and nothing downstream could tell.
+            _all_cols = [str(c).strip() for c in comp_df.columns]
+            _tail = {'Gibbs', 'Quality'}
+            component_cols = [c for c in _all_cols[3:] if c not in _tail]
+            _unexpected = [c for c in _all_cols[-2:] if c not in _tail]
+            if _unexpected:
+                print(f'Simulation{sim_id}: fort.99 ends with {_unexpected} rather than '
+                      f'{sorted(_tail)}; treating them as species. Check the HeFESTo build.')
             transition_tol = 1e-6
             for comp_abbr in component_cols:
                 comp_abbr_str = str(comp_abbr).strip()
@@ -2631,6 +2654,16 @@ def import_HeFESTo_components(
                     control_component_to_phase_abbr=control_component_to_phase_abbr,
                 )
                 if phase_name is None:
+                    # The abbreviation is not in HEFESTO_ABBREVIATION_TO_SHORT_NAMES, or
+                    # its phase is absent from COMPONENTS_IN_PHASES_HEFESTO. Older and
+                    # quieter than the unmapped-name case below, and just as lossy, so it
+                    # is tallied the same way rather than skipped in silence.
+                    _v = pd.to_numeric(comp_df[comp_abbr], errors='coerce').fillna(0.0).to_numpy(float)
+                    _peak = float(np.nanmax(np.abs(_v))) if _v.size else 0.0
+                    if _peak > 0:
+                        key = ('<no phase resolved>', str(component_name), comp_abbr_str)
+                        prev = UNMAPPED_SPECIES.get(key, (0, 0.0))
+                        UNMAPPED_SPECIES[key] = (prev[0] + 1, max(prev[1], _peak))
                     continue
                 values = pd.to_numeric(comp_df[comp_abbr], errors='coerce').fillna(0.0).to_numpy(dtype=float)
 
@@ -2641,14 +2674,18 @@ def import_HeFESTo_components(
                 schema_name = reconcile_component_name(
                     indexer, phase_name, component_name, comp_abbr_str)
                 if schema_name is None:
+                    # Record and carry on. Raising here would abort the enclosing
+                    # try/except, which discards the ENTIRE simulation -- turning one
+                    # unmappable column into thousands of lost rows, and (because the
+                    # derivative importer has no matching failure) into a sidecar that no
+                    # longer lines up with the main table. Losing a column is bad; losing
+                    # the simulation is worse. The tally is reported once at the end of
+                    # the import, where it is still impossible to miss.
                     peak = float(np.nanmax(np.abs(values))) if values.size else 0.0
                     if peak > 0:
-                        raise KeyError(
-                            f"fort.99 column '{comp_abbr_str}' resolves to "
-                            f"({component_name}, {phase_name}) but that phase has no such "
-                            f"column in the schema, and the species carries up to "
-                            f"{peak:.4e} mol. Refusing to drop it silently -- reconcile "
-                            f"HeFESTo_snames_long against COMPONENTS_IN_PHASES_HEFESTO.")
+                        key = (str(phase_name), str(component_name), comp_abbr_str)
+                        prev = UNMAPPED_SPECIES.get(key, (0, 0.0))
+                        UNMAPPED_SPECIES[key] = (prev[0] + 1, max(prev[1], peak))
                     continue
                 _safe_assign(out, indexer, phase_name, schema_name, values)
 
@@ -2742,6 +2779,17 @@ def import_HeFESTo_components(
         except Exception as exc:
             print(f'Simulation{sim_id} FAILED at {sim_dir}: {type(exc).__name__}: {exc}')
             malformed_ids.append(sim_id)
+
+    if UNMAPPED_SPECIES:
+        print('\n' + '!' * 78)
+        print('IMPORT WARNING: fort.99 columns with real data and no schema column.')
+        print('Their moles are ABSENT from this table; every affected row will fail bulk')
+        print('reconstruction. Reconcile HeFESTo_snames_long against')
+        print('COMPONENTS_IN_PHASES_HEFESTO, then re-import.')
+        for (phase, name, abbr), (n_sims, peak) in sorted(UNMAPPED_SPECIES.items()):
+            print(f'  {abbr!r} -> ({name}, {phase}): {n_sims} simulation(s), '
+                  f'peak {peak:.4e} mol')
+        print('!' * 78 + '\n')
 
     if len(data_blocks) > 0 or len(phase_change_blocks) > 0:
         _flush_import_buffers(

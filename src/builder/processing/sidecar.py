@@ -25,6 +25,7 @@ so the pair stays consistent without special handling. Do not normalise one side
 from __future__ import annotations
 
 import gc
+import json
 import os
 from typing import Iterator, List, Optional, Tuple
 
@@ -63,6 +64,65 @@ def build_memmap_from_csv(csv_file: str, npy_file: str, chunk_size: int = 200_00
     return npy_file, at, header
 
 
+def _header_path(filename: str, suffix: str) -> str:
+    return f'{filename}{suffix}_header.json'
+
+
+def _write_header(path: str, header) -> None:
+    try:
+        with open(path, 'w') as fh:
+            json.dump(list(header), fh)
+    except OSError:
+        pass          # best effort: a missing header is recoverable from the CSV
+
+
+def _read_header(path: str):
+    try:
+        with open(path) as fh:
+            return list(json.load(fh))
+    except (OSError, ValueError):
+        return None
+
+
+def component_columns(table, attr: str, indexer):
+    """(phase, component) -> column index in the sidecar `attr`.
+
+    The shadow tables carry a trimmed schema (P, T, then one column per component) whose
+    header strings are the main table's, e.g. `forsterite(olivine)`. Resolving by header
+    rather than by position is what keeps this correct when the component set changes --
+    and, more sharply, it is keyed on BOTH phase and component because component names are
+    NOT unique: `magnetite` appears under both `spinel` and `ferropericlase`. Keying on the
+    name alone silently maps two components onto one column.
+    """
+    header = getattr(table, f'{attr}_header', None)
+    if header is None:
+        raise ValueError(
+            f'sidecar {attr} has no column header; rebuild it from the CSV so '
+            f'{_header_path(base_of(table), dict(SIDECAR_SPECS)[attr])} exists.')
+    pos = {}
+    for j, name in enumerate(header):
+        pos.setdefault(str(name), j)
+    out = {}
+    for phase, comp_map in indexer.MELTS_indices.items():
+        if phase in ('System_main', 'Bulk_comp', 'Bulk_comp_elements'):
+            continue
+        for comp, _main_idx in comp_map.items():
+            key = f'{comp}({phase})'
+            if key in pos:
+                out[(phase, comp)] = pos[key]
+    return out
+
+
+def base_of(table) -> str:
+    """Filename stem the sidecars live under.
+
+    `BigMetaTable.__init__` rewrites `self.filename` to `<name>_working`, but the
+    importer wrote the shadows under the original stem, so the base is recorded at
+    attach time rather than re-derived later.
+    """
+    return getattr(table, '_sidecar_base', None) or table.filename
+
+
 def attach(table, filename: str, memmap_mode: str = 'r+', chunk_size: int = 200_000,
            verbose: bool = True) -> List[str]:
     """Attach `<filename>_dndP` / `_dndT` to `table` as `.dndp` / `.dndt`.
@@ -70,35 +130,88 @@ def attach(table, filename: str, memmap_mode: str = 'r+', chunk_size: int = 200_
     Prefers an existing `.npy`; otherwise builds one from the CSV the importer wrote.
     Absent sidecars leave the attribute at None, so everything downstream degrades to
     the previous behaviour. Column headers land on `table.dndp_header` / `dndt_header`.
-
-    Called with the original (pre-`_working`) stem, since that is where the importer
-    wrote the shadows; `table.filename` is already rewritten to `<name>_working` by
-    the time this runs, and every write path below (`apply_mask`, `grow_with_repeats`)
-    targets `table.filename` rather than this original stem, so later filtering never
-    touches the raw file this attaches from.
     """
+    table._sidecar_base = filename
     found: List[str] = []
     for attr, suffix in SIDECAR_SPECS:
         setattr(table, attr, None)
         setattr(table, f'{attr}_header', None)
         npy, csv = _npy_path(filename, suffix), _csv_path(filename, suffix)
+        hdr_path = _header_path(filename, suffix)
         if not os.path.exists(npy) and os.path.exists(csv):
             if verbose:
                 print(f'[sidecar] building {npy} from {csv}')
             _, _, header = build_memmap_from_csv(csv, npy, chunk_size)
+            setattr(table, f'{attr}_header', header)
+            _write_header(hdr_path, header)
+        elif os.path.exists(npy):
+            # A previously-built .npy carries no column names, and the CSV it came from is
+            # often deleted. Without the header the shadow is an anonymous float block and
+            # nothing downstream can say which column is which component -- so the header
+            # is persisted next to it at build time and read back here.
+            header = _read_header(hdr_path)
+            if header is None and os.path.exists(csv):
+                import pandas as pd
+                header = list(pd.read_csv(csv, nrows=0).columns)
+                _write_header(hdr_path, header)
             setattr(table, f'{attr}_header', header)
         if os.path.exists(npy):
             arr = np.load(npy, mmap_mode=memmap_mode)
             if getattr(table, 'table', None) is not None and arr.shape[0] != table.table.shape[0]:
                 raise ValueError(
                     f'{npy}: {arr.shape[0]} rows against a main table of '
-                    f'{table.table.shape[0]}. Sidecars must be row-parallel; re-run '
-                    'the import so both are written from the same pass.')
+                    f'{table.table.shape[0]}. The two imports admitted different '
+                    f'simulations. Realign without re-importing:\n'
+                    f'    python scripts/repair_derivative_alignment.py '
+                    f'{base_of(table)}.csv')
+            _assert_pt_agrees(table, arr, getattr(table, f'{attr}_header', None), npy)
             setattr(table, attr, arr)
             found.append(attr)
             if verbose:
                 print(f'[sidecar] attached {attr}: {arr.shape} from {npy}')
     return found
+
+
+def _assert_pt_agrees(table, arr, header, npy, samples: int = 20000, tol: float = 1e-6):
+    """Verify the sidecar describes the SAME rows, not merely the same number of them.
+
+    A matching row count proves nothing. If the main import dropped two simulations and
+    the derivative import dropped two *different* ones, the lengths agree, `attach`
+    is satisfied, and every row's derivative belongs to some other row -- which trains,
+    converges, and is wrong. That is exactly why the importer carries `P(GPa)` and
+    `T(K)` into the shadow tables; this is the check they exist for.
+
+    Sampled rather than exhaustive: any whole-simulation offset shifts a contiguous block
+    of hundreds to thousands of rows, so an evenly spaced sample of 20k catches it with
+    certainty while costing nothing on a 10M-row table.
+    """
+    if header is None or getattr(table, 'indexer', None) is None:
+        return                       # nothing to compare against; row count is all we have
+    sysmap = getattr(table.indexer, 'MELTS_indices', {}).get('System_main', {})
+    pairs = []
+    for attr_name in ('P(GPa)', 'T(K)'):
+        main_col = sysmap.get(attr_name)
+        full = f'{attr_name}(System_main)'
+        if main_col is None or full not in header:
+            return
+        pairs.append((int(main_col), header.index(full)))
+
+    n = arr.shape[0]
+    idx = np.unique(np.linspace(0, n - 1, min(samples, n)).astype(np.int64))
+    for main_col, side_col in pairs:
+        a = np.asarray(table.table[idx, main_col], dtype=np.float64)
+        b = np.asarray(arr[idx, side_col], dtype=np.float64)
+        bad = ~(np.isclose(a, b, atol=tol, rtol=0) | (~np.isfinite(b)))
+        if bad.any():
+            first = int(idx[np.argmax(bad)])
+            raise ValueError(
+                f'{npy}: row counts match but the rows do not. At main row {first}, the '
+                f'table has {a[np.argmax(bad)]:.6g} and the sidecar has '
+                f'{b[np.argmax(bad)]:.6g} for the same column '
+                f'({100 * bad.mean():.1f}% of sampled rows disagree).\n'
+                f'The two imports admitted different simulations. Realign without '
+                f're-importing:\n'
+                f'    python scripts/repair_derivative_alignment.py {base_of(table)}.csv')
 
 
 def items(table) -> Iterator[Tuple[str, str, np.ndarray]]:
@@ -118,16 +231,11 @@ def assert_aligned(table, where: str) -> None:
 
 
 def apply_mask(table, keep_mask: np.ndarray, chunk_size: int) -> None:
-    """Row-filter every sidecar with the same mask, mirroring `delete`.
-
-    Writes to `table.filename` (already `<name>_working` by the time this runs, same
-    as `delete()`'s own `self.memmap_file`), never to the original stem `attach()` read
-    from -- so filtering rewrites the working copy, not the raw import output.
-    """
+    """Row-filter every sidecar with the same mask, mirroring `delete`."""
     assert_aligned(table, 'apply_mask')
     for attr, suffix, arr in list(items(table)):
-        target = _npy_path(table.filename, suffix)
-        tmp = target if not os.path.exists(target) else f'{table.filename}{suffix}_temp.npy'
+        target = _npy_path(base_of(table), suffix)
+        tmp = target if not os.path.exists(target) else f'{base_of(table)}{suffix}_temp.npy'
         table._chunked_mask_copy(arr, tmp, keep_mask, chunk_size)
         setattr(table, attr, None)
         del arr
@@ -170,7 +278,7 @@ def grow_with_repeats(table, new_total: int, old_rows: int, repeat_plan, chunk_s
                 f'{old_rows} before growth.')
     handles = []
     for attr, suffix, arr in list(items(table)):
-        path = f'{table.filename}{suffix}_resampled.npy'
+        path = f'{base_of(table)}{suffix}_resampled.npy'
         new = np.lib.format.open_memmap(path, mode='w+', dtype=arr.dtype,
                                         shape=(new_total, arr.shape[1]))
         table._chunked_copy_into(arr, new, chunk_size=chunk_size)
@@ -193,8 +301,8 @@ def grow_with_repeats(table, new_total: int, old_rows: int, repeat_plan, chunk_s
         del new
         setattr(table, attr, None)
         gc.collect()
-        os.replace(path, _npy_path(table.filename, suffix))
-        grown = np.load(_npy_path(table.filename, suffix), mmap_mode='r+')
+        os.replace(path, _npy_path(base_of(table), suffix))
+        grown = np.load(_npy_path(base_of(table), suffix), mmap_mode='r+')
         if grown.shape[0] != new_total:
             raise AssertionError(
                 f'grow_with_repeats: sidecar {attr} grew to {grown.shape[0]} rows, '
@@ -205,31 +313,6 @@ def grow_with_repeats(table, new_total: int, old_rows: int, repeat_plan, chunk_s
 def save(table, name: str) -> None:
     for attr, suffix, arr in items(table):
         np.save(f'{name}{suffix}.npy', arr)
-
-
-def component_columns(table, attr: str, indexer) -> dict:
-    """(phase, component_name) -> column index into the `attr` sidecar array.
-
-    Mirrors the column layout `HeFESTo_derivative_import.derivative_schema` writes:
-    the shadow table's first two columns are the P(GPa)/T(K) keys, followed by every
-    (phase, component) placement in ascending order of its column index in the main
-    table. Recomputed here rather than imported, so sidecar.py does not pull in the
-    importer's heavier dependency chain (HeFESTo_functions, hefesto_vec, ...) just to
-    look up column positions.
-    """
-    skip = {'System_main', 'Bulk_comp', 'Bulk_comp_elements'}
-    component_names = {str(x) for x in getattr(indexer, 'label_names', [])}
-
-    placements = []
-    for phase_name, phase_map in indexer.MELTS_indices.items():
-        if phase_name in skip:
-            continue
-        for comp_name, idx in phase_map.items():
-            if comp_name in component_names:
-                placements.append((phase_name, comp_name, int(idx)))
-    placements.sort(key=lambda t: t[2])
-
-    return {(phase, comp): 2 + i for i, (phase, comp, _) in enumerate(placements)}
 
 
 def derivative_molar(table, chunk_slice, phase_label_inds, component_inds):
