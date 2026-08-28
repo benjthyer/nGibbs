@@ -6,12 +6,12 @@
 # ============================================================================
 dataset: #EXPECTED FILENAME: "nMELTS/data/MELTStables/{MELTSModel}/{'MELTS' if MELTSModel in ['102', '110', '120', 'p'] else ''}{MELTSModel}_<Train/Valid>set{Date}{Mode}"
   MELTSModel: 'HeFESTo'          # MELTS model version: '102', '110', '120', 'p'. Affects which directory dataproducts are read from and written to
-  Date: '080626'               # Date identifier for dataset naming
-  Mode: 'Earth_Adiabats'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
+  Date: '082726'               # Date identifier for dataset naming
+  Mode: 'EarthAdiabatsCompiled'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
-outname: 'HeFESTo_Earth_Adiabat_NPT_nosep'                  # Base name for output folder (without extension). Auto-Generated if blank
+outname: HeFESTo_Earth_Adiabat_NPT_derivs            # Base name for output folder (without extension). Auto-Generated if blank
 
 
 # ============================================================================
@@ -26,7 +26,7 @@ featureNames: # Non-chemical features to include in the dataset
 
 free_outputs: # Non-chemical labels to predict. These are used for training the saturation predictor and as auxiliary outputs for the encoder.
   #- 'Temperature(System_main)' 
-  - 'S(J/g/K)(System_main)'
+  #- 'S(J/g/K)(System_main)'
   #- 'T(K)(System_main)'
   #- 'VS(km/s)(System_main)'
   #- 'VP(km/s)(System_main)'
@@ -50,6 +50,7 @@ preprocessing:
   separate_feldspar: false    # Separate k-feldspar and plagioclase during preprocessing (Generally do this, MELTS sometimes classifies K-rich feldspar as plagioclase)
   excluded_oxides: []         # Explicitly exclude oxides from indexer basis (e.g., ['H2O', 'NiO'])
   #(Generally do this, Analcime in MELTS has two distinct compositional fields)
+  require_derivatives: false # Require dn/dP, dn/dT sidecars to be attached and delete rows where either is NaN/inf
 
 min_phase_proportion: 0.002    # Minimum phase proportion (0-1) for a sample to be included in training set. Applied after upsampling.
 

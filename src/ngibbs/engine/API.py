@@ -1579,27 +1579,33 @@ class HeFESToAPI(EmulatorAPI):
         
         assert self.isothermal_emulator.ml_indexer.label_names == self.isentropic_emulator.ml_indexer.label_names # Assume the label names are model-agnostic
 
-        self.PropertyIDX = np.array([snames_dict[name] for name in self.isothermal_emulator.ml_indexer.label_names])
-
-        # Known label collision: this model's ml_indexer.label_names has the
-        # string 'magnetite' at BOTH ml component index 4 (3rd member of the
+        # Known label collision: some checkpoints' ml_indexer.label_names carry the
+        # bare string 'magnetite' at BOTH ml component index 4 (3rd member of the
         # 'spinel' phase group -- physically HeFESTo's 'smag', the spinel-
         # solid-solution magnetite endmember) and index 56 (5th member of
         # 'ferropericlase' -- physically 'mag', plain oxide-phase magnetite).
         # Confirmed by matching phase position: ML 'spinel' = [spinel,
         # hercynite, magnetite, picro-chromite] lines up 1:1 with physics
-        # phase 'sp' = [sp, hc, smag, picr]. snames_dict['magnetite'] can only
-        # resolve to one species (63, 'mag'), so index 4 was silently mapped
-        # to the same species as index 56 -- X[:, PropertyIDX] = component_moles
-        # then drops index 4's contribution whenever both are nonzero. The
+        # phase 'sp' = [sp, hc, smag, picr]. snames_dict is keyed on the current
+        # composite 'species : phase' convention (see constants.COMPONENT_KEY_SEP),
+        # which has no bare 'magnetite' entry at all, so a plain lookup raises
+        # KeyError for both occurrences before either can be disambiguated. The
         # root cause is a stale COMPONENT_ABBREVIATION_OVERRIDES['smag'] entry
-        # (ngibbs/utils/file_utils.py) that produced this label at the time
-        # this model's label metadata was generated; fixed there for future
-        # models, but that fix cannot retroactively change this checkpoint's
-        # saved label_names, so it's corrected here too.
-        _label_names = self.isothermal_emulator.ml_indexer.label_names
-        if len(_label_names) > 4 and _label_names[4] == 'magnetite':
-            self.PropertyIDX[4] = snames_dict['magnetite-spinel']
+        # (ngibbs/utils/file_utils.py) that produced this label at the time this
+        # model's label metadata was generated; fixed there for future models
+        # (whose label_names already arrive as the composite name and resolve
+        # directly), but that fix cannot retroactively change this checkpoint's
+        # saved label_names, so bare 'magnetite' is disambiguated by position here.
+        def _resolve_snames_idx(i, name):
+            if name == 'magnetite':
+                composite = 'magnetite : spinel' if i == 4 else 'magnetite : ferropericlase'
+                return snames_dict[composite]
+            return snames_dict[name]
+
+        self.PropertyIDX = np.array([
+            _resolve_snames_idx(i, name)
+            for i, name in enumerate(self.isothermal_emulator.ml_indexer.label_names)
+        ])
 
         # Load vectorised HeFESTo EOS params if a control file is provided
         _eos_dir = Path(__file__).parent / "EOS_arithmetic"

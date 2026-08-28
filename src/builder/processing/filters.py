@@ -29,7 +29,7 @@ if top_path not in sys.path:
 from typing import Optional
 from builder.indexer import DatasetIndexer
 from ngibbs.config.ml_indexer import MLIndexer, load_ml_indexer_from_state
-from ngibbs.utils.file_utils import chunked_mask_copy
+from ngibbs.utils.file_utils import chunked_mask_copy, ROW_ALIGNED_BUNDLE_ARRAYS
 
 
 def _normalize_bulk_oxide_bounds(bounds):
@@ -812,16 +812,15 @@ def insanity_filter_npy(file_prefix, ml_indexer, tolerance=1e-3, bulk_tol_frac=1
 
         # Delete rows directly from the real .npy files (safe_delete_batched
         # already writes to a sibling .tmp.npy and atomically replaces, so no
-        # separate working copy is needed here).
-        npy_files = ['labels.npy', 'features.npy', 'binary_labels.npy', 'molar_labels.npy', 'mass_labels.npy']
-        for npy_file in npy_files:
+        # separate working copy is needed here). Every row-aligned array must be
+        # trimmed with the same indices -- a derivative/free_outputs array left
+        # behind keeps its pre-filter row count and desyncs from features.npy,
+        # which later trips the assertion in chunked_permutation_copy (or, worse,
+        # silently misaligns rows) during shuffle_bundle_rows.
+        for npy_file in ROW_ALIGNED_BUNDLE_ARRAYS:
             file_path = f"{file_prefix}{npy_file}"
             if Path(file_path).exists():
                 safe_delete_batched(file_path, delete_indices, batch_size=batch_size)
-
-        free_outputs_path = f"{file_prefix}free_outputs.npy"
-        if Path(free_outputs_path).exists():
-            safe_delete_batched(free_outputs_path, delete_indices, batch_size=batch_size)
 
         print(f"[INSANITY FILTER] Complete. Deleted {num_to_delete} rows ({deletion_fraction:.4%})")
         return delete_indices
@@ -1180,16 +1179,14 @@ def deep_filter_npy(filename, ml_indexer, Component_Lower_Bounds=None, Component
     del components, binary_labels, molar_labels
     gc.collect()
     
-    # Perform safe batch delete
-    safe_delete_batched(filename + 'labels.npy', delete_indices)
-    safe_delete_batched(filename + 'features.npy', delete_indices)
-    safe_delete_batched(filename + 'binary_labels.npy', delete_indices)
-    safe_delete_batched(filename + 'molar_labels.npy', delete_indices)
-    safe_delete_batched(filename + 'mass_labels.npy', delete_indices)
-
-    free_outputs_path = filename + 'free_outputs.npy'
-    if os.path.exists(free_outputs_path):
-        safe_delete_batched(free_outputs_path, delete_indices)
+    # Perform safe batch delete on every row-aligned array (see
+    # ROW_ALIGNED_BUNDLE_ARRAYS) so derivative/free_outputs arrays stay the same
+    # length as features.npy -- an untrimmed one desyncs the bundle and trips
+    # shuffle_bundle_rows.
+    for npy_file in ROW_ALIGNED_BUNDLE_ARRAYS:
+        file_path = filename + npy_file
+        if os.path.exists(file_path):
+            safe_delete_batched(file_path, delete_indices)
     
     gc.collect()
     

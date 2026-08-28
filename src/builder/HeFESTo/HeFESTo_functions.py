@@ -185,6 +185,11 @@ KM_PER_GPA = 250.0 / 9.0
 # Approximate core-mantle boundary pressure (GPa).
 CMB_PRESSURE_GPA = 135.0
 
+# Target pressure spacing (GPa) for the boundary-layer ad.in paths built by
+# prepare_HeFESTo_tree_surface / prepare_HeFESTo_tree_cmb. The number of
+# interior points over a window of width dP is round(dP / this) - 1.
+BOUNDARY_LAYER_P_STEP_GPA = 0.5
+
 
 def _predict_adiabat_temperature(P, S: float, element_moles: Dict[str, float]) -> np.ndarray:
     """Predict adiabatic temperature(s) via the Earth_Adiabats NN emulator.
@@ -1258,7 +1263,7 @@ def prepare_HeFESTo_tree_surface(directory: Path, GEOROC_DIR: Path, control_path
     Variant of ``prepare_HeFESTo_tree_fulladiabat`` restricted to the
     conductive lid only: each simulation's ``ad.in`` runs from the surface
     (P ~ 0) down to a randomly sampled lithosphere-asthenosphere transition
-    between 0 and 250 km depth (~0-9 GPa), sampled in ~1 GPa increments,
+    between 0 and 250 km depth (~0-9 GPa), sampled in ~0.5 GPa increments,
     with temperature a straight line in P from 300 K at the surface to the
     ``Earth_Adiabats`` NN emulator's adiabat temperature at the transition
     (see ``make_PT_path_surface`` / ``_predict_adiabat_temperature``). This
@@ -1333,11 +1338,12 @@ def prepare_HeFESTo_tree_surface(directory: Path, GEOROC_DIR: Path, control_path
 
     # Each simulation covers only the conductive lid: a small near-surface
     # jitter (P0) down to a lithosphere-asthenosphere transition sampled
-    # 0-250 km deeper (~0-9 GPa), sampled in ~1 GPa increments.
+    # 0-250 km deeper (~0-9 GPa), sampled in ~BOUNDARY_LAYER_P_STEP_GPA increments.
     P0s = np.random.uniform(0, 0.3, size=N)
     depth_below_surface_km = np.random.uniform(0.0, 250.0, N)
     P_trans = P0s + depth_below_surface_km / KM_PER_GPA
-    n_steps = np.maximum(np.round(P_trans - P0s).astype(int) - 1, 0)
+    n_steps = np.maximum(
+        np.round((P_trans - P0s) / BOUNDARY_LAYER_P_STEP_GPA).astype(int) - 1, 0)
     run_code = [
         [float(P0s[i]), float(P_trans[i]), int(n_steps[i]), 0, 0, 0, -1, 0, 0, 0, 0]
         for i in range(N)
@@ -1462,7 +1468,7 @@ def prepare_HeFESTo_tree_cmb(directory: Path, GEOROC_DIR: Path, control_path: Pa
     Variant of ``prepare_HeFESTo_tree_fulladiabat`` restricted to the
     conductive thermal boundary layer only: each simulation's ``ad.in`` runs
     from a randomly sampled transition 100-300 km above the CMB down to the
-    core at 135 GPa, sampled in ~1 GPa increments, with temperature a
+    core at 135 GPa, sampled in ~0.5 GPa increments, with temperature a
     straight line in P from the ``Earth_Adiabats`` NN emulator's adiabat
     temperature at the transition down to a randomly sampled mantle-side CMB
     temperature between 3500 K and 5000 K (see ``make_PT_path_cmb`` /
@@ -1538,12 +1544,13 @@ def prepare_HeFESTo_tree_cmb(directory: Path, GEOROC_DIR: Path, control_path: Pa
 
     # Each simulation covers only the CMB boundary layer: a transition
     # sampled 100-300 km above the CMB down to a small jitter around the
-    # core pressure (135 GPa), sampled in ~1 GPa increments.
+    # core pressure (135 GPa), sampled in ~BOUNDARY_LAYER_P_STEP_GPA increments.
     T_cmbs = np.random.uniform(3500.0, 5000.0, N)  # mantle-side CMB temperatures
     P_cores = CMB_PRESSURE_GPA + np.random.uniform(0, 1, size=N)
     depth_above_cmb_km = np.random.uniform(100.0, 300.0, N)
     P_trans = P_cores - depth_above_cmb_km / KM_PER_GPA
-    n_steps = np.maximum(np.round(P_cores - P_trans).astype(int) - 1, 0)
+    n_steps = np.maximum(
+        np.round((P_cores - P_trans) / BOUNDARY_LAYER_P_STEP_GPA).astype(int) - 1, 0)
     run_code = [
         [float(P_trans[i]), float(P_cores[i]), int(n_steps[i]), 0, 0, 0, -1, 0, 0, 0, 0]
         for i in range(N)

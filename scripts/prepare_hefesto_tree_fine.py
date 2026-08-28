@@ -79,6 +79,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--deep',
         action='store_true',
+        default=True,
         help=(
             'Fine-resolution traversal of a single bounded scan instead of a P-T '
             'grid. Requires bounds produced by --deep-phase-change-dataname.'

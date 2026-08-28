@@ -24,6 +24,7 @@ preprocessing:
   separate_feldspar: true    # Separate k-feldspar and plagioclase during preprocessing (Generally do this, MELTS sometimes classifies K-rich feldspar as plagioclase)
   excluded_oxides: []        # Explicitly exclude oxides from indexer basis (e.g., ['H2O', 'NiO'])
   #(Generally do this, Analcime in MELTS has two distinct compositional fields)
+  require_derivatives: false # Require dn/dP, dn/dT sidecars to be attached and delete rows where either is NaN/inf
 
 min_phase_proportion: 0.03    # Minimum phase proportion (0-1) for a sample to be included in training set. Applied after upsampling.
 

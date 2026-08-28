@@ -276,6 +276,9 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
 
             assert TrainMELTS.table.shape[0] > pre_filter*0.97, "More than 3% of the dataset has inconsistent phase data! (Zero mass but non-zero other properties)."
 
+            if preproc_cfg.get('require_derivatives', False):
+                TrainMELTS.filter_missing_derivatives()
+
             if not preprocessed:
                 if preproc_cfg.get('recover_untracked_phases', False):
                     TrainMELTS.recover_untracked_phases()
@@ -423,6 +426,8 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
         filter_bulk_composition_mismatch(ValidMELTS)
         assert ValidMELTS.table.shape[0] > pre_filter*0.9, "More than 10% of the validation dataset has a bulk composition mismatch!"
 
+        if preproc_cfg.get('require_derivatives', False):
+            ValidMELTS.filter_missing_derivatives()
 
         if not preprocessed:
             if preproc_cfg.get('recover_untracked_phases', False):

@@ -30,7 +30,9 @@ if src_path not in sys.path:
 from recipes.settings import internal_train_dir, external_train_dir, external_base
 from ngibbs.utils.string_utils import pull_number
 from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
-from ngibbs.utils.file_utils import load_ml_bundle, MLDataBundle, chunked_permutation_copy
+from ngibbs.utils.file_utils import (
+    load_ml_bundle, MLDataBundle, chunked_permutation_copy, ROW_ALIGNED_BUNDLE_ARRAYS,
+)
 from ngibbs.utils.math_utils import Normalizer
 from ngibbs.config.ml_indexer import load_ml_indexer_from_state
 from builder.processing.BigMetaTable import BigMetaTable
@@ -40,23 +42,9 @@ from .guardrails import assert_identity_multipliers, assert_alias_safe  # guardr
 # actually exists gets shuffled with the *same* permutation in shuffle_bundle_rows,
 # to keep rows aligned across arrays. Not all bundles have mass_labels/free_outputs
 # (the latter is optional; the former is always written by resampling_to_datasets
-# today, but guarded here in case of older/hand-built bundles).
-_ROW_ALIGNED_ARRAYS = (
-    "features.npy",
-    "labels.npy",
-    "binary_labels.npy",
-    "molar_labels.npy",
-    "mass_labels.npy",
-    "free_outputs.npy",
-    # Derivative supervision. These MUST be listed here: shuffle_bundle_rows permutes
-    # every array in this tuple with one permutation, and an array left out would keep
-    # its original order while the rest moved -- silently pairing each row's derivative
-    # with a different row's composition.
-    "dndp_labels.npy",
-    "dndt_labels.npy",
-    "dndp_s_labels.npy",
-    "dnds_labels.npy",
-)
+# today, but guarded here in case of older/hand-built bundles). The canonical list
+# lives in file_utils so the row-deletion filters trim exactly the same set.
+_ROW_ALIGNED_ARRAYS = ROW_ALIGNED_BUNDLE_ARRAYS
 
 # --------------------------------------------------------------------------- #
 #  Isentropic derivatives
@@ -743,6 +731,21 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     if deep_filter_kwargs is not None or insanity_filter_kwargs is not None:
         from builder.processing.filters import deep_filter_npy, insanity_filter_npy
 
+        # The derivative sidecars are still open as write memmaps from the export
+        # loop above. The filters below trim their .npy files on disk via
+        # os.replace (row for row, with the same indices as features.npy), which
+        # leaves these handles pointing at the stale pre-filter inode. Flush and
+        # drop them now, then re-open read-only from disk after filtering so
+        # _derivative_stats() and packaging both see the trimmed arrays.
+        _deriv_attrs_open = list(getattr(self, 'derivlabels', {}))
+        for _arr in getattr(self, 'derivlabels', {}).values():
+            try:
+                _arr.flush()
+            except Exception:
+                pass
+        self.derivlabels = {}
+        gc.collect()
+
         if stats_path and stats_path.exists():
             os.replace(stats_path, stats_path.with_name(f"{stats_path.stem}_prefilter.txt"))
         if feature_bounds_path.exists():
@@ -755,6 +758,13 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
         if insanity_filter_kwargs is not None:
             print("Applying insanity_filter to unpacked dataset (pre-packaging)...")
             insanity_filter_npy(self.filename, indexer.ml_indexer, **insanity_filter_kwargs)
+
+        # Re-open the (now trimmed) derivative sidecars read-only so the stats
+        # below and the packaging step read the post-filter arrays.
+        for _attr in _deriv_attrs_open:
+            _dpath = self.filename + f'{_attr}_labels.npy'
+            if os.path.exists(_dpath):
+                self.derivlabels[_attr] = np.load(_dpath, mmap_mode='r')
 
         print("Regenerating dataset statistics after filtering...")
         stats_path = generate_dataset_stats(

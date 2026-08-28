@@ -1,0 +1,252 @@
+####################################################################################
+# Sequential tuning + training for the continuous-saturation model (ContinuousModel),
+# adapted from the gated model's sequential recipe (HeFESToTuney.yaml). Two things
+# from that old recipe do not carry over, on purpose:
+#
+#   - No lower/binary-saturation stage. ContinuousModel has no sat_head -- saturation
+#     is the continuous n_phi = clamp(leaky(g_phi), min=0) itself, not a separate gate
+#     (see head_aliases in NN_continuous.py, which maps 'sat_head'/'prior_sat_head' to
+#     None). There is nothing to initialize there.
+#   - No bulk loss. bulk.weight stays 0 in every episode.
+#
+# Shape of the recipe: tune the encoder + chem_heads together (chem-first mole heads
+# condition on the encoder's output), then tune the mole branches on top of that --
+# each in two stages, a fast structural search (sweep: false) followed by a
+# hyperparameter sweep (sweep: true) -- then one full joint training run, then a
+# final derivative-supervised refinement pass (the only episode with derivatives on).
+#
+#   python src/builder/training/main.py train \
+#       --config recipes/training/HeFESTotuneyContinuous.yaml
+####################################################################################
+
+tarname: HeFESTo_Earth_Adiabat_NPT_derivs   # loads <tarname>_Train.tar.gz / _Test.tar.gz
+warm_start: none
+
+model_class: ContinuousModel
+
+######### model (initial values; tune1-tune4 below search around these) ###########
+encoderLayerUp: 2
+encoderLayerDown: 1
+encoderBase: 64
+moleLayerUp: 2
+moleLayerDown: 1
+moleBranchBase: 32
+head_order: chem_first     # mole heads see the endmember fractions; 'parallel' to decouple
+# Every regularization spec below carries 'dropout' with BOTH numbers at 0.0.
+# NN_continuous.py's ContinuousModel._reg only adds an nn.Dropout layer AT ALL when
+# the string contains 'dropout' -- so this wires dropout into the network graph from
+# the start, just inert (rate 0). pull_number_range reads the FIRST number as the
+# initial dropout rate and the LAST as the adaptive ceiling, so tune2/tune4 can raise
+# the initial rate later (their hyperparameter stage) without changing any layer
+# shapes, and the adaptive dropout_step_up/down machinery in trainer.py/sobolev.py has
+# room to move within [initial, ceiling] during training.
+encoder_regularization: 0.0layernormdropout0.0     # NOT batchnorm -- see note at bottom
+mole_regularization: 0.0layernormdropout0.0
+activation_leak: 0.05
+mole_activation_leak: 0.05            # the leaky branch is what makes phase-out continuous
+massbalance_iters: 3
+massbalance_tikhonov: 1.0e-6
+massbalance_damping: 1.0
+lowWD: 0
+highWD: 0
+noise: 0.0                 # goes into the value path only; derivative targets see clean x
+description: "HeFESTo continuous"
+
+######### data ####################################################################
+batch_size: 16384          # non-derivative default; train2 (the last episode)
+                            # overrides this to 8192 -- JVPs are ~3x the cost of a
+                            # plain step (see sobolev.py).
+ram_threshold_gb: 26
+device: cuda
+
+######### shared loss defaults (every episode needs a complete loss_config) #######
+loss_config:
+  binary:
+    weight: 0                 # ContinuousModel has no saturation head
+  chemistry:
+    type: symmetric_rel_l2
+    weight: 100
+  moles:
+    type: huber
+    weight: 50
+  bulk:
+    type: symmetric_rel_l2
+    weight: 0                 # not needed for this model -- see note at top
+
+binweights:                   # per-phase mole-loss weighting, carried over from HeFESToTuney.yaml
+  akimotoite: 10
+  hp-clinopyroxene: 4
+  plagioclase: 10
+  spinel: 4
+  stishovite: 5
+
+####################################################################################
+# PHASE A: encoder + chem_heads.
+# create_optimizer (optimizer_factory.py) routes weight decay by each parameter's
+# top-level module name: encoder -> lowWD, chem_heads -> highWD, mole_head -> always
+# 0 regardless of either. So this phase is the only place lowWD/highWD do anything
+# for encoder/chem_heads, and mole_head is frozen throughout it anyway.
+####################################################################################
+
+tune1: # structure only: encoder geometry, base width, norm choice. dropout stays off.
+  strategy: full
+  which_heads_to_freeze: ['mole_head']
+  sweep: false
+  epochs: 5
+  max_N: 2.0e5
+  early_stopping_patience: 2
+  scheduler:
+    type: OneCycleLR
+    args:
+      max_lr: 1.0e-3
+      epochs: 6              # steps_per_epoch is auto-computed/overridden by main.py
+  loss_config:
+    moles:
+      weight: 0               # mole_head is frozen and untrained this phase
+  tune_params: # in order
+    encoderLayer: [[1, 0], [1, 1], [2, 1], [2, 2], [3, 2]]
+    encoderBase: [32, 64, 128, 256]
+    encoder_regularization: [0.0layernormdropout0.0, 0.0dropout0.0]   # layernorm or not
+
+tune2: # hyperparameters: initial dropout, WD, noise. inherits tune1's winning geometry.
+  strategy: full
+  which_heads_to_freeze: ['mole_head']
+  sweep: true
+  inherit_loss: true
+  epochs: 8
+  max_N: 3.0e5
+  early_stopping_patience: 3
+  scheduler:
+    type: OneCycleLR
+    args:
+      max_lr: 1.0e-3
+      epochs: 8
+  loss_config:
+    moles:
+      weight: 0
+  tune_params:
+    lowWD: [0, 1.0e-5, 1.0e-4, 1.0e-3]     # encoder's own decay
+    highWD: [0, 1.0e-5, 1.0e-4, 1.0e-3]    # chem_heads' own decay
+    noise: [0, 0.01, 0.05, 0.1]
+    # varies the FIRST number (initial dropout rate); ceiling fixed at 0.3 so the
+    # adaptive mechanism has room to move during later full training.
+    encoder_regularization: [0.0layernormdropout0.3, 0.05layernormdropout0.3, 0.1layernormdropout0.3, 0.2layernormdropout0.3]
+
+####################################################################################
+# PHASE B: mole branches (mole_head).
+# mole_head is ALWAYS weight_decay=0 in create_optimizer regardless of lowWD/highWD
+# (it's hard-routed to the no-decay group, same as every bias and norm layer) -- so
+# lowWD/highWD are left OUT of tune4's hyperparameter sweep on purpose, not by
+# oversight: they would have no effect on the only thing being trained this phase,
+# and encoder/chem_heads (which they DO affect) are frozen throughout it.
+####################################################################################
+
+tune3: # structure only: mole branch geometry, base width, norm choice.
+  strategy: full
+  which_heads_to_freeze: ['encoder', 'chem_heads']
+  sweep: false
+  epochs: 5
+  max_N: 2.0e5
+  early_stopping_patience: 2
+  scheduler:
+    type: OneCycleLR
+    args:
+      max_lr: 1.0e-3
+      epochs: 6
+  loss_config:
+    chemistry:
+      weight: 0                # chem_heads is frozen this phase
+    moles:
+      weight: 50
+  tune_params:
+    moleLayer: [[1, 0], [1, 1], [2, 1], [2, 2], [3, 2]]
+    moleBranchBase: [16, 32, 64, 128]
+    mole_regularization: [0.0layernormdropout0.0, 0.0dropout0.0]
+
+tune4: # hyperparameters: initial dropout, noise (no WD -- see note above).
+  strategy: full
+  which_heads_to_freeze: ['encoder', 'chem_heads']
+  sweep: true
+  inherit_loss: true
+  epochs: 8
+  max_N: 3.0e5
+  early_stopping_patience: 3
+  scheduler:
+    type: OneCycleLR
+    args:
+      max_lr: 1.0e-3
+      epochs: 8
+  loss_config:
+    chemistry:
+      weight: 0
+    moles:
+      weight: 50
+  tune_params:
+    noise: [0, 0.01, 0.05, 0.1]
+    mole_regularization: [0.0layernormdropout0.3, 0.05layernormdropout0.3, 0.1layernormdropout0.3, 0.2layernormdropout0.3]
+
+####################################################################################
+# Joint training: everything unfrozen together, value losses only. tune1-4 already
+# left the model in a decent state ("rapidly trains a solid network"), so this is a
+# real (long, early-stopped) run rather than another short diagnostic.
+####################################################################################
+
+train1:
+  strategy: full
+  which_heads_to_freeze: []
+  epochs: 70
+  learning_rate: 5.0e-4
+  early_stopping_patience: 20
+  max_N: null
+  scheduler:
+    type: CosineAnnealingLR
+    args:
+      T_max: 10
+  loss_config:
+    chemistry:
+      weight: 100
+    moles:
+      weight: 50
+
+####################################################################################
+# Final refinement WITH derivatives. Last episode only, on purpose: dn/dP/dn/dT
+# supervision is ~3x the compute of a plain step (see sobolev.py docstring), and it's
+# meant to refine an already-competent model, not train one from scratch.
+# `derivatives:` is scoped to THIS episode's own block -- absent everywhere else,
+# which `_derivative_settings` in main.py reads as disabled -- so this is the only
+# episode that touches the dn/dP/dn/dT-supervised path (train_Upper_Sobolev).
+# Requires a bundle exported with derivative sidecars attached; `enabled: true`
+# against one without them raises rather than silently falling back.
+####################################################################################
+
+train2:
+  strategy: full
+  which_heads_to_freeze: []
+  batch_size: 8192            # smaller than the 16384 default -- JVPs cost more
+  epochs: 80
+  learning_rate: 5.0e-4
+  early_stopping_patience: 20
+  max_N: null
+  scheduler:
+    type: CosineAnnealingLR
+    args:
+      T_max: 10
+  loss_config:
+    chemistry:
+      weight: 100
+    moles:
+      weight: 50
+  derivatives:
+    enabled: true
+    dndp_weight: 1.0e-4       # normalised P spans [0,1], so dn/dx_norm is already the
+    dndt_weight: 5.0e-4       # same order of magnitude as n -- these need little tuning
+    project_tangent: true     # analytic null(A_omega^T) projection on the PREDICTION
+    subsample: 1.0            # fraction of each batch that gets the JVP; pure compute knob
+    huber_delta: 3.0          # in units of the per-component robust scale
+
+####################################################################################
+# encoder_regularization / mole_regularization: layernorm, never batchnorm. Under
+# forward-mode AD -- the JVP train2's derivative loss uses -- a batchnorm layer makes
+# each row's tangent depend on the rest of the batch, which is not a property the
+# physics has. train_Upper_Sobolev warns if it sees one.
+####################################################################################

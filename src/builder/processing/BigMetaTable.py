@@ -1154,9 +1154,54 @@ class BigMetaTable():
             print(f"\nDeleted {num_to_delete} rows with inconsistent phase data.")
         else:
             print("No inconsistent phase data found; no rows deleted.")
-            
-            
-    
+
+    def filter_missing_derivatives(self, chunk_size=None):
+        """
+        Delete rows where an attached derivative sidecar (dn/dP or dn/dT) is NaN/inf.
+
+        Sidecars are NaN-filled by the importer for rows where derivatives were
+        unavailable (see `sidecar.py`); this drops those rows so training doesn't see
+        them. Requires at least one sidecar to be attached, since a caller enabling
+        this expects derivative data to actually be present.
+        """
+        if chunk_size is None:
+            chunk_size = self.chunk_size
+        sidecars = list(_sidecar.items(self))
+        if not sidecars:
+            raise ValueError(
+                "filter_missing_derivatives requested but no derivative sidecars "
+                f"(dn/dP, dn/dT) are attached to {self.filename}.")
+
+        total_rows = self.table.shape[0]
+        if total_rows == 0:
+            print("No rows available; skipping derivative NaN filtering.")
+            return
+
+        delete_mask = np.zeros(total_rows, dtype=bool)
+        bad_counts = {attr: 0 for attr, _, _ in sidecars}
+        for start in tqdm(range(0, total_rows, chunk_size), desc="Checking derivative sidecars for NaN"):
+            end = min(start + chunk_size, total_rows)
+            for attr, _, arr in sidecars:
+                bad = ~np.isfinite(arr[start:end]).all(axis=1)
+                if bad.any():
+                    bad_counts[attr] += int(bad.sum())
+                    delete_mask[start:end][bad] = True
+
+        num_to_delete = int(delete_mask.sum())
+        if num_to_delete > 0:
+            proportion = num_to_delete / total_rows
+            print(f"\n=== Filtering Rows with NaN Derivative Sidecar Values ===")
+            print(f"Total rows: {total_rows}")
+            print(f"Rows with NaN/inf derivatives: {num_to_delete} ({proportion:.2%})")
+            for attr, count in bad_counts.items():
+                if count:
+                    print(f"  {attr:10s}: {count:6d} rows")
+            indices_to_delete = np.where(delete_mask)[0]
+            self.delete(indices_to_delete)
+            print(f"\nDeleted {num_to_delete} rows with NaN/inf derivative sidecar values.")
+        else:
+            print("No NaN/inf derivative sidecar values found; no rows deleted.")
+
     def filter_full_metadata(self):
         """Deletes rows where metadata contain unsupported phases."""
         # Classify each DISTINCT vocab entry once (typically a handful to a few

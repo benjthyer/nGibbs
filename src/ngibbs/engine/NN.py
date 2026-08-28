@@ -1250,12 +1250,21 @@ def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = 
         state_dict_path = temp_path / 'state_dict.pt'
         saved_state_dict = torch.load(state_dict_path, map_location='cpu', weights_only=False)
         
-        if low_only or load_prefixes is not None:
+        if low_only:
             effective_prefixes = load_prefixes if load_prefixes is not None else ["encoder.", "sat_head."]
             _load_matching_state_dict(model, saved_state_dict, load_prefixes=effective_prefixes)
         else:
-            # Load full model
-            model.load_state_dict(saved_state_dict, strict=False)
+            # Always shape-checked, even with no prefix restriction (load_prefixes=None
+            # already means "no restriction" to _load_matching_state_dict, since its own
+            # prefix filter is skipped when load_prefixes is None -- see that function).
+            # A raw `model.load_state_dict(..., strict=False)` tolerates missing/extra
+            # keys but still hard-raises on a key that exists in both but whose shape
+            # differs, which is exactly what a tuning trial that widens/narrows an
+            # existing layer (e.g. encoderBase, moleBranchBase) produces: same state_dict
+            # key, different tensor shape. Routing through the shape-checked loader
+            # degrades that case to "reinitialize the mismatched layer" instead of a
+            # crash, matching how an architectural (layer-count) trial already behaves.
+            _load_matching_state_dict(model, saved_state_dict, load_prefixes=load_prefixes)
 
         if hasattr(model, 'molar_epsilon'):
             model.molar_epsilon.fill_(float(model.ml_indexer.molar_epsilon))

@@ -75,7 +75,15 @@ def chunked_permutation_copy(src, dst_path, permutation, chunk_size=100_000):
     to worry about the underlying row order carrying any structure (such as
     upsampled rows appended as a block at the end of a table).
     """
-    n = src.shape[0]
+    n = len(permutation)
+    assert src.shape[0] == n, (
+        f"chunked_permutation_copy: src has {src.shape[0]:,} rows but permutation has "
+        f"{n:,} entries. A permutation built from one array (e.g. features.npy) is only "
+        f"valid for arrays with that same row count -- this mismatch means the bundle's "
+        f"row-aligned arrays are already out of sync before the shuffle, which used to "
+        f"either silently corrupt the output (when a short last chunk masked the size "
+        f"difference) or raise a confusing numpy broadcast error, instead of naming the "
+        f"actual problem here where it's cheap to catch.")
     dst = np.lib.format.open_memmap(dst_path, mode='w+', dtype=src.dtype, shape=(n,) + src.shape[1:])
     for start in range(0, n, chunk_size):
         end = min(start + chunk_size, n)
@@ -414,6 +422,29 @@ def clear_new_files(directory, baseline_files, protected_extensions=None, dry_ru
 # missing one is reported through `MLDataBundle.has_derivatives`, not raised here -- the
 # loud failure belongs in the trainer, where it can name the config key that asked for them.
 _OPTIONAL_ARRAYS = ('free_outputs', 'dndp_labels', 'dndt_labels')
+
+# Every row-aligned array a packaged ML bundle may contain, by arcname. Row i of each
+# array describes the same sample, so anything that changes the row set MUST touch all
+# of them together: row-deletion filters (filters.deep_filter_npy / insanity_filter_npy)
+# trim every one of these with the same delete indices, and MLexporter.shuffle_bundle_rows
+# permutes every one with the same permutation. Leaving an array out here silently
+# desyncs it from the rest -- e.g. an untrimmed derivative array keeps rows the insanity
+# filter dropped, so its row count no longer matches features.npy and every subsequent
+# row `i` pairs one sample's composition with another sample's derivative.
+# features/labels/binary/molar/mass are always written by resampling_to_datasets;
+# free_outputs and the four derivative arrays are optional (see _OPTIONAL_ARRAYS).
+ROW_ALIGNED_BUNDLE_ARRAYS = (
+    'features.npy',
+    'labels.npy',
+    'binary_labels.npy',
+    'molar_labels.npy',
+    'mass_labels.npy',
+    'free_outputs.npy',
+    'dndp_labels.npy',
+    'dndt_labels.npy',
+    'dndp_s_labels.npy',
+    'dnds_labels.npy',
+)
 
 
 class MLDataBundle:
