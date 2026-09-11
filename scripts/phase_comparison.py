@@ -30,11 +30,12 @@ import matplotlib.pyplot as plt
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = REPO_ROOT / 'src'
-for _p in (str(REPO_ROOT), str(SRC_ROOT)):
+for _p in (str(REPO_ROOT), str(SRC_ROOT), str(Path(__file__).resolve().parent)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from src.ngibbs.engine.API import HeFESToEmulatorCPU as HeFESToEmulatorCPU
+from _plot_output import plot_path
+from src.ngibbs.engine.models import HeFESToEmulatorCPU as HeFESToEmulatorCPU
 from src.builder.plotting import phase_colors, build_ordered_phases, draw_phase_stack
 from builder.HeFESTo.HeFESTo_functions import (
     extract_bulk_properties_from_simulation_dir,
@@ -342,8 +343,10 @@ if __name__ == '__main__':
                          help='Explicit simulation directory names (e.g. model_000167 model_000012), '
                               'overriding random sampling. Use this — not --seed — to guarantee '
                               'property_comparison.py and phase_comparison.py compare the same simulations.')
-    parser.add_argument('--save-path-isothermal', type=str, default='phase_comparison_isothermal.png')
-    parser.add_argument('--save-path-isentropic', type=str, default='phase_comparison_isentropic.png')
+    parser.add_argument('--save-path-isothermal', type=str,
+                        default=str(plot_path('phase_comparison_isothermal.png')))
+    parser.add_argument('--save-path-isentropic', type=str,
+                        default=str(plot_path('phase_comparison_isentropic.png')))
     args = parser.parse_args()
 
     workspace_dir = REPO_ROOT / args.workspace

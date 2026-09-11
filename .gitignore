@@ -45,10 +45,23 @@ Legacy/
 /data/
 !/src/ngibbs/engine/data/
 temp_models/
+src/builder/training/dataset_workspace/
+src/builder/training/residual_workspace/
 
 # Plots and Figures
 *hist/
 Plots/
+# All figures/animations from scripts/ land here (see scripts/_plot_output.py).
+# Not tracked, not packaged.
+/plots/
+*.gif
+*.mp4
+*.png
+*.jpg
+
+# Outputs of EmulatorAPI.test() / HeFESToAPI.test() (written into each model's
+# home directory). Regenerated on demand; never tracked or packaged.
+deployment_test/
 
 
 # Agent Configurations
@@ -188,7 +201,10 @@ src/builder/training/temp_models/
 C:/Git_Repositories/nGibbs/src/builder/training/temp_models
 oldMELTS/
 graveyard/
+
+# Windows / WSL "mark of the web" alternate-data-stream sidecars, anywhere.
 *.Identifier
+*:Zone.Identifier
 
 
 copilot-instructions.md

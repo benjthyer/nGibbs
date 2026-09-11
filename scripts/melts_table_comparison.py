@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -44,6 +45,10 @@ import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _plot_output import plots_dir
 
 CONDITION_COLS = {
     'P': 'P(GPa)(System_main)',
@@ -351,7 +356,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument('--name-a', default=None, help='Display name for table A (default: filename stem)')
     p.add_argument('--name-b', default=None, help='Display name for table B (default: filename stem)')
-    p.add_argument('--output-dir', required=True, help='Directory to save plots into')
+    p.add_argument('--output-dir', default=None,
+                   help='Directory to save plots into (default: <repo>/plots/melts_table_comparison)')
     p.add_argument('--bins', type=int, default=60, help='Number of histogram bins (default: 60)')
     p.add_argument('--gridsize', type=int, default=60, help='Hexbin grid size for density scatter (default: 60)')
     return p
@@ -366,7 +372,7 @@ def main() -> None:
         table_b_path=table_b_path,
         name_a=args.name_a or table_a_path.stem,
         name_b=args.name_b or table_b_path.stem,
-        output_dir=args.output_dir,
+        output_dir=args.output_dir or str(plots_dir('melts_table_comparison')),
         n_bins=args.bins,
         gridsize=args.gridsize,
     )

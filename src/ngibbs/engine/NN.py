@@ -276,7 +276,12 @@ class TunableModel(nn.Module):
                 raw = self.fc(x)
                 if train_inf_mask is not None:
                     raw = raw.clone()
-                    raw[train_inf_mask] = -1e9
+                    # torch.finfo(raw.dtype).min, not a fixed -1e9 -- see the matching
+                    # note in NN_continuous.py's ContinuousPhaseHead.forward. -1e9
+                    # overflows float16 (max magnitude ~65504) the moment this head runs
+                    # under fp16 autocast; reading the sentinel off raw's own dtype
+                    # keeps it valid at whatever precision this head actually ran at.
+                    raw[train_inf_mask] = torch.finfo(raw.dtype).min
                     proportions = F.softmax(raw, dim=-1)
                 elif inf_mask is not None:
                     raw = raw.clone()

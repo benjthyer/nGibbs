@@ -214,7 +214,7 @@ def _predict_adiabat_temperature(P, S: float, element_moles: Dict[str, float]) -
     np.ndarray
         Predicted temperatures (K), one per input pressure.
     """
-    from ngibbs.engine.API import HeFESToEmulatorCPU
+    from ngibbs.engine.models import HeFESToEmulatorCPU
 
     if HeFESToEmulatorCPU is None:
         raise RuntimeError(

@@ -553,6 +553,7 @@ class MLIndexer:
             'has_feature_normalizer': self.feature_normalizer is not None,
             'has_output_normalizer': self.output_normalizer is not None,
             'molar_epsilon': getattr(self, 'molar_epsilon', None),
+            'has_T0': getattr(self, 'T0', None) is not None,
         }
         
         with open(directory / 'indexer_metadata.json', 'w') as f:
@@ -599,6 +600,17 @@ class MLIndexer:
             'comp_mappings': self.comp_mappings,
         }
         
+        # Per-phase vanishing-abundance scale (5th percentile of nonzero training-label
+        # molar abundance), used to define the annealed complementarity-smoothing
+        # temperature T = a*T0 in ContinuousModel training. Computed once at export time
+        # (see MLexporter.py / scripts/compute_T0.py for older bundles) rather than
+        # rescanned by every training run, and optional: a bundle exported before this
+        # feature existed simply has no T0, and training without the annealing feature
+        # enabled doesn't need one.
+        T0 = getattr(self, 'T0', None)
+        if T0 is not None:
+            arrays_dict['T0'] = np.asarray(T0, dtype=np.float32)
+
         # Add normalizer states (only 1D min/range arrays, no objects)
         if self.feature_normalizer is not None:
             feature_state = self.feature_normalizer.to_state_dict()
@@ -673,6 +685,10 @@ def load_ml_indexer_from_state(directory: str) -> 'MLIndexer':
     indexer.compositionally_variable_phases = metadata['compositionally_variable_phases']
     indexer.projections_dir = Path(__file__).parent / 'projections'  # Set default; may not be used
     indexer.molar_epsilon = metadata.get('molar_epsilon', None) # May not exist before training.
+    # Per-phase (P,) vanishing-abundance scale, absent from any bundle exported before
+    # this feature existed -- None here means "no annealed boundary-smoothing data",
+    # which main.py must treat as episode-config-time error, not a silent fallback.
+    indexer.T0 = arrays_dict['T0'].astype(np.float32) if metadata.get('has_T0', False) else None
     
     # Restore optional attributes
     if metadata.get('featureNames') is not None:

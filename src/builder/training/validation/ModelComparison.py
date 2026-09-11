@@ -118,6 +118,7 @@ def _evaluate_model(
     use_cuda: bool,
     normalize_features: bool,
     batch_size: int = 2**14,
+    mass_balance: str = 'iterative',
 ) -> tuple[list[dict], list[dict]]:
     """
     Returns (phase_records, oxide_records) for this model.
@@ -128,7 +129,7 @@ def _evaluate_model(
     device = "cuda" if use_cuda and torch.cuda.is_available() else "cpu"
 
     model = rebuild_MELTS_model(str(model_path))
-    emulator = NN_MELTS(model, cuda=use_cuda)
+    emulator = NN_MELTS(model, cuda=use_cuda, mass_balance=mass_balance)
     ml_indexer = model.ml_indexer
 
     px_sp_transform = ml_indexer.PxSpTransform
@@ -169,7 +170,11 @@ def _evaluate_model(
 
     gt_masses = _staged_forward(gt_batch_fn, combined_gt, batch_size).detach().cpu().numpy()
 
-    # --- Model inference: batched forwardMB ---
+    # --- Model inference: batched ---
+    # One path for both architectures: `forwardMB` returns raw NN output mass-balanced by
+    # `emulator.mass_balance`. Presence is read off `phase_present` -- the POST-correction
+    # phase amounts, the same quantity `phase_tables`' masses come from -- so a phase the
+    # corrector drove to ~0 scores absent, consistent with its reported mass.
     infer_out = _staged_forward(
         emulator.forwardMB,
         features_sub_raw,
@@ -177,12 +182,14 @@ def _evaluate_model(
         Normalize=normalize_features,
         optimize_masses=True,
         protect_opx=False,
-        outputs=["likelihoods", "phase_tables"],
+        outputs=["phase_present", "phase_tables", "reconstruction_residual"],
     )
 
-    binary_hat = (infer_out["likelihoods"] > 0.5).float().numpy()  # already on CPU via _merge
+    binary_hat = infer_out["phase_present"].detach().cpu().numpy()  # already 0/1
     comp_tens, mass_tens = infer_out["phase_tables"]
-    #transcomponent_hat = infer_out["transcomponent_hat"]
+    recon_resid = infer_out["reconstruction_residual"].detach().cpu().numpy()  # (n_subset,)
+    recon_resid_mean = float(np.mean(recon_resid))
+    recon_resid_p95 = float(np.percentile(recon_resid, 95))
 
     def _to_np(t):
         return t.detach().cpu().numpy() if isinstance(t, torch.Tensor) else t
@@ -233,6 +240,11 @@ def _evaluate_model(
             "pred_abundance_pct": 100.0 * int(pred_pos.sum()) / n,
             "abs_mass_err_wt": abs_mass_err,
             "rel_mass_err": rel_mass_err,
+            # Post-mass-balance bulk reconstruction error (per model, repeated per phase
+            # row so it lands in phase_metrics.csv / the summary).
+            "mass_balance": emulator.mass_balance,
+            "recon_residual_mean": recon_resid_mean,
+            "recon_residual_p95": recon_resid_p95,
         }
 
         # Composition errors (oxide wt% within phase) for compositionally variable phases
@@ -353,6 +365,7 @@ def run_comparison(
     normalize_features: bool = True,
     min_liquid_mass: float = 0.0,
     batch_size: int = 2**14,
+    mass_balance: str = 'iterative',
 ) -> None:
     bundle_path = _resolve_bundle_path(bundle_path)
     bundle = load_ml_bundle(bundle_path)
@@ -397,7 +410,8 @@ def run_comparison(
         t0 = time.time()
         try:
             phase_recs, oxide_recs = _evaluate_model(
-                model_path, bundle, subset, use_cuda, normalize_features, batch_size
+                model_path, bundle, subset, use_cuda, normalize_features, batch_size,
+                mass_balance=mass_balance,
             )
             elapsed = time.time() - t0
             all_phase_records.extend(phase_recs)
@@ -476,6 +490,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--min-liquid-mass", type=float, default=0.0,
         help="Only include samples where melts-liquid wt%% > this value"
     )
+    parser.add_argument(
+        "--mass-balance", choices=["iterative", "pinv", "none"], default="iterative",
+        help="Mass-balance correction to apply during inference (default: iterative)"
+    )
     return parser
 
 
@@ -495,6 +513,7 @@ def main() -> None:
         normalize_features=not args.no_normalize,
         min_liquid_mass=args.min_liquid_mass,
         batch_size=args.batch_size,
+        mass_balance=args.mass_balance,
     )
 
 

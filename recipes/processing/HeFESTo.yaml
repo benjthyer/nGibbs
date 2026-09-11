@@ -11,7 +11,7 @@ dataset: #EXPECTED FILENAME: "nMELTS/data/MELTStables/{MELTSModel}/{'MELTS' if M
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
-outname: HeFESTo_Earth_Adiabat_NPT_derivs            # Base name for output folder (without extension). Auto-Generated if blank
+outname: HeFESTo_Earth_Adiabat_NPS            # Base name for output folder (without extension). Auto-Generated if blank
 
 
 # ============================================================================
@@ -19,15 +19,15 @@ outname: HeFESTo_Earth_Adiabat_NPT_derivs            # Base name for output fold
 # ============================================================================
 featureNames: # Non-chemical features to include in the dataset
   - 'P(GPa)(System_main)'
-  - 'T(K)(System_main)'
-  #- 'S(J/g/K)(System_main)'
+  #- 'T(K)(System_main)'
+  - 'S(J/g/K)(System_main)'
   #- 'S(System_main)' # Isentropic 
   
 
 free_outputs: # Non-chemical labels to predict. These are used for training the saturation predictor and as auxiliary outputs for the encoder.
   #- 'Temperature(System_main)' 
   #- 'S(J/g/K)(System_main)'
-  #- 'T(K)(System_main)'
+  - 'T(K)(System_main)'
   #- 'VS(km/s)(System_main)'
   #- 'VP(km/s)(System_main)'
   #- 'dVdP*10^6(System_main)' # COMPRESSIBILITY

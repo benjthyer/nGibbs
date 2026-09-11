@@ -16,7 +16,8 @@ base_path = str(Path(__file__).parent.parent)
 if base_path not in sys.path:
     sys.path.insert(0, base_path)
 
-from src.ngibbs.engine.API import HeFESToEmulatorCPU, HeFESToEmulatorGPU
+from _plot_output import plot_path
+from src.ngibbs.engine.models import HeFESToEmulatorCPU, HeFESToEmulatorGPU
 from src.ngibbs.utils.math_utils import grid_sample, mix_compositions
 
 PROPERTY_LABELS = {
@@ -366,7 +367,7 @@ if __name__ == '__main__':
 
     animate_property_transects(
         features, headers, property_names,
-        save_path='mixture_property_animation.gif',
+        save_path=str(plot_path('mixture_property_animation.gif')),
         n_isentropes=3,
         frame_values=np.tile(BSM_fraction, 3*300),
         frame_label = 'Mars fraction in BSE-BSM Mixture'

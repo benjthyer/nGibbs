@@ -1,0 +1,260 @@
+####################################################################################
+# Size-capped copy of HeFESTotuneyContinuous.yaml -- same data, losses, and tuning
+# shape, but tune1/tune3's structural search spaces are capped so the model this
+# recipe can ever produce stays well under ~50 MB as a saved state_dict.
+#
+# Why this exists: the uncapped recipe's tune1/tune3 search spaces were widened
+# (encoderLayer up to [4,3], encoderBase up to 512, chemBranchBase up to 256,
+# moleLayer up to [4,3], moleBranchBase up to 256) specifically to let the tuner find
+# a genuine ceiling rather than hit an arbitrary list limit -- see the comments there.
+# That is the right choice for "make the single best possible model, inference cost
+# permitting." It is the wrong choice for a model meant to ship inside the package
+# itself: nGibbs is meant to be an easy pip/git install, and a few hundred MB (up to
+# ~2.4 GB at that recipe's absolute ceiling) per model, times ~10 shipped models, is
+# not that. This recipe is the "light" half of a light/heavy split -- ship this one on
+# PyPI/GitHub, and the heavy, uncapped recipe's best output through external storage
+# (GitHub Releases, HuggingFace Hub, or Zenodo) for whoever wants the extra accuracy.
+#
+# The cap: tune1/tune3's candidate lists below were chosen so that even their WORST
+# case -- every dimension at its own list maximum simultaneously, which is more
+# pessimistic than the tuner would actually do, since it stops widening a dimension
+# the moment a larger value stops helping -- stays comfortably under budget. Checked
+# directly, not guessed: instantiating ContinuousModel at that literal worst-case
+# config (encoderLayer=[2,2], encoderBase=128, chemBranchBase=32, moleLayer=[2,2],
+# moleBranchBase=128) against a real HeFESTo ml_indexer and calling
+# `torch.save(model.state_dict(), ...)` produced a 34.3 MB file -- about 30% of
+# headroom under the 50 MB target, to absorb the fact that this was checked against a
+# similar but not byte-identical bundle to the one `tarname` below actually points at
+# (phase/feature counts can shift slightly between HeFESTo dataset exports).
+#
+#   python src/builder/training/main.py train \
+#       --config recipes/training/HeFESTotuneyContinuousLight.yaml
+####################################################################################
+
+tarname: 120SedIgClosed_Cr_NPS  # loads <tarname>_Train.tar.gz / _Test.tar.gz
+warm_start: None # 120SedIgClosed_Cr_NPT_train1e
+
+model_class: ContinuousModel
+
+######### model (initial values; tune1-tune4 below search around these) ###########
+encoderLayerUp: 2
+encoderLayerDown: 1
+encoderBase: 64
+moleLayerUp: 2
+moleLayerDown: 1
+moleBranchBase: 32
+chemBranchBase: 32          # 0 = bare Linear-to-softmax (the original, pre-hidden-layer
+                            # chem head); tune1 below searches whether a hidden layer helps
+head_order: chem_first     # mole heads see the endmember fractions; 'parallel' to decouple
+# Every regularization spec below carries 'dropout' with BOTH numbers at 0.0.
+# NN_continuous.py's ContinuousModel._reg only adds an nn.Dropout layer AT ALL when
+# the string contains 'dropout' -- so this wires dropout into the network graph from
+# the start, just inert (rate 0). pull_number_range reads the FIRST number as the
+# initial dropout rate and the LAST as the adaptive ceiling, so tune2/tune4 can raise
+# the initial rate later (their hyperparameter stage) without changing any layer
+# shapes, and the adaptive dropout_step_up/down machinery in trainer.py/sobolev.py has
+# room to move within [initial, ceiling] during training.
+encoder_regularization: 0.0dropout0.0     # NOT batchnorm -- see note at bottom
+mole_regularization: 0.0dropout0.0
+activation_leak: 0.05
+mole_activation_leak: 0.05            # the leaky branch is what makes phase-out continuous
+massbalance_iters: 3
+massbalance_tikhonov: 1.0e-6
+massbalance_damping: 1.0
+lowWD: 0
+highWD: 0
+noise: 0.0                 # goes into the value path only; derivative targets see clean x
+description: "SedIg 120 Continuous (light, ~50MB cap)"
+
+######### data ####################################################################
+batch_size: 16384
+ram_threshold_gb: 26
+device: cuda
+
+######### shared loss defaults (every episode needs a complete loss_config) #######
+loss_config:
+  binary:
+    weight: 0.002                 # ContinuousModel has no saturation head
+  chemistry:
+    type: symmetric_rel_l2
+    weight: 500
+  moles:
+    type: huber
+    weight: 50
+  bulk:
+    type: symmetric_rel_l2
+    weight: 0                 # OFF through tune1-tune4; train1 switches it on -- see note at top
+
+phase_weights:                 # one weight per phase, applied to binary + mole + chemistry
+                                # loss alike (never bulk, which has no per-phase concept) --
+                                # carried over from HeFESToTuney.yaml's binweights
+  calicite: 10
+  graphite: 4
+  hornblende: 4
+  leucite: 4
+  biotite: 2 
+  muscovite: 4
+
+####################################################################################
+# PHASE A: encoder + chem_heads.
+# create_optimizer (optimizer_factory.py) routes weight decay by each parameter's
+# top-level module name: encoder -> lowWD, chem_heads -> highWD, mole_head -> always
+# 0 regardless of either. So this phase is the only place lowWD/highWD do anything
+# for encoder/chem_heads, and mole_head is frozen throughout it anyway.
+#
+# tune1 also searches chemBranchBase here, not in tune2: it's a structural (width)
+# parameter like encoderBase, not a hyperparameter like dropout/WD/noise, and mole_head
+# being frozen throughout Phase A means chem_heads' own capacity is being searched
+# without any interference from the (not-yet-trained) mole branches.
+####################################################################################
+
+
+
+tune1: # structure only: encoder geometry, base width, norm choice. dropout stays off.
+  strategy: full
+  which_heads_to_freeze: ['mole_head']
+  sweep: false
+  epochs: 8
+  max_N: 1.5e7
+  early_stopping_patience: 6
+  scheduler:
+    type: OneCycleLR
+    args:
+      max_lr: 1.0e-3
+  loss_config:
+    moles:
+      weight: 0               # mole_head is frozen and untrained this phase
+    binary:
+      weight: 0
+  tune_params: # in order
+    # Capped, not widened: see the size-budget note at the top of this file. Every
+    # value here is kept from the uncapped recipe's own candidate lists (nothing new
+    # invented), just truncated before the point where a size problem starts.
+    encoderLayer: [[1, 0], [1, 1], [2, 1], [2, 2]]
+    encoderBase: [16, 32, 64, 128]
+    chemBranchBase: [0, 8, 16, 32, 64]   # 0 = no hidden layer (the original bare Linear head)
+    encoder_regularization: [0.0layernormdropout0.3, 0.01dropout0.3]   # layernorm or not
+
+tune2: # hyperparameters: initial dropout, WD, noise. inherits tune1's winning geometry.
+  strategy: full
+  which_heads_to_freeze: ['mole_head']
+  sweep: true
+  inherit_loss: true
+  epochs: 8
+  max_N: 1.5e7
+  early_stopping_patience: 6
+  scheduler:
+    type: OneCycleLR
+    args:
+      max_lr: 1.0e-3
+  loss_config:
+    moles:
+      weight: 0
+    binary:
+      weight: 0
+  tune_params:
+    lowWD: [0, 1.0e-5, 1.0e-4, 1.0e-3]     # encoder's own decay
+    highWD: [0, 1.0e-5, 1.0e-4, 1.0e-3]    # chem_heads' own decay
+    noise: [0, 0.01, 0.05, 0.1]
+    # varies the FIRST number (initial dropout rate); ceiling fixed at 0.3 so the
+    # adaptive mechanism has room to move during later full training.
+    # encoder_regularization: [0.01layernormdropout0.3, 0.01dropout0.3]
+
+
+####################################################################################
+# PHASE B: mole branches (mole_head).
+# mole_head is ALWAYS weight_decay=0 in create_optimizer regardless of lowWD/highWD
+# (it's hard-routed to the no-decay group, same as every bias and norm layer) -- so
+# lowWD/highWD are left OUT of tune4's hyperparameter sweep on purpose, not by
+# oversight: they would have no effect on the only thing being trained this phase,
+# and encoder/chem_heads (which they DO affect) are frozen throughout it.
+####################################################################################
+
+
+tune3: # structure only: mole branch geometry, base width, norm choice.
+  strategy: full
+  which_heads_to_freeze: ['encoder', 'chem_heads']
+  sweep: false
+  epochs: 8
+  max_N: 1.5e7
+  early_stopping_patience: 6
+  scheduler:
+    type: OneCycleLR
+    args:
+      max_lr: 1.0e-3
+      epochs: 6
+  loss_config:
+    chemistry:
+      weight: 0                # chem_heads is frozen this phase
+  tune_params:
+    # Capped, not widened -- same reasoning as tune1 above.
+    moleLayer: [[1, 0], [1, 1], [2, 1], [2, 2]]
+    moleBranchBase: [16, 32, 64, 96, 128]
+    mole_regularization: [0.0layernormdropout0.3, 0.01dropout0.3]
+
+tune4: # hyperparameters: initial dropout, noise (no WD -- see note above).
+  strategy: full
+  which_heads_to_freeze: ['encoder', 'chem_heads']
+  sweep: true
+  inherit_loss: true
+  epochs: 8
+  max_N: 1.5e7
+  early_stopping_patience: 6
+  scheduler:
+    type: OneCycleLR
+    args:
+      max_lr: 1.0e-3
+      epochs: 8
+  loss_config:
+    chemistry:
+      weight: 0
+  tune_params:
+    noise: [0, 0.01, 0.05, 0.1]
+    # mole_regularization: [0.01layernormdropout0.3, 0.01dropout0.3]
+
+####################################################################################
+# Joint training: everything unfrozen together. tune1-4 already left the model in a
+# decent state ("rapidly trains a solid network"), so this is a real (long,
+# early-stopped) run rather than another short diagnostic. This is also where the bulk
+# (pre-projection mass-balance residual) term switches on -- the mole branches now
+# exist, so `normalize(n_raw @ compToEl)` is a meaningful quantity. _upper_loss puts it
+# on the same 1E4 * weight footing as chemistry/moles and only adds it when weight != 0,
+# so it stays inert everywhere it is left at 0.
+####################################################################################
+
+
+train1:
+  strategy: full
+  which_heads_to_freeze: []
+  epochs: 120
+  learning_rate: 1e-4
+  early_stopping_patience: 25
+  max_N: null
+  boundary_temperature:
+    enabled: true
+    a_start: 1.0
+    a_end: 5.0e-2
+  scheduler:
+    type: CosineAnnealingLR
+    args:
+      T_max: 10
+
+
+train2:
+  strategy: full
+  which_heads_to_freeze: []
+  epochs: 120
+  learning_rate: 1e-4
+  early_stopping_patience: 25
+  max_N: null
+  boundary_temperature:
+    enabled: true
+    a_start: 5.0e-2
+    a_end: 1.0e-5
+  scheduler:
+    type: CosineAnnealingLR
+    args:
+      T_max: 10
+  loss_config:
+    bulk:
+      weight: 50

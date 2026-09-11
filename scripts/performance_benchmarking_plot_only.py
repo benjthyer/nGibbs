@@ -26,6 +26,10 @@ if str(src_root) not in sys.path:
     sys.path.insert(0, str(src_root))
 if str(nmelts_root) not in sys.path:
     sys.path.insert(0, str(nmelts_root))
+if str(repo_root / "scripts") not in sys.path:
+    sys.path.insert(0, str(repo_root / "scripts"))
+
+from _plot_output import plot_path
 
 #pd.DataFrame({'Batch Size': batch_sizes, 'GPU Emulator': GPU_emulator, 'CPU Emulator': CPU_emulator, 'GPU Properties': GPU_properties, 'CPU Properties': CPU_properties}).to_csv('performance_results.csv', index=False)
 
@@ -55,7 +59,7 @@ plt.grid(True, which='major')
 plt.grid(True, which='minor', color='lightgrey', linewidth=0.5)
 plt.title('HeFESTo Emulator Performance Comparison: Total Time')
 plt.legend()
-plt.savefig('scripts/performance_results.png', dpi=300)
+plt.savefig(plot_path('performance_results.png'), dpi=300)
 plt.show()
 
 plt.semilogx(batch_sizes, np.array(batch_sizes)/np.array(GPU_emulator), label='GPU Emulator', color = 'forestgreen', linestyle='-')
@@ -71,7 +75,7 @@ plt.grid(True, which='major')
 plt.grid(True, which='minor', color='lightgrey', linewidth=0.5)
 plt.title('Emulator Performance Comparison: Assemblages per Second')
 plt.legend()
-plt.savefig('scripts/performance_results_assemblages_per_second.png', dpi=300)
+plt.savefig(plot_path('performance_results_assemblages_per_second.png'), dpi=300)
 plt.show()
 
 burnman_rate = batch_sizes*(10/4000) #seconds
@@ -91,5 +95,5 @@ plt.grid(True, which='major')
 plt.grid(True, which='minor', color='lightgrey', linewidth=0.5)
 plt.title('Relative Speedup of nGibbsMin')
 plt.legend()
-plt.savefig('performance_results_relative.png', dpi=300)
+plt.savefig(plot_path('performance_results_relative.png'), dpi=300)
 plt.show()

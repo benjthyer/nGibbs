@@ -20,6 +20,10 @@ import argparse
 import sys
 from pathlib import Path
 
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _plot_output import plot_path
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -147,7 +151,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Plot random Martian P-T paths from GEOROC compositions.")
     parser.add_argument("--georoc", type=Path, default=GEOROC_DEFAULT, help="GEOROC CSV file path.")
     parser.add_argument("--n", type=int, default=N_DEFAULT, help="Number of paths to plot.")
-    parser.add_argument("--out", type=Path, default=None, help="Save figure to this path instead of showing it.")
+    parser.add_argument("--out", type=Path, default=None, help="Figure output path (default: <repo>/plots/mars_PT_paths.png).")
+    parser.add_argument("--show", action="store_true", help="Display interactively instead of saving.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     return parser.parse_args()
 
@@ -166,7 +171,8 @@ def main() -> None:
     P_lits = rng.uniform(1.5, 9.0, args.n)
 
     print("Generating and plotting P-T paths ...")
-    plot_paths(element_moles_list, Ss, P_lits, args.out)
+    out = None if args.show else (args.out or plot_path('mars_PT_paths.png'))
+    plot_paths(element_moles_list, Ss, P_lits, out)
 
 
 if __name__ == "__main__":

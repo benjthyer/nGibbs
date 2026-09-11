@@ -46,11 +46,12 @@ import matplotlib.pyplot as plt
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_ROOT = REPO_ROOT / 'src'
-for _p in (str(REPO_ROOT), str(SRC_ROOT)):
+for _p in (str(REPO_ROOT), str(SRC_ROOT), str(Path(__file__).resolve().parent)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from src.ngibbs.engine.API import HeFESToEmulatorCPU as HeFESToEmulatorCPU
+from _plot_output import plot_path
+from src.ngibbs.engine.models import HeFESToEmulatorCPU as HeFESToEmulatorCPU
 from src.ngibbs.engine.EOS_arithmetic.hefesto_vec import load_control, compute_within_phase_frac
 from builder.HeFESTo.HeFESTo_functions import (
     extract_bulk_properties_from_simulation_dir,
@@ -61,7 +62,12 @@ from src.ngibbs.utils.file_utils import _parse_control_file
 REQUIRED_FILES = ['control', 'fort.56', 'fort.61', 'fort.68', 'fort.99']
 ELEMENT_KEYS = ['Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O']
 
-# HeFESTo-vec EOS property key -> (fort.56 column, axis label).
+# HeFESTo-vec EOS property key -> (fort.56 column, axis label, eos->fort.56 unit scale).
+#
+# The scale multiplies the internally-computed EOS value to bring it into the
+# fort.56 column's units before any comparison.  It is 1.0 for everything except
+# thermal expansivity: the EOS returns `alptot` in 1/K, while fort.56's
+# `alpha(1e5_K^-1)` column is alptot * 1e5.
 #
 # Cp and KS used to be excluded here, on the grounds that "fort.56's KS(GPa)
 # uses a different aggregation scheme".  That is now understood: fort.56's KS is
@@ -77,12 +83,13 @@ ELEMENT_KEYS = ['Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O']
 # Requesting any of cptot/KStot/Vp_fast makes the API run the metamorphic pass;
 # see HeFESToAPI._METAMORPHIC_KEYS.
 PROPERTY_MAP = {
-    'rho':     ('rho(g/cm^3)', 'rho (g/cm3)'),
-    'Vp_fast': ('VP(km/s)',    'VP (km/s)'),
-    'Vs':      ('VS(km/s)',    'VS (km/s)'),
-    'S':       ('S(J/g/K)',    'S (J/g/K)'),
-    'cptot':   ('cp(J/g/K)',   'Cp (J/g/K)'),
-    'KStot':   ('KS(GPa)',     'KS (GPa)'),
+    'rho':     ('rho(g/cm^3)',     'rho (g/cm3)',      1.0),
+    'Vp_fast': ('VP(km/s)',        'VP (km/s)',        1.0),
+    'Vs':      ('VS(km/s)',        'VS (km/s)',        1.0),
+    'S':       ('S(J/g/K)',        'S (J/g/K)',        1.0),
+    'cptot':   ('cp(J/g/K)',       'Cp (J/g/K)',       1.0),
+    'KStot':   ('KS(GPa)',         'KS (GPa)',         1.0),
+    'alptot':  ('alpha(1e5_K^-1)', 'alpha (1e-5/K)',   1.0e5),
 }
 
 # HeFESTo_Parameters_010123 embedded in the control files points at the
@@ -146,10 +153,10 @@ def get_prop_array(result: dict, source: str, prop: str) -> np.ndarray:
     source is one of 'fort56', 'gt_internal', 'isothermal_emulator',
     'isentropic_emulator'.
     """
+    fort56_col, _, scale = PROPERTY_MAP[prop]
     if source == 'fort56':
-        fort56_col, _ = PROPERTY_MAP[prop]
         return np.asarray(result['fort56'][fort56_col], dtype=np.float64)
-    return np.asarray(result[source][prop], dtype=np.float64)
+    return np.asarray(result[source][prop], dtype=np.float64) * scale
 
 
 def compute_error_stats(gt_vals: np.ndarray, pred_vals: np.ndarray):
@@ -394,7 +401,7 @@ def plot_comparison(results: list, mode: str, save_path: str) -> None:
         P = result['P_gpa']
         for col, prop in enumerate(prop_keys):
             ax = axes[row][col]
-            _, label = PROPERTY_MAP[prop]
+            _, label, _ = PROPERTY_MAP[prop]
             gt_vals = get_prop_array(result, 'fort56', prop)
             em_vals = get_prop_array(result, emulator_source, prop)
             gi_vals = get_prop_array(result, 'gt_internal', prop)
@@ -448,7 +455,7 @@ def print_error_summary(results: list, mode: str) -> None:
         for source_key, display_name in sources:
             print(f'  -- {display_name} --')
             for prop in prop_keys:
-                _, label = PROPERTY_MAP[prop]
+                _, label, _ = PROPERTY_MAP[prop]
                 gt_vals = get_prop_array(result, 'fort56', prop)
                 pred_vals = get_prop_array(result, source_key, prop)
                 abs_err, rel_err = compute_error_stats(gt_vals, pred_vals)
@@ -486,8 +493,10 @@ if __name__ == '__main__':
                          help='override HeFESToAPI.metamorphic_nsmall_rel, the active-set '
                               'smallness threshold for the metamorphic solve (fraction of '
                               'total moles). Must exceed the emulator noise floor.')
-    parser.add_argument('--save-path-isothermal', type=str, default='property_comparison_isothermal.png')
-    parser.add_argument('--save-path-isentropic', type=str, default='property_comparison_isentropic.png')
+    parser.add_argument('--save-path-isothermal', type=str,
+                        default=str(plot_path('property_comparison_isothermal.png')))
+    parser.add_argument('--save-path-isentropic', type=str,
+                        default=str(plot_path('property_comparison_isentropic.png')))
     args = parser.parse_args()
     DIAGNOSE = args.diagnose
 

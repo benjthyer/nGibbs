@@ -526,6 +526,8 @@ class EmulatorAPI:
         device: str = 'cpu',
         verbose: bool = False,
         openox_model_path: Optional[Union[str, Path]] = None,
+        mass_balance: str = 'iterative',
+        test_bundles: Optional[Dict[str, Union[str, Path]]] = None,
     ):
         """
         Initialize the emulator API with neural network models.
@@ -546,6 +548,13 @@ class EmulatorAPI:
             Path to open oxygen (fO2-buffered) emulator checkpoint. When
             provided, inputs containing 'logfO2-QFM(System_main)' are
             routed to this model instead of the isothermal emulator.
+        mass_balance : {'iterative', 'pinv', 'none'}, default='iterative'
+            Mass-balance correction every wrapped `NN_MELTS` applies by default
+            (see `NN_MELTS.forwardMB`). The choice is model-agnostic.
+        test_bundles : dict, optional
+            {'isothermal'|'isentropic'|'openox': path-to-ML-ready-bundle}. Ground
+            truth for `self.test()`; one quality-metrics table is produced per
+            configured emulator whose bundle file is present.
         """
         if verbose:
             print("[INFO] Initializing EmulatorAPI...")
@@ -553,6 +562,7 @@ class EmulatorAPI:
         self.device = torch.device(device)
         self.verbose = verbose
         self.modelType = self.__class__.__name__
+        self._mass_balance = mass_balance
 
         # Store paths so _clone_as_cpu can rebuild this instance on another device
         self._iso_path  = str(isothermal_model_path)
@@ -560,18 +570,26 @@ class EmulatorAPI:
         self._temp_path = str(temperature_model_path) if temperature_model_path is not None else None
         self._open_path = str(openox_model_path) if openox_model_path is not None else None
 
+        # Ground-truth data for self.test(): one ML-ready bundle per emulator,
+        # keyed by {'isothermal', 'isentropic', 'openox'}. self.test() scores
+        # every configured emulator whose bundle file exists and writes the
+        # metrics tables into self.home_dir (the isothermal model's directory).
+        self._test_bundles = {
+            k: str(v) for k, v in dict(test_bundles or {}).items() if v is not None
+        }
+
         if verbose:
             print(f"  Loading isothermal emulator: {isothermal_model_path}")
-        self.isothermal_emulator = self._load_emulator(isothermal_model_path, device, verbose)
+        self.isothermal_emulator = self._load_emulator(isothermal_model_path, device, verbose, mass_balance)
 
         if verbose:
             print(f"  Loading isentropic emulator: {isentropic_model_path}")
-        self.isentropic_emulator = self._load_emulator(isentropic_model_path, device, verbose)
+        self.isentropic_emulator = self._load_emulator(isentropic_model_path, device, verbose, mass_balance)
 
         if openox_model_path is not None:
             if verbose:
                 print(f"  Loading open oxygen emulator: {openox_model_path}")
-            self.open_emulator = self._load_emulator(openox_model_path, device, verbose)
+            self.open_emulator = self._load_emulator(openox_model_path, device, verbose, mass_balance)
         else:
             self.open_emulator = None
 
@@ -631,7 +649,90 @@ class EmulatorAPI:
             self._iso_path, self._isen_path, self._temp_path,
             device='cpu', verbose=False,
             openox_model_path=self._open_path,
+            mass_balance=self._mass_balance,
+            test_bundles=self._test_bundles,
         )
+
+    @property
+    def home_dir(self) -> Path:
+        """Directory the emulator "lives" in — the parent of the isothermal model
+        file. ``test()`` writes its outputs into ``home_dir / 'deployment_test'``.
+        """
+        return Path(self._iso_path).resolve().parent
+
+    def test(
+        self,
+        output_dir: Optional[Union[str, Path]] = None,
+        *,
+        max_samples: Optional[int] = None,
+        seed: int = 1337,
+        write_outputs: bool = True,
+        verbose: bool = True,
+    ) -> Dict[str, object]:
+        """Run the deployable emulator quality test against the bundled ground truth.
+
+        Scores every configured emulator (``self._test_bundles`` maps
+        'isothermal' / 'isentropic' / 'openox' to an ML-ready bundle) the way
+        ``ModelComparison`` scores a field of models, but for the single model
+        this API wraps: per-phase precision / recall / proportion-in-dataset /
+        abundance error / per-oxide within-phase composition error, assembled
+        into one ``metrics x phases`` table per emulator (phase columns ordered
+        most- to least-abundant in the bundle). A bundle whose file is missing
+        is skipped with a note.
+
+        Quality metrics only — tolerances / pass-fail are applied by a separate
+        layer that consumes the returned tables.
+
+        Returns
+        -------
+        dict with:
+            'quality_metrics' : {emulator_name: DataFrame}
+            'meta'            : {emulator_name: dict}
+            'skipped_bundles' : list of emulator names whose bundle was absent
+        Each table is written to ``<output_dir>/emulator_quality_<name>.csv``
+        (NaN as ``--``) when ``write_outputs``, alongside
+        ``emulator_quality_legend.txt``.
+        """
+        from ngibbs.deployment_tests import evaluate_emulator_quality
+        from ngibbs.deployment_tests.emulator_quality import legend_text
+
+        if not self._test_bundles:
+            raise RuntimeError(
+                f"{self.__class__.__name__} has no test bundles configured "
+                "(test_bundles={}). Wire them in the constructor / model spec."
+            )
+        out_dir = Path(output_dir) if output_dir is not None else self.home_dir / 'deployment_test'
+
+        quality: Dict[str, object] = {}
+        meta: Dict[str, object] = {}
+        skipped = []
+        for name, bundle in self._test_bundles.items():
+            emu = getattr(self, {'openox': 'open_emulator'}.get(name, f'{name}_emulator'), None)
+            if emu is None or not Path(bundle).exists():
+                skipped.append(name)
+                continue
+            if verbose:
+                print(f"[test] {self.__class__.__name__} [{name}]: {Path(bundle).name}")
+            r = evaluate_emulator_quality(
+                self, bundle, emulator_name=name, max_samples=max_samples, seed=seed,
+            )
+            quality[name] = r['phase_quality_metrics']
+            meta[name] = r['meta']
+            if write_outputs:
+                out_dir.mkdir(parents=True, exist_ok=True)
+                csv_path = out_dir / f'emulator_quality_{name}.csv'
+                r['phase_quality_metrics'].to_csv(csv_path, na_rep='--')
+                if verbose:
+                    print(f"[test]   n={r['meta']['n_samples']:,}  "
+                          f"recon_resid_l2_mean={r['meta']['recon_residual_l2_mean']:.4g}  "
+                          f"-> {csv_path.name}")
+
+        if skipped and verbose:
+            print(f"[test]   skipped (bundle file or emulator absent): {skipped}")
+        if write_outputs and quality:
+            (out_dir / 'emulator_quality_legend.txt').write_text(legend_text())
+
+        return {'quality_metrics': quality, 'meta': meta, 'skipped_bundles': skipped}
 
     def _get_cpu_func(self, func):
         """Return the CPU-API equivalent of a GPU emulator bound method, or None.
@@ -683,14 +784,15 @@ class EmulatorAPI:
         )
 
     @staticmethod
-    def _load_emulator(model_path: Union[str, Path], device: str, verbose: bool = True) -> Optional[NN_MELTS]:
+    def _load_emulator(model_path: Union[str, Path], device: str, verbose: bool = True,
+                       mass_balance: str = 'iterative') -> Optional[NN_MELTS]:
         """Load and wrap a checkpoint as NN_MELTS emulator, or return None with a warning."""
         import warnings
         from .NN import rebuild_MELTS_model
 
         model_path = Path(model_path)
         if not model_path.exists():
-            if verbose: 
+            if verbose:
                 print(
                 f"[nGibbs] Model file not found: {model_path}. "
                 "This model will be unavailable."
@@ -698,7 +800,7 @@ class EmulatorAPI:
             return None
 
         model = rebuild_MELTS_model(str(model_path))
-        return NN_MELTS(model, cuda=(device == 'cuda'))
+        return NN_MELTS(model, cuda=(device == 'cuda'), mass_balance=mass_balance)
 
     def _setup_temperature_model(self, checkpoint_path: Union[str, Path], verbose: bool = False) -> None:
         """Load temperature FCNN and setup normalizers."""
@@ -1541,6 +1643,9 @@ class HeFESToAPI(EmulatorAPI):
         control_path: Optional[Union[str, Path]] = None,
         param_dir: Optional[Union[str, Path]] = None,
         npz_path: Optional[Union[str, Path]] = None,
+        mass_balance: str = 'iterative',
+        test_bundles: Optional[Dict[str, Union[str, Path]]] = None,
+        test_meltstable_dir: Optional[Union[str, Path]] = None,
     ):
         """
         Initialize HeFESTo API with emulator models and phases.
@@ -1565,6 +1670,12 @@ class HeFESToAPI(EmulatorAPI):
             (e.g. path to HeFESTo_Parameters_010123/).
         npz_path : str or Path, optional
             Path to a pre-built DOS-table .npz file for the HeFESTo EOS kernel.
+        test_bundles : dict, optional
+            {'isothermal' (NPT) / 'isentropic' (NPS): ML-ready bundle path} for
+            the base emulator quality test.
+        test_meltstable_dir : str or Path, optional
+            Directory of MELTStable adiabat CSVs for the HeFESTo-specific
+            bulk-property + phase-abundance comparison against the internal EOS.
         """
         if verbose:
             print("[INFO] Initializing HeFESToAPI...")
@@ -1575,8 +1686,15 @@ class HeFESToAPI(EmulatorAPI):
             temperature_model_path,
             device,
             verbose,
+            mass_balance=mass_balance,
+            test_bundles=test_bundles,
         )
-        
+
+        # Directory of MELTStable adiabat CSVs for the HeFESTo-specific part of
+        # self.test() (bulk-property + phase-abundance comparison vs the
+        # internal vectorised EOS).
+        self._test_meltstable_dir = str(test_meltstable_dir) if test_meltstable_dir is not None else None
+
         assert self.isothermal_emulator.ml_indexer.label_names == self.isentropic_emulator.ml_indexer.label_names # Assume the label names are model-agnostic
 
         # Known label collision: some checkpoints' ml_indexer.label_names carry the
@@ -1645,7 +1763,61 @@ class HeFESToAPI(EmulatorAPI):
             control_path=self._control_path,
             param_dir=self._param_dir,
             npz_path=self._npz_path,
+            mass_balance=self._mass_balance,
+            test_bundles=self._test_bundles,
+            test_meltstable_dir=self._test_meltstable_dir,
         )
+
+    def test(
+        self,
+        output_dir: Optional[Union[str, Path]] = None,
+        *,
+        max_samples: Optional[int] = None,
+        seed: int = 1337,
+        write_outputs: bool = True,
+        verbose: bool = True,
+    ) -> Dict[str, object]:
+        """HeFESTo deployable test: the base emulator quality metrics (one table
+        per configured NPT / NPS bundle) plus a MELTStable comparison of bulk EOS
+        properties (rho, VP, VS, S, Cp, KS, thermal expansivity) and phase
+        abundances against the internal vectorised HeFESTo EOS.
+
+        All outputs (a quality-metrics CSV per emulator, two property + two phase
+        figures, a property-error table and a phase-error table) are written to
+        ``self.home_dir / 'deployment_test'``.
+        """
+        from ngibbs.deployment_tests import (
+            run_meltstable_phase_comparison,
+            run_meltstable_property_comparison,
+        )
+
+        out_dir = Path(output_dir) if output_dir is not None else self.home_dir / 'deployment_test'
+        result = super().test(
+            output_dir=out_dir, max_samples=max_samples, seed=seed,
+            write_outputs=write_outputs, verbose=verbose,
+        )
+
+        if self._test_meltstable_dir is None:
+            if verbose:
+                print("[test]   no MELTStable directory configured; skipping EOS comparison.")
+            return result
+
+        if self.hefesto_params is None:
+            raise RuntimeError(
+                "HeFESTo EOS params not loaded; the MELTStable comparison needs a control file."
+            )
+        if verbose:
+            print(f"[test]   MELTStable EOS comparison: {self._test_meltstable_dir}")
+
+        prop = run_meltstable_property_comparison(self, self._test_meltstable_dir, out_dir)
+        phase = run_meltstable_phase_comparison(self, self._test_meltstable_dir, out_dir)
+        result['meltstable_property_errors'] = prop['property_errors']
+        result['meltstable_phase_errors'] = phase['phase_errors']
+        result['meltstable_unrepresented_phases'] = phase['unrepresented_phases']
+        result['figures'] = {**prop['figures'], **phase['figures']}
+        if write_outputs and verbose:
+            print(f"[test]   wrote MELTStable tables + figures to {out_dir}")
+        return result
 
     # EOS chunks: large enough to amortise Python overhead, small enough to
     # avoid OOM on systems where GPU VRAM is the bottleneck.
@@ -1954,6 +2126,9 @@ class MELTSAPI:
         openox_Cr_model_path: Optional[Union[str, Path]] = None,
         device: str = 'cpu',
         verbose: bool = False,
+        mass_balance: str = 'iterative',
+        test_NoCr_bundles: Optional[Dict[str, Union[str, Path]]] = None,
+        test_Cr_bundles: Optional[Dict[str, Union[str, Path]]] = None,
     ):
         """
         Initialize MELTS API, building NoCr and Cr sub-APIs.
@@ -1987,6 +2162,11 @@ class MELTSAPI:
             Torch device ('cpu' or 'cuda')
         verbose : bool, default=False
             Print initialization messages
+        test_NoCr_bundles, test_Cr_bundles : dict, optional
+            {'isothermal' (NPT closed) / 'isentropic' (NPS) / 'openox' (NPT
+            open): ML-ready bundle path} for the NoCr and Cr sub-APIs
+            respectively — up to six bundles in total. Consumed by
+            ``self.test()``.
         """
         if verbose:
             print("[INFO] Initializing MELTSAPI (NoCr)...")
@@ -1997,6 +2177,8 @@ class MELTSAPI:
             device,
             verbose,
             openox_model_path=openox_NoCr_model_path,
+            mass_balance=mass_balance,
+            test_bundles=test_NoCr_bundles,
         )
         if verbose:
             print("[INFO] Initializing MELTSAPI (Cr)...")
@@ -2007,6 +2189,8 @@ class MELTSAPI:
             device,
             verbose,
             openox_model_path=openox_Cr_model_path,
+            mass_balance=mass_balance,
+            test_bundles=test_Cr_bundles,
         )
         self.device = torch.device(device)
         self.verbose = verbose
@@ -2050,99 +2234,21 @@ class MELTSAPI:
     def divide_ptt_tables(self, ptt_out, tableIDX):
         return self.cr.divide_ptt_tables(ptt_out, tableIDX) # Function is agnostic of model.
 
-# Initialize APIs for best models.
+    def test(self, output_dir=None, **kwargs) -> dict:
+        """Run the deployable quality test on both sub-APIs (NoCr and Cr).
 
-# HeFESTo Model paths - resolved relative to this file's location
-_this_file_dir = Path(__file__).parent
-_models_dir = _this_file_dir / "TrainedModels" / "HeFESTo_Adiabats"
-_HeFESTo_Mars_dir = _this_file_dir / "TrainedModels" / "HeFESTo_Mars"
+        Each sub-API scores every configured emulator (isothermal / isentropic /
+        openox) whose bundle file is present — up to six tables in total. The
+        NoCr and Cr outputs are split into ``deployment_test/nocr`` and
+        ``deployment_test/cr`` (the two share a model directory). A sub-API with
+        no ``test_*_bundles`` dict at all raises.
 
-
-adiabat_NPT_path = _models_dir / "HeFESTo_Earth_Adiabat_NPT.tar"
-adiabat_NPS_path = _models_dir / "HeFESTo_Earth_Adiabat_NPS.tar"
-adiabat_TfromS_path = _models_dir / "Residual_T_from_S_NN.pt"
-# print(f"[INFO] Looking for HeFESTo model at: {adiabat_NPT_path}")
-
-MELTS102_dir = _this_file_dir / "TrainedModels" / "MELTS102"
-MELTS120_dir = _this_file_dir / "TrainedModels" / "MELTS120"
-
-
-
-
-HeFESToEmulatorCPU = None
-HeFESToEmulatorGPU = None
-MELTS102EmulatorCPU = None
-MELTS102EmulatorGPU = None
-
-
-
-
-HeFESToEmulatorCPU = HeFESToAPI(
-    isothermal_model_path=str(adiabat_NPT_path),
-    isentropic_model_path=str(adiabat_NPS_path),
-    temperature_model_path=str(adiabat_TfromS_path),
-    device='cpu'
-)
-
-HeFESToMarsEmulatorCPU = HeFESToAPI(
-    isothermal_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Isothermal.tar"),
-    isentropic_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Isentropic.tar"),
-    temperature_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Temp.pt"),
-    device='cpu'
-)
-
-MELTS102EmulatorCPU = MELTSAPI(
-    isothermal_NoCr_model_path = str(MELTS102_dir / "102Isothermal_NoCr.tar"),
-    isothermal_Cr_model_path = str(MELTS102_dir / "102Isothermal_Cr.tar"),
-    isentropic_NoCr_model_path = str(MELTS102_dir / "102Isentropic_NoCr.tar"),
-    isentropic_Cr_model_path = str(MELTS102_dir / "102Isentropic_Cr.tar"),
-    openox_NoCr_model_path = str(MELTS102_dir / "102OpenOx_NoCr.tar"),
-    openox_Cr_model_path = str(MELTS102_dir / "102OpenOx_Cr.tar"),
-    device='cpu'
-)
-
-MELTS120EmulatorCPU = MELTSAPI(
-    isothermal_NoCr_model_path = str(MELTS120_dir / "120Isothermal_NoCr.tar"),
-    isothermal_Cr_model_path = str(MELTS120_dir / "120Isothermal_Cr.tar"),
-    isentropic_NoCr_model_path = str(MELTS120_dir / "120Isentropic_NoCr.tar"),
-    isentropic_Cr_model_path = str(MELTS120_dir / "120Isentropic_Cr.tar"),
-    openox_NoCr_model_path = str(MELTS120_dir / "120OpenOx_NoCr.tar"),
-    openox_Cr_model_path = str(MELTS120_dir / "120OpenOx_Cr.tar"),
-    device='cpu'
-)
-
-if torch.cuda.is_available():
-    HeFESToEmulatorGPU = HeFESToAPI(
-        isothermal_model_path=str(adiabat_NPT_path),
-        isentropic_model_path=str(adiabat_NPS_path),
-        temperature_model_path=str(adiabat_TfromS_path),
-        device='cuda'
-    )
-
-    HeFESToMarsEmulatorGPU = HeFESToAPI(
-        isothermal_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Isothermal.tar"),
-        isentropic_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Isentropic.tar"),
-        temperature_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Temp.pt"),
-        device='cuda'
-    )
-
-    MELTS102EmulatorGPU = MELTSAPI(
-    isothermal_NoCr_model_path = str(MELTS102_dir / "102Isothermal_NoCr.tar"),
-    isothermal_Cr_model_path = str(MELTS102_dir / "102Isothermal_Cr.tar"),
-    isentropic_NoCr_model_path = str(MELTS102_dir / "102Isentropic_NoCr.tar"),
-    isentropic_Cr_model_path = str(MELTS102_dir / "102Isentropic_Cr.tar"),
-    openox_NoCr_model_path = str(MELTS102_dir / "102OpenOx_NoCr.tar"),
-    openox_Cr_model_path = str(MELTS102_dir / "102OpenOx_Cr.tar"),
-    device='cuda'
-    )
-
-    MELTS120EmulatorGPU = MELTSAPI(
-    isothermal_NoCr_model_path = str(MELTS120_dir / "120Isothermal_NoCr.tar"),
-    isothermal_Cr_model_path = str(MELTS120_dir / "120Isothermal_Cr.tar"),
-    isentropic_NoCr_model_path = str(MELTS120_dir / "120Isentropic_NoCr.tar"),
-    isentropic_Cr_model_path = str(MELTS120_dir / "120Isentropic_Cr.tar"),
-    openox_NoCr_model_path = str(MELTS120_dir / "120OpenOx_NoCr.tar"),
-    openox_Cr_model_path = str(MELTS120_dir / "120OpenOx_Cr.tar"),
-    device='cuda'
-)
+        Returns ``{'nocr': <result dict>, 'cr': <result dict>}``.
+        """
+        out = {}
+        for tag, sub in (('nocr', self.nocr), ('cr', self.cr)):
+            sub_dir = (Path(output_dir) / tag if output_dir is not None
+                       else sub.home_dir / 'deployment_test' / tag)
+            out[tag] = sub.test(output_dir=sub_dir, **kwargs)
+        return out
 

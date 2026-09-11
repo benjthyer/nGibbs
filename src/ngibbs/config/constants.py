@@ -40,6 +40,37 @@ TYPE_CONVERSION_MAP = {
     'noise_step_down': float,
 }
 
+# Training numeric precision -- flip this to compare training/inference cost against
+# accuracy without touching any recipe YAML. Read fresh (not cached at import time) by
+# builder.training.trainer._resolve_precision / builder.training.sobolev at the start
+# of every training loop, so editing this and rerunning is enough; no need to reload
+# any module by hand.
+#
+#   'float32'  -- current, long-standing behavior. No autocast, no gradient scaling.
+#   'bfloat16' -- RECOMMENDED first thing to try. Same exponent range as float32 (just
+#                 less mantissa precision), so it can't overflow the way float16 can --
+#                 relevant here because this project's annealed boundary-temperature
+#                 scheme (NN_continuous.py's ContinuousModel.upper_forward) divides by
+#                 T = a*T0, which anneals down to a small fraction of an already-small
+#                 per-phase statistic. No GradScaler needed. Full tensor-core rate on
+#                 this project's dev GPU (RTX 5070 Ti / Blackwell).
+#   'float16'  -- the traditional mixed-precision path (needs GradScaler, which trainer.py
+#                 wires in automatically when this is set). Half the exponent range of
+#                 bfloat16 (max ~65504) makes it the riskier of the two for the same
+#                 boundary-temperature division -- trainer.py forces that specific
+#                 computation back to float32 regardless of this setting, but other
+#                 large/small intermediate values elsewhere in the network are not
+#                 similarly guarded. Included for a direct three-way comparison, not as
+#                 the recommended default.
+#
+# Only takes effect on cuda; a non-cuda device silently trains in float32 regardless
+# (a printed notice explains why, rather than failing or silently doing nothing).
+# Derivative/Sobolev training (sobolev.py) intentionally ignores this and always trains
+# in float32 -- JVP/double-backward through the network is the most numerically
+# fragile part of this whole pipeline, and mixed precision there needs its own
+# dedicated validation before it's worth the risk.
+TRAIN_PRECISION = 'float32'   # 'float32' | 'bfloat16' | 'float16'
+
 # Required elements (must always be present)
 REQUIRED_ELEMENTS = {'Si','Ti', 'Al', 'Fe', 'Mg', 'Ca', 'Na'}
 ALLOWED_MELTS_OXIDES = {'SiO2', 'TiO2', 'Al2O3', 'FeO', 'Fe2O3', 'MgO', 'CaO', 'Na2O', 'K2O', 'P2O5', 'H2O', 'Cr2O3', 'CO2'}

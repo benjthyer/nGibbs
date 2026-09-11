@@ -25,6 +25,8 @@ base_path = str(Path(__file__).parent.parent)
 if base_path not in sys.path:
     sys.path.insert(0, base_path)
 
+from _plot_output import plot_path
+
 
 # ---------------------------------------------------------------------------
 # Generic primitives
@@ -251,7 +253,7 @@ def prepare_melts_phase_data(
     x_name        : stripped x-axis label (e.g. 'P(GPa)')
     y_name        : stripped y-axis label (e.g. 'T(K)')
     """
-    from src.ngibbs.engine.API import MELTS102EmulatorCPU
+    from src.ngibbs.engine.models import MELTS102EmulatorCPU
     from src.ngibbs.config.constants import ptt_to_short, ptt_longs
 
     features = np.asarray(features, dtype=np.float32)
@@ -359,7 +361,7 @@ if __name__ == '__main__':
     animate_phase_diagram(x, y, data, names,
                           x_name=x_name, y_name=y_name,
                           colors=colors,
-                          save_path='morb_melts_phase_animation.gif')
+                          save_path=str(plot_path('morb_melts_phase_animation.gif')))
 
     # Comparison: low-Na vs high-Na end-member grids
     lo_na = input_dict.copy(); lo_na['Na2O'] = 0.5  # not in input_dict originally, demo only
@@ -380,4 +382,4 @@ if __name__ == '__main__':
                               x_name=x_name, y_name=y_name,
                               label_a='Low Na₂O', label_b='High Na₂O',
                               colors=colors,
-                              save_path='morb_melts_na_comparison.gif')
+                              save_path=str(plot_path('morb_melts_na_comparison.gif')))

@@ -9,3 +9,5 @@ scikit-learn>=1.8.0
 scipy>=1.7.1
 matplotlib>=3.10.9
 tqdm>=4.67.1
+psutil>=5.9.0          # CPU/RAM stats for the training benchmark logger (builder.training.benchmark)
+nvidia-ml-py>=12.0.0   # GPU temp/util/VRAM/power via pynvml, same use

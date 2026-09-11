@@ -75,8 +75,10 @@ input_liquid_fractions = [102, 102]#, 100] # Make above 100 to allow for superli
 simcycle = 50 # How many simulations to run per iteration
 
 # Tunable: final table row count for each memmap (~30x scale-up target).
-target_rows_train = 35_000_000
-target_rows_valid = 1_500_000 # Change pipeline later to keep all this as test, no 3rd valid split. Existing set is fine
+#target_rows_train = 35_000_000
+target_rows_train = 50 # Change pipeline later to keep all this as test, no 3rd valid split. Existing set is fine
+#target_rows_valid = 1_500_000 # Change pipeline later to keep all this as test, no 3rd valid split. Existing set is fine
+target_rows_valid = 0 # Change pipeline later to keep all this as test, no 3rd valid split. Existing set is fine
 #batch_file = MELTSModel + 'batch'
 
 for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']): 

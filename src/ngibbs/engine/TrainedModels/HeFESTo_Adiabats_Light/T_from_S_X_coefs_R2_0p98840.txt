@@ -1,0 +1,30 @@
+Temperature regression: T = f(S, bulk composition elements)
+CSV: data/MELTStables/HeFESTo/HeFESTo_Trainset080626Earth_Adiabats.csv
+Rows used: 10188675
+P bound: none
+R^2: 0.988400387034
+
+Model: T = b0 + b_S*S + b_S^2*S^2 + b_P*P + b_P^2*P^2 + b_Si*Si + b_Si^2*Si^2 + b_Mg*Mg + b_Mg^2*Mg^2 + b_Fe*Fe + b_Fe^2*Fe^2 + b_Ca*Ca + b_Ca^2*Ca^2 + b_Al*Al + b_Al^2*Al^2 + b_Na*Na + b_Na^2*Na^2 + b_Cr*Cr + b_Cr^2*Cr^2 + b_O*O + b_O^2*O^2
+
+Coefficients:
+  b0  (intercept) = 275.686165087
+  b_S          = 61.764722203
+  b_S^2        = 315.569078513
+  b_P          = 11.1087292603
+  b_P^2        = -0.0229123847056
+  b_Si         = 48.4136120176
+  b_Si^2       = 2.68478801551
+  b_Mg         = -51.263710421
+  b_Mg^2       = 2.56174417454
+  b_Fe         = 65.6673589958
+  b_Fe^2       = 3.54682772511
+  b_Ca         = 72.0446761727
+  b_Ca^2       = -0.682358876285
+  b_Al         = -86.8244135172
+  b_Al^2       = 29.1074057354
+  b_Na         = -119.29114391
+  b_Na^2       = 20.2359036261
+  b_Cr         = 68.8613736868
+  b_Cr^2       = 15.3838860756
+  b_O          = 2.39196990567
+  b_O^2        = -4.8184298542

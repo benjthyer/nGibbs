@@ -31,7 +31,8 @@ from recipes.settings import internal_train_dir, external_train_dir, external_ba
 from ngibbs.utils.string_utils import pull_number
 from tests.unit_tests.test_processing.ML_export_tests import sanity_check_bundle
 from ngibbs.utils.file_utils import (
-    load_ml_bundle, MLDataBundle, chunked_permutation_copy, ROW_ALIGNED_BUNDLE_ARRAYS,
+    load_ml_bundle, MLDataBundle, chunked_permutation_copy, chunked_mask_copy,
+    ROW_ALIGNED_BUNDLE_ARRAYS, compute_T0,
 )
 from ngibbs.utils.math_utils import Normalizer
 from ngibbs.config.ml_indexer import load_ml_indexer_from_state
@@ -810,6 +811,23 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
                       f"EQUILIBRIUM heat capacity, not the fixed-assemblage one, before "
                       f"training on dndp_s/dnds.")
     
+    # Per-phase vanishing-abundance scale (5th percentile of nonzero training-label
+    # molar abundance), for ContinuousModel's annealed complementarity-smoothing
+    # temperature T = a*T0 (see NN_continuous.py). Computed once here, post-filter, on
+    # the final molar_labels.npy - see scripts/compute_T0.py to backfill an existing
+    # bundle that predates this.
+    print("Computing per-phase vanishing-abundance scale (T0)...")
+    _molar_for_T0 = np.load(self.filename + 'molar_labels.npy', mmap_mode='r')
+    _T0 = compute_T0(_molar_for_T0, indexer.ml_indexer.mass_phasedict, indexer.ml_indexer.all_phases)
+    del _molar_for_T0
+    gc.collect()
+    _t0_path = Path(self.filename + 'T0.npy')
+    np.save(_t0_path, _T0)
+    file_mappings[str(_t0_path)] = 'T0.npy'
+    _zero_T0 = [p for p in indexer.ml_indexer.all_phases if _T0[indexer.ml_indexer.mass_phasedict[p]] == 0.0]
+    if _zero_T0:
+        print(f"[T0] WARNING: never-present phases (T0=0, cannot anneal): {_zero_T0}")
+
     # Add stats file
     if stats_path and stats_path.exists():
         file_mappings[str(stats_path)] = 'stats.txt'
@@ -1358,6 +1376,142 @@ def shuffle_bundle_rows(bundle_path, seed=None, chunk_size=1_000_000):
         shutil.rmtree(extract_dir, ignore_errors=True)
 
     return bundle_path
+
+
+def subset_bundle_rows(bundle_path, output_path=None, nrows=None, *, seed=None,
+                       sequential=False, chunk_size=1_000_000):
+    """Extract a random (or sequential) row subset from an already-packaged
+    ML-ready bundle, out-of-core.
+
+    The bundle analogue of scripts/subset_csv.py: pick `nrows` of the bundle's
+    rows and write a new bundle containing only those rows. Every row-aligned
+    array present (`ROW_ALIGNED_BUNDLE_ARRAYS` -- features/labels/binary/molar/
+    mass plus optional free_outputs and the derivative sidecars) is trimmed with
+    the *same* row indices, so rows stay aligned across arrays exactly as
+    shuffle_bundle_rows and the deep_filter row-deletion path keep them.
+    stats.txt, feature_bounds.json and T0.npy (each a property of the row set)
+    are regenerated for the smaller dataset; ml_indexer/ and every other bundle
+    member are carried through unchanged.
+
+    Parameters
+    ----------
+    bundle_path : str or Path
+        Source .tar.gz ML-ready bundle.
+    output_path : str or Path, optional
+        Destination bundle. None -- or a path resolving to `bundle_path` --
+        subsets the bundle in place.
+    nrows : int
+        Number of rows to keep. If >= the bundle's row count, every row is kept
+        (the output is just a repackaged copy).
+    seed : int, optional
+        RNG seed for the random sample. Ignored when `sequential` is True.
+    sequential : bool, optional
+        Keep the first `nrows` rows instead of a random sample.
+    chunk_size : int, optional
+        Row-chunk size for the chunked_mask_copy passes and the stats scan.
+
+    Returns
+    -------
+    Path
+        `output_path` (or `bundle_path` when subsetting in place).
+    """
+    if nrows is None:
+        raise ValueError("subset_bundle_rows: nrows is required")
+    bundle_path = Path(bundle_path)
+    output_path = bundle_path if output_path is None else Path(output_path)
+    in_place = output_path.resolve() == bundle_path.resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    extract_dir = Path(tempfile.mkdtemp(dir=output_path.parent))
+    try:
+        with tarfile.open(bundle_path, "r:gz") as tar:
+            original_names = [m.name for m in tar.getmembers() if m.isfile()]
+            tar.extractall(path=extract_dir)
+
+        present_arrays = [name for name in _ROW_ALIGNED_ARRAYS if (extract_dir / name).exists()]
+
+        n_rows = np.load(extract_dir / "features.npy", mmap_mode="r").shape[0]
+        if nrows >= n_rows:
+            print(f"[subset_bundle_rows] Requested {nrows:,} rows but bundle has "
+                  f"{n_rows:,} -- keeping all rows.")
+            keep_mask = np.ones(n_rows, dtype=bool)
+        elif sequential:
+            keep_mask = np.zeros(n_rows, dtype=bool)
+            keep_mask[:nrows] = True
+        else:
+            rng = np.random.default_rng(seed)
+            chosen = rng.choice(n_rows, size=nrows, replace=False)
+            keep_mask = np.zeros(n_rows, dtype=bool)
+            keep_mask[chosen] = True
+        n_keep = int(keep_mask.sum())
+        mode = "first" if sequential else "random"
+        print(f"[subset_bundle_rows] Keeping {n_keep:,} / {n_rows:,} {mode} rows "
+              f"(seed={seed}) from {bundle_path.name}...")
+
+        for name in present_arrays:
+            src_path = extract_dir / name
+            src = np.load(src_path, mmap_mode="r")
+            tmp_path = extract_dir / f"_subset_{name}"
+            chunked_mask_copy(src, tmp_path, keep_mask, chunk_size=chunk_size)
+            del src
+            gc.collect()
+            tmp_path.replace(src_path)
+            print(f"[subset_bundle_rows]   subset {name}")
+
+        print("[subset_bundle_rows] Regenerating stats.txt + feature_bounds.json...")
+        ml_indexer = load_ml_indexer_from_state(str(extract_dir / "ml_indexer"))
+        dataset_name = str(extract_dir) + "/"
+        stats_path = generate_dataset_stats(
+            dataset_name=dataset_name,
+            ml_indexer=ml_indexer,
+            output_dir=extract_dir,
+            chunk_size=chunk_size,
+        )
+        feature_bounds_path = extract_dir / f"{Path(dataset_name).stem}_feature_bounds.json"
+
+        # T0 is a percentile of the (now smaller) nonzero molar-abundance
+        # distribution, so recompute it for the subset rather than shipping the
+        # parent bundle's value.
+        t0_path = extract_dir / "T0.npy"
+        if t0_path.exists() and (extract_dir / "molar_labels.npy").exists():
+            print("[subset_bundle_rows] Regenerating T0.npy...")
+            molar = np.load(extract_dir / "molar_labels.npy", mmap_mode="r")
+            T0 = compute_T0(molar, ml_indexer.mass_phasedict, ml_indexer.all_phases)
+            del molar
+            gc.collect()
+            np.save(t0_path, T0)
+
+        # Repack: trimmed arrays + regenerated stats/feature_bounds/T0 under their
+        # canonical arcnames, plus every other member the original bundle had
+        # (ml_indexer/, a copied processing.yaml, ...) carried through unchanged.
+        handled_top_names = set(present_arrays) | {"stats.txt", "feature_bounds.json", "T0.npy"}
+        with tarfile.open(output_path, "w:gz") as tar:
+            for name in present_arrays:
+                tar.add(extract_dir / name, arcname=name)
+            if stats_path and Path(stats_path).exists():
+                tar.add(stats_path, arcname="stats.txt")
+            if feature_bounds_path.exists():
+                tar.add(feature_bounds_path, arcname="feature_bounds.json")
+            if t0_path.exists():
+                tar.add(t0_path, arcname="T0.npy")
+            indexer_dir = extract_dir / "ml_indexer"
+            if indexer_dir.is_dir():
+                tar.add(indexer_dir, arcname="ml_indexer")
+                handled_top_names.add("ml_indexer")
+            for name in original_names:
+                top_name = Path(name).parts[0] if name else name
+                if top_name in handled_top_names:
+                    continue
+                member_path = extract_dir / name
+                if member_path.exists():
+                    tar.add(member_path, arcname=name)
+
+        verb = "Subset in place:" if in_place else "Wrote"
+        print(f"[subset_bundle_rows] Done. {verb} {output_path}")
+    finally:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+
+    return output_path
 
 
 def _parse_resample_bounds(value):

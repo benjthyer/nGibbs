@@ -46,6 +46,7 @@ for p in (str(SCRIPTS_DIR), str(REPO_ROOT), str(SRC_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from _plot_output import plots_dir  # noqa: E402
 from melts_table_comparison import (  # noqa: E402
     load_table,
     unique_compositions,
@@ -161,7 +162,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--control-dir', required=True, help='Root directory containing BatchNNNN/SimulationN or flat SimulationN subdirectories with control files')
     p.add_argument('--name-reference', default=None, help='Display name for the reference table (default: filename stem)')
     p.add_argument('--name-controls', default=None, help='Display name for the control-file directory (default: directory name)')
-    p.add_argument('--output-dir', required=True, help='Directory to save plots into')
+    p.add_argument('--output-dir', default=None,
+                   help='Directory to save plots into (default: <repo>/plots/melts_table_control_dir_comparison)')
     p.add_argument('--bins', type=int, default=60, help='Number of histogram bins (default: 60)')
     return p
 
@@ -175,7 +177,7 @@ def main() -> None:
         control_dir=control_dir,
         name_table=args.name_reference or table_path.stem,
         name_dir=args.name_controls or control_dir.name,
-        output_dir=args.output_dir,
+        output_dir=args.output_dir or str(plots_dir('melts_table_control_dir_comparison')),
         n_bins=args.bins,
     )
 

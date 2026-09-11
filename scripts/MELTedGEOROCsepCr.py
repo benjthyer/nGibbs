@@ -56,7 +56,7 @@ calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, I
 input_date = 'July9open'
 
 input_ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
-MELTSmodels = ['102']#, '120']#, '102'] # MELTS models to run. To add: MAGEmin
+MELTSmodels = ['120']#, '120']#, '102'] # MELTS models to run. To add: MAGEmin
 FXes = ['Batch']#, 'FxCryst']
 Prange = None # Auto if None, for lithosphere/aesthenospere (p)
 
@@ -66,7 +66,7 @@ total_to_run = int(300) # How many total simulations to run. Now
 
 startTs = [1800, 1800]#, 1800]
 delta = -1
-input_liquid_fractions = [102, 102]#, 100] # Make above 100 to allow for superliquidus
+input_liquid_fractions = [120, 120]#, 100] # Make above 100 to allow for superliquidus
 simcycle = 50 # How many simulations to run per iteration
 
 #storage_directory = f'/mnt/d/Workspace/{MELTSModel}Datasets/'
@@ -77,7 +77,8 @@ simcycle = 50 # How many simulations to run per iteration
 target_rows_train = 50_000_000
 target_rows_valid = 2_000_000 # Change pipeline later to keep all this as test, no 3rd valid split. Existing set is fine
 #batch_file = MELTSModel + 'batch'
-
+target_rows_train = 20
+target_rows_valid = 0
 for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']): 
 
     if MELTSModel == 'p':

@@ -21,10 +21,11 @@ from pathlib import Path
 
 repo_root = Path(__file__).resolve().parents[1]
 src_root = repo_root / 'src'
-for p in (str(repo_root), str(src_root)):
+for p in (str(repo_root), str(src_root), str(Path(__file__).resolve().parent)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from _plot_output import plot_path  # noqa: E402
 from builder.HeFESTo.HeFESTo_functions import plot_bulk_compositions  # noqa: E402
 
 
@@ -42,8 +43,10 @@ def parse_args() -> argparse.Namespace:
         '--out',
         type=Path,
         default=None,
-        help='Save the figure to this path instead of displaying it interactively.',
+        help='Figure output path (default: <repo>/plots/bulk_compositions.png). Pass --show to display instead.',
     )
+    parser.add_argument('--show', action='store_true',
+                        help='Display interactively instead of saving.')
     parser.add_argument(
         '--max-sims',
         type=int,
@@ -55,9 +58,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    out_path = None if args.show else str(args.out or plot_path('bulk_compositions.png'))
     df = plot_bulk_compositions(
         workspace_dir=str(args.workspace_dir),
-        out_path=str(args.out) if args.out is not None else None,
+        out_path=out_path,
         max_sims=args.max_sims,
     )
     print(f'Parsed {len(df)} compositions.')

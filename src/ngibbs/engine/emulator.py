@@ -13,6 +13,10 @@ import pandas as pd
 # Import utility functions
 from ..utils.math_utils import QFM_fO2, Fe2O3_FeO_ratio, QFM_fO2_torch, Normalizer
 from ..config.constants import OXIDE_MOLAR_MASSES as oxide_molar_masses, ptt_longs, ptt_order_oxides, ptt_to_short, ptt_oxide_indexer
+from .mass_balance import MassBalanceProjector
+
+# Mass-balance modes accepted by NN_MELTS(mass_balance=...) / forwardMB(mass_balance=...).
+_MASS_BALANCE_MODES = ('iterative', 'pinv', 'none')
 
 ferric_to_ferrous_ratio =  (2*oxide_molar_masses['FeO'])/oxide_molar_masses['Fe2O3']
 
@@ -30,42 +34,71 @@ class NN_MELTS:
     neural network focused on prediction tasks.
     """
     
-    def __init__(self, model, cuda=False):
+    def __init__(self, model, cuda=False, mass_balance='iterative', *,
+                 massbalance_iters=3, massbalance_tikhonov=1.0e-6,
+                 massbalance_damping=1.0, massbalance_relative=True,
+                 massbalance_weight_floor=1.0e-9):
         """
         Initialize the NN_MELTS emulator.
-        
+
         Parameters
         ----------
-        model : MidLevelNetwork
-            The neural network model with attached ml_indexer
+        model : MidLevelNetwork or ContinuousModel
+            The neural network model with attached ml_indexer. Both architectures emit
+            raw, NON mass-balanced component moles through an identical
+            `forward(detailed=True)` 7-tuple -- this wrapper is the sole owner of the
+            mass-balance correction and never branches on model type.
         cuda : bool, default=False
             Whether to use CUDA/GPU acceleration
+        mass_balance : {'iterative', 'pinv', 'none'}, default='iterative'
+            Default correction applied by `forwardMB` (overridable per call):
+            - 'iterative' : `MassBalanceProjector` (support-restricted, non-negativity
+              clamped, GPU-safe, runs on `self.dev`)
+            - 'pinv'      : one-shot pseudo-inverse `polish_masses` (CPU-only)
+            - 'none'      : no correction; raw heads output straight through
+              (for intercomparing the correctors)
+        massbalance_iters, massbalance_tikhonov, massbalance_damping, massbalance_relative,
+        massbalance_weight_floor
+            `MassBalanceProjector` construction knobs (see that class). `relative=True`
+            gives the weighted (relative) least-norm objective that `polish_masses` also
+            uses, so a low-abundance phase is not corrected by an absolute amount that is
+            relatively enormous.
         """
-        # Validate input
-        if type(model).__name__ != 'MidLevelNetwork':
-            raise TypeError(f"Model must be MidLevelNetwork, got {type(model)}")
+        if type(model).__name__ not in ('MidLevelNetwork', 'ContinuousModel'):
+            raise TypeError(f"Model must be MidLevelNetwork or ContinuousModel, got {type(model)}")
         if not hasattr(model, 'ml_indexer') or model.ml_indexer is None:
             raise ValueError("Model must have an attached ml_indexer")
-        
+        if mass_balance not in _MASS_BALANCE_MODES:
+            raise ValueError(f"mass_balance must be one of {_MASS_BALANCE_MODES}, got {mass_balance!r}")
+
         # Store model and set evaluation mode
         self.model = model.eval()
         self.ml_indexer = model.ml_indexer
-        
+
         # Set device
         self.dev = 'cuda' if cuda else 'cpu'
         if cuda:
             self.model = self.model.cuda()
         else:
             self.model = self.model.cpu()
-        
+
         # Extract and convert indexer attributes to tensors on appropriate device
         self._setup_indexer_tensors()
-        
+
         # Setup normalizer from ml_indexer
         self._setup_normalizer()
-        
+
         # Derive compound matrices
         self.compToEl = self.compToOx @ self.oxToEl
+
+        # Mass balance (see apply_mass_balance). The projector lives on this wrapper, not
+        # the model -- it needs only componentMoles, self.compToEl and the bulk target.
+        self.mass_balance = mass_balance
+        self._projector = MassBalanceProjector(
+            iters=massbalance_iters, tikhonov=massbalance_tikhonov,
+            damping=massbalance_damping, relative=massbalance_relative,
+            weight_floor=massbalance_weight_floor,
+        ).to(self.dev)
 
 
     
@@ -311,177 +344,254 @@ class NN_MELTS:
 
         return componentMoles
 
-    def forwardMB(self, features, Normalize=True, WtPercent=False, comp_table_out='oxides',
-                  optimize_masses=False, protect_opx=False, outputs=None):
+    def _recon_residual(self, componentMoles, norm_features):
+        """L2 norm, per row, of `normalize(componentMoles @ compToEl) - bulk_target` --
+        how far the (already scale-normalised) reconstructed bulk is from the requested
+        composition. Reported by `apply_mass_balance` for every mode so `'none'`,
+        `'iterative'` and `'pinv'` can be compared on the same footing.
         """
-        Forward pass through the model with mass balancing.
+        cm = componentMoles.to(self.dev)
+        compToEl = self.compToEl.to(self.dev)
+        bulk_dir = norm_features[:, self.feature_offset:].to(self.dev)
+        bl = cm @ compToEl
+        recon = bl / bl.sum(dim=1, keepdim=True).clamp(min=1e-6)
+        return (recon - bulk_dir).norm(dim=1).to('cpu')
+
+    def _assemble_component_outputs(self, componentMoles, feats, requested_outputs,
+                                    comp_table_out, wtDelComponentMoles=None):
+        """Build the `{selector: value}` output dict from a (corrected or raw) component-
+        mole tensor. Shared by `polish_masses` (the 'pinv' backend) and
+        `apply_mass_balance`'s 'iterative' / 'none' branches so there is one definition
+        of what each selector means.
+        """
+        requested_outputs = set(requested_outputs)
+        compToOx = self.compToOx.to(componentMoles.device)
+        MM = self.MM.to(componentMoles.device)
+        phaseToCompMap = self.phaseToCompMap.to(componentMoles.device)
+
+        out = {}
+        if 'phase_tables' in requested_outputs:
+            out['phase_tables'] = self.make_phase_tables(
+                componentMoles, compToOx, MM, compPhaseMap=phaseToCompMap.T,
+                features=feats, eps=1e-12, out=comp_table_out,
+            )
+        if 'component_moles' in requested_outputs:
+            out['component_moles'] = componentMoles
+        if 'wt_del_component_moles' in requested_outputs:
+            if wtDelComponentMoles is None:
+                raise KeyError("'wt_del_component_moles' is only available from the 'pinv' "
+                               "mass-balance mode")
+            out['wt_del_component_moles'] = wtDelComponentMoles
+        if requested_outputs & {'phase_moles', 'chem_out', 'phase_present'}:
+            phaseComponentMoles = componentMoles[:, None, :] * phaseToCompMap[None, :, :]  # (B, P, C)
+            phaseMoles = phaseComponentMoles.sum(dim=2)  # (B, P)
+            if 'phase_moles' in requested_outputs:
+                out['phase_moles'] = phaseMoles
+            if 'phase_present' in requested_outputs:
+                out['phase_present'] = (phaseMoles > 0).to(phaseMoles.dtype)
+            if 'chem_out' in requested_outputs:
+                vc = np.array(self.ml_indexer.compositionally_variable_subset).astype(int)
+                out['chem_out'] = (phaseComponentMoles / (phaseMoles[:, :, None] + 1e-12)).sum(dim=1)[:, vc]
+        return out
+
+    def apply_mass_balance(self, phaseMoles, reconBulk, componentMoles, phaseProportions,
+                           norm_features, *, mode=None, optimize_masses=False,
+                           protect_opx=False, comp_table_out='oxides', outputs=None):
+        """Correct raw model component moles onto the requested bulk, by the named method.
+
+        `mode` (default `self.mass_balance`, set at construction):
+        - 'none'      : no correction; assemble outputs from the raw moles.
+        - 'iterative' : `self._projector` (MassBalanceProjector) -- support-restricted,
+          non-negativity clamped, weighted least-norm, runs on `self.dev` (GPU-safe).
+        - 'pinv'      : `self.polish_masses` -- one-shot pseudo-inverse, CPU-only,
+          honours `optimize_masses` / `protect_opx`.
+
+        Returns the same shape as `polish_masses`: a `(compTable, massTable)` tuple when
+        `outputs is None`, else a `{selector: value}` dict. A `'reconstruction_residual'`
+        selector (per-row post-correction L2 residual) is available in every mode.
+        """
+        mode = mode or self.mass_balance
+        if mode not in _MASS_BALANCE_MODES:
+            raise ValueError(f"mode must be one of {_MASS_BALANCE_MODES}, got {mode!r}")
+
+        want_resid = outputs is not None and 'reconstruction_residual' in outputs
+
+        if mode == 'pinv':
+            if outputs is None:
+                return self.polish_masses(
+                    phaseMoles, reconBulk, componentMoles, phaseProportions,
+                    features=norm_features, optimize_masses=optimize_masses,
+                    protect_opx=protect_opx, comp_table_out=comp_table_out, outputs=None)
+            keys = [k for k in outputs if k != 'reconstruction_residual']
+            # residual needs the corrected component moles; request them, drop later.
+            need_cm = want_resid and 'component_moles' not in keys
+            polish_keys = keys + (['component_moles'] if need_cm else [])
+            result = self.polish_masses(
+                phaseMoles, reconBulk, componentMoles, phaseProportions,
+                features=norm_features, optimize_masses=optimize_masses,
+                protect_opx=protect_opx, comp_table_out=comp_table_out,
+                outputs=polish_keys or ['component_moles'])
+            if want_resid:
+                result['reconstruction_residual'] = self._recon_residual(
+                    result['component_moles'], norm_features)
+                if need_cm:
+                    del result['component_moles']
+            return result
+
+        # 'none' / 'iterative' ---------------------------------------------------------
+        # The projector runs on self.dev (GPU-safe: batched linalg.solve); the cheap
+        # phase-table bookkeeping that follows is done on CPU, matching polish_masses
+        # (make_phase_tables' 'oxides' path assumes CPU-side index tensors).
+        if mode == 'iterative':
+            cm = componentMoles.to(self.dev)
+            bulk_dir = norm_features[:, self.feature_offset:].to(self.dev)
+            cm, resid = self._projector(cm, self.compToEl.to(self.dev), bulk_dir)
+        else:  # 'none'
+            cm = componentMoles
+            resid = self._recon_residual(cm, norm_features)
+
+        cm = cm.to('cpu')
+        feats = norm_features.to('cpu')
+        resid = resid.to('cpu')
+
+        if outputs is None:
+            return self.make_phase_tables(
+                cm, self.compToOx.to('cpu'), self.MM.to('cpu'),
+                compPhaseMap=self.phaseToCompMap.to('cpu').T,
+                features=feats, eps=1e-12, out=comp_table_out,
+            )
+
+        requested = set(k for k in outputs if k != 'reconstruction_residual')
+        result = self._assemble_component_outputs(cm, feats, requested, comp_table_out)
+        if want_resid:
+            result['reconstruction_residual'] = resid
+        return result
+
+    def forwardMB(self, features, Normalize=True, WtPercent=False, comp_table_out='oxides',
+                  optimize_masses=False, protect_opx=False, outputs=None, mass_balance=None):
+        """
+        Forward pass through the model, then mass-balance the component moles.
+
+        Both architectures (MidLevelNetwork, ContinuousModel) return raw, NON
+        mass-balanced output through an identical 7-tuple; the correction is applied here
+        by `apply_mass_balance`.
 
         Parameters:
         -----------
         features : torch.Tensor
             Input features
         Normalize : bool, default=True
-            Whether to normalize features. This is not referring to normalizing the composition but rather the entire feature vector. Compositions are enforced to be normalized
+            Whether to normalize the whole feature vector (not the composition, which is
+            always closed).
         WtPercent : bool, default=False
-            Whether input is in weight percent, otherwise mole fraction.
+            Whether composition inputs are weight percent, otherwise mole fraction.
         comp_table_out DEPRECATED: str, default='oxides'
             Output format: 'oxides', 'comps', 'components', or None
-        optimize_masses : bool, default=False
-            Whether to run the linear-algebra mass-balance optimization in polish_masses.
-        protect_opx : bool, default=False
-            Whether to protect orthopyroxene during mass polishing.
-
+        optimize_masses, protect_opx : bool
+            Passed through to `polish_masses`; only used when the effective
+            `mass_balance` mode is 'pinv'.
+        mass_balance : {'iterative', 'pinv', 'none'} or None
+            Overrides `self.mass_balance` for this call. None -> use the default set at
+            construction.
         outputs : sequence[str] or None, default=None
             Optional selector list. Valid values:
-            - 'likelihoods'
-            - 'transcomponent_hat'
+            - 'likelihoods'             raw model presence signal (gate prob for the
+              gated model, phaseMoles>0 for the continuous one), PRE mass balance
+            - 'phase_present'           post-mass-balance phase presence (0/1)
             - 'chem_out'
             - 'phase_tables'
             - 'component_moles'
-            - 'wt_del_component_moles'
             - 'phase_moles'
+            - 'reconstruction_residual' per-row L2 |normalize(recon bulk) - target|
 
         Returns:
         --------
         tuple or dict
-            Default returns (transcomponent_hat, phase_tables) for backward compatibility.
-            If outputs is provided, returns a dict containing only requested keys.
+            outputs is None -> (compTable, massTable). Otherwise a dict of requested keys.
         """
         _VALID_MB_OUTPUTS = {
-            'likelihoods', 'transcomponent_hat', 'chem_out', 'phase_tables',
-            'component_moles', 'wt_del_component_moles', 'phase_moles',
+            'likelihoods', 'phase_present', 'chem_out', 'phase_tables',
+            'component_moles', 'phase_moles', 'reconstruction_residual',
         }
         if Normalize:
             norm_features = self.norm_features.norm(self.convertOxToMol(features, convert=WtPercent))
         else:
             norm_features = self.convertOxToMol(features, convert=WtPercent)
         with torch.no_grad():
-            likelihoods, chem_out, logMoles, reconBulk, componentMoles, phaseProportions, phaseMoles = self.model.forward(
-                norm_features, detailed=True
-            )
+            likelihoods, chem_out, logMoles, reconBulk, componentMoles, phaseProportions, phaseMoles = \
+                self.model.forward(norm_features, detailed=True)
 
-            requested_outputs = None
-            if outputs is not None:
-                requested_outputs = []
-                for key in outputs:
-                    if key not in _VALID_MB_OUTPUTS:
-                        raise KeyError(
-                            f"Unknown forwardMB output selector '{key}'. "
-                            f"Valid selectors are: {', '.join(sorted(_VALID_MB_OUTPUTS))}"
-                        )
-                    if key not in requested_outputs:
-                        requested_outputs.append(key)
-            else:
-                requested_outputs = ['phase_tables']
-
-            need_likelihoods = 'likelihoods' in requested_outputs
-            polish_requested = [k for k in requested_outputs if k != 'likelihoods']
-            if not polish_requested:
-                polish_requested = ['phase_tables']
-
-            polish_result = self.polish_masses(
-                phaseMoles,
-                reconBulk,
-                componentMoles,
-                phaseProportions,
-                features=norm_features,
-                optimize_masses=optimize_masses,
-                protect_opx=protect_opx,
-                comp_table_out=comp_table_out,
-                output_componentMoles=False,
-                outputs=polish_requested
-            )
+            mb_kwargs = dict(mode=mass_balance, optimize_masses=optimize_masses,
+                             protect_opx=protect_opx, comp_table_out=comp_table_out)
 
             if outputs is None:
-                transcomponent_hat, mass_tens = polish_result  # compTable and massTable
-                return transcomponent_hat, mass_tens
+                return self.apply_mass_balance(
+                    phaseMoles, reconBulk, componentMoles, phaseProportions,
+                    norm_features, outputs=None, **mb_kwargs)
 
-            if need_likelihoods:
-                polish_result['likelihoods'] = likelihoods.detach()
+            requested = []
+            for key in outputs:
+                if key not in _VALID_MB_OUTPUTS:
+                    raise KeyError(
+                        f"Unknown forwardMB output selector '{key}'. "
+                        f"Valid selectors are: {', '.join(sorted(_VALID_MB_OUTPUTS))}"
+                    )
+                if key not in requested:
+                    requested.append(key)
 
-            return polish_result
+            # 'likelihoods' is the raw pre-correction model signal -- everything else
+            # comes from apply_mass_balance. Ask it for at least one thing so it runs.
+            mb_outputs = [k for k in requested if k != 'likelihoods'] or ['phase_tables']
+            result = self.apply_mass_balance(
+                phaseMoles, reconBulk, componentMoles, phaseProportions,
+                norm_features, outputs=mb_outputs, **mb_kwargs)
+
+            if 'likelihoods' in requested:
+                result['likelihoods'] = likelihoods.detach()
+            return {k: v for k, v in result.items() if k in requested}
 
 
     def forwardNN(self, features, Normalize=True, WtPercent=False, outputs=None):
         """
-        Forward pass through the model only, no mass balancing.
-        
+        Forward pass with NO mass balancing -- identical to
+        `forwardMB(..., mass_balance='none')`, kept as a named entry point.
+
         Parameters:
         -----------
         features : torch.Tensor
             Input features
         Normalize : bool, default=True
-            Whether to normalize features
-        WtPercent : bool, default=True
-            Whether input is in weight percent, otherwise mole fraction. 
-
-            
-        outputs : sequence[str] or None, default=None
-            Optional selector list. Valid values:
-            - 'transcomponent_hat'
-            - 'chem_out'
-            - 'phase_tables'
-            - 'component_moles'
-            - 'wt_del_component_moles'
-            - 'phase_moles'
+            Whether to normalize the whole feature vector
+        WtPercent : bool, default=False
+            Whether composition inputs are weight percent, otherwise mole fraction
+        outputs : sequence[str]
+            Required. Valid: 'chem_out', 'component_moles', 'phase_moles',
+            'phase_tables', 'phase_present'.
 
         Returns:
         --------
-        tuple or dict
-            Default returns (transcomponent_hat, phase_tables) for backward compatibility.
-            If outputs is provided, returns a dict containing only requested keys.
+        dict
+            The requested keys only.
         """
+        _VALID = {'chem_out', 'component_moles', 'phase_moles', 'phase_tables', 'phase_present'}
+        if outputs is None:
+            raise ValueError("Outputs must be specified for forwardNN. Valid selectors: "
+                             f"{', '.join(sorted(_VALID))}")
+        bad = [k for k in outputs if k not in _VALID]
+        if bad:
+            raise KeyError(f"Unknown forwardNN output selector(s) {bad}. "
+                           f"Valid selectors: {', '.join(sorted(_VALID))}")
+
         if Normalize:
             norm_features = self.norm_features.norm(self.convertOxToMol(features, convert=WtPercent))
         else:
             norm_features = self.convertOxToMol(features, convert=WtPercent)
         with torch.no_grad():
-            likelihoods, chem_out, logMoles, reconBulk, componentMoles, phaseProportions, phaseMoles = self.model.forward(
-                norm_features, detailed=True
-            )
-
-
-            
-            requested_outputs = None
-            if outputs is not None:
-                requested_outputs = []
-                for key in outputs:
-                    if key not in ['chem_out', 'component_moles',  'phase_moles', 'transcomponent_hat', 'phase_tables', ]:
-                        raise KeyError(
-                            f"Unknown forwardMB output selector '{key}'. "
-                            "Valid selectors are: transcomponent_hat, chem_out, phase_tables, "
-                            "component_moles, wt_del_component_moles, phase_moles"
-                        )
-                    if key not in requested_outputs:
-                        requested_outputs.append(key)
-            else:
-                raise ValueError("Outputs must be specified for forwardNN since it does not perform mass balancing. Valid outputs are: chem_out, component_moles, phase_moles")
-
-         
-                
-            out = {}
-            if 'phase_tables' in requested_outputs:
-                out['phase_tables'] = self.make_phase_tables(
-                    componentMoles,
-                    torch.tensor(self.ml_indexer.compToOx, dtype=torch.float32, device=self.dev),
-                    torch.tensor(self.ml_indexer.MM, dtype=torch.float32, device=self.dev),
-                    compPhaseMap=torch.tensor(self.ml_indexer.phaseToCompMap.T, dtype=torch.float32, device=self.dev),
-                    features=features,
-                    eps=1e-12
-                )
-            if 'component_moles' in requested_outputs:
-                out['component_moles'] = componentMoles
-
-            if ('phase_moles' in requested_outputs) or ('chem_out' in requested_outputs): # Recompute refined chem_out after mass adjustments
-                phaseComponentMoles = componentMoles[:, None, :] * torch.tensor(self.ml_indexer.phaseToCompMap, dtype=torch.float32, device=self.dev)[None, :, :]  # (B, P, C)
-                phaseMoles = phaseComponentMoles.sum(dim=2)  # (B, P)
-                if 'phase_moles' in requested_outputs:
-                    out['phase_moles'] = phaseMoles
-                if 'chem_out' in requested_outputs:
-                    chem_out = (phaseComponentMoles / (phaseMoles[:, :, None] + 1e-12)).sum(dim=1)[:, np.array(self.ml_indexer.compositionally_variable_subset).astype(int)]  # (B, VC)
-                    out['chem_out'] = chem_out
-
-            return out
+            _lik, _chem, _lm, reconBulk, componentMoles, phaseProportions, phaseMoles = \
+                self.model.forward(norm_features, detailed=True)
+            return self.apply_mass_balance(
+                phaseMoles, reconBulk, componentMoles, phaseProportions, norm_features,
+                mode='none', outputs=list(outputs))
 
     def Iron_Speciator(self, oxides, Normedfeatures=None, P=None, T=None, fO2=None):
         """
@@ -1004,55 +1114,26 @@ class NN_MELTS:
         DelComponentMoles = wtDelComponentMoles * componentMoles
         componentMoles = componentMoles + DelComponentMoles
 
-        requested_outputs = None
+        _VALID = {'phase_tables', 'component_moles', 'wt_del_component_moles',
+                  'phase_moles', 'chem_out', 'phase_present'}
         if outputs is not None:
-            requested_outputs = []
-            for key in outputs:
-                if key not in ['phase_tables', 'component_moles', 'wt_del_component_moles', 'phase_moles', 'chem_out']:
-                    # print(outputs)
-                    raise KeyError(
-                        f"Unknown polish_masses output selector '{key}'. "
-                        "Valid selectors are: phase_tables, component_moles, wt_del_component_moles, phase_moles, chem_out"
-                    )
-                if key not in requested_outputs:
-                    requested_outputs.append(key)
+            bad = [k for k in outputs if k not in _VALID]
+            if bad:
+                raise KeyError(f"Unknown polish_masses output selector(s) {bad}. "
+                               f"Valid selectors are: {', '.join(sorted(_VALID))}")
 
         if outputs is None:
+            phase_tables = self.make_phase_tables(componentMoles, compToOx, MM,
+                                                  compPhaseMap=phaseToCompMap.T,
+                                                  features=feats, eps=1e-12, out=comp_table_out)
             if output_componentMoles:
-                return (
-                    self.make_phase_tables(componentMoles, compToOx, MM, compPhaseMap=phaseToCompMap.T,
-                                          features=feats, eps=1e-12, out=comp_table_out),
-                    componentMoles,
-                    wtDelComponentMoles
-                )
-            else:
-                return self.make_phase_tables(componentMoles, compToOx, MM, compPhaseMap=phaseToCompMap.T,
-                                             features=feats, eps=1e-12, out=comp_table_out)
+                return phase_tables, componentMoles, wtDelComponentMoles
+            return phase_tables
 
-        out = {}
-        if 'phase_tables' in requested_outputs:
-            out['phase_tables'] = self.make_phase_tables(
-                componentMoles,
-                compToOx,
-                MM,
-                compPhaseMap=phaseToCompMap.T,
-                features=feats,
-                eps=1e-12,
-                out=comp_table_out,
-            )
-        if 'component_moles' in requested_outputs:
-            out['component_moles'] = componentMoles
-        if 'wt_del_component_moles' in requested_outputs:
-            out['wt_del_component_moles'] = wtDelComponentMoles
-        if ('phase_moles' in requested_outputs) or ('chem_out' in requested_outputs): # Recompute refined chem_out after mass adjustments
-            phaseComponentMoles = componentMoles[:, None, :] * phaseToCompMap[None, :, :]  # (B, P, C)
-            phaseMoles = phaseComponentMoles.sum(dim=2)  # (B, P)
-            if 'phase_moles' in requested_outputs:
-                out['phase_moles'] = phaseMoles
-            if 'chem_out' in requested_outputs:
-                chem_out = (phaseComponentMoles / (phaseMoles[:, :, None] + 1e-12)).sum(dim=1)[:, np.array(self.ml_indexer.compositionally_variable_subset).astype(int)]  # (B, VC)
-                out['chem_out'] = chem_out
-        return out
+        return self._assemble_component_outputs(
+            componentMoles, feats, set(outputs), comp_table_out,
+            wtDelComponentMoles=wtDelComponentMoles,
+        )
 
     def find_liquidus(self, features, resolution=25):
         if 'melts-liquid' not in self.ml_indexer.label_indices_comp:
@@ -1123,11 +1204,10 @@ class NN_MELTS:
 
         return liquidus_temperatures
 
-
     def fractional_crystalization(self, features, T_path, fit_residual=True, WtPercent=True):
         """
         Perform fractional crystallization simulation.
-        
+
         Parameters:
         -----------
         features : torch.Tensor
@@ -1146,7 +1226,7 @@ class NN_MELTS:
         tuple
             (component_tensor, mass_tensor) - Component and mass evolution over T_path
         """
-        
+
         if 'melts-liquid' not in self.ml_indexer.label_indices_comp:
             raise ValueError("Model does not include a liquid phase, cannot perform fractional crystallization.")
         
@@ -1257,7 +1337,6 @@ class NN_MELTS:
                     outs[i] = torch.cat((outs[i], batch_outs[i]), dim=0)
 
             return outs
-
 
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import inspect
 from typing import Dict, NamedTuple, Optional
 
 import torch
@@ -24,7 +25,34 @@ if src_path not in sys.path:
 
 from ngibbs.utils.string_utils import pull_number_range
 from builder.training.optimizer_factory import create_optimizer, create_scheduler, SchedulerWrapper
+from builder.training.benchmark import ThroughputBenchmark
+from ngibbs.config import constants
 import ngibbs.engine.NN as NN
+
+# Mixed precision: constants.TRAIN_PRECISION selects the autocast dtype. See that
+# constant's docstring in constants.py for the float32/bfloat16/float16 tradeoffs.
+_PRECISION_DTYPES = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}
+
+
+def _resolve_precision(device: str):
+    """(amp_dtype, use_amp), read fresh from constants.TRAIN_PRECISION on every call --
+    not bound at import time -- so flipping the constant takes effect on the next
+    training run without reloading this module. Mixed precision only ever runs on
+    cuda: float16 autocast on CPU is not well supported, and bfloat16 on CPU gets none
+    of the tensor-core speedup it exists for here, so a non-cuda device always trains
+    in float32 regardless of the setting (with a one-line notice, not a silent no-op)."""
+    name = getattr(constants, 'TRAIN_PRECISION', 'float32')
+    if name not in _PRECISION_DTYPES:
+        print(f"constants.TRAIN_PRECISION={name!r} is not one of {list(_PRECISION_DTYPES)} -- "
+              f"continuing in float32. (Check for a typo, e.g. 'bfloat32' is not a real dtype.)")
+        return torch.float32, False
+    dtype = _PRECISION_DTYPES[name]
+    use_amp = dtype != torch.float32 and device == 'cuda' and torch.cuda.is_available()
+    if dtype != torch.float32 and not use_amp:
+        print(f"constants.TRAIN_PRECISION={name!r} requested but device={device!r} -- "
+              f"mixed precision only runs on cuda. Continuing in float32.")
+        dtype = torch.float32
+    return dtype, use_amp
 
 # Set up temp models directory
 TEMP_MODELS_DIR = Path(__file__).parent / "temp_models"
@@ -109,20 +137,94 @@ class UpperBatch(NamedTuple):
     mole: torch.Tensor
     bulk: torch.Tensor
     mole_mask: Optional[torch.Tensor]   # None -> derive from ground-truth binaries
+    sat_weight: Optional[torch.Tensor] = None  # None -> uniform (see ContinuousModel.upper_forward's `T`)
+    g_phi: Optional[torch.Tensor] = None  # None for a model with no such concept (e.g. MidLevelNetwork)
 
 
-def _upper_forward(model, x_batch, b_batch) -> UpperBatch:
+def _upper_forward(model, x_batch, b_batch, T=None) -> UpperBatch:
     fn = getattr(model, 'upper_forward', None)
     if fn is None:
         logits, chem, chem_mask, mole, bulk = model(x_batch, binaries=b_batch, NN_only=True)
         return UpperBatch(logits, chem, chem_mask, mole, bulk, None)
 
-    out = fn(x_batch, binaries=b_batch)
+    # T (annealed complementarity-smoothing temperature) is a ContinuousModel-specific
+    # concept; only pass it to models that actually declare support for it, so a plain
+    # MidLevelNetwork's upper_forward (if one is ever added) isn't forced to accept an
+    # argument it has no use for.
+    kwargs = {'binaries': b_batch}
+    if T is not None and 'T' in inspect.signature(fn).parameters:
+        kwargs['T'] = T
+    out = fn(x_batch, **kwargs)
     missing = {'chem', 'chem_mask', 'mole', 'bulk'} - set(out)
     if missing:
         raise KeyError(f"{type(model).__name__}.upper_forward() omitted {sorted(missing)}")
     return UpperBatch(out.get('logits'), out['chem'], out['chem_mask'],
-                      out['mole'], out['bulk'], out.get('mole_mask'))
+                      out['mole'], out['bulk'], out.get('mole_mask'), out.get('sat_weight'),
+                      out.get('g_phi'))
+
+
+def make_horizontal_bar(percent, max_width=50):
+    """Create horizontal bar: '19.75% ||||||||||||'"""
+    n_bars = int(round(percent / 100.0 * max_width))
+    return '|' * n_bars
+
+
+def _print_histogram(values, title, n_bins=20, max_width=40):
+    """Percentile-clipped (2nd-98th) histogram of a flat 1D array, one row per bin,
+    rendered with `make_horizontal_bar`. A diagnostic, not a correctness check -- an
+    empty/degenerate input prints a note rather than raising."""
+    values = values.detach().cpu().numpy() if torch.is_tensor(values) else np.asarray(values)
+    values = values[np.isfinite(values)]
+    print(f"\n[{title}] n={values.size:,}")
+    if values.size == 0:
+        print("  (no data)")
+        return
+    lo, hi = np.percentile(values, [2, 98])
+    if hi <= lo:
+        print(f"  (degenerate range: [{lo:.3g}, {hi:.3g}])")
+        return
+    edges = np.linspace(lo, hi, n_bins + 1)
+    counts, _ = np.histogram(values, bins=edges)
+    total = counts.sum()
+    for i in range(n_bins):
+        pct = 100.0 * counts[i] / total if total else 0.0
+        bar = make_horizontal_bar(pct, max_width=max_width)
+        print(f"  [{edges[i]:>10.3g}, {edges[i+1]:>10.3g})  {pct:5.2f}% {bar}")
+
+
+def _anneal_a(epoch, epochs, a_start=1.0, a_end=1e-4):
+    """Linear schedule for the complementarity-smoothing scale factor `a` (`T = a*T0`),
+    from `a_start` at epoch 0 to `a_end` at this episode's last epoch. Per-episode, not
+    global across the whole main.py run: each episode that enables `boundary_temperature`
+    starts its own schedule fresh, the same way every other per-episode config (epochs,
+    scheduler, loss weights) already works."""
+    if epochs <= 1:
+        return float(a_end)
+    frac = min(max(epoch, 0), epochs - 1) / (epochs - 1)
+    return float(a_start + (a_end - a_start) * frac)
+
+
+def _boundary_T(ml_indexer, a, device, dtype=torch.float32, floor_frac=1e-6):
+    """Build this epoch's `(1, P)` annealed temperature tensor `T = a*T0`.
+
+    Floors `T0` itself (not just the product) at a tiny fraction of its own nonzero
+    median, so a phase this dataset never saw present (`T0=0`, see `compute_T0`)
+    doesn't produce `T=0` -> division by zero in `upper_forward`. It just gets an
+    extremely sharp, near-hard-clamp `T`, which plays no meaningful smoothing role for
+    a phase that's absent everywhere in the data anyway.
+    """
+    T0 = getattr(ml_indexer, 'T0', None)
+    if T0 is None:
+        raise ValueError(
+            "boundary_temperature is enabled but ml_indexer.T0 is missing -- re-export "
+            "this bundle (MLexporter.py computes T0 automatically) or backfill it with "
+            "scripts/compute_T0.py.")
+    T0 = np.asarray(T0, dtype=np.float64)
+    nonzero = T0[T0 > 0]
+    floor = float(nonzero.min()) * floor_frac if nonzero.size else 1e-8
+    T0_safe = np.maximum(T0, floor)
+    T = a * T0_safe
+    return torch.as_tensor(T, dtype=dtype, device=device).reshape(1, -1)
 
 
 def _mole_targets(model, m_batch):
@@ -171,8 +273,21 @@ def _upper_loss(model, out: UpperBatch, x_batch, b_batch, y_batch, m_batch, feat
     """Single definition of the upper objective, shared by the training step and the
     evaluation pass. These were two copies of the same twenty lines; a change to one that
     missed the other would silently score models against a different loss than it trained
-    them on."""
-    loss_sat = (criterion_sat(out.logits, b_batch) if out.logits is not None
+    them on.
+
+    `binWeights` (a recipe's `binweights:` block -- upweighting rare phases the mole
+    regression under-serves) now also scales the binary/saturation term via
+    `_weighted_binary_loss_gt_positive_only`, not just `mole_loss` below: `criterion_sat`
+    is no longer called directly (it was always `nn.BCEWithLogitsLoss()` in practice --
+    no call site overrides it -- and that helper already IS that loss, phase-weighted).
+    Weighting only the GT-positive term, not GT-negative, is deliberate and matches how
+    `_evaluate_binary_model` already weights the lower-stage sat_head loss elsewhere: a
+    rare phase's positive examples are the ones actually starved of gradient, and
+    upweighting its (already numerous) negatives too would just rescale the loss without
+    changing what the network is pushed toward."""
+    loss_sat = (_weighted_binary_loss_gt_positive_only(out.logits, b_batch, binWeights,
+                                                       extra_weight=out.sat_weight)
+                if out.logits is not None
                 else torch.zeros((), device=x_batch.device, dtype=x_batch.dtype))
 
     bulk_target = x_batch[:, feature_offset:]
@@ -199,10 +314,23 @@ def _weighted_binary_loss_gt_positive_only(
     logits: torch.Tensor,
     targets: torch.Tensor,
     bin_weights: torch.Tensor,
+    extra_weight: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """Apply phase weights only where GT phase is present; GT-absent terms stay unweighted."""
+    """Apply phase weights only where GT phase is present; GT-absent terms stay unweighted.
+
+    `extra_weight`, when given, multiplies in on top of `bin_weights` for every entry
+    regardless of GT sign -- unlike `bin_weights` it isn't a static per-phase constant,
+    it's per-(sample, phase) (e.g. ContinuousModel's `|tanh(g_phi/T)|` confidence
+    weight, see `upper_forward`). The weighted-mean normalisation (divide by the sum of
+    weights, not the raw count) means a down-weighted entry shrinks its own
+    contribution rather than shrinking the whole batch's effective denominator -- so a
+    boundary-adjacent sample that's mostly excluded doesn't silently make the reported
+    loss look smaller than the decisive samples actually warrant.
+    """
     loss_raw = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
     effective_weights = targets * bin_weights + (1.0 - targets)
+    if extra_weight is not None:
+        effective_weights = effective_weights * extra_weight
     return (loss_raw * effective_weights).sum() / effective_weights.sum().clamp(min=1.0)
 
 
@@ -241,7 +369,7 @@ def _evaluate_binary_model(model, test_loader, binWeights, device, max_N=np.inf)
 
 def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, criterion_chem, criterion_mole,
                            criterion_bulk, compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
-                           device, max_N=np.inf):
+                           device, max_N=np.inf, T=None, amp_dtype=torch.float32, use_amp=False):
     model.eval()
     running_test_loss = 0.0
     running_sat_loss = 0
@@ -250,16 +378,25 @@ def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, cri
     running_bulk_loss = 0
     N = 0
     out = None
+    g_phi_chunks = []
+    residual_chunks = []
+    T0 = getattr(getattr(model, 'ml_indexer', None), 'T0', None)
     with torch.no_grad():
-        for batch_idx, (x_batch, b_batch, y_batch, m_batch) in enumerate(test_loader):
+        for batch_idx, batch in enumerate(test_loader):
+            # testData may carry trailing derivative arrays (dn/dP, dn/dT) when some other
+            # episode in the recipe wants them -- main.py loads the dataset once for every
+            # episode, so a non-derivative trainer like this one must ignore those extras
+            # rather than assume a fixed 4-tuple.
+            x_batch, b_batch, y_batch, m_batch = batch[0], batch[1], batch[2], batch[3]
             x_batch, b_batch, y_batch, m_batch = x_batch.to(device, non_blocking=True), b_batch.to(device, non_blocking=True), y_batch.to(device, non_blocking=True), m_batch.to(device, non_blocking=True)
-            out = _upper_forward(model, x_batch, b_batch)
+            with torch.autocast(device_type='cuda', dtype=amp_dtype, enabled=use_amp):
+                out = _upper_forward(model, x_batch, b_batch, T=T)
 
-            loss, loss_sat, chem_loss_masked, mole_loss_masked, bulk_loss_masked = _upper_loss(
-                model, out, x_batch, b_batch, y_batch, m_batch, feature_offset,
-                criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
-                compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
-            )
+                loss, loss_sat, chem_loss_masked, mole_loss_masked, bulk_loss_masked = _upper_loss(
+                    model, out, x_batch, b_batch, y_batch, m_batch, feature_offset,
+                    criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
+                    compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
+                )
 
             batch_size_curr = x_batch.size(0)
             running_sat_loss += loss_sat.item() * batch_size_curr
@@ -269,6 +406,29 @@ def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, cri
 
             running_test_loss += loss.item() * batch_size_curr
             N += batch_size_curr
+
+            if out.g_phi is not None:
+                # Normalize by T0 (per phase) before pooling across phases -- T0 spans
+                # ~3 orders of magnitude across phases in a typical dataset (e.g. iron
+                # polymorphs ~1e-5 vs. a dominant phase ~0.06), so a raw, un-normalized
+                # g_phi pooled across all of them answers an ill-posed question: the
+                # same absolute g_phi is deeply decisive for a small-T0 phase and barely
+                # past the boundary for a large-T0 one. g_phi/T0 puts every phase on the
+                # same boundary-relative scale, matching how this is actually read.
+                if T0 is not None:
+                    T0_norm = torch.as_tensor(T0, dtype=out.g_phi.dtype,
+                                              device=out.g_phi.device).reshape(1, -1).clamp(min=1e-30)
+                    g_phi_chunks.append((out.g_phi / T0_norm).detach().to('cpu', torch.float32))
+                else:
+                    g_phi_chunks.append(out.g_phi.detach().to('cpu', torch.float32))
+            if out.g_phi is not None and T0 is not None:
+                gt = _mole_targets(model, m_batch)
+                T0_t = torch.as_tensor(T0, dtype=gt.dtype, device=gt.device).reshape(1, -1)
+                near_boundary = (gt > 0) & (gt <= 2.0 * T0_t)
+                if near_boundary.any():
+                    resid = (gt - out.mole) / T0_t.clamp(min=1e-30)
+                    residual_chunks.append(resid[near_boundary].detach().to('cpu', torch.float32))
+
             if N > max_N:
                 break
 
@@ -276,6 +436,21 @@ def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, cri
     sat_str = 'n/a (no saturation head)' if (out is None or out.logits is None) else f'{running_sat_loss/N:.3e}'
     print(f"[TEST] Running Saturation Loss: {sat_str}\tRunning Chem Loss: {running_chem_loss/N:.3e}")
     print(f"[TEST] Running Molar Loss: {running_mole_loss/N:.3e}\tRunning Bulk Loss: {running_bulk_loss/N:.3e}")
+
+    # Boundary-behavior diagnostics -- always shown when the model exposes g_phi
+    # (ContinuousModel does, regardless of whether boundary_temperature annealing is
+    # actually enabled this episode), since "is the network confidently separating
+    # present/absent" is useful to watch either way.
+    if g_phi_chunks:
+        title = "g_phi / T0 (2nd-98th pct)" if T0 is not None else "g_phi, RAW -- no T0, not comparable across phases (2nd-98th pct)"
+        _print_histogram(torch.cat(g_phi_chunks).flatten(), title)
+    if residual_chunks:
+        _print_histogram(torch.cat(residual_chunks).flatten(),
+                         "(GT - pred) / T0, GT in (0, 2*T0] (2nd-98th pct)")
+    elif g_phi_chunks and T0 is None:
+        print("\n[boundary residual] skipped: ml_indexer.T0 not available "
+              "(re-export the bundle or run scripts/compute_T0.py)")
+
     return avg_test_loss
 
 
@@ -474,13 +649,19 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
 
 
-def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = {}, criterion = symmetric_rel_l2, criterion_sat = nn.BCEWithLogitsLoss(), 
+def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = {}, criterion = symmetric_rel_l2, criterion_sat = nn.BCEWithLogitsLoss(),
                       chem_alpha = 1, mole_alpha = 1, bulk_alpha = 0, sat_alpha = 1, Epochs = 20, batch_size = 1024, lr = 1e-4,
-                      binWeights = torch.ones(1), compWeights = torch.ones(1), 
+                      binWeights = torch.ones(1), compWeights = torch.ones(1),
                       device = 'cuda', max_N = np.inf, early_stopping_patience = 5, which_heads_to_freeze = ['sat_head', 'encoder'], DictFilePath = None,
                       dropout_step_up = 0.05, dropout_step_down = 0.02,
                       noise_step_up = 0.002, noise_step_down = 0.001,
+                      boundary_temperature = None,
                       config_yaml = None, training_yaml = None, processing_yaml = None, stats = None, log_path = None, amsgrad=True, eps = 1E-4):
+    """`boundary_temperature`: None (default, current behavior) or a dict
+    `{a_start, a_end}` -- see `_anneal_a`/`_boundary_T`. Only meaningful for a model
+    whose `upper_forward` accepts `T` (ContinuousModel); `_upper_forward` no-ops it for
+    any other model, so passing this against e.g. MidLevelNetwork is harmless, not an
+    error."""
     # iF which_heads_to_freeze is [], then this is a full model trainer!
     # Currently does not handle limited VC training!! Need to adjust model to make bulk output optional, then not use it in this loop
     """model = NN.MidLevelNetwork(**Model.config)#.to(Model.device) # Copy the old model, so no overwriting. 
@@ -534,12 +715,38 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     criterion_mole = criterion
     criterion_bulk = criterion
 
+    # --- Boundary-temperature annealing (see NN_continuous.py's upper_forward) ---
+    if boundary_temperature:
+        a_start = float(boundary_temperature.get('a_start', 1.0))
+        a_end = float(boundary_temperature.get('a_end', 1e-4))
+        print(f"[boundary_temperature] enabled: a {a_start:.3e} -> {a_end:.3e} over {Epochs} epochs")
+    else:
+        a_start = a_end = None
+
+    def _epoch_T(epoch_idx):
+        if a_start is None:
+            return None
+        a = _anneal_a(epoch_idx, Epochs, a_start, a_end)
+        return _boundary_T(model.ml_indexer, a, device)
+
+    # --- Mixed precision (see constants.TRAIN_PRECISION docstring for the tradeoffs) ---
+    amp_dtype, use_amp = _resolve_precision(device)
+    # GradScaler is only needed for float16 (limited exponent range risks over/underflow
+    # in fp16 gradients); bfloat16 shares float32's exponent range so has nothing for a
+    # scaler to protect against, and `enabled=False` makes every GradScaler method below
+    # a plain passthrough, so this one object covers all three precisions unconditionally.
+    scaler = torch.amp.GradScaler(device='cuda', enabled=(use_amp and amp_dtype is torch.float16))
+    if use_amp:
+        print(f"[precision] autocast dtype={amp_dtype}, GradScaler={'on' if scaler.is_enabled() else 'off'} "
+              f"(set constants.TRAIN_PRECISION='float32' in ngibbs/config/constants.py to disable)")
+
     # --- Baseline: evaluate the incoming (pre-training) model first, so a training run that
     # never beats its own starting point cannot overwrite a superior saved checkpoint. ---
     print("Evaluating baseline (pre-training) model on validation set...")
     baseline_test_loss = _evaluate_upper_model(
         model, test_loader, feature_offset, criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
         compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha, device, max_N,
+        T=_epoch_T(0), amp_dtype=amp_dtype, use_amp=use_amp,
     )
     print(f"Baseline Test Loss: {baseline_test_loss:.5f}")
 
@@ -549,6 +756,7 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
     train_losses, test_losses = [], []
     early_stopping_counter = 0
+    bench = ThroughputBenchmark()  # one training-speed/inference-speed record, after epoch 5
 
     # --- Train for specified epochs ---
     for epoch in range(Epochs):
@@ -561,12 +769,26 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         running_bulk_loss = 0
         N=0
         out = None
-        for batch_idx, (x_batch, b_batch, y_batch, m_batch) in enumerate(tqdm(train_loader, desc="Training", leave=False)):
+        epoch_T = _epoch_T(epoch)
+        for batch_idx, batch in enumerate(tqdm(train_loader, desc="Training", leave=False)):
+            # See _evaluate_upper_model: trainData can likewise carry trailing derivative
+            # arrays this non-derivative episode doesn't use.
+            x_batch, b_batch, y_batch, m_batch = batch[0], batch[1], batch[2], batch[3]
+
+            # Benchmark: only synchronizes/times during the one target epoch (see
+            # benchmark.ThroughputBenchmark) -- torch.cuda.synchronize() forces a GPU
+            # pipeline drain, so doing this every batch of every epoch would itself slow
+            # training down; guarding it to a single epoch keeps that cost bounded.
+            _bench_timing = bench.should_time(epoch)
+            if _bench_timing:
+                if device == 'cuda' and torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                _bench_t0 = time.perf_counter()
 
             optimizer.zero_grad()
 
             x_batch, b_batch, y_batch, m_batch = x_batch.to(device, non_blocking=True), b_batch.to(device, non_blocking=True), y_batch.to(device, non_blocking=True), m_batch.to(device, non_blocking=True)
-            
+
             # NOTE: the bulk mask is now built inside _upper_loss from the *post-noise*
             # x_batch, identically to the evaluation path. Previously training built it
             # from the pre-noise batch over the full feature vector and evaluation built
@@ -574,13 +796,14 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
             # cannot turn a zero non-zero), so this is a de-duplication, not a change.
             if noise != 0:
                 x_batch = x_batch + (x_batch * torch.randn_like(x_batch) * noise)
-            out = _upper_forward(model, x_batch, b_batch)
+            with torch.autocast(device_type='cuda', dtype=amp_dtype, enabled=use_amp):
+                out = _upper_forward(model, x_batch, b_batch, T=epoch_T)
 
-            loss, loss_sat, chem_loss_masked, mole_loss_masked, bulk_loss_masked = _upper_loss(
-                model, out, x_batch, b_batch, y_batch, m_batch, feature_offset,
-                criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
-                compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
-            )
+                loss, loss_sat, chem_loss_masked, mole_loss_masked, bulk_loss_masked = _upper_loss(
+                    model, out, x_batch, b_batch, y_batch, m_batch, feature_offset,
+                    criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
+                    compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
+                )
 
             batch_size_curr = x_batch.size(0)
             running_sat_loss += loss_sat.item() * batch_size_curr
@@ -597,10 +820,32 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                 #raise ValueError("Non-finite loss, stopping training.")
                 continue
 
-            loss.backward()
+            # scaler.scale/.step/.update are plain passthroughs to loss.backward()/
+            # optimizer.step() when the scaler is disabled (float32 and bfloat16 both
+            # disable it -- see its construction above), so this one path covers all
+            # three precisions without a branch here.
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
-
-            optimizer.step()
+            if _bench_timing:
+                if device == 'cuda' and torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                bench.tick(epoch, batch_size_curr, time.perf_counter() - _bench_t0)
+                if bench.ready:
+                    bench.finalize(
+                        model=model, infer_batches=test_loader, batch_size=batch_size, device=device,
+                        episode_label=Path(DictFilePath).stem if DictFilePath else 'unknown',
+                        training_config=dict(
+                            batch_size=batch_size, lr=lr, chem_alpha=chem_alpha, mole_alpha=mole_alpha,
+                            bulk_alpha=bulk_alpha, sat_alpha=sat_alpha, bulk_enabled=bool(bulk_alpha),
+                            derivatives_enabled=False,
+                            boundary_temperature_enabled=bool(boundary_temperature),
+                            which_heads_to_freeze=list(which_heads_to_freeze),
+                            precision=str(amp_dtype).replace('torch.', ''),
+                        ),
+                        amp_dtype=amp_dtype, use_amp=use_amp,
+                    )
 
             running_train_loss += loss.item() * batch_size_curr
 
@@ -644,9 +889,12 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         print(lr_eff.item())"""
 
         # ---- Evaluation ----
+        # Same T as this epoch's training step - baseline/test loss should reflect the
+        # temperature the model was actually just trained at, not a fresh a(0).
         avg_test_loss = _evaluate_upper_model(
             model, test_loader, feature_offset, criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
             compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha, device, max_N,
+            T=epoch_T, amp_dtype=amp_dtype, use_amp=use_amp,
         )
         test_losses.append(avg_test_loss)
         print(f"Epoch {epoch+1:02d}: Train {avg_train_loss:.5f} | Test {avg_test_loss:.5f} | time = {time.time()-start:.1f}s")

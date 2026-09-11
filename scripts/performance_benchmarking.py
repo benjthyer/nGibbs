@@ -26,10 +26,15 @@ if str(src_root) not in sys.path:
     sys.path.insert(0, str(src_root))
 if str(ngibbs_root) not in sys.path:
     sys.path.insert(0, str(ngibbs_root))
+if str(repo_root / "scripts") not in sys.path:
+    sys.path.insert(0, str(repo_root / "scripts"))
+
+from _plot_output import plot_path
 
 # Import utilities and API
 from ngibbs.utils.math_utils import grid_sample, grid_sample_explicit
-from ngibbs.engine.API import HeFESToAPI, HeFESToEmulatorCPU, HeFESToEmulatorGPU
+from ngibbs.engine.API import HeFESToAPI
+from ngibbs.engine.models import HeFESToEmulatorCPU, HeFESToEmulatorGPU
 from ngibbs.config.constants import HEFESTO_ABBREVIATION_TO_SHORT_NAMES
 REV_HEFESTO_ABBREVIATION_TO_SHORT_NAMES = {v: k for k, v in HEFESTO_ABBREVIATION_TO_SHORT_NAMES.items()}
 
@@ -245,7 +250,7 @@ plt.ylabel('Wall Time (s)')
 plt.grid(True)
 plt.title('HeFESTo Emulator Performance Comparison: Total Time')
 plt.legend(fontsize=7)
-plt.savefig('performance_results.png', dpi=300)
+plt.savefig(plot_path('performance_results.png'), dpi=300)
 plt.show()
 
 plt.plot(batch_sizes[~skip], np.array(batch_sizes[~skip])/np.array(GPU_emulator[~skip]), label='GPU Emulator', color = 'forestgreen', linestyle='-')
@@ -262,7 +267,7 @@ plt.ylabel('Assemblages per second')
 plt.grid(True)
 plt.title('Emulator Performance Comparison: Assemblages per Second')
 plt.legend(fontsize=7)
-plt.savefig('per_second_performance_results.png', dpi=300)
+plt.savefig(plot_path('per_second_performance_results.png'), dpi=300)
 plt.show()
 
 properties_rate = batch_sizes*(10/4000) #seconds
@@ -282,5 +287,5 @@ plt.ylabel('Relative Speed Up: nGibbsMin Equilibria/Properties')
 plt.grid(True)
 plt.title('Relative Speedup of nGibbsMin')
 plt.legend(fontsize=7)
-plt.savefig('performance_results_relative.png', dpi=300)
+plt.savefig(plot_path('performance_results_relative.png'), dpi=300)
 plt.show()

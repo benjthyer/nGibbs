@@ -1,1 +1,1 @@
-"""Model loading and emulator interfaces. This is where neural network wrappers live."""
+"""Emulator interfaces. Model loading lives in models.py; neural network wrappers live here."""

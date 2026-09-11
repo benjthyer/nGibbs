@@ -470,7 +470,7 @@ def main():
     ap.add_argument('--json', default=None, help='write the full report here')
     a = ap.parse_args()
 
-    from ngibbs.engine.API import HeFESToEmulatorCPU as E
+    from ngibbs.engine.models import HeFESToEmulatorCPU as E
     emu = E.isothermal_emulator
     indexer = emu.ml_indexer
     A = np.asarray(emu.compToEl, dtype=float)

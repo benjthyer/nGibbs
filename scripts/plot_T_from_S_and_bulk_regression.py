@@ -34,6 +34,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap, Normalize
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _plot_output import plot_path  # noqa: E402
 from fit_T_from_S_and_bulk import P_MAX_DEFAULT, compute_T_from_S_and_bulk_regression  # noqa: E402
 
 # Diverging blue -> neutral -> red, matching this repo's chart palette
@@ -197,7 +198,7 @@ def main() -> None:
     out_path = args.out
     if out_path is None:
         csv_base = args.csv if args.csv.suffix else args.csv
-        out_path = csv_base.parent / f"{csv_base.stem}_regression_diagnostics.png"
+        out_path = plot_path(f"{csv_base.stem}_regression_diagnostics.png")
     plot_regression_diagnostics(args.csv, out_path, args.threshold, p_max=args.p_max)
 
 

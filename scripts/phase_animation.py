@@ -12,7 +12,8 @@ base_path = str(Path(__file__).parent.parent)
 if base_path not in sys.path:
     sys.path.insert(0, base_path)
 
-from src.ngibbs.engine.API import HeFESToEmulatorCPU
+from _plot_output import plot_path
+from src.ngibbs.engine.models import HeFESToEmulatorCPU
 from src.builder.plotting import phase_colors as _phase_colors, build_ordered_phases as _build_ordered_phases, draw_phase_stack as _draw_stack
 
 
@@ -186,6 +187,6 @@ if __name__ == '__main__':
 
 
 
-    animate_phase_diagram(features, headers, save_path='pyrolite_phase_animation.gif')
+    animate_phase_diagram(features, headers, save_path=str(plot_path('pyrolite_phase_animation.gif')))
 
 

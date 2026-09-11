@@ -447,6 +447,48 @@ ROW_ALIGNED_BUNDLE_ARRAYS = (
 )
 
 
+def compute_T0(molar_labels, mass_phasedict, all_phases, percentile=5.0):
+    """Per-phase vanishing-abundance scale: the `percentile`-th percentile of a phase's
+    *nonzero* training-label molar abundance.
+
+    Used to set the annealed complementarity-smoothing temperature `T = a*T0` in
+    `ContinuousModel` training (see NN_continuous.py's `upper_forward`) -- T0 anchors
+    that schedule to "how small does this specific phase's abundance actually get before
+    the data calls it absent", per-phase, rather than one global guess.
+
+    Parameters
+    ----------
+    molar_labels : np.ndarray or memmap, shape (n_rows, P)
+        Phase molar abundances, indexed the same way as `mass_phasedict`.
+    mass_phasedict : dict[str, int]
+        Phase name -> column index into `molar_labels`, per the MLIndexer convention
+        (see README_MLIndexer.md).
+    all_phases : list[str]
+        Ordered phase names; the returned array is ordered the same way (i.e. by
+        `mass_phasedict[phase]`, which is what every other (P,)-shaped array in this
+        pipeline is indexed by).
+    percentile : float, default 5.0
+        Which percentile of the nonzero distribution to use.
+
+    Returns
+    -------
+    np.ndarray, shape (P,), float32
+        T0 per phase. A phase with zero nonzero rows in this dataset (never present)
+        gets T0 = 0.0 -- there is no data to estimate a vanishing scale for it, and 0
+        is a safe sentinel: main.py should refuse to anneal a phase whose T0 is 0
+        rather than divide by it.
+    """
+    P = len(all_phases)
+    T0 = np.zeros(P, dtype=np.float64)
+    for phase in all_phases:
+        idx = mass_phasedict[phase]
+        col = np.asarray(molar_labels[:, idx])
+        nonzero = col[col > 0]
+        if nonzero.size > 0:
+            T0[idx] = np.percentile(nonzero, percentile)
+    return T0.astype(np.float32)
+
+
 class MLDataBundle:
     """Container for ML dataset bundle loaded from .tar.gz file."""
     def __init__(self):
@@ -462,6 +504,10 @@ class MLDataBundle:
         self.dndp_labels = None
         self.dndt_labels = None
         self.derivative_stats = None
+        # Per-phase (P,) vanishing-abundance scale (see compute_T0). None for a bundle
+        # exported before this feature existed, or not yet backfilled via
+        # scripts/compute_T0.py.
+        self.T0 = None
         self.ml_indexer = None
 
     @property
@@ -539,6 +585,14 @@ def load_ml_bundle(bundle_path, arrays=None):
         stats_json = Path(temp_dir) / 'derivative_stats.json'
         if stats_json.exists():
             bundle.derivative_stats = json.loads(stats_json.read_text())
+
+        # T0 is a tiny (P,) array (see compute_T0), not row-aligned data, so - like
+        # derivative_stats above - it's always loaded when present rather than gated by
+        # the `arrays` selector. Absence is normal for a bundle exported before this
+        # feature existed or not yet backfilled by scripts/compute_T0.py.
+        t0_path = Path(temp_dir) / 'T0.npy'
+        if t0_path.exists():
+            bundle.T0 = np.load(t0_path)
         
         # Load ml_indexer state directory (preferred)
         indexer_dir = Path(temp_dir) / 'ml_indexer'
@@ -619,7 +673,11 @@ def save_ml_bundle(bundle, output_path):
         for filename, array in arrays_to_save.items():
             if array is not None:
                 np.save(Path(temp_dir) / f'{filename}.npy', array)
-        
+
+        T0 = get_attr(bundle, 'T0')  # optional, see compute_T0
+        if T0 is not None:
+            np.save(Path(temp_dir) / 'T0.npy', np.asarray(T0, dtype=np.float32))
+
         # Save ml_indexer
         ml_indexer = get_attr(bundle, 'ml_indexer')
         if ml_indexer is None:

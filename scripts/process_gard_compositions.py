@@ -18,15 +18,17 @@ import matplotlib.ticker as mticker
 # Allow running from any working directory
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ngibbs.config.constants import OXIDE_MOLAR_MASSES
+from _plot_output import plot_path
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
 CSV_PATH = REPO_ROOT / "data" / "MELTStables" / "GEOROC" / "CompleteGardEtAl2019.csv"
 OUT_CSV  = REPO_ROOT / "data" / "MELTStables" / "GEOROC" / "Gard2019_processed.csv"
-OUT_FIG  = REPO_ROOT / "data" / "MELTStables" / "GEOROC" / "Gard2019_histograms.png"
+OUT_FIG  = plot_path("Gard2019_histograms.png")
 
 # ---------------------------------------------------------------------------
 # Molar mass constants
@@ -273,7 +275,7 @@ plt.close(fig)
 # ---------------------------------------------------------------------------
 # 8. SiO2 vs CO2 scatter, coloured by FeO (wt%)
 # ---------------------------------------------------------------------------
-OUT_SCATTER = REPO_ROOT / "data" / "MELTStables" / "GEOROC" / "Gard2019_SiO2_CO2_scatter.png"
+OUT_SCATTER = plot_path("Gard2019_SiO2_CO2_scatter.png")
 scatter_data = out[["SiO2", "CO2", "FeO"]].dropna()
 fig2, ax2 = plt.subplots(figsize=(7.5, 5))
 sc = ax2.scatter(

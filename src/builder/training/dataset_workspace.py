@@ -197,6 +197,8 @@ def _build_workspace(bundle_path, workspace_dir, only_VP, molar_epsilon, chunk_s
             print(f"[dataset_workspace] Restricting to phases: {only_VP}")
             ml_indexer.restrictVC(only_VP)
         ml_indexer.molar_epsilon = molar_epsilon
+        t0_path = extract_dir / 'T0.npy'
+        ml_indexer.T0 = np.load(t0_path) if t0_path.exists() else None
 
         # compositional_component_subset defaults to every label column when no
         # restriction has been applied, so subsetting by it (then transforming by

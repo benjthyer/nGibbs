@@ -26,7 +26,8 @@ base_path = str(Path(__file__).parent.parent)
 if base_path not in sys.path:
     sys.path.insert(0, base_path)
 
-from src.ngibbs.engine.API import HeFESToEmulatorCPU
+from _plot_output import plot_path
+from src.ngibbs.engine.models import HeFESToEmulatorCPU
 from src.ngibbs.utils.math_utils import make_ternary, grid_sample, mix_compositions
 from src.ngibbs.utils.file_utils import load_fort99_componentMoles, extract_bulk_properties_from_simulation_dir
 
@@ -386,7 +387,7 @@ if __name__ == '__main__':
 
     animate_phase_comparison(
         composition=DMM_PS,
-        save_path='phase_composition_comparison.gif',
+        save_path=str(plot_path('phase_composition_comparison.gif')),
         interval=150,
         #ground_truth_el_comps=phase_el_comps,
         #ground_truth_PS=PS[Desired_S],

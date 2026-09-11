@@ -37,6 +37,33 @@ from builder.training.logger import setup_training_logger, redirect_output, rest
 from ngibbs.utils.string_utils import apply_type_conversions
 from ngibbs.config.constants import TYPE_CONVERSION_MAP
 
+def _sync_canonical_indexer(model, ml_indexer):
+    """Force `model.ml_indexer` onto the ONE ml_indexer loaded from the training bundle
+    at the top of `main()`, discarding whatever `load_model_from_zip` just rebuilt from
+    that specific checkpoint's own saved `ml_indexer/` state.
+
+    Why this is needed: `load_model_from_zip` has no override hook for `ml_indexer`
+    (only `epsilon` gets special-cased there) -- it always reconstructs a fresh
+    `MLIndexer` from whatever was serialized *inside that checkpoint* at save time. Any
+    property added to `ml_indexer` after an earlier episode's checkpoint was written
+    (e.g. `T0`, added well after tune1-4 were trained) is then silently absent from
+    every later episode that warm-starts from it, even though the training bundle
+    loaded for THIS run has it. Train and Test bundles share one ml_indexer already
+    (`load_ML_data` for Test discards its own); every episode's model should too,
+    rather than each checkpoint carrying a slowly-drifting copy.
+
+    Safe to overwrite outright rather than merge property-by-property: the checkpoint's
+    own indexer and this run's canonical one describe the same dataset/phase structure,
+    so every buffer the model already built from the checkpoint's copy (compToOx,
+    phaseToCompMap, etc.) is numerically identical either way -- this only changes which
+    object `model.ml_indexer` points to, not any tensor already baked into the model.
+    """
+    model.ml_indexer = ml_indexer
+    if hasattr(model, 'molar_epsilon'):
+        model.molar_epsilon.fill_(float(ml_indexer.molar_epsilon))
+    return model
+
+
 def _any_episode_wants_derivatives(config):
     """Does any episode in this recipe set `derivatives.enabled`?
 
@@ -96,6 +123,24 @@ def _derivative_settings(episode_cfg, train_set):
         kwargs['deriv_scale'] = scale
     print(f"[derivatives] enabled: {kwargs}")
     return train_Upper_Sobolev, kwargs
+
+
+def _boundary_temperature_settings(episode_cfg):
+    """Resolve the episode's `boundary_temperature:` block (annealed complementarity
+    smoothing -- see NN_continuous.py's `upper_forward`, `trainer._anneal_a`/
+    `_boundary_T`). Returns a dict to merge into the trainer's kwargs, or `{}` when
+    absent/disabled -- matching `_derivative_settings`'s "block missing means off, every
+    existing recipe is unaffected" contract. Only meaningful for ContinuousModel; passing
+    it to train_Upper_MELTS/train_Upper_Sobolev is harmless either way since
+    `_upper_forward` only forwards `T` to a model whose `upper_forward` declares it."""
+    cfg = episode_cfg.get('boundary_temperature') or {}
+    enabled = str(cfg.get('enabled', False)).lower() in ('1', 'true', 'yes')
+    if not enabled:
+        return {}
+    return {'boundary_temperature': {
+        'a_start': float(cfg.get('a_start', 1.0)),
+        'a_end': float(cfg.get('a_end', 1e-4)),
+    }}
 
 
 def _model_class_from_config(config):
@@ -264,21 +309,34 @@ def _build_phase_weights(ml_indexer, episode_cfg: Dict[str, Any]):
     """
     Build broadcastable phase and component loss weights.
 
-    Expected episode-level schema:
-      binweights:
-        phase_name: weight
-      compweights:
-        phase_name: weight
+    Three ways to set this, checked in order per axis (binary+mole vs. chemistry),
+    each falling through to the next when absent:
 
-    All unspecified phases/components default to 1. Legacy `weight_dict` is used
-    as a fallback for both maps when explicit keys are not provided.
+      binweights: / compweights:
+        phase_name: weight
+        -- axis-specific overrides, for when binary/mole and chemistry genuinely need
+        different weights for the same phase.
+
+      phase_weights:
+        phase_name: weight
+        -- ONE weight per phase, applied uniformly to binary, mole, AND chemistry loss
+        (never bulk, which has no per-phase weighting concept at all -- it's a single
+        system-wide term, not phase-indexed). This is the common case: a rare phase is
+        struggling everywhere, not on just one axis, and there's no reason to maintain
+        two copies of the same phase list to say so.
+
+      weight_dict:
+        -- older name for `phase_weights`, kept working for backward compatibility.
+
+    All unspecified phases/components default to 1.
     """
     binWeights = torch.ones((1, ml_indexer.nphases), dtype=torch.float32)
     compWeights = torch.ones((1, ml_indexer.ncompsVaried), dtype=torch.float32)
 
-    legacy_weights = episode_cfg.get('weight_dict') if isinstance(episode_cfg, dict) else None
-    bin_cfg = episode_cfg.get('binweights', legacy_weights) if isinstance(episode_cfg, dict) else None
-    comp_cfg = episode_cfg.get('compweights', legacy_weights) if isinstance(episode_cfg, dict) else None
+    shared_weights = (episode_cfg.get('phase_weights', episode_cfg.get('weight_dict'))
+                      if isinstance(episode_cfg, dict) else None)
+    bin_cfg = episode_cfg.get('binweights', shared_weights) if isinstance(episode_cfg, dict) else None
+    comp_cfg = episode_cfg.get('compweights', shared_weights) if isinstance(episode_cfg, dict) else None
 
     if isinstance(bin_cfg, dict):
         for phase, weight in bin_cfg.items():
@@ -503,8 +561,9 @@ def main() -> None:
     config = apply_type_conversions(config, TYPE_CONVERSION_MAP)
 
     if warm_start.lower() != 'none':
-        best_model = NN.rebuild_MELTS_model(Path(__file__).parent / config['checkpoints']['load_dir'] / (warm_start + '.tar'), 
+        best_model = NN.rebuild_MELTS_model(Path(__file__).parent / config['checkpoints']['load_dir'] / (warm_start + '.tar'),
                                             epsilon=ml_indexer.molar_epsilon) # Override default epsilon with training data value so model initializes appropriately
+        _sync_canonical_indexer(best_model, ml_indexer)
         # Warm-start config becomes the global baseline for subsequent episodes.
         config = _deep_update(config, deepcopy(best_model.config))
         config = apply_type_conversions(config, TYPE_CONVERSION_MAP)
@@ -597,9 +656,9 @@ def main() -> None:
         lr = float(episode_cfg["learning_rate"])
         eps = float(episode_cfg.get("eps", 1E-8))
         amsgrad = bool(episode_cfg.get("amsgrad", True))
-        dropout_step_up = float(episode_cfg.get("dropout_step_up", 0.02))
-        dropout_step_down = float(episode_cfg.get("dropout_step_down", 0.01))
-        noise_step_up = float(episode_cfg.get("noise_step_up", 0.002))
+        dropout_step_up = float(episode_cfg.get("dropout_step_up", 0.0025))
+        dropout_step_down = float(episode_cfg.get("dropout_step_down", 0.0025))
+        noise_step_up = float(episode_cfg.get("noise_step_up", 0.001))
         noise_step_down = float(episode_cfg.get("noise_step_down", 0.001))
 
         binWeights, compWeights = _build_phase_weights(ml_indexer, episode_cfg)
@@ -718,6 +777,7 @@ def main() -> None:
                         best_loss = tuned_best_loss
                 else:
                     _train_fn, _dkw = _derivative_settings(episode_cfg, train_set)
+                    _dkw.update(_boundary_temperature_settings(episode_cfg))
                     model, tune_results = tune_Upper_MELTS(
                         train_fn=_train_fn,
                         train_fn_kwargs=_dkw,
@@ -782,6 +842,7 @@ def main() -> None:
             if last_best_model_path is not None and last_best_model_path.exists():
                 print(f"Loading latest episode-best checkpoint: {last_best_model_path}")
                 best_model = NN.rebuild_MELTS_model(str(last_best_model_path), epsilon=ml_indexer.molar_epsilon)
+                _sync_canonical_indexer(best_model, ml_indexer)
 
             # Set up logging
             logger = setup_training_logger(str(log_dir), episode_key, args.command)
@@ -819,6 +880,7 @@ def main() -> None:
                     #raise ValueError('This temporary config works on lower model only')
                     #with torch.autograd.set_detect_anomaly(True):
                     _train_fn, _dkw = _derivative_settings(episode_cfg, train_set)
+                    _dkw.update(_boundary_temperature_settings(episode_cfg))
                     _train_fn(
                         best_model,
                         train_set,
@@ -861,6 +923,7 @@ def main() -> None:
                 # to pick up the saved checkpoint's config/ml_indexer when one was written.
                 if dict_filepath.exists():
                     best_model = NN.rebuild_MELTS_model(str(dict_filepath))
+                    _sync_canonical_indexer(best_model, ml_indexer)
                     print(f"Saved trained model to {dict_filepath}")
                     last_best_model_path = dict_filepath
                 else:

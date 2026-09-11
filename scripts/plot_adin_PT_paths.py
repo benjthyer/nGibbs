@@ -20,6 +20,10 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys as _sys
+if str(Path(__file__).resolve().parent) not in _sys.path:
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _plot_output import plot_path
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -108,8 +112,9 @@ def parse_args() -> argparse.Namespace:
         "--out",
         type=Path,
         default=None,
-        help="Save figure to this path instead of showing it.",
+        help="Figure output path (default: <repo>/plots/adin_PT_paths.png).",
     )
+    parser.add_argument("--show", action="store_true", help="Display interactively instead of saving.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for subsampling.")
     return parser.parse_args()
 
@@ -131,7 +136,8 @@ def main() -> None:
         all_files = [all_files[i] for i in sorted(indices)]
         print(f"Subsampled to {args.max_paths} paths.")
 
-    plot_paths(all_files, args.out)
+    out = None if args.show else (args.out or plot_path('adin_PT_paths.png'))
+    plot_paths(all_files, out)
 
 
 if __name__ == "__main__":

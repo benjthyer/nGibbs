@@ -80,10 +80,12 @@ if src_path not in sys.path:
 
 from ngibbs.utils.string_utils import pull_number_range
 from builder.training.optimizer_factory import create_optimizer, create_scheduler, SchedulerWrapper
+from builder.training.benchmark import ThroughputBenchmark
 from builder.training.trainer import (
     TEMP_MODELS_DIR, _make_train_loader, _read_text_file, _regularization_spec,
     _resolve_heads_to_freeze, _set_adaptive_dropout_rate, _iter_adaptive_dropout_modules,
-    _upper_forward, _upper_loss, symmetric_rel_l2,
+    _upper_forward, _upper_loss, symmetric_rel_l2, _mole_targets,
+    _anneal_a, _boundary_T, _print_histogram,
 )
 
 # Batch layout. The first four are the historical `TensorDatasetFour`; the derivative
@@ -202,11 +204,14 @@ def _evaluate_sobolev(model, test_loader, feature_offset, criterion_sat, criteri
                       criterion_mole, criterion_bulk, compWeights, binWeights,
                       sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
                       dndp_alpha, dndt_alpha, deriv_scale, feat_idx, ranges,
-                      device, max_N=np.inf, project_tangent=True, huber_delta=3.0):
+                      device, max_N=np.inf, project_tangent=True, huber_delta=3.0, T=None):
     model.eval()
     tot = {k: 0.0 for k in ('loss', 'sat', 'chem', 'mole', 'bulk', 'dndp', 'dndt')}
     N = 0
     out = None
+    g_phi_chunks = []
+    residual_chunks = []
+    T0 = getattr(getattr(model, 'ml_indexer', None), 'T0', None)
     # Tangents need grad through the inputs, so this cannot run under `no_grad`; the
     # parameter graph is discarded per batch instead.
     for batch in test_loader:
@@ -215,11 +220,28 @@ def _evaluate_sobolev(model, test_loader, feature_offset, criterion_sat, criteri
         dndp_t, dndt_t = batch[_N_BASE], batch[_N_BASE + 1]
 
         with torch.no_grad():
-            out = _upper_forward(model, x_batch, b_batch)
+            out = _upper_forward(model, x_batch, b_batch, T=T)
             loss, l_sat, l_chem, l_mole, l_bulk = _upper_loss(
                 model, out, x_batch, b_batch, y_batch, m_batch, feature_offset,
                 criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
                 compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha)
+
+            if out.g_phi is not None:
+                # See trainer.py's _evaluate_upper_model for why this normalizes by T0
+                # (per phase) before pooling across phases.
+                if T0 is not None:
+                    T0_norm = torch.as_tensor(T0, dtype=out.g_phi.dtype,
+                                              device=out.g_phi.device).reshape(1, -1).clamp(min=1e-30)
+                    g_phi_chunks.append((out.g_phi / T0_norm).detach().to('cpu', torch.float32))
+                else:
+                    g_phi_chunks.append(out.g_phi.detach().to('cpu', torch.float32))
+            if out.g_phi is not None and T0 is not None:
+                gt = _mole_targets(model, m_batch)
+                T0_t = torch.as_tensor(T0, dtype=gt.dtype, device=gt.device).reshape(1, -1)
+                near_boundary = (gt > 0) & (gt <= 2.0 * T0_t)
+                if near_boundary.any():
+                    resid = (gt - out.mole) / T0_t.clamp(min=1e-30)
+                    residual_chunks.append(resid[near_boundary].detach().to('cpu', torch.float32))
 
         d_losses = _derivative_terms(
             model, x_batch, y_batch, m_batch, dndp_t, dndt_t, deriv_scale, feat_idx,
@@ -243,6 +265,17 @@ def _evaluate_sobolev(model, test_loader, feature_offset, criterion_sat, criteri
         'TEST', has_sat, {k: tot[k] / N for k in ('sat', 'chem', 'mole', 'bulk', 'dndp', 'dndt')},
         {'sat': sat_alpha, 'chem': chem_alpha, 'mole': mole_alpha, 'bulk': bulk_alpha,
          'dndp': dndp_alpha, 'dndt': dndt_alpha})
+
+    if g_phi_chunks:
+        title = "g_phi / T0 (2nd-98th pct)" if T0 is not None else "g_phi, RAW -- no T0, not comparable across phases (2nd-98th pct)"
+        _print_histogram(torch.cat(g_phi_chunks).flatten(), title)
+    if residual_chunks:
+        _print_histogram(torch.cat(residual_chunks).flatten(),
+                         "(GT - pred) / T0, GT in (0, 2*T0] (2nd-98th pct)")
+    elif g_phi_chunks and T0 is None:
+        print("\n[boundary residual] skipped: ml_indexer.T0 not available "
+              "(re-export the bundle or run scripts/compute_T0.py)")
+
     return tot['loss'] / N
 
 
@@ -295,7 +328,7 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
                         config_yaml=None, training_yaml=None, processing_yaml=None,
                         stats=None, log_path=None, amsgrad=True, eps=1E-4,
                         project_tangent=True, deriv_subsample=1.0, huber_delta=3.0,
-                        deriv_scale=None, row_weights=None):
+                        deriv_scale=None, row_weights=None, boundary_temperature=None):
     """Upper-model training with `dn/dP` and `dn/dT` supervision.
 
     Extra arguments beyond `train_Upper_MELTS`:
@@ -315,12 +348,23 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
         adequate; supplying the exporter's `derivative_stats` value makes runs comparable.
     row_weights : Tensor or None
         Per-row weight, for down-weighting rows where an untracked phase is present.
+    boundary_temperature : dict or None
+        `{a_start, a_end}` -- see `trainer._anneal_a`/`_boundary_T`. Same per-episode
+        schedule mechanism as `train_Upper_MELTS`; independent of `project_tangent`
+        (which controls `tangent_project`, a different, already-existing analytic
+        projection this episode may separately use for the derivative tangent).
     """
     if not hasattr(model, 'derivative_outputs'):
         raise TypeError(
             f"{type(model).__name__} has no derivative_outputs(); Sobolev training needs a "
             "double-backward-safe model. Use ContinuousModel -- NN.py's PhaseHead writes "
             "into a softmax output in place and cannot be differentiated twice.")
+
+    # Deliberately does not read constants.TRAIN_PRECISION -- unlike train_Upper_MELTS,
+    # this loop always trains in float32. JVP/forward-mode AD through the network is
+    # already the most numerically fragile part of this pipeline; mixed precision here
+    # needs its own dedicated validation (does autocast even support the ops
+    # derivative_outputs uses under forward-mode AD?) before it's worth the risk.
 
     print('###### config ######')
     print(model.config)
@@ -384,18 +428,33 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
     else:
         deriv_scale = torch.as_tensor(np.asarray(deriv_scale, dtype=np.float32))
 
-    ev = lambda: _evaluate_sobolev(
+    # --- Boundary-temperature annealing (see NN_continuous.py's upper_forward) ---
+    if boundary_temperature:
+        a_start = float(boundary_temperature.get('a_start', 1.0))
+        a_end = float(boundary_temperature.get('a_end', 1e-4))
+        print(f"[boundary_temperature] enabled: a {a_start:.3e} -> {a_end:.3e} over {Epochs} epochs")
+    else:
+        a_start = a_end = None
+
+    def _epoch_T(epoch_idx):
+        if a_start is None:
+            return None
+        a = _anneal_a(epoch_idx, Epochs, a_start, a_end)
+        return _boundary_T(model.ml_indexer, a, device)
+
+    ev = lambda T=None: _evaluate_sobolev(
         model, test_loader, feature_offset, criterion_sat, criterion_chem, criterion_mole,
         criterion_bulk, compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha,
         bulk_alpha, dndp_alpha, dndt_alpha, deriv_scale, feat_idx, ranges, device, max_N,
-        project_tangent, huber_delta)
+        project_tangent, huber_delta, T=T)
 
     print("Evaluating baseline (pre-training) model on validation set...")
-    best_test_loss = ev()
+    best_test_loss = ev(_epoch_T(0))
     print(f"Baseline Test Loss: {best_test_loss:.5f}")
     best_epoch = 0
     torch.save(model.state_dict(), str(TEMP_MODELS_DIR / 'temp_upper_sobolev.pt'))
     early_stopping_counter = 0
+    bench = ThroughputBenchmark()  # one training-speed/inference-speed record, after epoch 5
 
     for epoch in range(Epochs):
         start = time.time()
@@ -403,6 +462,7 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
         run = {k: 0.0 for k in ('train', 'sat', 'chem', 'mole', 'bulk', 'dndp', 'dndt')}
         N = 0
         out = None
+        epoch_T = _epoch_T(epoch)
         for batch in tqdm(train_loader, desc="Training", leave=False):
             if len(batch) < _N_BASE + 2:
                 raise ValueError(
@@ -410,6 +470,14 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
                     f"(x, binaries, chem, moles, dndp, dndt); this loader yields "
                     f"{len(batch)}. The ML bundle predates derivative export -- re-export "
                     f"it, or set derivatives.enabled=false to use train_Upper_MELTS.")
+            # Benchmark: see trainer.py's train_Upper_MELTS for why this is guarded to
+            # one epoch only (torch.cuda.synchronize() forces a GPU pipeline drain).
+            _bench_timing = bench.should_time(epoch)
+            if _bench_timing:
+                if device == 'cuda' and torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                _bench_t0 = time.perf_counter()
+
             optimizer.zero_grad()
             batch = [t.to(device, non_blocking=True) for t in batch]
             x_batch, b_batch, y_batch, m_batch = batch[:_N_BASE]
@@ -423,7 +491,7 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
             else:
                 x_noisy = x_batch
 
-            out = _upper_forward(model, x_noisy, b_batch)
+            out = _upper_forward(model, x_noisy, b_batch, T=epoch_T)
             loss, l_sat, l_chem, l_mole, l_bulk = _upper_loss(
                 model, out, x_noisy, b_batch, y_batch, m_batch, feature_offset,
                 criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
@@ -453,6 +521,25 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
 
             loss.backward()
             optimizer.step()
+
+            if _bench_timing:
+                if device == 'cuda' and torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                bench.tick(epoch, n, time.perf_counter() - _bench_t0)
+                if bench.ready:
+                    bench.finalize(
+                        model=model, infer_batches=test_loader, batch_size=batch_size, device=device,
+                        episode_label=Path(DictFilePath).stem if DictFilePath else 'unknown',
+                        training_config=dict(
+                            batch_size=batch_size, lr=lr, chem_alpha=chem_alpha, mole_alpha=mole_alpha,
+                            bulk_alpha=bulk_alpha, sat_alpha=sat_alpha, bulk_enabled=bool(bulk_alpha),
+                            derivatives_enabled=True, dndp_alpha=dndp_alpha, dndt_alpha=dndt_alpha,
+                            project_tangent=project_tangent, deriv_subsample=deriv_subsample,
+                            boundary_temperature_enabled=bool(boundary_temperature),
+                            which_heads_to_freeze=list(which_heads_to_freeze),
+                        ),
+                    )
+
             run['train'] += float(loss.detach()) * n
             N += n
             if N > max_N:
@@ -470,7 +557,7 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
             {'sat': sat_alpha, 'chem': chem_alpha, 'mole': mole_alpha, 'bulk': bulk_alpha,
              'dndp': dndp_alpha, 'dndt': dndt_alpha})
 
-        avg_test_loss = ev()
+        avg_test_loss = ev(epoch_T)
         print(f"Epoch {epoch+1:02d}: Train {avg_train_loss:.5f} | Test {avg_test_loss:.5f} "
               f"| time = {time.time()-start:.1f}s")
 

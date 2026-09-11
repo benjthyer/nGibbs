@@ -11,6 +11,10 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys as _sys
+if str(Path(__file__).resolve().parent) not in _sys.path:
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _plot_output import plot_path
 
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
@@ -80,7 +84,7 @@ def plot_heatmap(si: np.ndarray, mg: np.ndarray, out: Path | None) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Plot a Si-Mg heat map of a HeFESTo training CSV.")
     parser.add_argument("--csv", type=Path, default=CSV_DEFAULT, help="Training dataset CSV path.")
-    parser.add_argument("--out", type=Path, default=None, help="Save figure to this path instead of showing it.")
+    parser.add_argument("--out", type=Path, default=None, help="Figure output path (default: <repo>/plots/<csv-stem>_SiMg_heatmap.png).")
     return parser.parse_args()
 
 
@@ -92,7 +96,7 @@ def main() -> None:
 
     out = args.out
     if out is None:
-        out = args.csv.parent / f"{args.csv.stem}_SiMg_heatmap.png"
+        out = plot_path(f"{args.csv.stem}_SiMg_heatmap.png")
 
     print("Plotting heat map ...")
     plot_heatmap(df[SI_COL].to_numpy(), df[MG_COL].to_numpy(), out)

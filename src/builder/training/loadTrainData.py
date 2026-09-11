@@ -126,6 +126,8 @@ def load_ML_data(Trainpath, only_VP=None, feature_normalizer=None, with_derivati
     moleMap = train_data.molar_labels
 
     ml_indexer.molar_epsilon = molar_epsilon # Save
+    ml_indexer.T0 = train_data.T0 # Per-phase vanishing-abundance scale; None if the
+                                  # bundle predates it (see scripts/compute_T0.py)
 
     # Extract indexer components for easier access
     label_indices = ml_indexer.label_indices

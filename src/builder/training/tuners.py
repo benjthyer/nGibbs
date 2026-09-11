@@ -33,14 +33,27 @@ def _save_anchor_bundle(model, bundle_path):
 
 def _load_trial_model(bundle_path, ml_indexer, substitutions=None, low_only=False,
                       load_prefixes=None, model_class=None):
-    return NN.rebuild_MELTS_model(
+    model = NN.rebuild_MELTS_model(
         str(bundle_path),
         substitutions=substitutions,
         low_only=low_only,
-        ml_indexer=ml_indexer,
+        ml_indexer=ml_indexer,  # only takes effect for a legacy checkpoint with no
+                                 # embedded indexer of its own -- see below.
         load_prefixes=load_prefixes,
         model_class=model_class,
     )
+    # `rebuild_MELTS_model`/`load_model_from_zip` always reconstructs `ml_indexer` fresh
+    # from THIS checkpoint's own saved `ml_indexer/` state when one is present (every
+    # zip/tar checkpoint in this pipeline has one), silently ignoring the `ml_indexer=`
+    # kwarg above in that case. Force the canonical, freshly-loaded-from-the-training-
+    # bundle indexer here too, for the same reason main.py's `_sync_canonical_indexer`
+    # does: a property added to ml_indexer after an earlier trial's checkpoint was
+    # written (e.g. T0) must not silently vanish for later trials that warm-start from
+    # it. Safe to overwrite outright -- see that function's docstring.
+    model.ml_indexer = ml_indexer
+    if hasattr(model, 'molar_epsilon'):
+        model.molar_epsilon.fill_(float(ml_indexer.molar_epsilon))
+    return model
 
 
 # --------------------------------------------------------------------------- #

@@ -1,4 +1,5 @@
-tarname: HeFESTo_Earth_Adiabat_NPT_nosep    #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
+tarname: HeFESTo_Earth_Adiabat_NPT_Binary #derivs   # loads <tarname>_Train.tar.gz / _Test.tar.gz
+# tarname: HeFESTo_Earth_Adiabat_NPT_nosep    #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
     
 warm_start: None #pGeoDynamicsIsentropicNoCrApr20_train1 #None #pGeoDynamicsIsothemalNoCrMar11_train6 #None #pGeoDynPTNoCrBinaries #None # 102CrMoleLinear
 

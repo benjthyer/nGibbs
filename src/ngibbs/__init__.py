@@ -1,3 +1,3 @@
 #nGibbs - Neural network emulators for MELTS and HeFESTo thermodynamic modeling.
 
-#Eventually load models here for easy access?
+#Model singletons are loaded in ngibbs.engine.models for easy access.
