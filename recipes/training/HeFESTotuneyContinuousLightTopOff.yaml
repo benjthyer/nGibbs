@@ -32,7 +32,7 @@
 ####################################################################################
 
 tarname: HeFESTo_Mars_Profiles_NPT_Continuous #loads <tarname>_Train.tar.gz / _Test.tar.gz
-warm_start: None
+warm_start: HeFESTo_Mars_Profiles_NPT_Continuous_train1
 
 model_class: ContinuousModel
 
@@ -107,129 +107,16 @@ phase_weights:                 # one weight per phase, applied to binary + mole 
 # without any interference from the (not-yet-trained) mole branches.
 ####################################################################################
 
-
-tune1: # structure only: encoder geometry, base width, norm choice. dropout stays off.
-  strategy: full
-  which_heads_to_freeze: ['mole_head']
-  sweep: false
-  epochs: 8
-  max_N: 3.0e6
-  early_stopping_patience: 6
-  scheduler:
-    type: OneCycleLR
-    args:
-      max_lr: 1.0e-3
-  loss_config:
-    moles:
-      weight: 0               # mole_head is frozen and untrained this phase
-    binary:
-      weight: 0
-  tune_params: # in order
-    # Capped, not widened: see the size-budget note at the top of this file. Every
-    # value here is kept from the uncapped recipe's own candidate lists (nothing new
-    # invented), just truncated before the point where a size problem starts.
-    encoderLayer: [[1, 0], [1, 1], [2, 1], [2, 2]]
-    encoderBase: [16, 32, 64, 128]
-    chemBranchBase: [0, 8, 16, 32, 64]   # 0 = no hidden layer (the original bare Linear head)
-    encoder_regularization: [0.0layernormdropout0.3, 0.01dropout0.3]   # layernorm or not
-
-tune2: # hyperparameters: initial dropout, WD, noise. inherits tune1's winning geometry.
-  strategy: full
-  which_heads_to_freeze: ['mole_head']
-  sweep: true
-  inherit_loss: true
-  epochs: 8
-  max_N: 3.0e6
-  early_stopping_patience: 6
-  scheduler:
-    type: OneCycleLR
-    args:
-      max_lr: 1.0e-3
-  loss_config:
-    moles:
-      weight: 0
-    binary:
-      weight: 0
-  tune_params:
-    lowWD: [0, 1.0e-5, 1.0e-4, 1.0e-3]     # encoder's own decay
-    highWD: [0, 1.0e-5, 1.0e-4, 1.0e-3]    # chem_heads' own decay
-    noise: [0, 0.01, 0.05, 0.1]
-    # varies the FIRST number (initial dropout rate); ceiling fixed at 0.3 so the
-    # adaptive mechanism has room to move during later full training.
-    # encoder_regularization: [0.01layernormdropout0.3, 0.01dropout0.3]
-
-
-####################################################################################
-# PHASE B: mole branches (mole_head).
-# mole_head is ALWAYS weight_decay=0 in create_optimizer regardless of lowWD/highWD
-# (it's hard-routed to the no-decay group, same as every bias and norm layer) -- so
-# lowWD/highWD are left OUT of tune4's hyperparameter sweep on purpose, not by
-# oversight: they would have no effect on the only thing being trained this phase,
-# and encoder/chem_heads (which they DO affect) are frozen throughout it.
-####################################################################################
-
-
-tune3: # structure only: mole branch geometry, base width, norm choice.
-  strategy: full
-  which_heads_to_freeze: ['encoder', 'chem_heads']
-  sweep: false
-  epochs: 8
-  max_N: 3.0e6
-  early_stopping_patience: 6
-  scheduler:
-    type: OneCycleLR
-    args:
-      max_lr: 1.0e-3
-      epochs: 6
-  loss_config:
-    chemistry:
-      weight: 0                # chem_heads is frozen this phase
-  tune_params:
-    # Capped, not widened -- same reasoning as tune1 above.
-    moleLayer: [[1, 0], [1, 1], [2, 1], [2, 2]]
-    moleBranchBase: [16, 32, 64, 96, 128]
-    mole_regularization: [0.0layernormdropout0.3, 0.01dropout0.3]
-
-tune4: # hyperparameters: initial dropout, noise (no WD -- see note above).
-  strategy: full
-  which_heads_to_freeze: ['encoder', 'chem_heads']
-  sweep: true
-  inherit_loss: true
-  epochs: 8
-  max_N: 3.0e6
-  early_stopping_patience: 6
-  scheduler:
-    type: OneCycleLR
-    args:
-      max_lr: 1.0e-3
-      epochs: 8
-  loss_config:
-    chemistry:
-      weight: 0
-  tune_params:
-    noise: [0, 0.01, 0.05, 0.1]
-    # mole_regularization: [0.01layernormdropout0.3, 0.01dropout0.3]
-
-####################################################################################
-# Joint training: everything unfrozen together. tune1-4 already left the model in a
-# decent state ("rapidly trains a solid network"), so this is a real (long,
-# early-stopped) run rather than another short diagnostic. This is also where the bulk
-# (pre-projection mass-balance residual) term switches on -- the mole branches now
-# exist, so `normalize(n_raw @ compToEl)` is a meaningful quantity. _upper_loss puts it
-# on the same 1E4 * weight footing as chemistry/moles and only adds it when weight != 0,
-# so it stays inert everywhere it is left at 0.
-####################################################################################
-
 train1:
   strategy: full
   which_heads_to_freeze: []
-  epochs: 120
+  epochs: 70 # 120
   learning_rate: 1e-4
   early_stopping_patience: 25
   max_N: null
   boundary_temperature:
     enabled: true
-    a_start: 1.0
+    a_start: 0.6
     a_end: 5.0e-2
   scheduler:
     type: CosineAnnealingLR

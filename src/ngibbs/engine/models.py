@@ -29,17 +29,15 @@ def _bundle(name: str) -> str:
     """Absolute path to a test bundle in the deployment_tests directory. The
     file need not exist yet -- .test() skips a configured-but-absent bundle with
     a note, so every emulator's slot is wired here as a template."""
-    return str(_deploy_tests_dir / f"{name}_Test_subset50000.tar.gz")
+    return str(_deploy_tests_dir / f"{name}_Test_subset15000.tar.gz")
 
 
-def _hefesto_test_bundles(variant: str) -> dict:
+def _hefesto_test_bundles(stem) -> dict:
     """{'isothermal': NPT bundle, 'isentropic': NPS bundle} for a HeFESTo model.
     `variant` is the model tag, e.g. 'light', 'heavy', 'Mars'."""
-    stem = "HeFESTo_Mars" if variant == "Mars" else "HeFESTo_Earth_Adiabat"
-    suffix = "" if variant == "Mars" else f"_{variant}"
     return {
-        "isothermal": _bundle(f"{stem}_NPT{suffix}"),
-        "isentropic": _bundle(f"{stem}_NPS{suffix}"),
+        "isothermal": _bundle(f"HeFESTo_{stem}_NPT"),
+        "isentropic": _bundle(f"HeFESTo_{stem}_NPS"),
     }
 
 
@@ -48,9 +46,9 @@ def _melts_test_bundles(gen: str, cr: bool) -> dict:
     and NPT (open oxygen). `gen` is '102' or '120'."""
     tag = "Cr" if cr else "NoCr"
     return {
-        "isothermal": _bundle(f"{gen}SedIgClosed_{tag}_NPT"),
-        "isentropic": _bundle(f"{gen}SedIgClosed_{tag}_NPS"),
-        "openox":     _bundle(f"{gen}SedIgOpen_{tag}_NPT"),
+        "isothermal": _bundle(f"{gen}Closed_{tag}_NPT"),
+        "isentropic": _bundle(f"{gen}Closed_{tag}_NPS"),
+        "openox":     _bundle(f"{gen}Open_{tag}_NPT"),
     }
 
 # Model name -> (API class, constructor kwargs minus `device`). Each entry is
@@ -68,55 +66,10 @@ _MODEL_SPECS = {
             isothermal_model_path=str(_HeFESTo_dir / "HeFESTo_Earth_Adiabat_NPT_light.tar"),
             isentropic_model_path=str(_HeFESTo_dir / "HeFESTo_Earth_Adiabat_NPS_light.tar"),
             temperature_model_path=str(_HeFESTo_dir / "Residual_T_from_S_NN_light.pt"),
-            test_bundles=_hefesto_test_bundles("light"),
+            test_bundles=_hefesto_test_bundles("Earth_Adiabat"),
             test_meltstable_dir=str(_HeFESTo_adiabat_standards),
         ),
-    ),
-    "HeFESToHeavyEmulator": (
-            HeFESToAPI,
-            dict(
-                isothermal_model_path=str(_HeFESTo_heavy_dir / "HeFESTo_Earth_Adiabat_NPT_heavy.tar"),
-                isentropic_model_path=str(_HeFESTo_heavy_dir / "HeFESTo_Earth_Adiabat_NPS_heavy.tar"),
-                temperature_model_path=str(_HeFESTo_heavy_dir / "HeFESTo_Earth_Temp_heavy.pt"),
-                test_bundles=_hefesto_test_bundles("heavy"),
-                test_meltstable_dir=str(_HeFESTo_adiabat_standards),
-            ),
-        ),
-    "HeFESToMarsEmulator": (
-        HeFESToAPI,
-        dict(
-            isothermal_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Isothermal.tar"),
-            isentropic_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Isentropic.tar"),
-            temperature_model_path=str(_HeFESTo_Mars_dir / "HeFESTo_Mars_Temp.pt"),
-            test_bundles=_hefesto_test_bundles("Mars"),
-        ),
-    ),
-    "MELTS102Emulator": (
-        MELTSAPI,
-        dict(
-            isothermal_NoCr_model_path=str(_MELTS102_dir / "102Isothermal_NoCr.tar"),
-            isothermal_Cr_model_path=str(_MELTS102_dir / "102Isothermal_Cr.tar"),
-            isentropic_NoCr_model_path=str(_MELTS102_dir / "102Isentropic_NoCr.tar"),
-            isentropic_Cr_model_path=str(_MELTS102_dir / "102Isentropic_Cr.tar"),
-            openox_NoCr_model_path=str(_MELTS102_dir / "102OpenOx_NoCr.tar"),
-            openox_Cr_model_path=str(_MELTS102_dir / "102OpenOx_Cr.tar"),
-            test_NoCr_bundles=_melts_test_bundles("102", cr=False),
-            test_Cr_bundles=_melts_test_bundles("102", cr=True),
-        ),
-    ),
-    "MELTS120Emulator": (
-        MELTSAPI,
-        dict(
-            isothermal_NoCr_model_path=str(_MELTS120_dir / "120Isothermal_NoCr.tar"),
-            isothermal_Cr_model_path=str(_MELTS120_dir / "120Isothermal_Cr.tar"),
-            isentropic_NoCr_model_path=str(_MELTS120_dir / "120Isentropic_NoCr.tar"),
-            isentropic_Cr_model_path=str(_MELTS120_dir / "120Isentropic_Cr.tar"),
-            openox_NoCr_model_path=str(_MELTS120_dir / "120OpenOx_NoCr.tar"),
-            openox_Cr_model_path=str(_MELTS120_dir / "120OpenOx_Cr.tar"),
-            test_NoCr_bundles=_melts_test_bundles("120", cr=False),
-            test_Cr_bundles=_melts_test_bundles("120", cr=True),
-        ),
-    ),
+    ), 
 }
 
 # CPU_MODELS is always fully populated; GPU_MODELS only gains entries when

@@ -893,10 +893,26 @@ def prune_active_set(n: np.ndarray,
     1e-12..1e-4.  A threshold *below* the noise floor is worse than useless --
     it leaves the trace species active and pays the cost of the check.
 
-    Both a per-species and a per-phase test are applied: a phase whose *total*
-    is trace level is dropped entirely, which catches the case where the trace
-    amount is split across several members so that no single member's mole
-    fraction is small.
+    Both a per-species and a per-phase test are applied, and each guards
+    against the failure the other misses:
+
+    * A phase whose *total* is trace level is dropped entirely, even if no
+      single member's mole fraction is individually small -- catches a trace
+      amount split evenly across several members.
+    * A species below the per-species floor is *only* zeroed if its phase's
+      total (computed from the ORIGINAL, unpruned ``n``) is ALSO below the
+      floor. Without this guard, a real, non-trace phase that happens to be
+      finely divided among several endmembers -- e.g. a residual clinopyroxene
+      dissolving into garnet, individually a fraction of a percent of system
+      moles even though the six endmembers collectively are not -- gets wiped
+      out member-by-member by the per-species test before the phase-level test
+      ever runs, which is irreversible: dropped species can't be un-dropped
+      once the phase-level total reads back close to zero. Observed on
+      BASALTadiabat P=15 GPa: a fort.99-exact (not emulator noise) clinopyroxene
+      relic totalling 0.17% of system moles was destroyed this way because none
+      of its six endmembers individually cleared 0.1%, silently deleting the
+      cpx-to-garnet dissolution reaction and shifting KS by 78% even in the
+      ground-truth-composition pathway (no emulator involved).
 
     The single-component sweep
     ---------------------------
@@ -955,7 +971,26 @@ def prune_active_set(n: np.ndarray,
     total = n.sum(axis=1, keepdims=True)
     thresh = nsmall_rel * total                       # (B, 1)
 
-    n = np.where(n < thresh, 0.0, n)
+    # Phase totals computed from the ORIGINAL (unpruned) n, before the
+    # per-species floor below can destroy the information they need. A real,
+    # non-trace phase that happens to be split across several endmembers --
+    # e.g. a residual clinopyroxene dissolving into garnet, each endmember
+    # individually a fraction of a percent of system moles even though the
+    # phase collectively is not -- must not be wiped out member-by-member. See
+    # the nGibbs BASALTadiabat P=15 GPa KS investigation: this ordering bug
+    # zeroed a real (fort.99-exact, not emulator noise) cpx relic and shifted
+    # KS by 78% even in the ground-truth-composition pathway.
+    phase_total = n.copy()
+    for members in tables.phase_members:
+        if len(members) == 0:
+            continue
+        idx = np.asarray(members, dtype=np.int64)
+        phase_total[:, idx] = n[:, idx].sum(axis=1, keepdims=True)
+
+    # Per-species floor: only zero a species that is both individually trace
+    # AND belongs to a phase that is collectively trace. A species clearing
+    # neither bar on its own but whose phase does is left alone.
+    n = np.where((n < thresh) & (phase_total < thresh), 0.0, n)
 
     # Phase-level sweep: a phase that is collectively trace level goes entirely,
     # even if its members individually clear the per-species bar.
