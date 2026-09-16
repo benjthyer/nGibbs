@@ -734,6 +734,56 @@ class EmulatorAPI:
 
         return {'quality_metrics': quality, 'meta': meta, 'skipped_bundles': skipped}
 
+    def assert_quality(
+        self,
+        output_dir: Optional[Union[str, Path]] = None,
+        *,
+        max_samples: Optional[int] = None,
+        seed: int = 1337,
+        write_outputs: bool = True,
+        verbose: bool = True,
+    ) -> Dict[str, object]:
+        """Run ``self.test()`` and enforce the deployment quality gate on the result.
+
+        Applies the fixed pass/fail tolerances in
+        ``ngibbs.deployment_tests.quality_thresholds`` to every ``quality_metrics``
+        table returned by ``test()`` -- phase-presence precision/recall (bucketed
+        by average GT modal abundance), and for major phases the abundance and
+        MgO/FeO/SiO2 composition errors. Subclasses whose ``test()`` also returns
+        ``meltstable_property_errors`` (currently ``HeFESToAPI``) additionally get
+        those EOS-property tolerances checked.
+
+        Raises
+        ------
+        EmulatorQualityError
+            If any threshold is missed; the exception's ``.failures`` lists every
+            violation (see ``QualityFailure``).
+
+        Returns
+        -------
+        The same dict ``test()`` returns, plus ``'failures': []`` on success.
+        """
+        from ngibbs.deployment_tests.quality_thresholds import (
+            check_meltstable_quality,
+            check_phase_quality,
+            EmulatorQualityError,
+        )
+
+        result = self.test(
+            output_dir=output_dir, max_samples=max_samples, seed=seed,
+            write_outputs=write_outputs, verbose=verbose,
+        )
+        failures = check_phase_quality(result['quality_metrics'])
+        if 'meltstable_property_errors' in result:
+            failures += check_meltstable_quality(result['meltstable_property_errors'])
+
+        result['failures'] = failures
+        if failures:
+            raise EmulatorQualityError(self.__class__.__name__, failures, result=result)
+        if verbose:
+            print(f"[test]   {self.__class__.__name__}: all deployment quality checks passed.")
+        return result
+
     def _get_cpu_func(self, func):
         """Return the CPU-API equivalent of a GPU emulator bound method, or None.
 
@@ -2250,5 +2300,18 @@ class MELTSAPI:
             sub_dir = (Path(output_dir) / tag if output_dir is not None
                        else sub.home_dir / 'deployment_test' / tag)
             out[tag] = sub.test(output_dir=sub_dir, **kwargs)
+        return out
+
+    def assert_quality(self, output_dir=None, **kwargs) -> dict:
+        """Run ``assert_quality()`` on both sub-APIs (NoCr and Cr).
+
+        Raises ``EmulatorQualityError`` (from whichever sub-API fails first) if
+        either misses a threshold. Returns ``{'nocr': <result dict>, 'cr': <result dict>}``.
+        """
+        out = {}
+        for tag, sub in (('nocr', self.nocr), ('cr', self.cr)):
+            sub_dir = (Path(output_dir) / tag if output_dir is not None
+                       else sub.home_dir / 'deployment_test' / tag)
+            out[tag] = sub.assert_quality(output_dir=sub_dir, **kwargs)
         return out
 
