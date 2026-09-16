@@ -30,9 +30,7 @@ if src_path not in sys.path:
 # Import from refactored modules
 from builder.indexer import DatasetIndexer
 from ngibbs.utils.file_utils import move_file, chunked_mask_copy
-from .guardrails import (  # guardrails: see module docstring
-    assert_identity_multipliers, assert_no_derivative_sidecars,
-)
+from .guardrails import assert_no_derivative_sidecars  # guardrails: see module docstring
 from . import sidecar as _sidecar  # dn/dP, dn/dT tables carried parallel to self.table
 
 
@@ -1299,7 +1297,9 @@ class BigMetaTable():
         chunk-wise so that case stays memory-bounded instead of materializing an
         "all matching rows" array that can be a large fraction of the whole table.
         """
-        assert_identity_multipliers(multiplier_bounds, 'resample_rare_phase')
+        # Non-identity multiplier_bounds are validated once, before any data is read,
+        # by guardrails.check_resampling_config() in process_for_ML (it raises when an
+        # entropy column is a configured feature/free output; otherwise it warns).
         if chunk_size is None:
             chunk_size = self.chunk_size
         min_multiplier, max_multiplier = multiplier_bounds
@@ -1642,7 +1642,9 @@ class BigMetaTable():
         Creates:
             self.molar: memmap array (n_rows, n_components) with absolute component moles, normalized to sum(element moles) = 1
         """
-        assert_identity_multipliers(multiplier_bounds, 'retrieve_component_moles')
+        # Non-identity multiplier_bounds are validated once, before any data is read,
+        # by guardrails.check_resampling_config() in process_for_ML (it raises when an
+        # entropy column is a configured feature/free output; otherwise it warns).
         if chunk_size is None:
             chunk_size = self.chunk_size
         # ========== Extract indexer data ==========

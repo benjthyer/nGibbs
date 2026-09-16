@@ -40,6 +40,7 @@ from ngibbs.utils.file_utils import delete_files_with_keyword, move_files_with_e
 
 # Exporter functions
 from builder.processing.MLexporter import resampling_to_datasets, make_harkers, make_Tplots, shuffle_bundle_rows
+from builder.processing.guardrails import check_resampling_config
 
 # Perhaps migrate the chemistry filters to their own module?
 # deep_filter/bundle_insanity_filter are no longer called directly here - filtering now
@@ -157,7 +158,12 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, upsa
     
     upsample = upsample if upsample is not None else upsample_cfg['enabled']
     plot_enabled = bool(plot_cfg.get('enabled', False))
-    
+
+    # Validate abundance-resampling config before any table is opened (see
+    # guardrails.py module docstring): raises if an entropy column is a configured
+    # feature/free output, otherwise prints a loud warning and lets it proceed.
+    check_resampling_config(upsample, upsample_cfg, resampling_cfg, feature_names_cfg, free_outputs_cfg)
+
     if balance_function is None:
         balance_func_name = balance_cfg['function']
         if balance_func_name == 'balance_lowF':

@@ -37,7 +37,7 @@ from ngibbs.utils.file_utils import (
 from ngibbs.utils.math_utils import Normalizer
 from ngibbs.config.ml_indexer import load_ml_indexer_from_state
 from builder.processing.BigMetaTable import BigMetaTable
-from .guardrails import assert_identity_multipliers, assert_alias_safe  # guardrails
+from .guardrails import assert_alias_safe  # guardrails: see guardrails module docstring
 
 # Row-aligned arrays that may be present in an ML-ready bundle. Every one that
 # actually exists gets shuffled with the *same* permutation in shuffle_bundle_rows,
@@ -193,7 +193,10 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
         files in place before packaging (kwargs forwarded as-is, e.g.
         tolerance, bulk_tol_frac, batch_size).
     """
-    assert_identity_multipliers(resample_bounds, 'resampling_to_datasets')
+    # Non-identity resample_bounds are validated once, before any data is read, by
+    # guardrails.check_resampling_config() in process_for_ML (it raises when an entropy
+    # column is a configured feature/free output; otherwise it warns). table1 aliasing
+    # below has its own, unrelated identity-multiplier requirement (assert_alias_safe).
 
     if chunk_size is None:
         chunk_size = getattr(self, 'chunk_size', 100_000)
