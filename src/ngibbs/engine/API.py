@@ -30,6 +30,19 @@ from .EOS_arithmetic.hefesto_vec import (
     NSMALL_REL,
 )
 
+from .EOS_arithmetic_MELTS.melts_vec import (
+    load_solids as load_melts_solids,
+    load_liquid as load_melts_liquid,
+    compute_liquid_bulk as melts_compute_liquid_bulk,
+    compute_feldspar_solution as melts_compute_feldspar_solution,
+    compute_olivine_solution as melts_compute_olivine_solution,
+    compute_clinopyroxene_solution as melts_compute_clinopyroxene_solution,
+    feldspar as _melts_feldspar,
+    olivine as _melts_olivine,
+    clinopyroxene as _melts_clinopyroxene,
+    BARS_PER_GPA as _MELTS_BARS_PER_GPA,
+)
+
 from ..config.constants import OXIDE_MOLAR_MASSES as oxide_molar_masses, ptt_longs, ptt_order_oxides, ptt_to_short, ptt_oxide_indexer, HeFESTo_snames_long
 
 ferric_to_ferrous_ratio =  (2*oxide_molar_masses['FeO'])/oxide_molar_masses['Fe2O3']
@@ -2129,6 +2142,9 @@ class MELTSAPI:
         mass_balance: str = 'iterative',
         test_NoCr_bundles: Optional[Dict[str, Union[str, Path]]] = None,
         test_Cr_bundles: Optional[Dict[str, Union[str, Path]]] = None,
+        load_melts_eos: bool = True,
+        melts_solid_params_path: Optional[Union[str, Path]] = None,
+        melts_liquid_params_path: Optional[Union[str, Path]] = None,
     ):
         """
         Initialize MELTS API, building NoCr and Cr sub-APIs.
@@ -2167,6 +2183,15 @@ class MELTSAPI:
             open): ML-ready bundle path} for the NoCr and Cr sub-APIs
             respectively — up to six bundles in total. Consumed by
             ``self.test()``.
+        load_melts_eos : bool, default=True
+            Load the vectorised MELTS EOS parameter tables (melts_vec) needed
+            by get_property_melts_vectorized_from_assemblage. These ship as
+            JSON inside EOS_arithmetic_MELTS/MELTS_Parameters/ and load fast,
+            so this defaults on (unlike HeFESToAPI's control_path, which is
+            optional because it points at a large external control file).
+        melts_solid_params_path, melts_liquid_params_path : str or Path, optional
+            Override the packaged sol_struct_data.json / liq_struct_data.json
+            (see EOS_arithmetic_MELTS/melts_vec/params.py, liquid_params.py).
         """
         if verbose:
             print("[INFO] Initializing MELTSAPI (NoCr)...")
@@ -2196,6 +2221,23 @@ class MELTSAPI:
         self.verbose = verbose
         self.nocr.modelType = "MELTSAPI"
         self.cr.modelType = "MELTSAPI"
+
+        # Vectorised MELTS EOS (melts_vec): solid-endmember + liquid + the
+        # feldspar/olivine solid-solution mixing models. See
+        # get_property_melts_vectorized_from_assemblage's docstring for what
+        # is and isn't covered.
+        self._melts_solid_params_path = str(melts_solid_params_path) if melts_solid_params_path is not None else None
+        self._melts_liquid_params_path = str(melts_liquid_params_path) if melts_liquid_params_path is not None else None
+        self.melts_solid_params = None
+        self.melts_liquid_params = None
+        if load_melts_eos:
+            self.melts_solid_params = load_melts_solids(self._melts_solid_params_path)
+            self.melts_liquid_params = load_melts_liquid(self._melts_liquid_params_path)
+            if verbose:
+                print(f"[INFO] Loaded melts_vec EOS params: "
+                      f"{self.melts_solid_params.nspec} solid endmembers, "
+                      f"{self.melts_liquid_params.nspec} liquid components")
+
         if verbose:
             print("[INFO] MELTSAPI initialized successfully.")
 
@@ -2252,3 +2294,249 @@ class MELTSAPI:
             out[tag] = sub.test(output_dir=sub_dir, **kwargs)
         return out
 
+    # ── Vectorised MELTS EOS (melts_vec) ──────────────────────────────────────
+    # Phase-name -> (endmember list, solution-model function) for the phases
+    # melts_vec currently implements a real (non-ideal) mixing model for.
+    # Both the canonical melts_vec module name and a couple of common nMELTS
+    # ml_indexer phase-name spellings are accepted so callers can pass
+    # whichever convention their composition dict already uses.
+    _MELTS_SOLUTION_PHASES = {
+        'feldspar':    (_melts_feldspar.ENDMEMBERS, melts_compute_feldspar_solution),
+        'plagioclase': (_melts_feldspar.ENDMEMBERS, melts_compute_feldspar_solution),
+        'olivine':     (_melts_olivine.ENDMEMBERS,  melts_compute_olivine_solution),
+        'clinopyroxene': (_melts_clinopyroxene.ENDMEMBERS, melts_compute_clinopyroxene_solution),
+        'cpx':           (_melts_clinopyroxene.ENDMEMBERS, melts_compute_clinopyroxene_solution),
+    }
+    # Phases MELTS models as solid solutions that melts_vec does NOT yet
+    # implement a mixing model for (clinopyroxene/orthopyroxene, spinel,
+    # rhombohedral-oxide -- see EOS_arithmetic_MELTS/melts_vec/__init__.py's
+    # docstring for why: much larger parameter surface, deferred pending a
+    # more automated extraction+verification approach). Recognised purely so
+    # get_property_melts_vectorized_from_assemblage can name them in its
+    # coverage report / strict-mode error rather than just silently ignoring
+    # an unrecognised key.
+    _MELTS_UNSUPPORTED_SOLUTION_PHASES = frozenset({
+        'orthopyroxene', 'opx', 'spinel', 'sp', 'rhm-oxide',
+        'rhombohedral-oxide', 'rhm_oxide',
+        # 'pyroxene' is deliberately left here too: unlike 'clinopyroxene'/'cpx'
+        # (unambiguous), a bare 'pyroxene' key could mean either clino- or
+        # orthopyroxene, and only the former has a mixing model implemented, so
+        # it stays unsupported rather than silently guessing which one a caller
+        # meant.
+        'pyroxene',
+    })
+    _MELTS_LIQUID_PHASE_NAMES = frozenset({'liquid', 'melts-liquid', 'melt'})
+
+    def get_property_melts_vectorized_from_assemblage(
+        self,
+        phase_composition: Dict[str, Union[torch.Tensor, np.ndarray]],
+        phase_moles: Dict[str, Union[torch.Tensor, np.ndarray]],
+        PT: torch.Tensor,
+        property_names: Sequence[str] = ('V', 'Cp', 'K', 'alpha', 'G', 'H', 'S'),
+        strict: bool = False,
+    ) -> Dict[str, np.ndarray]:
+        """
+        Compute bulk thermodynamic properties of a MELTS assemblage using the
+        vectorised melts_vec EOS -- the MELTS analogue of
+        HeFESToAPI.get_property_hefesto_vectorized_from_assemblage, but
+        operating directly in melts_vec's own per-phase composition space
+        (see "Scope and known gaps" below for why this isn't yet wired
+        straight to the trained MELTS emulator's raw output).
+
+        Parameters
+        ----------
+        phase_composition : dict[str, array-like]
+            {phase_name: (B, n_endmembers) mole fractions of that phase's own
+            endmembers, each row should sum to ~1}. Recognised phase names:
+              - 'melts-liquid' / 'liquid' / 'melt': (B, 19) mole fractions in
+                melts_vec.liquid_params.load_liquid().labels order (SiO2,
+                TiO2, Al2O3, Fe2O3, MgCr2O4, Fe2SiO4, MnSi0.5O2, Mg2SiO4,
+                NiSi0.5O2, CoSi0.5O2, CaSiO3, Na2SiO3, KAlSiO4, Ca3(PO4)2,
+                CO2, SO3, Cl2O-1, F2O-1, H2O).
+              - 'feldspar' / 'plagioclase': (B, 3), melts_vec.feldspar.
+                ENDMEMBERS order (albite, anorthite, sanidine).
+              - 'olivine': (B, 6), melts_vec.olivine.ENDMEMBERS order
+                (tephroite, fayalite, co-olivine, ni-olivine, monticellite,
+                forsterite).
+              - 'clinopyroxene' / 'cpx': (B, 7), melts_vec.clinopyroxene.
+                ENDMEMBERS order (diopside, clinoenstatite, hedenbergite,
+                alumino-buffonite, buffonite, essenite, jadeite).
+            Any other key is treated as a single (possibly pure) phase
+            evaluated via the pure-endmember EOS only (see "ideal-only
+            phases" below) -- pass its melts_vec solid-endmember label(s)
+            as the dict values' implicit column order isn't defined for
+            those, so for anything beyond feldspar/olivine/liquid this is
+            only meaningful for a SINGLE pure phase (n_endmembers = 1,
+            (B, 1) all-ones), e.g. quartz.
+        phase_moles : dict[str, array-like]
+            {phase_name: (B,) molar amount of that phase in the assemblage},
+            same keys as phase_composition. Used as the bulk-aggregation
+            weights (mirrors HeFESTo's component_moles carrying both
+            identity and abundance in one array; kept separate here because
+            melts_vec's per-phase functions want composition normalized to
+            sum to 1, not raw extensive moles).
+        PT : torch.Tensor, shape (B, 2)
+            Columns: [P (GPa), T (K)] -- same convention as
+            get_property_hefesto_vectorized_from_assemblage; converted
+            internally to melts_vec's bars.
+        property_names : sequence of str
+            Bulk (B,) keys to return: 'V' (J/bar), 'dVdT', 'dVdP', 'K' (bar),
+            'alpha' (1/K), 'Cp' (J/mol/K), 'dCpdT', 'G', 'H' (J/mol), 'S'
+            (J/mol/K). (No 'rho' -- melts_vec's extracted parameter tables
+            don't carry a verified per-endmember molar mass yet, see Scope
+            below.) Also accepts 'melts_coverage_fraction' (the mole
+            fraction of the total assemblage actually covered by a
+            supported phase -- see below) and 'per_phase' (returns the raw
+            per-phase dicts, keyed by the phase names in phase_composition,
+            instead of/alongside the bulk aggregate).
+        strict : bool, default=False
+            If True, raise ValueError when phase_composition contains a key
+            in _MELTS_UNSUPPORTED_SOLUTION_PHASES with nonzero phase_moles
+            (rather than silently excluding it from the bulk aggregate --
+            see below).
+
+        Bulk aggregation
+        ----------------
+        Bulk V/dVdT/dVdP/H/S/Cp/dCpdT are the phase-mole-weighted sum over
+        every phase in phase_composition that melts_vec can actually
+        compute (liquid, feldspar, olivine, or a single pure endmember);
+        G = H - T*S is then recomputed for consistency, and K/alpha are
+        derived from V/dVdT/dVdP exactly as compute()/solid_solutions.py do
+        for a single phase. This is NOT necessarily the properties of the
+        WHOLE assemblage: any phase in _MELTS_UNSUPPORTED_SOLUTION_PHASES
+        (pyroxene, spinel, rhm-oxide) is excluded from the sum entirely
+        (its moles still count toward the coverage denominator). Always
+        check 'melts_coverage_fraction' -- the fraction of total assemblage
+        moles actually covered -- before trusting the bulk numbers for a
+        pyroxene- or spinel-bearing assemblage; request it explicitly via
+        property_names or read it off the returned dict's
+        'melts_coverage_fraction' key, which is always included.
+
+        Scope and known gaps
+        ---------------------
+        This method's composition input is melts_vec's OWN endmember space,
+        not the trained MELTS neural-network emulator's raw output space.
+        Bridging the two is a real, separate translation task that was
+        looked into but deliberately NOT done this pass:
+          - For 'melts-liquid', nMELTS's ml_indexer represents the liquid's
+            ML-output composition as ELEMENTAL mole fractions (Si, Ti, Al,
+            Fe, Mg, Ca, Na, K, P, H, Cr, Mn, Ni -- see
+            config/README_MLIndexer.md: "'melts-liquid' components come
+            from Elkeys, not components_in_phases"), not the 19-component
+            meltsLiquid oxide-component table melts_vec.liquid_eos expects.
+            Converting one to the other is MAGMA's own conLiq() (sources/
+            liquid.c) -- which includes an fO2-dependent Fe2+/Fe3+
+            equilibrium partition, not a fixed linear map -- and has not
+            been translated. Passing raw ml_indexer liquid output straight
+            into this method's 'melts-liquid' slot WILL give wrong numbers;
+            don't do it without that conversion in between.
+          - For 'feldspar'/'olivine', nMELTS's components_in_phases already
+            appears to use plain MELTS endmember names directly as its
+            per-phase component labels (per the README's own
+            ``{'olivine': ['fayalite', 'forsterite'], ...}`` example, which
+            matches melts_vec.olivine.ENDMEMBERS's naming) -- so mapping a
+            real ml_indexer's label_indices_comp['olivine'] /
+            ['feldspar' or 'plagioclase'] columns into this method's
+            expected column order is likely a straight reindex by label
+            name, not a unit-system conversion like the liquid case. This
+            has NOT been cross-checked against an actual trained
+            checkpoint's ml_indexer this session, though, so verify the
+            label order (e.g. via ``ml_indexer.detail_label_indices``)
+            before wiring it up for real use.
+          - orthopyroxene/spinel/rhombohedral-oxide mixing models are simply
+            not implemented yet (see melts_vec's __init__.py docstring);
+            clinopyroxene now IS supported. Any assemblage containing an
+            unsupported phase is necessarily partially covered here, see
+            'melts_coverage_fraction'.
+        """
+        if self.melts_solid_params is None or self.melts_liquid_params is None:
+            raise RuntimeError(
+                "melts_vec EOS params not loaded. Pass load_melts_eos=True "
+                "(the default) to MELTSAPI.__init__, or supply "
+                "melts_solid_params_path=/melts_liquid_params_path=."
+            )
+
+        def _np(x):
+            if torch.is_tensor(x):
+                return x.detach().cpu().numpy().astype(np.float64)
+            return np.asarray(x, dtype=np.float64)
+
+        PT_np = _np(PT)
+        P_bar = PT_np[:, 0] * _MELTS_BARS_PER_GPA
+        T = PT_np[:, 1]
+        B = PT_np.shape[0]
+
+        per_phase: Dict[str, Dict[str, np.ndarray]] = {}
+        total_moles = np.zeros(B, dtype=np.float64)
+        covered_moles = np.zeros(B, dtype=np.float64)
+
+        acc_keys = ('V', 'dVdT', 'dVdP', 'H', 'S', 'Cp', 'dCpdT')
+        acc = {k: np.zeros(B, dtype=np.float64) for k in acc_keys}
+
+        for phase_name, X in phase_composition.items():
+            X_np = _np(X)
+            moles = _np(phase_moles[phase_name]) if phase_name in phase_moles else np.zeros(B)
+            total_moles = total_moles + moles
+
+            phase_key = phase_name.strip().lower()
+            result = None
+            if phase_key in self._MELTS_LIQUID_PHASE_NAMES:
+                result = melts_compute_liquid_bulk(T, P_bar, X_np, self.melts_liquid_params)
+            elif phase_key in self._MELTS_SOLUTION_PHASES:
+                endmembers, fn = self._MELTS_SOLUTION_PHASES[phase_key]
+                result = fn(T, P_bar, X_np, self.melts_solid_params)
+            elif phase_key in self._MELTS_UNSUPPORTED_SOLUTION_PHASES:
+                if strict and np.any(moles != 0.0):
+                    raise ValueError(
+                        f"phase {phase_name!r} is a MELTS solid solution melts_vec "
+                        f"does not yet implement a mixing model for (see "
+                        f"get_property_melts_vectorized_from_assemblage's docstring); "
+                        f"pass strict=False to exclude it from the bulk aggregate instead."
+                    )
+                # excluded: contributes to total_moles (coverage denominator)
+                # but not to covered_moles or the property sums.
+                continue
+            else:
+                # Single pure phase fallback: X_np expected (B, 1), all ones.
+                from .EOS_arithmetic_MELTS.melts_vec import compute as melts_compute
+                result = melts_compute(T, P_bar, self.melts_solid_params, names=[phase_name])
+                for k in acc_keys:
+                    result[k] = result[k][:, 0]
+
+            per_phase[phase_name] = result
+            covered_moles = covered_moles + moles
+            for k in acc_keys:
+                if k in result:
+                    acc[k] = acc[k] + moles * result[k]
+
+            del X_np, moles, result
+
+        with np.errstate(divide='ignore', invalid='ignore'):
+            for k in acc_keys:
+                acc[k] = np.where(covered_moles != 0.0, acc[k] / np.where(covered_moles != 0.0, covered_moles, 1.0), 0.0)
+
+        G = acc['H'] - T * acc['S']
+        with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
+            K = np.where(acc['dVdP'] != 0.0, -acc['V'] / acc['dVdP'], np.inf)
+            alpha = np.where(acc['V'] != 0.0, acc['dVdT'] / acc['V'], 0.0)
+        coverage = np.where(total_moles != 0.0, covered_moles / np.where(total_moles != 0.0, total_moles, 1.0), 0.0)
+
+        full = dict(acc)
+        full['G'] = G
+        full['K'] = K
+        full['alpha'] = alpha
+        full['melts_coverage_fraction'] = coverage
+
+        out = {}
+        for prop in property_names:
+            if prop == 'per_phase':
+                out['per_phase'] = per_phase
+            elif prop in full:
+                out[prop] = full[prop]
+            else:
+                raise ValueError(
+                    f"Unknown property {prop!r}. Available keys: "
+                    f"{sorted(full.keys()) + ['per_phase']}"
+                )
+        out['melts_coverage_fraction'] = coverage
+        return out
