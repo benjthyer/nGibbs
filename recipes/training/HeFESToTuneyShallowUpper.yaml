@@ -1,6 +1,6 @@
-tarname:  HeFESTo_Mars_Profiles_NPT_JCC1_retro   #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
+tarname:  HeFESTo_Mars_Profiles_NPT_JCC1_retr0  #(Suffix: '_Train', '_Test', '_Valid') - Base name for training, test, and validation datasets. Only _Train and _Test are loaded. 
     
-warm_start:  HeFESTo_Mars_Profiles_NPT_JCC1_train8 #pGeoDynamicsIsentropicNoCrApr20_train1 #None #pGeoDynamicsIsothemalNoCrMar11_train6 #None #pGeoDynPTNoCrBinaries #None # 102CrMoleLinear
+warm_start: None # HeFESTo_Mars_Profiles_NPT_JCC1 #pGeoDynamicsIsentropicNoCrApr20_train1 #None #pGeoDynamicsIsothemalNoCrMar11_train6 #None #pGeoDynPTNoCrBinaries #None # 102CrMoleLinear
 
 
 tune7: 
@@ -9,26 +9,26 @@ tune7:
   noise_step_up: 0.002 # Adaptive noise: step size when increasing noise on overfitting (kicks in once dropout is maxed out)
   noise_step_down: 0.001 # Adaptive noise: step size when decreasing noise on underfitting (kicks in once dropout is at zero)
   low_regularization: 0.00batchnormdropout0.00
-  high_regularization: 0.02batchnormdropout0.05
-  highWD: 1e-4
-  type: OneCycleLR #CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
-  args:
-    #T_max: 10 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
-    max_lr: 1E-3
-    epochs: 15
-    steps_per_epoch: 1960
+  high_regularization: 0.00batchnormdropout0.00
+  #highWD: 1e-4
+  #type: OneCycleLR #CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
+  #args:
+  #  #T_max: 10 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
+  #  max_lr: 5E-4
+  #  epochs: 15
+  #  steps_per_epoch: 488
   strategy: upper # Train encoder and saturation predictor, all else frozen. Upper portion of model not used at all for efficiency
   lowWD: 0 # No WD for frozen layers
   sweep: true
   batch_size: 4096
   epochs: 15
   early_stopping_patience: 7
-  #learning_rate: 5E-4
+  learning_rate: 1E-4
   max_N: 2E6
   tune_params:
     #lowWD: [0, 1e-6, 1e-5, 1e-4, 1e-3]
-    highWD: [0, 1e-4, 1e-3, 1e-2]
     noise: [0, 0.005, 0.01, 0.02, 0.05]
+    highWD: [0, 1e-4, 1e-3, 1e-2]
   loss_config:
     binary:
       weight: 0
@@ -50,24 +50,24 @@ tune8: # No dropout for models with bulk loss (breaks it for some reason), so le
   dropout_step_down: 0.01 # Adaptive dropout: step size when decreasing dropout on underfitting
   noise_step_up: 0.002 # Adaptive noise: step size when increasing noise on overfitting (kicks in once dropout is maxed out)
   noise_step_down: 0.001 # Adaptive noise: step size when decreasing noise on underfitting (kicks in once dropout is at zero)
-  low_regularization: 0.02batchnormdropout0.05
-  high_regularization: 0.02batchnormdropout0.05
+  #low_regularization: 0.02batchnormdropout0.05
+  #high_regularization: 0.02batchnormdropout0.05
   batch_size: 4096
-  lowWD: 1E-5
+  #lowWD: 1E-5
   epochs: 15
   early_stopping_patience: 7
-  #learning_rate: 5E-4
-  type: OneCycleLR #CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
-  args:
-    #T_max: 10 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
-    max_lr: 1E-3
-    epochs: 15
-    steps_per_epoch: 1960
+  learning_rate: 1E-4
+  #type: OneCycleLR #CosineAnnealingLR # Any scheduler in optim.lr_scheduler, e.g. 'CosineAnnealingLR', 'ReduceLROnPlateau', 'CosineAnnealingWarmRestarts'.
+  #args:
+  #  #T_max: 10 # Then args to pass to the scheduler, e.g. factor, patience, T_0, etc. See PyTorch documentation for details.
+  #  max_lr: 5E-4
+  #  epochs: 15
+  #  steps_per_epoch: 488
   max_N: 2E6
   tune_params:
+    noise: [0, 0.005, 0.01, 0.02, 0.05]
     lowWD: [0, 1e-6, 1e-5, 1e-4, 1e-3]
     highWD: [0, 1e-4, 1e-3, 1e-2]
-    noise: [0, 0.005, 0.01, 0.02, 0.05]
   loss_config:
     binary:
       weight: 1
@@ -87,8 +87,10 @@ train8: # Increase number for another layer of training
   dropout_step_down: 0.01 # Adaptive dropout: step size when decreasing dropout on underfitting
   noise_step_up: 0.002 # Adaptive noise: step size when increasing noise on overfitting (kicks in once dropout is maxed out)
   noise_step_down: 0.001 # Adaptive noise: step size when decreasing noise on underfitting (kicks in once dropout is at zero)
-  low_regularization: 0.02batchnormdropout0.05
-  high_regularization: 0.02batchnormdropout0.05
+  low_regularization: 0.00batchnormdropout0.00
+  high_regularization: 0.00batchnormdropout0.00
+  #low_regularization: 0.02batchnormdropout0.05
+  #high_regularization: 0.02batchnormdropout0.05
   batch_size: 4096
   epochs: 50
   learning_rate: 5E-4
@@ -126,8 +128,8 @@ tune9: # No dropout for models with bulk loss (breaks it for some reason), so le
   dropout_step_down: 0.01 # Adaptive dropout: step size when decreasing dropout on underfitting
   noise_step_up: 0.002 # Adaptive noise: step size when increasing noise on overfitting (kicks in once dropout is maxed out)
   noise_step_down: 0.001 # Adaptive noise: step size when decreasing noise on underfitting (kicks in once dropout is at zero)
-  low_regularization: 0.02batchnormdropout0.05
-  high_regularization: 0.02batchnormdropout0.05
+  #low_regularization: 0.02batchnormdropout0.05
+  #high_regularization: 0.02batchnormdropout0.05
   batch_size: 4096
   epochs: 40
   early_stopping_patience: 7
