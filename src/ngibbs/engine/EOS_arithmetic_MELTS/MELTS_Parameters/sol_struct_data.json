@@ -1,0 +1,9855 @@
+{
+ "xMeltsSolids": [
+  {
+   "label": "tephroite",
+   "type": "COMPONENT",
+   "formula": "Mn2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1732000.0,
+   "s": 155.9,
+   "v": 4.889,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    219.89,
+    -1271.0,
+    -2049600.0,
+    176520000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.84e-07,
+    0.0,
+    2.514e-05,
+    6.47e-09
+   ]
+  },
+  {
+   "label": "fayalite",
+   "type": "COMPONENT",
+   "formula": "Fe2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1479360.0,
+   "s": 150.93,
+   "v": 4.63,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    248.93,
+    -1923.9,
+    0.0,
+    -139100000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.3e-07,
+    0.0,
+    2.6546e-05,
+    7.9482e-09
+   ]
+  },
+  {
+   "label": "co-olivine",
+   "type": "COMPONENT",
+   "formula": "Co2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1414100.0,
+   "s": 142.6,
+   "v": 4.459,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    201.048,
+    -36.9,
+    -7181000.0,
+    900500000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -6.4e-07,
+    0.0,
+    2.8422e-05,
+    3.5355e-09
+   ]
+  },
+  {
+   "label": "ni-olivine",
+   "type": "COMPONENT",
+   "formula": "Ni2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1395300.0,
+   "s": 128.1,
+   "v": 4.259,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    214.997,
+    -1030.8,
+    -4944500.0,
+    623700000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -6.71e-07,
+    0.0,
+    2.8422e-05,
+    3.5355e-09
+   ]
+  },
+  {
+   "label": "monticellite",
+   "type": "COMPONENT",
+   "formula": "CaMgSiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2250027.0,
+   "s": 108.3,
+   "v": 5.148,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    226.34,
+    -1542.7,
+    -1179700.0,
+    -23290000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -9.04e-07,
+    2e-12,
+    2.7863e-05,
+    7.6339e-09
+   ]
+  },
+  {
+   "label": "forsterite",
+   "type": "COMPONENT",
+   "formula": "Mg2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2174420.0,
+   "s": 94.01,
+   "v": 4.366,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    238.64,
+    -2001.3,
+    0.0,
+    -116240000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.91e-07,
+    1.351e-12,
+    2.9464e-05,
+    8.8633e-09
+   ]
+  },
+  {
+   "label": "fayalite",
+   "type": "PHASE",
+   "formula": "Fe2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1479360.0,
+   "s": 150.93,
+   "v": 4.63,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    248.93,
+    -1923.9,
+    0.0,
+    -139100000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_VINET",
+   "eos_coeffs": [
+    2.9447e-05,
+    127.955797,
+    5.016956
+   ]
+  },
+  {
+   "label": "sphene",
+   "type": "PHASE",
+   "formula": "CaTiSiO5",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2596652.0,
+   "s": 129.29,
+   "v": 5.565,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    234.62,
+    -1040.3,
+    -5118300.0,
+    591460000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.9e-07,
+    0.0,
+    2.52e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "almandine",
+   "type": "COMPONENT",
+   "formula": "Fe3Al2Si3O12",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -5267216.0,
+   "s": 340.007,
+   "v": 11.511,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    573.96,
+    -1483.1,
+    -29292000.0,
+    5022080000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.58e-07,
+    3.21e-13,
+    1.8613e-05,
+    7.4539e-09
+   ]
+  },
+  {
+   "label": "grossular",
+   "type": "COMPONENT",
+   "formula": "Ca3Al2Si3O12",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -6632859.0,
+   "s": 255.15,
+   "v": 12.538,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    573.43,
+    -2039.4,
+    -18887200.0,
+    2319310000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -6.54e-07,
+    1.635e-12,
+    1.8994e-05,
+    7.9756e-09
+   ]
+  },
+  {
+   "label": "pyrope",
+   "type": "COMPONENT",
+   "formula": "Mg3Al2Si3O12",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -6286548.0,
+   "s": 266.359,
+   "v": 11.316,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    640.72,
+    -4542.1,
+    -4701900.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.76e-07,
+    4.42e-13,
+    2.2519e-05,
+    3.7044e-09
+   ]
+  },
+  {
+   "label": "akermanite",
+   "type": "COMPONENT",
+   "formula": "Ca2MgSi2O7",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3855541.0,
+   "s": 212.0,
+   "v": 9.252,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    387.06,
+    -2938.8,
+    0.0,
+    -40790000.0,
+    358.0,
+    452.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.85e-07,
+    0.0,
+    2.5011e-05,
+    6.7224e-09
+   ]
+  },
+  {
+   "label": "gehlenite",
+   "type": "COMPONENT",
+   "formula": "Ca2Al2SiO7",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3969258.0,
+   "s": 198.6,
+   "v": 9.033,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    373.09,
+    -2276.8,
+    -4778500.0,
+    477910000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -9.96e-07,
+    2.488e-12,
+    2.4926e-05,
+    5.664e-10
+   ]
+  },
+  {
+   "label": "iron-akermanite",
+   "type": "COMPONENT",
+   "formula": "Ca2FeSi2O7",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3856441.0,
+   "s": 212.0,
+   "v": 9.252,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    387.06,
+    -2938.8,
+    0.0,
+    -40790000.0,
+    358.0,
+    452.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.85e-07,
+    0.0,
+    2.5011e-05,
+    6.7224e-09
+   ]
+  },
+  {
+   "label": "soda-melilite",
+   "type": "COMPONENT",
+   "formula": "Na2Si3O7",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3981458.0,
+   "s": 198.6,
+   "v": 9.033,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    373.09,
+    -2276.8,
+    -4778500.0,
+    477910000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -9.96e-07,
+    2.488e-12,
+    2.4926e-05,
+    5.664e-10
+   ]
+  },
+  {
+   "label": "diopside",
+   "type": "COMPONENT",
+   "formula": "CaMgSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3200583.0,
+   "s": 142.5,
+   "v": 6.62,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    305.41,
+    -1604.9,
+    -7166000.0,
+    921840000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.72e-07,
+    1.707e-12,
+    2.7795e-05,
+    8.3082e-09
+   ]
+  },
+  {
+   "label": "clinoenstatite",
+   "type": "COMPONENT",
+   "formula": "Mg2Si2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3086083.0,
+   "s": 135.164,
+   "v": 6.3279,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    333.16,
+    -2401.2,
+    -4541200.0,
+    558300000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.49e-07,
+    4.47e-13,
+    2.4656e-05,
+    7.467e-09
+   ]
+  },
+  {
+   "label": "hedenbergite",
+   "type": "COMPONENT",
+   "formula": "CaFeSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2842221.0,
+   "s": 174.2,
+   "v": 6.7894,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    307.89,
+    -1597.3,
+    -6992500.0,
+    935220000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -9.925e-07,
+    1.4835e-12,
+    3.1371e-05,
+    8.3672e-09
+   ]
+  },
+  {
+   "label": "alumino-buffonite",
+   "type": "COMPONENT",
+   "formula": "CaTi0.5Mg0.5AlSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3283830.18,
+   "s": 143.745,
+   "v": 6.356,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    297.499,
+    -1355.96,
+    -6702190.0,
+    759082000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "buffonite",
+   "type": "COMPONENT",
+   "formula": "CaTi0.5Mg0.5FeSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2828776.95,
+   "s": 180.741,
+   "v": 6.7217,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    303.909,
+    -1417.67,
+    -4356540.0,
+    352523000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "essenite",
+   "type": "COMPONENT",
+   "formula": "CaFeAlSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2867478.01,
+   "s": 177.747,
+   "v": 6.7217,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    317.11,
+    -1733.3,
+    -5109650.0,
+    542220000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "jadeite",
+   "type": "COMPONENT",
+   "formula": "NaAlSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3025118.0,
+   "s": 133.574,
+   "v": 6.034,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    311.29,
+    -2005.1,
+    -5350300.0,
+    662570000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.6e-07,
+    2.149e-12,
+    2.3118e-05,
+    2.5785e-09
+   ]
+  },
+  {
+   "label": "diopside",
+   "type": "COMPONENT",
+   "formula": "CaMgSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3200583.0,
+   "s": 142.5,
+   "v": 6.62,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    305.41,
+    -1604.9,
+    -7166000.0,
+    921840000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.72e-07,
+    1.707e-12,
+    2.7795e-05,
+    8.3082e-09
+   ]
+  },
+  {
+   "label": "clinoenstatite",
+   "type": "COMPONENT",
+   "formula": "Mg2Si2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3086083.0,
+   "s": 135.164,
+   "v": 6.3279,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    333.16,
+    -2401.2,
+    -4541200.0,
+    558300000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.49e-07,
+    4.47e-13,
+    2.4656e-05,
+    7.467e-09
+   ]
+  },
+  {
+   "label": "hedenbergite",
+   "type": "COMPONENT",
+   "formula": "CaFeSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2842221.0,
+   "s": 174.2,
+   "v": 6.7894,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    307.89,
+    -1597.3,
+    -6992500.0,
+    935220000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -9.925e-07,
+    1.4835e-12,
+    3.1371e-05,
+    8.3672e-09
+   ]
+  },
+  {
+   "label": "alumino-buffonite",
+   "type": "COMPONENT",
+   "formula": "CaTi0.5Mg0.5AlSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3283830.18,
+   "s": 143.745,
+   "v": 6.356,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    297.499,
+    -1355.96,
+    -6702190.0,
+    759082000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "buffonite",
+   "type": "COMPONENT",
+   "formula": "CaTi0.5Mg0.5FeSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2828776.95,
+   "s": 180.741,
+   "v": 6.7217,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    303.909,
+    -1417.67,
+    -4356540.0,
+    352523000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "essenite",
+   "type": "COMPONENT",
+   "formula": "CaFeAlSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2867478.01,
+   "s": 177.747,
+   "v": 6.7217,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    317.11,
+    -1733.3,
+    -5109650.0,
+    542220000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "jadeite",
+   "type": "COMPONENT",
+   "formula": "NaAlSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3025118.0,
+   "s": 133.574,
+   "v": 6.034,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    311.29,
+    -2005.1,
+    -5350300.0,
+    662570000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.6e-07,
+    2.149e-12,
+    2.3118e-05,
+    2.5785e-09
+   ]
+  },
+  {
+   "label": "aegirine",
+   "type": "PHASE",
+   "formula": "NaFeSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2576800.0,
+   "s": 170.57,
+   "v": 63.997,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    317.70000000000005,
+    -2066.81,
+    -3004650.0,
+    256011000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "aenigmatite",
+   "type": "PHASE",
+   "formula": "Na2Fe5TiSi6O20",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -8472805.0,
+   "s": 740.23,
+   "v": 22.8546,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1092.073,
+    -6159.81,
+    -22526790.0,
+    3268659000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "cummingtonite",
+   "type": "COMPONENT",
+   "formula": "Mg7Si8O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -12067517.0,
+   "s": 540.2587,
+   "v": 26.33,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1233.792,
+    -7133.98,
+    -22163800.0,
+    2333937490.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.1393847e-06,
+    0.0,
+    2.81048234e-05,
+    6.2894e-09
+   ]
+  },
+  {
+   "label": "grunerite",
+   "type": "COMPONENT",
+   "formula": "Fe7Si8O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -9623300.0,
+   "s": 725.0,
+   "v": 27.84,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1347.83,
+    -9356.91,
+    -20228480.0,
+    3039190000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.670299e-06,
+    8.68919e-12,
+    2.84e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "cummingtonite",
+   "type": "COMPONENT",
+   "formula": "Mg7Si8O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -12067920.38,
+   "s": 540.2587,
+   "v": 26.34,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1233.792,
+    -7133.98,
+    -22163800.0,
+    2333937490.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.1393847e-06,
+    0.0,
+    2.81048234e-05,
+    6.2894e-09
+   ]
+  },
+  {
+   "label": "grunerite",
+   "type": "COMPONENT",
+   "formula": "Fe7Si8O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -9623550.0,
+   "s": 725.0,
+   "v": 27.84,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1347.83,
+    -9356.91,
+    -20228480.0,
+    3039190000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.670299e-06,
+    8.68919e-12,
+    2.84e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "tremolite",
+   "type": "COMPONENT",
+   "formula": "Ca2Mg5Si8O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -12307863.0,
+   "s": 549.5,
+   "v": 27.312,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1229.36,
+    -6401.9,
+    -32089900.0,
+    4208810000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.4763e-06,
+    8.9462e-12,
+    2.4374e-05,
+    9.8338e-09
+   ]
+  },
+  {
+   "label": "pargasite",
+   "type": "COMPONENT",
+   "formula": "NaCa2Mg4AlAl2Si6O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -12621554.816,
+   "s": 669.44,
+   "v": 27.35,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1267.25,
+    -6654.34,
+    -30378700.0,
+    3913530000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.392e-06,
+    3.481e-12,
+    2.4374e-05,
+    9.8338e-09
+   ]
+  },
+  {
+   "label": "ferropargasite",
+   "type": "COMPONENT",
+   "formula": "NaCa2Fe4AlAl2Si6O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -11224859.38742857,
+   "s": 776.1320000000001,
+   "v": 27.989,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1342.61,
+    -8348.62,
+    -24760400.0,
+    3485070000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.392e-06,
+    3.481e-12,
+    2.4374e-05,
+    9.8338e-09
+   ]
+  },
+  {
+   "label": "magnesiohastingsite",
+   "type": "COMPONENT",
+   "formula": "NaCa2Mg4FeAl2Si6O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -12166501.586,
+   "s": 685.3392000000001,
+   "v": 27.38,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1273.66,
+    -6716.06,
+    -28033100.0,
+    3506970000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.392e-06,
+    3.481e-12,
+    2.4374e-05,
+    9.8338e-09
+   ]
+  },
+  {
+   "label": "annite",
+   "type": "COMPONENT",
+   "formula": "KFe3Si3AlO10(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -5142800.0,
+   "s": 420.0,
+   "v": 15.408,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    727.208,
+    -4775.04,
+    -13831900.0,
+    2119060000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.6969784e-06,
+    0.0,
+    3.44473262e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "phlogopite",
+   "type": "COMPONENT",
+   "formula": "KMg3Si3AlO10(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -6210391.0,
+   "s": 334.346,
+   "v": 14.977,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    610.37988,
+    -2083.781,
+    -21533008.0,
+    2841040896.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.6969784e-06,
+    0.0,
+    3.44473262e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "muscovite",
+   "type": "PHASE",
+   "formula": "KAl2Si3AlO10(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -5976740.0,
+   "s": 293.157,
+   "v": 14.087,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    651.49,
+    -3873.2,
+    -18523200.0,
+    2742470000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.717e-06,
+    4.295e-12,
+    3.3527e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "albite",
+   "type": "COMPONENT",
+   "formula": "NaAlSi3O8",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3921618.0,
+   "s": 224.412,
+   "v": 10.083,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    393.64,
+    -2415.5,
+    -7892800.0,
+    1070640000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.945e-06,
+    4.861e-12,
+    2.6307e-05,
+    3.2407e-09
+   ]
+  },
+  {
+   "label": "anorthite",
+   "type": "COMPONENT",
+   "formula": "CaAl2Si2O8",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -4213249.2,
+   "s": 207.22272727272727,
+   "v": 10.075,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    439.37,
+    -3734.1,
+    0.0,
+    -317020000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.272e-06,
+    3.176e-12,
+    1.0918e-05,
+    4.1985e-09
+   ]
+  },
+  {
+   "label": "sanidine",
+   "type": "COMPONENT",
+   "formula": "KAlSi3O8",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3967391.0,
+   "s": 214.145,
+   "v": 10.869,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    381.37,
+    -1941.0,
+    -12037300.0,
+    1836430000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.805e-06,
+    5.112e-12,
+    1.5145e-05,
+    5.485e-09
+   ]
+  },
+  {
+   "label": "quartz",
+   "type": "PHASE",
+   "formula": "SiO2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -910700.0,
+   "s": 41.46,
+   "v": 2.269,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    80.01,
+    -240.3,
+    -3546700.0,
+    491570000.0,
+    848.0,
+    0.0,
+    -0.09187,
+    0.00024607
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.434e-06,
+    1.0137e-11,
+    2.3895e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "tridymite",
+   "type": "PHASE",
+   "formula": "SiO2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -907750.0,
+   "s": 43.77,
+   "v": 2.675,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    75.37,
+    0.0,
+    -5958100.0,
+    958250000.0,
+    383.0,
+    130.0,
+    0.4267,
+    -0.00144575
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.508e-06,
+    0.0,
+    1.9339e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "cristobalite",
+   "type": "PHASE",
+   "formula": "SiO2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -907753.0,
+   "s": 43.394,
+   "v": 2.587,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    83.51,
+    -374.7,
+    -2455400.0,
+    280070000.0,
+    535.0,
+    0.0,
+    -0.14216,
+    0.00044142
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.515e-06,
+    0.0,
+    2.0824e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "na-nepheline",
+   "type": "COMPONENT",
+   "formula": "Na4Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -8372016.0,
+   "s": 498.564,
+   "v": 21.6524,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    820.96,
+    -3039.6,
+    -43353200.0,
+    8327280000.0,
+    467.0,
+    964.0,
+    -1.00498,
+    0.003319
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.05e-06,
+    5.2e-12,
+    3.1802e-05,
+    2.13e-08
+   ]
+  },
+  {
+   "label": "k-nepheline",
+   "type": "COMPONENT",
+   "formula": "K4Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -8436178.559999999,
+   "s": 535.8612,
+   "v": 24.215752000000002,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    744.0,
+    0.0,
+    -52426800.0,
+    8555720000.0,
+    800.15,
+    4616.0,
+    -0.14192908,
+    0.00043364
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.05e-06,
+    5.2e-12,
+    3.1802e-05,
+    2.13e-08
+   ]
+  },
+  {
+   "label": "vc-nepheline",
+   "type": "COMPONENT",
+   "formula": "Na3Al3Si5O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3921618.0,
+   "s": 224.412,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    393.64,
+    -2415.5,
+    -7892800.0,
+    1070640000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "ca-nepheline",
+   "type": "COMPONENT",
+   "formula": "CaNa2Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -4213249.2,
+   "s": 207.22272727272727,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    439.37,
+    -3734.1,
+    0.0,
+    -317020000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "na-nepheline",
+   "type": "COMPONENT",
+   "formula": "Na4Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -8372016.0,
+   "s": 498.564,
+   "v": 21.6524,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    820.96,
+    -3039.6,
+    -43353200.0,
+    8327280000.0,
+    467.0,
+    964.0,
+    -1.00498,
+    0.003319
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.05e-06,
+    5.2e-12,
+    3.1802e-05,
+    2.13e-08
+   ]
+  },
+  {
+   "label": "k-nepheline",
+   "type": "COMPONENT",
+   "formula": "K4Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -8432605.799999999,
+   "s": 535.8612,
+   "v": 24.215752000000002,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    744.0,
+    0.0,
+    -52426800.0,
+    8555720000.0,
+    800.15,
+    4616.0,
+    -0.14192908,
+    0.00043364
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.05e-06,
+    5.2e-12,
+    3.1802e-05,
+    2.13e-08
+   ]
+  },
+  {
+   "label": "vc-nepheline",
+   "type": "COMPONENT",
+   "formula": "Na3Al3Si5O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3921618.0,
+   "s": 224.412,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    393.64,
+    -2415.5,
+    -7892800.0,
+    1070640000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "ca-nepheline",
+   "type": "COMPONENT",
+   "formula": "CaNa2Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -4213249.2,
+   "s": 207.22272727272727,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    439.37,
+    -3734.1,
+    0.0,
+    -317020000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "leucite",
+   "type": "COMPONENT",
+   "formula": "KAlSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3010279.63,
+   "s": 205.846,
+   "v": 8.839,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    271.14,
+    -944.1,
+    -7857200.0,
+    959200000.0,
+    955.0,
+    256.0,
+    -0.09731,
+    0.0003373
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.5568254e-06,
+    1.2739e-12,
+    1.25167877e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "analcime",
+   "type": "COMPONENT",
+   "formula": "NaAlSi2O5(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3325900.0,
+   "s": 228.1,
+   "v": 9.71,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    571.83,
+    -7188.7,
+    0.0,
+    1493060000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.5568254e-06,
+    1.2739e-12,
+    1.25167877e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "na-leucite",
+   "type": "COMPONENT",
+   "formula": "NaAlSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3001975.55,
+   "s": 165.74,
+   "v": 8.91,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    401.27,
+    -4248.0,
+    0.0,
+    216300000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.5568254e-06,
+    1.2739e-12,
+    1.25167877e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "corundum",
+   "type": "PHASE",
+   "formula": "Al2O3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1675700.0,
+   "s": 50.82,
+   "v": 2.558,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    155.02,
+    -828.4,
+    -3861400.0,
+    409080000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -3.85e-07,
+    3.75e-13,
+    2.1342e-05,
+    4.718e-09
+   ]
+  },
+  {
+   "label": "sillimanite",
+   "type": "PHASE",
+   "formula": "Al2SiO5",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2586091.0,
+   "s": 95.93,
+   "v": 4.983,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    256.73,
+    -1887.2,
+    -2977400.0,
+    250960000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.53e-07,
+    0.0,
+    1.3431e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "rutile",
+   "type": "PHASE",
+   "formula": "TiO2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -944750.0,
+   "s": 50.46,
+   "v": 1.882,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    77.84,
+    0.0,
+    -3367800.0,
+    402940000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -4.54e-07,
+    5.84e-13,
+    2.5716e-05,
+    1.5409e-09
+   ]
+  },
+  {
+   "label": "perovskite",
+   "type": "PHASE",
+   "formula": "CaTiO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1660630.0,
+   "s": 93.64,
+   "v": 3.3626,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    150.49,
+    -621.3,
+    0.0,
+    -430100000.0,
+    1530.0,
+    2301.2000000000003,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "chromite",
+   "type": "COMPONENT",
+   "formula": "FeCr2O4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1445490.0,
+   "s": 142.676,
+   "v": 4.401,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    236.874,
+    -1679.6,
+    0.0,
+    -167650000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "hercynite",
+   "type": "COMPONENT",
+   "formula": "FeAl2O4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1947681.0,
+   "s": 115.362,
+   "v": 4.074998432,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    235.19,
+    -1437.0,
+    -4691300.0,
+    645640000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "magnetite",
+   "type": "COMPONENT",
+   "formula": "Fe3O4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1117403.0,
+   "s": 146.114,
+   "v": 4.452,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    207.93,
+    0.0,
+    -7243300.0,
+    664360000.0,
+    848.0,
+    1565.0,
+    -0.19502,
+    0.00061037
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.82e-07,
+    1.751e-12,
+    3.0291e-05,
+    1.3847e-08
+   ]
+  },
+  {
+   "label": "spinel",
+   "type": "COMPONENT",
+   "formula": "MgAl2O4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2300313.0,
+   "s": 84.535,
+   "v": 3.977,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    235.9,
+    -1766.6,
+    -1710400.0,
+    40620000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -4.89e-07,
+    0.0,
+    2.1691e-05,
+    5.0528e-09
+   ]
+  },
+  {
+   "label": "ulvospinel",
+   "type": "COMPONENT",
+   "formula": "Fe2TiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1488500.0,
+   "s": 185.447,
+   "v": 4.682,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    249.63,
+    -1817.4,
+    0.0,
+    -54530000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "geikielite",
+   "type": "COMPONENT",
+   "formula": "MgTiO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1572560.0,
+   "s": 74.56,
+   "v": 3.086,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    146.2,
+    -416.0,
+    -3999800.0,
+    402330000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.84e-07,
+    1.23e-12,
+    2.7248e-05,
+    2.9968e-09
+   ]
+  },
+  {
+   "label": "hematite",
+   "type": "COMPONENT",
+   "formula": "Fe2O3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -825627.0,
+   "s": 87.437,
+   "v": 3.027,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    146.86,
+    0.0,
+    -5576800.0,
+    525630000.0,
+    955.0,
+    1287.0,
+    -0.07403,
+    0.00027921
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -4.79e-07,
+    3.04e-13,
+    3.831e-05,
+    1.65e-10
+   ]
+  },
+  {
+   "label": "ilmenite",
+   "type": "COMPONENT",
+   "formula": "FeTiO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1231947.0,
+   "s": 108.628,
+   "v": 3.17,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    150.0,
+    -441.6,
+    -3323700.0,
+    348150000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.84e-07,
+    1.23e-12,
+    2.7248e-05,
+    2.9968e-09
+   ]
+  },
+  {
+   "label": "pyrophanite",
+   "type": "COMPONENT",
+   "formula": "MnTiO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1350707.0,
+   "s": 104.935,
+   "v": 2.8859,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    150.0,
+    -441.6,
+    -3323700.0,
+    348150000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.84e-07,
+    1.23e-12,
+    2.7248e-05,
+    2.9968e-09
+   ]
+  },
+  {
+   "label": "corundum",
+   "type": "COMPONENT",
+   "formula": "Al2O3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1655700.0,
+   "s": 50.82,
+   "v": 2.558,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    155.02,
+    -828.4,
+    -3861400.0,
+    409080000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -3.85e-07,
+    3.75e-13,
+    2.1342e-05,
+    4.718e-09
+   ]
+  },
+  {
+   "label": "pseudobrookite",
+   "type": "COMPONENT",
+   "formula": "Fe2TiO5",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1754429.0,
+   "s": 156.4816,
+   "v": 5.491,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    261.35,
+    -1530.7,
+    0.0,
+    -234660000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "ferropseudobrookite",
+   "type": "COMPONENT",
+   "formula": "FeTi2O5",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2175332.0,
+   "s": 160.05360000000002,
+   "v": 5.578,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    251.42000000000002,
+    -1179.0700000000002,
+    -4256220.0,
+    475025000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "karrooite",
+   "type": "COMPONENT",
+   "formula": "MgTi2O5",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2507053.0,
+   "s": 127.1936,
+   "v": 5.482,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    232.58,
+    -755.5,
+    -5660800.0,
+    582140000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "whitlockite",
+   "type": "PHASE",
+   "formula": "Ca3(PO4)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -4097169.0,
+   "s": 235.978,
+   "v": 9.762,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    402.997,
+    -2808.35,
+    0.0,
+    -326230000.0,
+    1373.0,
+    14059.0,
+    0.025427,
+    0.00019255
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "apatite",
+   "type": "PHASE",
+   "formula": "Ca5(PO4)3OH",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -6694689.0,
+   "s": 398.74,
+   "v": 16.4025,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    758.81,
+    -6480.6,
+    0.0,
+    447940000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "water",
+   "type": "PHASE",
+   "formula": "H2O",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -54955.2356,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "h2oduan",
+   "type": "COMPONENT",
+   "formula": "H2O",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -54955.2356,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "co2duan",
+   "type": "COMPONENT",
+   "formula": "CO2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -54955.2356,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "Fe-metal",
+   "type": "COMPONENT",
+   "formula": "Fe",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": 9999.0,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "Ni-metal",
+   "type": "COMPONENT",
+   "formula": "Ni",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": 9999.0,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "Fe-liquid",
+   "type": "COMPONENT",
+   "formula": "Fe",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": 9999.0,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "Ni-liquid",
+   "type": "COMPONENT",
+   "formula": "Ni",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": 9999.0,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "lime",
+   "type": "PHASE",
+   "formula": "CaO",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -635090.0,
+   "s": 37.75,
+   "v": 1.676,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    58.79117,
+    -133.904,
+    -1147146.0,
+    102978784.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.0217132e-06,
+    2.565e-12,
+    3.46103555e-05,
+    6.7406e-09
+   ]
+  },
+  {
+   "label": "periclase",
+   "type": "PHASE",
+   "formula": "MgO",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -601500.0,
+   "s": 26.951,
+   "v": 1.125,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    61.10965,
+    -296.199,
+    -621154.0,
+    5844612.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -6.223329e-07,
+    1.5114e-12,
+    3.74774182e-05,
+    3.556e-10
+   ]
+  },
+  {
+   "label": "calcite",
+   "type": "PHASE",
+   "formula": "CaCO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1206819.0,
+   "s": 91.725,
+   "v": 3.69,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    178.19,
+    -1657.7,
+    -482700.0,
+    166600000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.4e-06,
+    0.0,
+    8.907e-06,
+    2.27402e-08
+   ]
+  },
+  {
+   "label": "aragonite",
+   "type": "PHASE",
+   "formula": "CaCO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1205719.0,
+   "s": 88.0,
+   "v": 3.415,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    166.62,
+    -1499.4,
+    0.0,
+    54490000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.4e-06,
+    0.0,
+    8.907e-06,
+    2.27402e-08
+   ]
+  },
+  {
+   "label": "magnesite",
+   "type": "PHASE",
+   "formula": "MgCO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1113636.0,
+   "s": 65.21,
+   "v": 2.803,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    162.3,
+    -1109.3,
+    -4882600.0,
+    874660000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.9e-07,
+    2.212e-12,
+    1.8436e-05,
+    4.15968e-08
+   ]
+  },
+  {
+   "label": "siderite",
+   "type": "PHASE",
+   "formula": "FeCO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -755900.0,
+   "s": 95.5,
+   "v": 2.938,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    177.36,
+    -1669.4,
+    -355100.0,
+    150780000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.9e-07,
+    2.212e-12,
+    1.8436e-05,
+    4.15968e-08
+   ]
+  },
+  {
+   "label": "dolomite",
+   "type": "PHASE",
+   "formula": "CaMg(CO3)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2323400.0,
+   "s": 155.2,
+   "v": 6.434,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    368.02,
+    -3750.8,
+    0.0,
+    180790000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.4e-06,
+    0.0,
+    8.907e-06,
+    2.27402e-08
+   ]
+  },
+  {
+   "label": "spurrite",
+   "type": "PHASE",
+   "formula": "Ca5Si2O8CO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -5840200.0,
+   "s": 331.0,
+   "v": 14.712,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    597.163,
+    -3692.9,
+    -5057120.0,
+    433820000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.9e-07,
+    2.212e-12,
+    1.8436e-05,
+    4.15968e-08
+   ]
+  },
+  {
+   "label": "tilleyite",
+   "type": "PHASE",
+   "formula": "Ca5Si2O7(CO3)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -6372200.0,
+   "s": 394.0,
+   "v": 17.43,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    716.789,
+    -5199.2,
+    -5057120.0,
+    607690000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.9e-07,
+    2.212e-12,
+    1.8436e-05,
+    4.15968e-08
+   ]
+  },
+  {
+   "label": "diamond",
+   "type": "PHASE",
+   "formula": "C",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": 1900.0,
+   "s": 2.38,
+   "v": 0.3417,
+   "cp_type": "CP_SAXENA",
+   "cp_coeffs": [
+    98.45,
+    -0.03655,
+    1217000.0,
+    1.098e-05,
+    0.0,
+    -1659.0,
+    0.0
+   ],
+   "eos_type": "EOS_VINET",
+   "eos_coeffs": [
+    2.243e-05,
+    444.0,
+    1.9
+   ]
+  },
+  {
+   "label": "graphite",
+   "type": "PHASE",
+   "formula": "C",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": 0.0,
+   "s": 5.74,
+   "v": 0.5298,
+   "cp_type": "CP_SAXENA",
+   "cp_coeffs": [
+    60.86,
+    -0.01024,
+    713900.0,
+    1.669e-06,
+    0.0,
+    -992.2,
+    0.0
+   ],
+   "eos_type": "EOS_VINET",
+   "eos_coeffs": [
+    3.46e-05,
+    33.8,
+    8.9
+   ]
+  }
+ ],
+ "meltsSolids": [
+  {
+   "label": "tephroite",
+   "type": "COMPONENT",
+   "formula": "Mn2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1732000.0,
+   "s": 155.9,
+   "v": 4.889,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    219.89,
+    -1271.0,
+    -2049600.0,
+    176520000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.84e-07,
+    0.0,
+    2.514e-05,
+    6.47e-09
+   ]
+  },
+  {
+   "label": "fayalite",
+   "type": "COMPONENT",
+   "formula": "Fe2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1479360.0,
+   "s": 150.93,
+   "v": 4.63,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    248.93,
+    -1923.9,
+    0.0,
+    -139100000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.3e-07,
+    0.0,
+    2.6546e-05,
+    7.9482e-09
+   ]
+  },
+  {
+   "label": "co-olivine",
+   "type": "COMPONENT",
+   "formula": "Co2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1414100.0,
+   "s": 142.6,
+   "v": 4.459,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    201.048,
+    -36.9,
+    -7181000.0,
+    900500000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -6.4e-07,
+    0.0,
+    2.8422e-05,
+    3.5355e-09
+   ]
+  },
+  {
+   "label": "ni-olivine",
+   "type": "COMPONENT",
+   "formula": "Ni2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1395300.0,
+   "s": 128.1,
+   "v": 4.259,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    214.997,
+    -1030.8,
+    -4944500.0,
+    623700000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -6.71e-07,
+    0.0,
+    2.8422e-05,
+    3.5355e-09
+   ]
+  },
+  {
+   "label": "monticellite",
+   "type": "COMPONENT",
+   "formula": "CaMgSiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2250027.0,
+   "s": 108.3,
+   "v": 5.148,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    226.34,
+    -1542.7,
+    -1179700.0,
+    -23290000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -9.04e-07,
+    2e-12,
+    2.7863e-05,
+    7.6339e-09
+   ]
+  },
+  {
+   "label": "forsterite",
+   "type": "COMPONENT",
+   "formula": "Mg2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2174420.0,
+   "s": 94.01,
+   "v": 4.366,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    238.64,
+    -2001.3,
+    0.0,
+    -116240000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.91e-07,
+    1.351e-12,
+    2.9464e-05,
+    8.8633e-09
+   ]
+  },
+  {
+   "label": "fayalite",
+   "type": "PHASE",
+   "formula": "Fe2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1479360.0,
+   "s": 150.93,
+   "v": 4.63,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    248.93,
+    -1923.9,
+    0.0,
+    -139100000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_VINET",
+   "eos_coeffs": [
+    2.9447e-05,
+    127.955797,
+    5.016956
+   ]
+  },
+  {
+   "label": "sphene",
+   "type": "PHASE",
+   "formula": "CaTiSiO5",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2596652.0,
+   "s": 129.29,
+   "v": 5.565,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    234.62,
+    -1040.3,
+    -5118300.0,
+    591460000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.9e-07,
+    0.0,
+    2.52e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "almandine",
+   "type": "COMPONENT",
+   "formula": "Fe3Al2Si3O12",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -5267216.0,
+   "s": 340.007,
+   "v": 11.511,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    573.96,
+    -1483.1,
+    -29292000.0,
+    5022080000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.58e-07,
+    3.21e-13,
+    1.8613e-05,
+    7.4539e-09
+   ]
+  },
+  {
+   "label": "grossular",
+   "type": "COMPONENT",
+   "formula": "Ca3Al2Si3O12",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -6632859.0,
+   "s": 255.15,
+   "v": 12.538,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    573.43,
+    -2039.4,
+    -18887200.0,
+    2319310000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -6.54e-07,
+    1.635e-12,
+    1.8994e-05,
+    7.9756e-09
+   ]
+  },
+  {
+   "label": "pyrope",
+   "type": "COMPONENT",
+   "formula": "Mg3Al2Si3O12",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -6286548.0,
+   "s": 266.359,
+   "v": 11.316,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    640.72,
+    -4542.1,
+    -4701900.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.76e-07,
+    4.42e-13,
+    2.2519e-05,
+    3.7044e-09
+   ]
+  },
+  {
+   "label": "akermanite",
+   "type": "COMPONENT",
+   "formula": "Ca2MgSi2O7",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3855541.0,
+   "s": 212.0,
+   "v": 9.252,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    387.06,
+    -2938.8,
+    0.0,
+    -40790000.0,
+    358.0,
+    452.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.85e-07,
+    0.0,
+    2.5011e-05,
+    6.7224e-09
+   ]
+  },
+  {
+   "label": "gehlenite",
+   "type": "COMPONENT",
+   "formula": "Ca2Al2SiO7",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3969258.0,
+   "s": 198.6,
+   "v": 9.033,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    373.09,
+    -2276.8,
+    -4778500.0,
+    477910000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -9.96e-07,
+    2.488e-12,
+    2.4926e-05,
+    5.664e-10
+   ]
+  },
+  {
+   "label": "iron-akermanite",
+   "type": "COMPONENT",
+   "formula": "Ca2FeSi2O7",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3856441.0,
+   "s": 212.0,
+   "v": 9.252,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    387.06,
+    -2938.8,
+    0.0,
+    -40790000.0,
+    358.0,
+    452.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.85e-07,
+    0.0,
+    2.5011e-05,
+    6.7224e-09
+   ]
+  },
+  {
+   "label": "soda-melilite",
+   "type": "COMPONENT",
+   "formula": "Na2Si3O7",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3981458.0,
+   "s": 198.6,
+   "v": 9.033,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    373.09,
+    -2276.8,
+    -4778500.0,
+    477910000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -9.96e-07,
+    2.488e-12,
+    2.4926e-05,
+    5.664e-10
+   ]
+  },
+  {
+   "label": "diopside",
+   "type": "COMPONENT",
+   "formula": "CaMgSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3200583.0,
+   "s": 142.5,
+   "v": 6.62,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    305.41,
+    -1604.9,
+    -7166000.0,
+    921840000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.72e-07,
+    1.707e-12,
+    2.7795e-05,
+    8.3082e-09
+   ]
+  },
+  {
+   "label": "clinoenstatite",
+   "type": "COMPONENT",
+   "formula": "Mg2Si2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3086083.0,
+   "s": 135.164,
+   "v": 6.3279,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    333.16,
+    -2401.2,
+    -4541200.0,
+    558300000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.49e-07,
+    4.47e-13,
+    2.4656e-05,
+    7.467e-09
+   ]
+  },
+  {
+   "label": "hedenbergite",
+   "type": "COMPONENT",
+   "formula": "CaFeSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2842221.0,
+   "s": 174.2,
+   "v": 6.7894,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    307.89,
+    -1597.3,
+    -6992500.0,
+    935220000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -9.925e-07,
+    1.4835e-12,
+    3.1371e-05,
+    8.3672e-09
+   ]
+  },
+  {
+   "label": "alumino-buffonite",
+   "type": "COMPONENT",
+   "formula": "CaTi0.5Mg0.5AlSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3283830.18,
+   "s": 143.745,
+   "v": 6.356,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    297.499,
+    -1355.96,
+    -6702190.0,
+    759082000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "buffonite",
+   "type": "COMPONENT",
+   "formula": "CaTi0.5Mg0.5FeSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2828776.95,
+   "s": 180.741,
+   "v": 6.7217,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    303.909,
+    -1417.67,
+    -4356540.0,
+    352523000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "essenite",
+   "type": "COMPONENT",
+   "formula": "CaFeAlSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2867478.01,
+   "s": 177.747,
+   "v": 6.7217,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    317.11,
+    -1733.3,
+    -5109650.0,
+    542220000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "jadeite",
+   "type": "COMPONENT",
+   "formula": "NaAlSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3025118.0,
+   "s": 133.574,
+   "v": 6.034,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    311.29,
+    -2005.1,
+    -5350300.0,
+    662570000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.6e-07,
+    2.149e-12,
+    2.3118e-05,
+    2.5785e-09
+   ]
+  },
+  {
+   "label": "diopside",
+   "type": "COMPONENT",
+   "formula": "CaMgSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3200583.0,
+   "s": 142.5,
+   "v": 6.62,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    305.41,
+    -1604.9,
+    -7166000.0,
+    921840000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.72e-07,
+    1.707e-12,
+    2.7795e-05,
+    8.3082e-09
+   ]
+  },
+  {
+   "label": "clinoenstatite",
+   "type": "COMPONENT",
+   "formula": "Mg2Si2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3086083.0,
+   "s": 135.164,
+   "v": 6.3279,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    333.16,
+    -2401.2,
+    -4541200.0,
+    558300000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.49e-07,
+    4.47e-13,
+    2.4656e-05,
+    7.467e-09
+   ]
+  },
+  {
+   "label": "hedenbergite",
+   "type": "COMPONENT",
+   "formula": "CaFeSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2842221.0,
+   "s": 174.2,
+   "v": 6.7894,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    307.89,
+    -1597.3,
+    -6992500.0,
+    935220000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -9.925e-07,
+    1.4835e-12,
+    3.1371e-05,
+    8.3672e-09
+   ]
+  },
+  {
+   "label": "alumino-buffonite",
+   "type": "COMPONENT",
+   "formula": "CaTi0.5Mg0.5AlSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3283830.18,
+   "s": 143.745,
+   "v": 6.356,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    297.499,
+    -1355.96,
+    -6702190.0,
+    759082000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "buffonite",
+   "type": "COMPONENT",
+   "formula": "CaTi0.5Mg0.5FeSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2828776.95,
+   "s": 180.741,
+   "v": 6.7217,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    303.909,
+    -1417.67,
+    -4356540.0,
+    352523000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "essenite",
+   "type": "COMPONENT",
+   "formula": "CaFeAlSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2867478.01,
+   "s": 177.747,
+   "v": 6.7217,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    317.11,
+    -1733.3,
+    -5109650.0,
+    542220000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "jadeite",
+   "type": "COMPONENT",
+   "formula": "NaAlSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3025118.0,
+   "s": 133.574,
+   "v": 6.034,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    311.29,
+    -2005.1,
+    -5350300.0,
+    662570000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.6e-07,
+    2.149e-12,
+    2.3118e-05,
+    2.5785e-09
+   ]
+  },
+  {
+   "label": "aegirine",
+   "type": "PHASE",
+   "formula": "NaFeSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2576800.0,
+   "s": 170.57,
+   "v": 63.997,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    317.70000000000005,
+    -2066.81,
+    -3004650.0,
+    256011000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "aenigmatite",
+   "type": "PHASE",
+   "formula": "Na2Fe5TiSi6O20",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -8472805.0,
+   "s": 740.23,
+   "v": 22.8546,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1092.073,
+    -6159.81,
+    -22526790.0,
+    3268659000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "cummingtonite",
+   "type": "COMPONENT",
+   "formula": "Mg7Si8O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -12067517.0,
+   "s": 540.2587,
+   "v": 26.33,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1233.792,
+    -7133.98,
+    -22163800.0,
+    2333937490.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.1393847e-06,
+    0.0,
+    2.81048234e-05,
+    6.2894e-09
+   ]
+  },
+  {
+   "label": "grunerite",
+   "type": "COMPONENT",
+   "formula": "Fe7Si8O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -9623300.0,
+   "s": 725.0,
+   "v": 27.84,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1347.83,
+    -9356.91,
+    -20228480.0,
+    3039190000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.670299e-06,
+    8.68919e-12,
+    2.84e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "cummingtonite",
+   "type": "COMPONENT",
+   "formula": "Mg7Si8O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -12067920.38,
+   "s": 540.2587,
+   "v": 26.34,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1233.792,
+    -7133.98,
+    -22163800.0,
+    2333937490.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.1393847e-06,
+    0.0,
+    2.81048234e-05,
+    6.2894e-09
+   ]
+  },
+  {
+   "label": "grunerite",
+   "type": "COMPONENT",
+   "formula": "Fe7Si8O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -9623550.0,
+   "s": 725.0,
+   "v": 27.84,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1347.83,
+    -9356.91,
+    -20228480.0,
+    3039190000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.670299e-06,
+    8.68919e-12,
+    2.84e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "tremolite",
+   "type": "COMPONENT",
+   "formula": "Ca2Mg5Si8O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -12307863.0,
+   "s": 549.5,
+   "v": 27.312,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1229.36,
+    -6401.9,
+    -32089900.0,
+    4208810000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.4763e-06,
+    8.9462e-12,
+    2.4374e-05,
+    9.8338e-09
+   ]
+  },
+  {
+   "label": "pargasite",
+   "type": "COMPONENT",
+   "formula": "NaCa2Mg4AlAl2Si6O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -12621554.816,
+   "s": 669.44,
+   "v": 27.35,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1267.25,
+    -6654.34,
+    -30378700.0,
+    3913530000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.392e-06,
+    3.481e-12,
+    2.4374e-05,
+    9.8338e-09
+   ]
+  },
+  {
+   "label": "ferropargasite",
+   "type": "COMPONENT",
+   "formula": "NaCa2Fe4AlAl2Si6O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -11224859.38742857,
+   "s": 776.1320000000001,
+   "v": 27.989,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1342.61,
+    -8348.62,
+    -24760400.0,
+    3485070000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.392e-06,
+    3.481e-12,
+    2.4374e-05,
+    9.8338e-09
+   ]
+  },
+  {
+   "label": "magnesiohastingsite",
+   "type": "COMPONENT",
+   "formula": "NaCa2Mg4FeAl2Si6O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -12166501.586,
+   "s": 685.3392000000001,
+   "v": 27.38,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1273.66,
+    -6716.06,
+    -28033100.0,
+    3506970000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.392e-06,
+    3.481e-12,
+    2.4374e-05,
+    9.8338e-09
+   ]
+  },
+  {
+   "label": "annite",
+   "type": "COMPONENT",
+   "formula": "KFe3Si3AlO10(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -5142800.0,
+   "s": 420.0,
+   "v": 15.408,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    727.208,
+    -4775.04,
+    -13831900.0,
+    2119060000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.6969784e-06,
+    0.0,
+    3.44473262e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "phlogopite",
+   "type": "COMPONENT",
+   "formula": "KMg3Si3AlO10(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -6210391.0,
+   "s": 334.346,
+   "v": 14.977,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    610.37988,
+    -2083.781,
+    -21533008.0,
+    2841040896.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.6969784e-06,
+    0.0,
+    3.44473262e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "muscovite",
+   "type": "PHASE",
+   "formula": "KAl2Si3AlO10(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -5976740.0,
+   "s": 293.157,
+   "v": 14.087,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    651.49,
+    -3873.2,
+    -18523200.0,
+    2742470000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.717e-06,
+    4.295e-12,
+    3.3527e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "albite",
+   "type": "COMPONENT",
+   "formula": "NaAlSi3O8",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3921618.0,
+   "s": 224.412,
+   "v": 10.083,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    393.64,
+    -2415.5,
+    -7892800.0,
+    1070640000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.945e-06,
+    4.861e-12,
+    2.6307e-05,
+    3.2407e-09
+   ]
+  },
+  {
+   "label": "anorthite",
+   "type": "COMPONENT",
+   "formula": "CaAl2Si2O8",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -4213249.2,
+   "s": 207.22272727272727,
+   "v": 10.075,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    439.37,
+    -3734.1,
+    0.0,
+    -317020000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.272e-06,
+    3.176e-12,
+    1.0918e-05,
+    4.1985e-09
+   ]
+  },
+  {
+   "label": "sanidine",
+   "type": "COMPONENT",
+   "formula": "KAlSi3O8",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3967391.0,
+   "s": 214.145,
+   "v": 10.869,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    381.37,
+    -1941.0,
+    -12037300.0,
+    1836430000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.805e-06,
+    5.112e-12,
+    1.5145e-05,
+    5.485e-09
+   ]
+  },
+  {
+   "label": "quartz",
+   "type": "PHASE",
+   "formula": "SiO2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -910700.0,
+   "s": 41.46,
+   "v": 2.269,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    80.01,
+    -240.3,
+    -3546700.0,
+    491570000.0,
+    848.0,
+    0.0,
+    -0.09187,
+    0.00024607
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.434e-06,
+    1.0137e-11,
+    2.3895e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "tridymite",
+   "type": "PHASE",
+   "formula": "SiO2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -907750.0,
+   "s": 43.77,
+   "v": 2.675,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    75.37,
+    0.0,
+    -5958100.0,
+    958250000.0,
+    383.0,
+    130.0,
+    0.4267,
+    -0.00144575
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.508e-06,
+    0.0,
+    1.9339e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "cristobalite",
+   "type": "PHASE",
+   "formula": "SiO2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -907753.0,
+   "s": 43.394,
+   "v": 2.587,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    83.51,
+    -374.7,
+    -2455400.0,
+    280070000.0,
+    535.0,
+    0.0,
+    -0.14216,
+    0.00044142
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.515e-06,
+    0.0,
+    2.0824e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "na-nepheline",
+   "type": "COMPONENT",
+   "formula": "Na4Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -8372016.0,
+   "s": 498.564,
+   "v": 21.6524,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    820.96,
+    -3039.6,
+    -43353200.0,
+    8327280000.0,
+    467.0,
+    964.0,
+    -1.00498,
+    0.003319
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.05e-06,
+    5.2e-12,
+    3.1802e-05,
+    2.13e-08
+   ]
+  },
+  {
+   "label": "k-nepheline",
+   "type": "COMPONENT",
+   "formula": "K4Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -8436178.559999999,
+   "s": 535.8612,
+   "v": 24.215752000000002,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    744.0,
+    0.0,
+    -52426800.0,
+    8555720000.0,
+    800.15,
+    4616.0,
+    -0.14192908,
+    0.00043364
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.05e-06,
+    5.2e-12,
+    3.1802e-05,
+    2.13e-08
+   ]
+  },
+  {
+   "label": "vc-nepheline",
+   "type": "COMPONENT",
+   "formula": "Na3Al3Si5O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3921618.0,
+   "s": 224.412,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    393.64,
+    -2415.5,
+    -7892800.0,
+    1070640000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "ca-nepheline",
+   "type": "COMPONENT",
+   "formula": "CaNa2Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -4213249.2,
+   "s": 207.22272727272727,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    439.37,
+    -3734.1,
+    0.0,
+    -317020000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "na-nepheline",
+   "type": "COMPONENT",
+   "formula": "Na4Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -8372016.0,
+   "s": 498.564,
+   "v": 21.6524,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    820.96,
+    -3039.6,
+    -43353200.0,
+    8327280000.0,
+    467.0,
+    964.0,
+    -1.00498,
+    0.003319
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.05e-06,
+    5.2e-12,
+    3.1802e-05,
+    2.13e-08
+   ]
+  },
+  {
+   "label": "k-nepheline",
+   "type": "COMPONENT",
+   "formula": "K4Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -8432605.799999999,
+   "s": 535.8612,
+   "v": 24.215752000000002,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    744.0,
+    0.0,
+    -52426800.0,
+    8555720000.0,
+    800.15,
+    4616.0,
+    -0.14192908,
+    0.00043364
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.05e-06,
+    5.2e-12,
+    3.1802e-05,
+    2.13e-08
+   ]
+  },
+  {
+   "label": "vc-nepheline",
+   "type": "COMPONENT",
+   "formula": "Na3Al3Si5O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3921618.0,
+   "s": 224.412,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    393.64,
+    -2415.5,
+    -7892800.0,
+    1070640000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "ca-nepheline",
+   "type": "COMPONENT",
+   "formula": "CaNa2Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -4213249.2,
+   "s": 207.22272727272727,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    439.37,
+    -3734.1,
+    0.0,
+    -317020000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "leucite",
+   "type": "COMPONENT",
+   "formula": "KAlSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3010279.63,
+   "s": 205.846,
+   "v": 8.839,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    271.14,
+    -944.1,
+    -7857200.0,
+    959200000.0,
+    955.0,
+    256.0,
+    -0.09731,
+    0.0003373
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.5568254e-06,
+    1.2739e-12,
+    1.25167877e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "analcime",
+   "type": "COMPONENT",
+   "formula": "NaAlSi2O5(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3325900.0,
+   "s": 228.1,
+   "v": 9.71,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    571.83,
+    -7188.7,
+    0.0,
+    1493060000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.5568254e-06,
+    1.2739e-12,
+    1.25167877e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "na-leucite",
+   "type": "COMPONENT",
+   "formula": "NaAlSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3001975.55,
+   "s": 165.74,
+   "v": 8.91,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    401.27,
+    -4248.0,
+    0.0,
+    216300000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.5568254e-06,
+    1.2739e-12,
+    1.25167877e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "corundum",
+   "type": "PHASE",
+   "formula": "Al2O3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1675700.0,
+   "s": 50.82,
+   "v": 2.558,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    155.02,
+    -828.4,
+    -3861400.0,
+    409080000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -3.85e-07,
+    3.75e-13,
+    2.1342e-05,
+    4.718e-09
+   ]
+  },
+  {
+   "label": "sillimanite",
+   "type": "PHASE",
+   "formula": "Al2SiO5",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2586091.0,
+   "s": 95.93,
+   "v": 4.983,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    256.73,
+    -1887.2,
+    -2977400.0,
+    250960000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.53e-07,
+    0.0,
+    1.3431e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "rutile",
+   "type": "PHASE",
+   "formula": "TiO2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -944750.0,
+   "s": 50.46,
+   "v": 1.882,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    77.84,
+    0.0,
+    -3367800.0,
+    402940000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -4.54e-07,
+    5.84e-13,
+    2.5716e-05,
+    1.5409e-09
+   ]
+  },
+  {
+   "label": "perovskite",
+   "type": "PHASE",
+   "formula": "CaTiO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1660630.0,
+   "s": 93.64,
+   "v": 3.3626,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    150.49,
+    -621.3,
+    0.0,
+    -430100000.0,
+    1530.0,
+    2301.2000000000003,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "chromite",
+   "type": "COMPONENT",
+   "formula": "FeCr2O4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1445490.0,
+   "s": 142.676,
+   "v": 4.401,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    236.874,
+    -1679.6,
+    0.0,
+    -167650000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "hercynite",
+   "type": "COMPONENT",
+   "formula": "FeAl2O4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1947681.0,
+   "s": 115.362,
+   "v": 4.074998432,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    235.19,
+    -1437.0,
+    -4691300.0,
+    645640000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "magnetite",
+   "type": "COMPONENT",
+   "formula": "Fe3O4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1117403.0,
+   "s": 146.114,
+   "v": 4.452,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    207.93,
+    0.0,
+    -7243300.0,
+    664360000.0,
+    848.0,
+    1565.0,
+    -0.19502,
+    0.00061037
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.82e-07,
+    1.751e-12,
+    3.0291e-05,
+    1.3847e-08
+   ]
+  },
+  {
+   "label": "spinel",
+   "type": "COMPONENT",
+   "formula": "MgAl2O4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2300313.0,
+   "s": 84.535,
+   "v": 3.977,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    235.9,
+    -1766.6,
+    -1710400.0,
+    40620000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -4.89e-07,
+    0.0,
+    2.1691e-05,
+    5.0528e-09
+   ]
+  },
+  {
+   "label": "ulvospinel",
+   "type": "COMPONENT",
+   "formula": "Fe2TiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1488500.0,
+   "s": 185.447,
+   "v": 4.682,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    249.63,
+    -1817.4,
+    0.0,
+    -54530000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "geikielite",
+   "type": "COMPONENT",
+   "formula": "MgTiO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1572560.0,
+   "s": 74.56,
+   "v": 3.086,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    146.2,
+    -416.0,
+    -3999800.0,
+    402330000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.84e-07,
+    1.23e-12,
+    2.7248e-05,
+    2.9968e-09
+   ]
+  },
+  {
+   "label": "hematite",
+   "type": "COMPONENT",
+   "formula": "Fe2O3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -825627.0,
+   "s": 87.437,
+   "v": 3.027,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    146.86,
+    0.0,
+    -5576800.0,
+    525630000.0,
+    955.0,
+    1287.0,
+    -0.07403,
+    0.00027921
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -4.79e-07,
+    3.04e-13,
+    3.831e-05,
+    1.65e-10
+   ]
+  },
+  {
+   "label": "ilmenite",
+   "type": "COMPONENT",
+   "formula": "FeTiO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1231947.0,
+   "s": 108.628,
+   "v": 3.17,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    150.0,
+    -441.6,
+    -3323700.0,
+    348150000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.84e-07,
+    1.23e-12,
+    2.7248e-05,
+    2.9968e-09
+   ]
+  },
+  {
+   "label": "pyrophanite",
+   "type": "COMPONENT",
+   "formula": "MnTiO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1350707.0,
+   "s": 104.935,
+   "v": 2.8859,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    150.0,
+    -441.6,
+    -3323700.0,
+    348150000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.84e-07,
+    1.23e-12,
+    2.7248e-05,
+    2.9968e-09
+   ]
+  },
+  {
+   "label": "corundum",
+   "type": "COMPONENT",
+   "formula": "Al2O3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1655700.0,
+   "s": 50.82,
+   "v": 2.558,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    155.02,
+    -828.4,
+    -3861400.0,
+    409080000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -3.85e-07,
+    3.75e-13,
+    2.1342e-05,
+    4.718e-09
+   ]
+  },
+  {
+   "label": "pseudobrookite",
+   "type": "COMPONENT",
+   "formula": "Fe2TiO5",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1754429.0,
+   "s": 156.4816,
+   "v": 5.491,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    261.35,
+    -1530.7,
+    0.0,
+    -234660000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "ferropseudobrookite",
+   "type": "COMPONENT",
+   "formula": "FeTi2O5",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2175332.0,
+   "s": 160.05360000000002,
+   "v": 5.578,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    251.42000000000002,
+    -1179.0700000000002,
+    -4256220.0,
+    475025000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "karrooite",
+   "type": "COMPONENT",
+   "formula": "MgTi2O5",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2507053.0,
+   "s": 127.1936,
+   "v": 5.482,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    232.58,
+    -755.5,
+    -5660800.0,
+    582140000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "whitlockite",
+   "type": "PHASE",
+   "formula": "Ca3(PO4)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -4097169.0,
+   "s": 235.978,
+   "v": 9.762,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    402.997,
+    -2808.35,
+    0.0,
+    -326230000.0,
+    1373.0,
+    14059.0,
+    0.025427,
+    0.00019255
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "apatite",
+   "type": "PHASE",
+   "formula": "Ca5(PO4)3OH",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -6694689.0,
+   "s": 398.74,
+   "v": 16.4025,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    758.81,
+    -6480.6,
+    0.0,
+    447940000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "water",
+   "type": "PHASE",
+   "formula": "H2O",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -54955.2356,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "Fe-metal",
+   "type": "COMPONENT",
+   "formula": "Fe",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": 9999.0,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "Ni-metal",
+   "type": "COMPONENT",
+   "formula": "Ni",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": 9999.0,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "Fe-liquid",
+   "type": "COMPONENT",
+   "formula": "Fe",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": 9999.0,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "Ni-liquid",
+   "type": "COMPONENT",
+   "formula": "Ni",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": 9999.0,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  }
+ ],
+ "meltsFluidSolids": [
+  {
+   "label": "tephroite",
+   "type": "COMPONENT",
+   "formula": "Mn2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1732000.0,
+   "s": 155.9,
+   "v": 4.889,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    219.89,
+    -1271.0,
+    -2049600.0,
+    176520000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.84e-07,
+    0.0,
+    2.514e-05,
+    6.47e-09
+   ]
+  },
+  {
+   "label": "fayalite",
+   "type": "COMPONENT",
+   "formula": "Fe2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1479360.0,
+   "s": 150.93,
+   "v": 4.63,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    248.93,
+    -1923.9,
+    0.0,
+    -139100000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.3e-07,
+    0.0,
+    2.6546e-05,
+    7.9482e-09
+   ]
+  },
+  {
+   "label": "co-olivine",
+   "type": "COMPONENT",
+   "formula": "Co2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1414100.0,
+   "s": 142.6,
+   "v": 4.459,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    201.048,
+    -36.9,
+    -7181000.0,
+    900500000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -6.4e-07,
+    0.0,
+    2.8422e-05,
+    3.5355e-09
+   ]
+  },
+  {
+   "label": "ni-olivine",
+   "type": "COMPONENT",
+   "formula": "Ni2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1395300.0,
+   "s": 128.1,
+   "v": 4.259,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    214.997,
+    -1030.8,
+    -4944500.0,
+    623700000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -6.71e-07,
+    0.0,
+    2.8422e-05,
+    3.5355e-09
+   ]
+  },
+  {
+   "label": "monticellite",
+   "type": "COMPONENT",
+   "formula": "CaMgSiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2250027.0,
+   "s": 108.3,
+   "v": 5.148,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    226.34,
+    -1542.7,
+    -1179700.0,
+    -23290000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -9.04e-07,
+    2e-12,
+    2.7863e-05,
+    7.6339e-09
+   ]
+  },
+  {
+   "label": "forsterite",
+   "type": "COMPONENT",
+   "formula": "Mg2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2174420.0,
+   "s": 94.01,
+   "v": 4.366,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    238.64,
+    -2001.3,
+    0.0,
+    -116240000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.91e-07,
+    1.351e-12,
+    2.9464e-05,
+    8.8633e-09
+   ]
+  },
+  {
+   "label": "fayalite",
+   "type": "PHASE",
+   "formula": "Fe2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1479360.0,
+   "s": 150.93,
+   "v": 4.63,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    248.93,
+    -1923.9,
+    0.0,
+    -139100000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_VINET",
+   "eos_coeffs": [
+    2.9447e-05,
+    127.955797,
+    5.016956
+   ]
+  },
+  {
+   "label": "sphene",
+   "type": "PHASE",
+   "formula": "CaTiSiO5",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2596652.0,
+   "s": 129.29,
+   "v": 5.565,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    234.62,
+    -1040.3,
+    -5118300.0,
+    591460000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.9e-07,
+    0.0,
+    2.52e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "almandine",
+   "type": "COMPONENT",
+   "formula": "Fe3Al2Si3O12",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -5267216.0,
+   "s": 340.007,
+   "v": 11.511,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    573.96,
+    -1483.1,
+    -29292000.0,
+    5022080000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.58e-07,
+    3.21e-13,
+    1.8613e-05,
+    7.4539e-09
+   ]
+  },
+  {
+   "label": "grossular",
+   "type": "COMPONENT",
+   "formula": "Ca3Al2Si3O12",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -6632859.0,
+   "s": 255.15,
+   "v": 12.538,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    573.43,
+    -2039.4,
+    -18887200.0,
+    2319310000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -6.54e-07,
+    1.635e-12,
+    1.8994e-05,
+    7.9756e-09
+   ]
+  },
+  {
+   "label": "pyrope",
+   "type": "COMPONENT",
+   "formula": "Mg3Al2Si3O12",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -6286548.0,
+   "s": 266.359,
+   "v": 11.316,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    640.72,
+    -4542.1,
+    -4701900.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.76e-07,
+    4.42e-13,
+    2.2519e-05,
+    3.7044e-09
+   ]
+  },
+  {
+   "label": "akermanite",
+   "type": "COMPONENT",
+   "formula": "Ca2MgSi2O7",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3855541.0,
+   "s": 212.0,
+   "v": 9.252,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    387.06,
+    -2938.8,
+    0.0,
+    -40790000.0,
+    358.0,
+    452.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.85e-07,
+    0.0,
+    2.5011e-05,
+    6.7224e-09
+   ]
+  },
+  {
+   "label": "gehlenite",
+   "type": "COMPONENT",
+   "formula": "Ca2Al2SiO7",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3969258.0,
+   "s": 198.6,
+   "v": 9.033,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    373.09,
+    -2276.8,
+    -4778500.0,
+    477910000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -9.96e-07,
+    2.488e-12,
+    2.4926e-05,
+    5.664e-10
+   ]
+  },
+  {
+   "label": "iron-akermanite",
+   "type": "COMPONENT",
+   "formula": "Ca2FeSi2O7",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3856441.0,
+   "s": 212.0,
+   "v": 9.252,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    387.06,
+    -2938.8,
+    0.0,
+    -40790000.0,
+    358.0,
+    452.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.85e-07,
+    0.0,
+    2.5011e-05,
+    6.7224e-09
+   ]
+  },
+  {
+   "label": "soda-melilite",
+   "type": "COMPONENT",
+   "formula": "Na2Si3O7",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3981458.0,
+   "s": 198.6,
+   "v": 9.033,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    373.09,
+    -2276.8,
+    -4778500.0,
+    477910000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -9.96e-07,
+    2.488e-12,
+    2.4926e-05,
+    5.664e-10
+   ]
+  },
+  {
+   "label": "diopside",
+   "type": "COMPONENT",
+   "formula": "CaMgSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3200583.0,
+   "s": 142.5,
+   "v": 6.62,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    305.41,
+    -1604.9,
+    -7166000.0,
+    921840000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.72e-07,
+    1.707e-12,
+    2.7795e-05,
+    8.3082e-09
+   ]
+  },
+  {
+   "label": "clinoenstatite",
+   "type": "COMPONENT",
+   "formula": "Mg2Si2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3086083.0,
+   "s": 135.164,
+   "v": 6.3279,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    333.16,
+    -2401.2,
+    -4541200.0,
+    558300000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.49e-07,
+    4.47e-13,
+    2.4656e-05,
+    7.467e-09
+   ]
+  },
+  {
+   "label": "hedenbergite",
+   "type": "COMPONENT",
+   "formula": "CaFeSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2842221.0,
+   "s": 174.2,
+   "v": 6.7894,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    307.89,
+    -1597.3,
+    -6992500.0,
+    935220000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -9.925e-07,
+    1.4835e-12,
+    3.1371e-05,
+    8.3672e-09
+   ]
+  },
+  {
+   "label": "alumino-buffonite",
+   "type": "COMPONENT",
+   "formula": "CaTi0.5Mg0.5AlSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3283830.18,
+   "s": 143.745,
+   "v": 6.356,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    297.499,
+    -1355.96,
+    -6702190.0,
+    759082000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "buffonite",
+   "type": "COMPONENT",
+   "formula": "CaTi0.5Mg0.5FeSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2828776.95,
+   "s": 180.741,
+   "v": 6.7217,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    303.909,
+    -1417.67,
+    -4356540.0,
+    352523000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "essenite",
+   "type": "COMPONENT",
+   "formula": "CaFeAlSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2867478.01,
+   "s": 177.747,
+   "v": 6.7217,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    317.11,
+    -1733.3,
+    -5109650.0,
+    542220000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "jadeite",
+   "type": "COMPONENT",
+   "formula": "NaAlSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3025118.0,
+   "s": 133.574,
+   "v": 6.034,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    311.29,
+    -2005.1,
+    -5350300.0,
+    662570000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.6e-07,
+    2.149e-12,
+    2.3118e-05,
+    2.5785e-09
+   ]
+  },
+  {
+   "label": "diopside",
+   "type": "COMPONENT",
+   "formula": "CaMgSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3200583.0,
+   "s": 142.5,
+   "v": 6.62,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    305.41,
+    -1604.9,
+    -7166000.0,
+    921840000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.72e-07,
+    1.707e-12,
+    2.7795e-05,
+    8.3082e-09
+   ]
+  },
+  {
+   "label": "clinoenstatite",
+   "type": "COMPONENT",
+   "formula": "Mg2Si2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3086083.0,
+   "s": 135.164,
+   "v": 6.3279,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    333.16,
+    -2401.2,
+    -4541200.0,
+    558300000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.49e-07,
+    4.47e-13,
+    2.4656e-05,
+    7.467e-09
+   ]
+  },
+  {
+   "label": "hedenbergite",
+   "type": "COMPONENT",
+   "formula": "CaFeSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2842221.0,
+   "s": 174.2,
+   "v": 6.7894,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    307.89,
+    -1597.3,
+    -6992500.0,
+    935220000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -9.925e-07,
+    1.4835e-12,
+    3.1371e-05,
+    8.3672e-09
+   ]
+  },
+  {
+   "label": "alumino-buffonite",
+   "type": "COMPONENT",
+   "formula": "CaTi0.5Mg0.5AlSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3283830.18,
+   "s": 143.745,
+   "v": 6.356,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    297.499,
+    -1355.96,
+    -6702190.0,
+    759082000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "buffonite",
+   "type": "COMPONENT",
+   "formula": "CaTi0.5Mg0.5FeSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2828776.95,
+   "s": 180.741,
+   "v": 6.7217,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    303.909,
+    -1417.67,
+    -4356540.0,
+    352523000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "essenite",
+   "type": "COMPONENT",
+   "formula": "CaFeAlSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2867478.01,
+   "s": 177.747,
+   "v": 6.7217,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    317.11,
+    -1733.3,
+    -5109650.0,
+    542220000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "jadeite",
+   "type": "COMPONENT",
+   "formula": "NaAlSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3025118.0,
+   "s": 133.574,
+   "v": 6.034,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    311.29,
+    -2005.1,
+    -5350300.0,
+    662570000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.6e-07,
+    2.149e-12,
+    2.3118e-05,
+    2.5785e-09
+   ]
+  },
+  {
+   "label": "aegirine",
+   "type": "PHASE",
+   "formula": "NaFeSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2576800.0,
+   "s": 170.57,
+   "v": 63.997,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    317.70000000000005,
+    -2066.81,
+    -3004650.0,
+    256011000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "aenigmatite",
+   "type": "PHASE",
+   "formula": "Na2Fe5TiSi6O20",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -8472805.0,
+   "s": 740.23,
+   "v": 22.8546,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1092.073,
+    -6159.81,
+    -22526790.0,
+    3268659000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "cummingtonite",
+   "type": "COMPONENT",
+   "formula": "Mg7Si8O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -12067517.0,
+   "s": 540.2587,
+   "v": 26.33,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1233.792,
+    -7133.98,
+    -22163800.0,
+    2333937490.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.1393847e-06,
+    0.0,
+    2.81048234e-05,
+    6.2894e-09
+   ]
+  },
+  {
+   "label": "grunerite",
+   "type": "COMPONENT",
+   "formula": "Fe7Si8O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -9623300.0,
+   "s": 725.0,
+   "v": 27.84,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1347.83,
+    -9356.91,
+    -20228480.0,
+    3039190000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.670299e-06,
+    8.68919e-12,
+    2.84e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "cummingtonite",
+   "type": "COMPONENT",
+   "formula": "Mg7Si8O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -12067920.38,
+   "s": 540.2587,
+   "v": 26.34,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1233.792,
+    -7133.98,
+    -22163800.0,
+    2333937490.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.1393847e-06,
+    0.0,
+    2.81048234e-05,
+    6.2894e-09
+   ]
+  },
+  {
+   "label": "grunerite",
+   "type": "COMPONENT",
+   "formula": "Fe7Si8O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -9623550.0,
+   "s": 725.0,
+   "v": 27.84,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1347.83,
+    -9356.91,
+    -20228480.0,
+    3039190000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.670299e-06,
+    8.68919e-12,
+    2.84e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "tremolite",
+   "type": "COMPONENT",
+   "formula": "Ca2Mg5Si8O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -12307863.0,
+   "s": 549.5,
+   "v": 27.312,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1229.36,
+    -6401.9,
+    -32089900.0,
+    4208810000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.4763e-06,
+    8.9462e-12,
+    2.4374e-05,
+    9.8338e-09
+   ]
+  },
+  {
+   "label": "pargasite",
+   "type": "COMPONENT",
+   "formula": "NaCa2Mg4AlAl2Si6O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -12621554.816,
+   "s": 669.44,
+   "v": 27.35,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1267.25,
+    -6654.34,
+    -30378700.0,
+    3913530000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.392e-06,
+    3.481e-12,
+    2.4374e-05,
+    9.8338e-09
+   ]
+  },
+  {
+   "label": "ferropargasite",
+   "type": "COMPONENT",
+   "formula": "NaCa2Fe4AlAl2Si6O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -11224859.38742857,
+   "s": 776.1320000000001,
+   "v": 27.989,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1342.61,
+    -8348.62,
+    -24760400.0,
+    3485070000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.392e-06,
+    3.481e-12,
+    2.4374e-05,
+    9.8338e-09
+   ]
+  },
+  {
+   "label": "magnesiohastingsite",
+   "type": "COMPONENT",
+   "formula": "NaCa2Mg4FeAl2Si6O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -12166501.586,
+   "s": 685.3392000000001,
+   "v": 27.38,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1273.66,
+    -6716.06,
+    -28033100.0,
+    3506970000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.392e-06,
+    3.481e-12,
+    2.4374e-05,
+    9.8338e-09
+   ]
+  },
+  {
+   "label": "annite",
+   "type": "COMPONENT",
+   "formula": "KFe3Si3AlO10(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -5142800.0,
+   "s": 420.0,
+   "v": 15.408,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    727.208,
+    -4775.04,
+    -13831900.0,
+    2119060000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.6969784e-06,
+    0.0,
+    3.44473262e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "phlogopite",
+   "type": "COMPONENT",
+   "formula": "KMg3Si3AlO10(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -6210391.0,
+   "s": 334.346,
+   "v": 14.977,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    610.37988,
+    -2083.781,
+    -21533008.0,
+    2841040896.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.6969784e-06,
+    0.0,
+    3.44473262e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "muscovite",
+   "type": "PHASE",
+   "formula": "KAl2Si3AlO10(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -5976740.0,
+   "s": 293.157,
+   "v": 14.087,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    651.49,
+    -3873.2,
+    -18523200.0,
+    2742470000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.717e-06,
+    4.295e-12,
+    3.3527e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "albite",
+   "type": "COMPONENT",
+   "formula": "NaAlSi3O8",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3921618.0,
+   "s": 224.412,
+   "v": 10.083,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    393.64,
+    -2415.5,
+    -7892800.0,
+    1070640000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.945e-06,
+    4.861e-12,
+    2.6307e-05,
+    3.2407e-09
+   ]
+  },
+  {
+   "label": "anorthite",
+   "type": "COMPONENT",
+   "formula": "CaAl2Si2O8",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -4213249.2,
+   "s": 207.22272727272727,
+   "v": 10.075,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    439.37,
+    -3734.1,
+    0.0,
+    -317020000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.272e-06,
+    3.176e-12,
+    1.0918e-05,
+    4.1985e-09
+   ]
+  },
+  {
+   "label": "sanidine",
+   "type": "COMPONENT",
+   "formula": "KAlSi3O8",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3967391.0,
+   "s": 214.145,
+   "v": 10.869,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    381.37,
+    -1941.0,
+    -12037300.0,
+    1836430000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.805e-06,
+    5.112e-12,
+    1.5145e-05,
+    5.485e-09
+   ]
+  },
+  {
+   "label": "quartz",
+   "type": "PHASE",
+   "formula": "SiO2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -910700.0,
+   "s": 41.46,
+   "v": 2.269,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    80.01,
+    -240.3,
+    -3546700.0,
+    491570000.0,
+    848.0,
+    0.0,
+    -0.09187,
+    0.00024607
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.434e-06,
+    1.0137e-11,
+    2.3895e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "tridymite",
+   "type": "PHASE",
+   "formula": "SiO2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -907750.0,
+   "s": 43.77,
+   "v": 2.675,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    75.37,
+    0.0,
+    -5958100.0,
+    958250000.0,
+    383.0,
+    130.0,
+    0.4267,
+    -0.00144575
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.508e-06,
+    0.0,
+    1.9339e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "cristobalite",
+   "type": "PHASE",
+   "formula": "SiO2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -907753.0,
+   "s": 43.394,
+   "v": 2.587,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    83.51,
+    -374.7,
+    -2455400.0,
+    280070000.0,
+    535.0,
+    0.0,
+    -0.14216,
+    0.00044142
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.515e-06,
+    0.0,
+    2.0824e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "na-nepheline",
+   "type": "COMPONENT",
+   "formula": "Na4Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -8372016.0,
+   "s": 498.564,
+   "v": 21.6524,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    820.96,
+    -3039.6,
+    -43353200.0,
+    8327280000.0,
+    467.0,
+    964.0,
+    -1.00498,
+    0.003319
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.05e-06,
+    5.2e-12,
+    3.1802e-05,
+    2.13e-08
+   ]
+  },
+  {
+   "label": "k-nepheline",
+   "type": "COMPONENT",
+   "formula": "K4Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -8436178.559999999,
+   "s": 535.8612,
+   "v": 24.215752000000002,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    744.0,
+    0.0,
+    -52426800.0,
+    8555720000.0,
+    800.15,
+    4616.0,
+    -0.14192908,
+    0.00043364
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.05e-06,
+    5.2e-12,
+    3.1802e-05,
+    2.13e-08
+   ]
+  },
+  {
+   "label": "vc-nepheline",
+   "type": "COMPONENT",
+   "formula": "Na3Al3Si5O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3921618.0,
+   "s": 224.412,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    393.64,
+    -2415.5,
+    -7892800.0,
+    1070640000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "ca-nepheline",
+   "type": "COMPONENT",
+   "formula": "CaNa2Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -4213249.2,
+   "s": 207.22272727272727,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    439.37,
+    -3734.1,
+    0.0,
+    -317020000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "na-nepheline",
+   "type": "COMPONENT",
+   "formula": "Na4Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -8372016.0,
+   "s": 498.564,
+   "v": 21.6524,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    820.96,
+    -3039.6,
+    -43353200.0,
+    8327280000.0,
+    467.0,
+    964.0,
+    -1.00498,
+    0.003319
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.05e-06,
+    5.2e-12,
+    3.1802e-05,
+    2.13e-08
+   ]
+  },
+  {
+   "label": "k-nepheline",
+   "type": "COMPONENT",
+   "formula": "K4Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -8432605.799999999,
+   "s": 535.8612,
+   "v": 24.215752000000002,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    744.0,
+    0.0,
+    -52426800.0,
+    8555720000.0,
+    800.15,
+    4616.0,
+    -0.14192908,
+    0.00043364
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.05e-06,
+    5.2e-12,
+    3.1802e-05,
+    2.13e-08
+   ]
+  },
+  {
+   "label": "vc-nepheline",
+   "type": "COMPONENT",
+   "formula": "Na3Al3Si5O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3921618.0,
+   "s": 224.412,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    393.64,
+    -2415.5,
+    -7892800.0,
+    1070640000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "ca-nepheline",
+   "type": "COMPONENT",
+   "formula": "CaNa2Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -4213249.2,
+   "s": 207.22272727272727,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    439.37,
+    -3734.1,
+    0.0,
+    -317020000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "leucite",
+   "type": "COMPONENT",
+   "formula": "KAlSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3010279.63,
+   "s": 205.846,
+   "v": 8.839,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    271.14,
+    -944.1,
+    -7857200.0,
+    959200000.0,
+    955.0,
+    256.0,
+    -0.09731,
+    0.0003373
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.5568254e-06,
+    1.2739e-12,
+    1.25167877e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "analcime",
+   "type": "COMPONENT",
+   "formula": "NaAlSi2O5(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3325900.0,
+   "s": 228.1,
+   "v": 9.71,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    571.83,
+    -7188.7,
+    0.0,
+    1493060000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.5568254e-06,
+    1.2739e-12,
+    1.25167877e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "na-leucite",
+   "type": "COMPONENT",
+   "formula": "NaAlSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3001975.55,
+   "s": 165.74,
+   "v": 8.91,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    401.27,
+    -4248.0,
+    0.0,
+    216300000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.5568254e-06,
+    1.2739e-12,
+    1.25167877e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "corundum",
+   "type": "PHASE",
+   "formula": "Al2O3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1675700.0,
+   "s": 50.82,
+   "v": 2.558,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    155.02,
+    -828.4,
+    -3861400.0,
+    409080000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -3.85e-07,
+    3.75e-13,
+    2.1342e-05,
+    4.718e-09
+   ]
+  },
+  {
+   "label": "sillimanite",
+   "type": "PHASE",
+   "formula": "Al2SiO5",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2586091.0,
+   "s": 95.93,
+   "v": 4.983,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    256.73,
+    -1887.2,
+    -2977400.0,
+    250960000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.53e-07,
+    0.0,
+    1.3431e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "rutile",
+   "type": "PHASE",
+   "formula": "TiO2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -944750.0,
+   "s": 50.46,
+   "v": 1.882,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    77.84,
+    0.0,
+    -3367800.0,
+    402940000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -4.54e-07,
+    5.84e-13,
+    2.5716e-05,
+    1.5409e-09
+   ]
+  },
+  {
+   "label": "perovskite",
+   "type": "PHASE",
+   "formula": "CaTiO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1660630.0,
+   "s": 93.64,
+   "v": 3.3626,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    150.49,
+    -621.3,
+    0.0,
+    -430100000.0,
+    1530.0,
+    2301.2000000000003,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "chromite",
+   "type": "COMPONENT",
+   "formula": "FeCr2O4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1445490.0,
+   "s": 142.676,
+   "v": 4.401,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    236.874,
+    -1679.6,
+    0.0,
+    -167650000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "hercynite",
+   "type": "COMPONENT",
+   "formula": "FeAl2O4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1947681.0,
+   "s": 115.362,
+   "v": 4.074998432,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    235.19,
+    -1437.0,
+    -4691300.0,
+    645640000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "magnetite",
+   "type": "COMPONENT",
+   "formula": "Fe3O4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1117403.0,
+   "s": 146.114,
+   "v": 4.452,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    207.93,
+    0.0,
+    -7243300.0,
+    664360000.0,
+    848.0,
+    1565.0,
+    -0.19502,
+    0.00061037
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.82e-07,
+    1.751e-12,
+    3.0291e-05,
+    1.3847e-08
+   ]
+  },
+  {
+   "label": "spinel",
+   "type": "COMPONENT",
+   "formula": "MgAl2O4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2300313.0,
+   "s": 84.535,
+   "v": 3.977,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    235.9,
+    -1766.6,
+    -1710400.0,
+    40620000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -4.89e-07,
+    0.0,
+    2.1691e-05,
+    5.0528e-09
+   ]
+  },
+  {
+   "label": "ulvospinel",
+   "type": "COMPONENT",
+   "formula": "Fe2TiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1488500.0,
+   "s": 185.447,
+   "v": 4.682,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    249.63,
+    -1817.4,
+    0.0,
+    -54530000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "geikielite",
+   "type": "COMPONENT",
+   "formula": "MgTiO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1572560.0,
+   "s": 74.56,
+   "v": 3.086,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    146.2,
+    -416.0,
+    -3999800.0,
+    402330000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.84e-07,
+    1.23e-12,
+    2.7248e-05,
+    2.9968e-09
+   ]
+  },
+  {
+   "label": "hematite",
+   "type": "COMPONENT",
+   "formula": "Fe2O3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -825627.0,
+   "s": 87.437,
+   "v": 3.027,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    146.86,
+    0.0,
+    -5576800.0,
+    525630000.0,
+    955.0,
+    1287.0,
+    -0.07403,
+    0.00027921
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -4.79e-07,
+    3.04e-13,
+    3.831e-05,
+    1.65e-10
+   ]
+  },
+  {
+   "label": "ilmenite",
+   "type": "COMPONENT",
+   "formula": "FeTiO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1231947.0,
+   "s": 108.628,
+   "v": 3.17,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    150.0,
+    -441.6,
+    -3323700.0,
+    348150000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.84e-07,
+    1.23e-12,
+    2.7248e-05,
+    2.9968e-09
+   ]
+  },
+  {
+   "label": "pyrophanite",
+   "type": "COMPONENT",
+   "formula": "MnTiO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1350707.0,
+   "s": 104.935,
+   "v": 2.8859,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    150.0,
+    -441.6,
+    -3323700.0,
+    348150000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.84e-07,
+    1.23e-12,
+    2.7248e-05,
+    2.9968e-09
+   ]
+  },
+  {
+   "label": "corundum",
+   "type": "COMPONENT",
+   "formula": "Al2O3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1655700.0,
+   "s": 50.82,
+   "v": 2.558,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    155.02,
+    -828.4,
+    -3861400.0,
+    409080000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -3.85e-07,
+    3.75e-13,
+    2.1342e-05,
+    4.718e-09
+   ]
+  },
+  {
+   "label": "pseudobrookite",
+   "type": "COMPONENT",
+   "formula": "Fe2TiO5",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1754429.0,
+   "s": 156.4816,
+   "v": 5.491,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    261.35,
+    -1530.7,
+    0.0,
+    -234660000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "ferropseudobrookite",
+   "type": "COMPONENT",
+   "formula": "FeTi2O5",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2175332.0,
+   "s": 160.05360000000002,
+   "v": 5.578,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    251.42000000000002,
+    -1179.0700000000002,
+    -4256220.0,
+    475025000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "karrooite",
+   "type": "COMPONENT",
+   "formula": "MgTi2O5",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2507053.0,
+   "s": 127.1936,
+   "v": 5.482,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    232.58,
+    -755.5,
+    -5660800.0,
+    582140000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "whitlockite",
+   "type": "PHASE",
+   "formula": "Ca3(PO4)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -4097169.0,
+   "s": 235.978,
+   "v": 9.762,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    402.997,
+    -2808.35,
+    0.0,
+    -326230000.0,
+    1373.0,
+    14059.0,
+    0.025427,
+    0.00019255
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "apatite",
+   "type": "PHASE",
+   "formula": "Ca5(PO4)3OH",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -6694689.0,
+   "s": 398.74,
+   "v": 16.4025,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    758.81,
+    -6480.6,
+    0.0,
+    447940000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "h2oduan",
+   "type": "COMPONENT",
+   "formula": "H2O",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -54955.2356,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "co2duan",
+   "type": "COMPONENT",
+   "formula": "CO2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -54955.2356,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "Fe-metal",
+   "type": "COMPONENT",
+   "formula": "Fe",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": 9999.0,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "Ni-metal",
+   "type": "COMPONENT",
+   "formula": "Ni",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": 9999.0,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "Fe-liquid",
+   "type": "COMPONENT",
+   "formula": "Fe",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": 9999.0,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "Ni-liquid",
+   "type": "COMPONENT",
+   "formula": "Ni",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": 9999.0,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "calcite",
+   "type": "PHASE",
+   "formula": "CaCO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1206819.0,
+   "s": 91.725,
+   "v": 3.69,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    178.19,
+    -1657.7,
+    -482700.0,
+    166600000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.4e-06,
+    0.0,
+    8.907e-06,
+    2.27402e-08
+   ]
+  },
+  {
+   "label": "aragonite",
+   "type": "PHASE",
+   "formula": "CaCO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1205719.0,
+   "s": 88.0,
+   "v": 3.415,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    166.62,
+    -1499.4,
+    0.0,
+    54490000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.4e-06,
+    0.0,
+    8.907e-06,
+    2.27402e-08
+   ]
+  },
+  {
+   "label": "magnesite",
+   "type": "PHASE",
+   "formula": "MgCO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1113636.0,
+   "s": 65.21,
+   "v": 2.803,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    162.3,
+    -1109.3,
+    -4882600.0,
+    874660000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.9e-07,
+    2.212e-12,
+    1.8436e-05,
+    4.15968e-08
+   ]
+  },
+  {
+   "label": "siderite",
+   "type": "PHASE",
+   "formula": "FeCO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -755900.0,
+   "s": 95.5,
+   "v": 2.938,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    177.36,
+    -1669.4,
+    -355100.0,
+    150780000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.9e-07,
+    2.212e-12,
+    1.8436e-05,
+    4.15968e-08
+   ]
+  },
+  {
+   "label": "dolomite",
+   "type": "PHASE",
+   "formula": "CaMg(CO3)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2323400.0,
+   "s": 155.2,
+   "v": 6.434,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    368.02,
+    -3750.8,
+    0.0,
+    180790000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.4e-06,
+    0.0,
+    8.907e-06,
+    2.27402e-08
+   ]
+  },
+  {
+   "label": "spurrite",
+   "type": "PHASE",
+   "formula": "Ca5Si2O8CO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -5840200.0,
+   "s": 331.0,
+   "v": 14.712,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    597.163,
+    -3692.9,
+    -5057120.0,
+    433820000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.9e-07,
+    2.212e-12,
+    1.8436e-05,
+    4.15968e-08
+   ]
+  },
+  {
+   "label": "tilleyite",
+   "type": "PHASE",
+   "formula": "Ca5Si2O7(CO3)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -6372200.0,
+   "s": 394.0,
+   "v": 17.43,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    716.789,
+    -5199.2,
+    -5057120.0,
+    607690000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.9e-07,
+    2.212e-12,
+    1.8436e-05,
+    4.15968e-08
+   ]
+  },
+  {
+   "label": "diamond",
+   "type": "PHASE",
+   "formula": "C",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": 1900.0,
+   "s": 2.38,
+   "v": 0.3417,
+   "cp_type": "CP_SAXENA",
+   "cp_coeffs": [
+    98.45,
+    -0.03655,
+    1217000.0,
+    1.098e-05,
+    0.0,
+    -1659.0,
+    0.0
+   ],
+   "eos_type": "EOS_VINET",
+   "eos_coeffs": [
+    2.243e-05,
+    444.0,
+    1.9
+   ]
+  },
+  {
+   "label": "graphite",
+   "type": "PHASE",
+   "formula": "C",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": 0.0,
+   "s": 5.74,
+   "v": 0.5298,
+   "cp_type": "CP_SAXENA",
+   "cp_coeffs": [
+    60.86,
+    -0.01024,
+    713900.0,
+    1.669e-06,
+    0.0,
+    -992.2,
+    0.0
+   ],
+   "eos_type": "EOS_VINET",
+   "eos_coeffs": [
+    3.46e-05,
+    33.8,
+    8.9
+   ]
+  }
+ ],
+ "pMeltsSolids": [
+  {
+   "label": "tephroite",
+   "type": "COMPONENT",
+   "formula": "Mn2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1732000.0,
+   "s": 155.9,
+   "v": 4.889,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    219.89,
+    -1271.0,
+    -2049600.0,
+    176520000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.84e-07,
+    0.0,
+    2.514e-05,
+    6.47e-09
+   ]
+  },
+  {
+   "label": "fayalite",
+   "type": "COMPONENT",
+   "formula": "Fe2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1479360.0,
+   "s": 150.93,
+   "v": 4.63,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    248.93,
+    -1923.9,
+    0.0,
+    -139100000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.3e-07,
+    0.0,
+    2.6546e-05,
+    7.9482e-09
+   ]
+  },
+  {
+   "label": "co-olivine",
+   "type": "COMPONENT",
+   "formula": "Co2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1414100.0,
+   "s": 142.6,
+   "v": 4.459,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    201.048,
+    -36.9,
+    -7181000.0,
+    900500000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -6.4e-07,
+    0.0,
+    2.8422e-05,
+    3.5355e-09
+   ]
+  },
+  {
+   "label": "ni-olivine",
+   "type": "COMPONENT",
+   "formula": "Ni2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1395300.0,
+   "s": 128.1,
+   "v": 4.259,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    214.997,
+    -1030.8,
+    -4944500.0,
+    623700000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -6.71e-07,
+    0.0,
+    2.8422e-05,
+    3.5355e-09
+   ]
+  },
+  {
+   "label": "monticellite",
+   "type": "COMPONENT",
+   "formula": "CaMgSiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2250027.0,
+   "s": 108.3,
+   "v": 5.148,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    226.34,
+    -1542.7,
+    -1179700.0,
+    -23290000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -9.04e-07,
+    2e-12,
+    2.7863e-05,
+    7.6339e-09
+   ]
+  },
+  {
+   "label": "forsterite",
+   "type": "COMPONENT",
+   "formula": "Mg2SiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2174420.0,
+   "s": 94.01,
+   "v": 4.366,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    238.64,
+    -2001.3,
+    0.0,
+    -116240000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.91e-07,
+    1.351e-12,
+    2.9464e-05,
+    8.8633e-09
+   ]
+  },
+  {
+   "label": "sphene",
+   "type": "PHASE",
+   "formula": "CaTiSiO5",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2596652.0,
+   "s": 129.29,
+   "v": 5.565,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    234.62,
+    -1040.3,
+    -5118300.0,
+    591460000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.9e-07,
+    0.0,
+    2.52e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "almandine",
+   "type": "COMPONENT",
+   "formula": "Fe3Al2Si3O12",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -5267216.0,
+   "s": 340.007,
+   "v": 11.511,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    573.96,
+    -1483.1,
+    -29292000.0,
+    5022080000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.58e-07,
+    3.21e-13,
+    1.8613e-05,
+    7.4539e-09
+   ]
+  },
+  {
+   "label": "grossular",
+   "type": "COMPONENT",
+   "formula": "Ca3Al2Si3O12",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -6632859.0,
+   "s": 255.15,
+   "v": 12.538,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    573.43,
+    -2039.4,
+    -18887200.0,
+    2319310000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -6.54e-07,
+    1.635e-12,
+    1.8994e-05,
+    7.9756e-09
+   ]
+  },
+  {
+   "label": "pyrope",
+   "type": "COMPONENT",
+   "formula": "Mg3Al2Si3O12",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -6286548.0,
+   "s": 266.359,
+   "v": 11.316,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    640.72,
+    -4542.1,
+    -4701900.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.76e-07,
+    4.42e-13,
+    2.2519e-05,
+    3.7044e-09
+   ]
+  },
+  {
+   "label": "akermanite",
+   "type": "COMPONENT",
+   "formula": "Ca2MgSi2O7",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3855541.0,
+   "s": 212.0,
+   "v": 9.252,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    387.06,
+    -2938.8,
+    0.0,
+    -40790000.0,
+    358.0,
+    452.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.85e-07,
+    0.0,
+    2.5011e-05,
+    6.7224e-09
+   ]
+  },
+  {
+   "label": "gehlenite",
+   "type": "COMPONENT",
+   "formula": "Ca2Al2SiO7",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3969258.0,
+   "s": 198.6,
+   "v": 9.033,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    373.09,
+    -2276.8,
+    -4778500.0,
+    477910000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -9.96e-07,
+    2.488e-12,
+    2.4926e-05,
+    5.664e-10
+   ]
+  },
+  {
+   "label": "iron-akermanite",
+   "type": "COMPONENT",
+   "formula": "Ca2FeSi2O7",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3856441.0,
+   "s": 212.0,
+   "v": 9.252,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    387.06,
+    -2938.8,
+    0.0,
+    -40790000.0,
+    358.0,
+    452.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.85e-07,
+    0.0,
+    2.5011e-05,
+    6.7224e-09
+   ]
+  },
+  {
+   "label": "soda-melilite",
+   "type": "COMPONENT",
+   "formula": "Na2Si3O7",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3981458.0,
+   "s": 198.6,
+   "v": 9.033,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    373.09,
+    -2276.8,
+    -4778500.0,
+    477910000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -9.96e-07,
+    2.488e-12,
+    2.4926e-05,
+    5.664e-10
+   ]
+  },
+  {
+   "label": "diopside",
+   "type": "COMPONENT",
+   "formula": "CaMgSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3200583.0,
+   "s": 142.5,
+   "v": 6.62,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    305.41,
+    -1604.9,
+    -7166000.0,
+    921840000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.72e-07,
+    1.707e-12,
+    2.7795e-05,
+    8.3082e-09
+   ]
+  },
+  {
+   "label": "clinoenstatite",
+   "type": "COMPONENT",
+   "formula": "Mg2Si2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3086083.0,
+   "s": 135.164,
+   "v": 6.3279,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    333.16,
+    -2401.2,
+    -4541200.0,
+    558300000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.49e-07,
+    4.47e-13,
+    2.4656e-05,
+    7.467e-09
+   ]
+  },
+  {
+   "label": "hedenbergite",
+   "type": "COMPONENT",
+   "formula": "CaFeSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2842221.0,
+   "s": 174.2,
+   "v": 6.7894,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    307.89,
+    -1597.3,
+    -6992500.0,
+    935220000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -9.925e-07,
+    1.4835e-12,
+    3.1371e-05,
+    8.3672e-09
+   ]
+  },
+  {
+   "label": "alumino-buffonite",
+   "type": "COMPONENT",
+   "formula": "CaTi0.5Mg0.5AlSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3283830.18,
+   "s": 143.745,
+   "v": 6.356,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    297.499,
+    -1355.96,
+    -6702190.0,
+    759082000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "buffonite",
+   "type": "COMPONENT",
+   "formula": "CaTi0.5Mg0.5FeSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2828776.95,
+   "s": 180.741,
+   "v": 6.7217,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    303.909,
+    -1417.67,
+    -4356540.0,
+    352523000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "essenite",
+   "type": "COMPONENT",
+   "formula": "CaFeAlSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2867478.01,
+   "s": 177.747,
+   "v": 6.7217,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    317.11,
+    -1733.3,
+    -5109650.0,
+    542220000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "jadeite",
+   "type": "COMPONENT",
+   "formula": "NaAlSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3025118.0,
+   "s": 133.574,
+   "v": 6.034,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    311.29,
+    -2005.1,
+    -5350300.0,
+    662570000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.6e-07,
+    2.149e-12,
+    2.3118e-05,
+    2.5785e-09
+   ]
+  },
+  {
+   "label": "diopside",
+   "type": "COMPONENT",
+   "formula": "CaMgSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3200583.0,
+   "s": 142.5,
+   "v": 6.62,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    305.41,
+    -1604.9,
+    -7166000.0,
+    921840000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.72e-07,
+    1.707e-12,
+    2.7795e-05,
+    8.3082e-09
+   ]
+  },
+  {
+   "label": "clinoenstatite",
+   "type": "COMPONENT",
+   "formula": "Mg2Si2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3086083.0,
+   "s": 135.164,
+   "v": 6.3279,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    333.16,
+    -2401.2,
+    -4541200.0,
+    558300000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -7.49e-07,
+    4.47e-13,
+    2.4656e-05,
+    7.467e-09
+   ]
+  },
+  {
+   "label": "hedenbergite",
+   "type": "COMPONENT",
+   "formula": "CaFeSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2842221.0,
+   "s": 174.2,
+   "v": 6.7894,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    307.89,
+    -1597.3,
+    -6992500.0,
+    935220000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -9.925e-07,
+    1.4835e-12,
+    3.1371e-05,
+    8.3672e-09
+   ]
+  },
+  {
+   "label": "alumino-buffonite",
+   "type": "COMPONENT",
+   "formula": "CaTi0.5Mg0.5AlSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3283830.18,
+   "s": 143.745,
+   "v": 6.356,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    297.499,
+    -1355.96,
+    -6702190.0,
+    759082000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "buffonite",
+   "type": "COMPONENT",
+   "formula": "CaTi0.5Mg0.5FeSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2828776.95,
+   "s": 180.741,
+   "v": 6.7217,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    303.909,
+    -1417.67,
+    -4356540.0,
+    352523000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "essenite",
+   "type": "COMPONENT",
+   "formula": "CaFeAlSiO6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2867478.01,
+   "s": 177.747,
+   "v": 6.7217,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    317.11,
+    -1733.3,
+    -5109650.0,
+    542220000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.7e-07,
+    2.171e-12,
+    2.225e-05,
+    5.2863e-09
+   ]
+  },
+  {
+   "label": "jadeite",
+   "type": "COMPONENT",
+   "formula": "NaAlSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3025118.0,
+   "s": 133.574,
+   "v": 6.034,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    311.29,
+    -2005.1,
+    -5350300.0,
+    662570000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -8.6e-07,
+    2.149e-12,
+    2.3118e-05,
+    2.5785e-09
+   ]
+  },
+  {
+   "label": "aegirine",
+   "type": "PHASE",
+   "formula": "NaFeSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2576800.0,
+   "s": 170.57,
+   "v": 63.997,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    317.70000000000005,
+    -2066.81,
+    -3004650.0,
+    256011000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "aenigmatite",
+   "type": "PHASE",
+   "formula": "Na2Fe5TiSi6O20",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -8472805.0,
+   "s": 740.23,
+   "v": 22.8546,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1092.073,
+    -6159.81,
+    -22526790.0,
+    3268659000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "cummingtonite",
+   "type": "COMPONENT",
+   "formula": "Mg7Si8O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -12067517.0,
+   "s": 540.2587,
+   "v": 26.33,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1233.792,
+    -7133.98,
+    -22163800.0,
+    2333937490.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.1393847e-06,
+    0.0,
+    2.81048234e-05,
+    6.2894e-09
+   ]
+  },
+  {
+   "label": "grunerite",
+   "type": "COMPONENT",
+   "formula": "Fe7Si8O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -9623300.0,
+   "s": 725.0,
+   "v": 27.84,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1347.83,
+    -9356.91,
+    -20228480.0,
+    3039190000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.670299e-06,
+    8.68919e-12,
+    2.84e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "cummingtonite",
+   "type": "COMPONENT",
+   "formula": "Mg7Si8O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -12067920.38,
+   "s": 540.2587,
+   "v": 26.34,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1233.792,
+    -7133.98,
+    -22163800.0,
+    2333937490.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.1393847e-06,
+    0.0,
+    2.81048234e-05,
+    6.2894e-09
+   ]
+  },
+  {
+   "label": "grunerite",
+   "type": "COMPONENT",
+   "formula": "Fe7Si8O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -9623550.0,
+   "s": 725.0,
+   "v": 27.84,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1347.83,
+    -9356.91,
+    -20228480.0,
+    3039190000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.670299e-06,
+    8.68919e-12,
+    2.84e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "tremolite",
+   "type": "COMPONENT",
+   "formula": "Ca2Mg5Si8O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -12307863.0,
+   "s": 549.5,
+   "v": 27.312,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1229.36,
+    -6401.9,
+    -32089900.0,
+    4208810000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.4763e-06,
+    8.9462e-12,
+    2.4374e-05,
+    9.8338e-09
+   ]
+  },
+  {
+   "label": "pargasite",
+   "type": "COMPONENT",
+   "formula": "NaCa2Mg4AlAl2Si6O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -12621554.816,
+   "s": 669.44,
+   "v": 27.35,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1267.25,
+    -6654.34,
+    -30378700.0,
+    3913530000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.392e-06,
+    3.481e-12,
+    2.4374e-05,
+    9.8338e-09
+   ]
+  },
+  {
+   "label": "ferropargasite",
+   "type": "COMPONENT",
+   "formula": "NaCa2Fe4AlAl2Si6O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -11224859.38742857,
+   "s": 776.1320000000001,
+   "v": 27.989,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1342.61,
+    -8348.62,
+    -24760400.0,
+    3485070000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.392e-06,
+    3.481e-12,
+    2.4374e-05,
+    9.8338e-09
+   ]
+  },
+  {
+   "label": "magnesiohastingsite",
+   "type": "COMPONENT",
+   "formula": "NaCa2Mg4FeAl2Si6O22(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -12166501.586,
+   "s": 685.3392000000001,
+   "v": 27.38,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    1273.66,
+    -6716.06,
+    -28033100.0,
+    3506970000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.392e-06,
+    3.481e-12,
+    2.4374e-05,
+    9.8338e-09
+   ]
+  },
+  {
+   "label": "annite",
+   "type": "COMPONENT",
+   "formula": "KFe3Si3AlO10(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -5142800.0,
+   "s": 420.0,
+   "v": 15.408,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    727.208,
+    -4775.04,
+    -13831900.0,
+    2119060000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.6969784e-06,
+    0.0,
+    3.44473262e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "phlogopite",
+   "type": "COMPONENT",
+   "formula": "KMg3Si3AlO10(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -6210391.0,
+   "s": 334.346,
+   "v": 14.977,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    610.37988,
+    -2083.781,
+    -21533008.0,
+    2841040896.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.6969784e-06,
+    0.0,
+    3.44473262e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "muscovite",
+   "type": "PHASE",
+   "formula": "KAl2Si3AlO10(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -5976740.0,
+   "s": 293.157,
+   "v": 14.087,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    651.49,
+    -3873.2,
+    -18523200.0,
+    2742470000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.717e-06,
+    4.295e-12,
+    3.3527e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "albite",
+   "type": "COMPONENT",
+   "formula": "NaAlSi3O8",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3921618.0,
+   "s": 224.412,
+   "v": 10.083,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    393.64,
+    -2415.5,
+    -7892800.0,
+    1070640000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.945e-06,
+    4.861e-12,
+    2.6307e-05,
+    3.2407e-09
+   ]
+  },
+  {
+   "label": "anorthite",
+   "type": "COMPONENT",
+   "formula": "CaAl2Si2O8",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -4228730.0,
+   "s": 200.186,
+   "v": 10.075,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    439.37,
+    -3734.1,
+    0.0,
+    -317020000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.272e-06,
+    3.176e-12,
+    1.0918e-05,
+    4.1985e-09
+   ]
+  },
+  {
+   "label": "sanidine",
+   "type": "COMPONENT",
+   "formula": "KAlSi3O8",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3970791.0,
+   "s": 214.145,
+   "v": 10.869,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    381.37,
+    -1941.0,
+    -12037300.0,
+    1836430000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.805e-06,
+    5.112e-12,
+    1.5145e-05,
+    5.485e-09
+   ]
+  },
+  {
+   "label": "quartz",
+   "type": "PHASE",
+   "formula": "SiO2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -910700.0,
+   "s": 41.46,
+   "v": 2.269,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    80.01,
+    -240.3,
+    -3546700.0,
+    491570000.0,
+    848.0,
+    0.0,
+    -0.09187,
+    0.00024607
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.434e-06,
+    1.0137e-11,
+    2.3895e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "tridymite",
+   "type": "PHASE",
+   "formula": "SiO2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -907750.0,
+   "s": 43.77,
+   "v": 2.675,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    75.37,
+    0.0,
+    -5958100.0,
+    958250000.0,
+    383.0,
+    130.0,
+    0.4267,
+    -0.00144575
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.508e-06,
+    0.0,
+    1.9339e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "cristobalite",
+   "type": "PHASE",
+   "formula": "SiO2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -907753.0,
+   "s": 43.394,
+   "v": 2.587,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    83.51,
+    -374.7,
+    -2455400.0,
+    280070000.0,
+    535.0,
+    0.0,
+    -0.14216,
+    0.00044142
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.515e-06,
+    0.0,
+    2.0824e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "na-nepheline",
+   "type": "COMPONENT",
+   "formula": "Na4Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -8372016.0,
+   "s": 498.564,
+   "v": 21.6524,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    820.96,
+    -3039.6,
+    -43353200.0,
+    8327280000.0,
+    467.0,
+    964.0,
+    -1.00498,
+    0.003319
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.05e-06,
+    5.2e-12,
+    3.1802e-05,
+    2.13e-08
+   ]
+  },
+  {
+   "label": "k-nepheline",
+   "type": "COMPONENT",
+   "formula": "K4Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -8436178.559999999,
+   "s": 535.8612,
+   "v": 24.215752000000002,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    744.0,
+    0.0,
+    -52426800.0,
+    8555720000.0,
+    800.15,
+    4616.0,
+    -0.14192908,
+    0.00043364
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.05e-06,
+    5.2e-12,
+    3.1802e-05,
+    2.13e-08
+   ]
+  },
+  {
+   "label": "vc-nepheline",
+   "type": "COMPONENT",
+   "formula": "Na3Al3Si5O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3921618.0,
+   "s": 224.412,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    393.64,
+    -2415.5,
+    -7892800.0,
+    1070640000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "ca-nepheline",
+   "type": "COMPONENT",
+   "formula": "CaNa2Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -4228730.0,
+   "s": 200.186,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    439.37,
+    -3734.1,
+    0.0,
+    -317020000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "na-nepheline",
+   "type": "COMPONENT",
+   "formula": "Na4Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -8372016.0,
+   "s": 498.564,
+   "v": 21.6524,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    820.96,
+    -3039.6,
+    -43353200.0,
+    8327280000.0,
+    467.0,
+    964.0,
+    -1.00498,
+    0.003319
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.05e-06,
+    5.2e-12,
+    3.1802e-05,
+    2.13e-08
+   ]
+  },
+  {
+   "label": "k-nepheline",
+   "type": "COMPONENT",
+   "formula": "K4Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -8432605.799999999,
+   "s": 535.8612,
+   "v": 24.215752000000002,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    744.0,
+    0.0,
+    -52426800.0,
+    8555720000.0,
+    800.15,
+    4616.0,
+    -0.14192908,
+    0.00043364
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -2.05e-06,
+    5.2e-12,
+    3.1802e-05,
+    2.13e-08
+   ]
+  },
+  {
+   "label": "vc-nepheline",
+   "type": "COMPONENT",
+   "formula": "Na3Al3Si5O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3921618.0,
+   "s": 224.412,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    393.64,
+    -2415.5,
+    -7892800.0,
+    1070640000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "ca-nepheline",
+   "type": "COMPONENT",
+   "formula": "CaNa2Al4Si4O16",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -4228730.0,
+   "s": 200.186,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    439.37,
+    -3734.1,
+    0.0,
+    -317020000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "leucite",
+   "type": "COMPONENT",
+   "formula": "KAlSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3005146.03,
+   "s": 205.846,
+   "v": 8.839,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    271.14,
+    -944.1,
+    -7857200.0,
+    959200000.0,
+    955.0,
+    256.0,
+    -0.09731,
+    0.0003373
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.5568254e-06,
+    1.2739e-12,
+    1.25167877e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "analcime",
+   "type": "COMPONENT",
+   "formula": "NaAlSi2O5(OH)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3325900.0,
+   "s": 228.1,
+   "v": 9.71,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    571.83,
+    -7188.7,
+    0.0,
+    1493060000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.5568254e-06,
+    1.2739e-12,
+    1.25167877e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "na-leucite",
+   "type": "COMPONENT",
+   "formula": "NaAlSi2O6",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -3001975.55,
+   "s": 165.74,
+   "v": 8.91,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    401.27,
+    -4248.0,
+    0.0,
+    216300000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -1.5568254e-06,
+    1.2739e-12,
+    1.25167877e-05,
+    0.0
+   ]
+  },
+  {
+   "label": "corundum",
+   "type": "PHASE",
+   "formula": "Al2O3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1675700.0,
+   "s": 50.82,
+   "v": 2.558,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    155.02,
+    -828.4,
+    -3861400.0,
+    409080000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -3.85e-07,
+    3.75e-13,
+    2.1342e-05,
+    4.718e-09
+   ]
+  },
+  {
+   "label": "rutile",
+   "type": "PHASE",
+   "formula": "TiO2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -944750.0,
+   "s": 50.46,
+   "v": 1.882,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    77.84,
+    0.0,
+    -3367800.0,
+    402940000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -4.54e-07,
+    5.84e-13,
+    2.5716e-05,
+    1.5409e-09
+   ]
+  },
+  {
+   "label": "perovskite",
+   "type": "PHASE",
+   "formula": "CaTiO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1660630.0,
+   "s": 93.64,
+   "v": 3.3626,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    150.49,
+    -621.3,
+    0.0,
+    -430100000.0,
+    1530.0,
+    2301.2000000000003,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "chromite",
+   "type": "COMPONENT",
+   "formula": "FeCr2O4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1445490.0,
+   "s": 142.676,
+   "v": 4.401,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    236.874,
+    -1679.6,
+    0.0,
+    -167650000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "hercynite",
+   "type": "COMPONENT",
+   "formula": "FeAl2O4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1947681.0,
+   "s": 115.362,
+   "v": 4.074998432,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    235.19,
+    -1437.0,
+    -4691300.0,
+    645640000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "magnetite",
+   "type": "COMPONENT",
+   "formula": "Fe3O4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1117403.0,
+   "s": 146.114,
+   "v": 4.452,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    207.93,
+    0.0,
+    -7243300.0,
+    664360000.0,
+    848.0,
+    1565.0,
+    -0.19502,
+    0.00061037
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.82e-07,
+    1.751e-12,
+    3.0291e-05,
+    1.3847e-08
+   ]
+  },
+  {
+   "label": "spinel",
+   "type": "COMPONENT",
+   "formula": "MgAl2O4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2300313.0,
+   "s": 84.535,
+   "v": 3.977,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    235.9,
+    -1766.6,
+    -1710400.0,
+    40620000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -4.89e-07,
+    0.0,
+    2.1691e-05,
+    5.0528e-09
+   ]
+  },
+  {
+   "label": "ulvospinel",
+   "type": "COMPONENT",
+   "formula": "Fe2TiO4",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1488500.0,
+   "s": 185.447,
+   "v": 4.682,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    249.63,
+    -1817.4,
+    0.0,
+    -54530000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "geikielite",
+   "type": "COMPONENT",
+   "formula": "MgTiO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1572560.0,
+   "s": 74.56,
+   "v": 3.086,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    146.2,
+    -416.0,
+    -3999800.0,
+    402330000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.839748e-07,
+    1.2303e-12,
+    2.72476341e-05,
+    2.9968e-09
+   ]
+  },
+  {
+   "label": "hematite",
+   "type": "COMPONENT",
+   "formula": "Fe2O3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -822000.0,
+   "s": 87.4,
+   "v": 3.027,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    146.86,
+    0.0,
+    -5576800.0,
+    525630000.0,
+    955.0,
+    1287.0,
+    -0.07403,
+    0.00027921
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -4.79e-07,
+    3.04e-13,
+    3.831e-05,
+    1.65e-10
+   ]
+  },
+  {
+   "label": "ilmenite",
+   "type": "COMPONENT",
+   "formula": "FeTiO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1231947.0,
+   "s": 108.628,
+   "v": 3.17,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    150.0,
+    -441.6,
+    -3323700.0,
+    348150000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.84e-07,
+    1.23e-12,
+    2.7248e-05,
+    2.9968e-09
+   ]
+  },
+  {
+   "label": "pyrophanite",
+   "type": "COMPONENT",
+   "formula": "MnTiO3",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1350707.0,
+   "s": 104.935,
+   "v": 3.17,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    150.0,
+    -441.6,
+    -3323700.0,
+    348150000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    -5.84e-07,
+    1.23e-12,
+    2.7248e-05,
+    2.9968e-09
+   ]
+  },
+  {
+   "label": "pseudobrookite",
+   "type": "COMPONENT",
+   "formula": "Fe2TiO5",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -1754429.0,
+   "s": 156.4816,
+   "v": 5.491,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    261.35,
+    -1530.7,
+    0.0,
+    -234660000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "ferropseudobrookite",
+   "type": "COMPONENT",
+   "formula": "FeTi2O5",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2175332.0,
+   "s": 160.05360000000002,
+   "v": 5.578,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    251.42000000000002,
+    -1179.0700000000002,
+    -4256220.0,
+    475025000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "karrooite",
+   "type": "COMPONENT",
+   "formula": "MgTi2O5",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -2507053.0,
+   "s": 127.1936,
+   "v": 5.482,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    232.58,
+    -755.5,
+    -5660800.0,
+    582140000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "whitlockite",
+   "type": "PHASE",
+   "formula": "Ca3(PO4)2",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -4097169.0,
+   "s": 235.978,
+   "v": 9.762,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    402.997,
+    -2808.35,
+    0.0,
+    -326230000.0,
+    1373.0,
+    14059.0,
+    0.025427,
+    0.00019255
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "apatite",
+   "type": "PHASE",
+   "formula": "Ca5(PO4)3OH",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -6694689.0,
+   "s": 398.74,
+   "v": 16.4025,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    758.81,
+    -6480.6,
+    0.0,
+    447940000.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "water",
+   "type": "PHASE",
+   "formula": "H2O",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": -54955.2356,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "Fe-metal",
+   "type": "COMPONENT",
+   "formula": "Fe",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": 9999.0,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "Ni-metal",
+   "type": "COMPONENT",
+   "formula": "Ni",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": 9999.0,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "Fe-liquid",
+   "type": "COMPONENT",
+   "formula": "Fe",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": 9999.0,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "label": "Ni-liquid",
+   "type": "COMPONENT",
+   "formula": "Ni",
+   "mw": "0.0",
+   "natoms": "0.0",
+   "h": 9999.0,
+   "s": 0.0,
+   "v": 0.0,
+   "cp_type": "CP_BERMAN",
+   "cp_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ],
+   "eos_type": "EOS_BERMAN",
+   "eos_coeffs": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+   ]
+  }
+ ]
+}

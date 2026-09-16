@@ -1,0 +1,2132 @@
+{
+  "xMeltsLiquid": [
+    {
+      "label": "SiO2",
+      "ref_h": -906377.0,
+      "ref_s": 46.029,
+      "ref_v": 2.73,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        83.51,
+        -374.7,
+        -2455400.0,
+        280070000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 2.69,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        -1.89e-05,
+        1.3e-08,
+        3.6e-10
+      ],
+      "t_fusion": 1999.0,
+      "s_fusion": 4.46,
+      "cp_liquid": 82.6,
+      "t_glass": 0.0
+    },
+    {
+      "label": "TiO2",
+      "ref_h": -944750.0,
+      "ref_s": 50.46,
+      "ref_v": 1.882,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        77.84,
+        0.0,
+        -3367800.0,
+        402940000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 2.316,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0007246,
+        -2.31e-05,
+        0.0,
+        5e-10
+      ],
+      "t_fusion": 1870.0,
+      "s_fusion": 35.824,
+      "cp_liquid": 109.2,
+      "t_glass": 0.0
+    },
+    {
+      "label": "Al2O3",
+      "ref_h": -1675700.0,
+      "ref_s": 50.82,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        155.02,
+        -828.4,
+        -3861400.0,
+        409080000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 3.711,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000262,
+        -2.26e-05,
+        2.7e-08,
+        4e-10
+      ],
+      "t_fusion": 2319.65,
+      "s_fusion": 48.61,
+      "cp_liquid": 170.3,
+      "t_glass": 0.0
+    },
+    {
+      "label": "Fe2O3",
+      "ref_h": -822000.0,
+      "ref_s": 87.4,
+      "ref_v": 3.027,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        146.86,
+        0.0,
+        -5576800.0,
+        525630000.0,
+        955.0,
+        1287.0,
+        -0.07403,
+        0.00027921
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 4.213,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000909,
+        -2.53e-05,
+        3.1e-08,
+        4.4e-10
+      ],
+      "t_fusion": 1895.0,
+      "s_fusion": 60.41,
+      "cp_liquid": 240.9,
+      "t_glass": 0.0
+    },
+    {
+      "label": "MgCr2O4",
+      "ref_h": -1783640.0,
+      "ref_s": 106.02,
+      "ref_v": 4.356,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        201.981,
+        -551.9,
+        -5784400.0,
+        577290000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 5.358,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.001171,
+        -2.26e-05,
+        1.8e-08,
+        4.67e-10
+      ],
+      "t_fusion": 2673.15,
+      "s_fusion": 73.22,
+      "cp_liquid": 335.1,
+      "t_glass": 0.0
+    },
+    {
+      "label": "Fe2SiO4",
+      "ref_h": -1479360.0,
+      "ref_s": 150.93,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        248.93,
+        -1923.9,
+        0.0,
+        -139100000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 5.42,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000584,
+        -2.79e-05,
+        -2.3e-08,
+        1.46e-09
+      ],
+      "t_fusion": 1490.0,
+      "s_fusion": 59.9,
+      "cp_liquid": 240.2,
+      "t_glass": 0.0
+    },
+    {
+      "label": "MnSi0.5O2",
+      "ref_h": -866000.0,
+      "ref_s": 77.95,
+      "ref_v": 2.4445,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        109.945,
+        -635.5,
+        -1024800.0,
+        88260000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 2.84,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000292,
+        -1.395e-05,
+        -1.15e-08,
+        7.3e-10
+      ],
+      "t_fusion": 1620.0,
+      "s_fusion": 27.6,
+      "cp_liquid": 121.6,
+      "t_glass": 0.0
+    },
+    {
+      "label": "Mg2SiO4",
+      "ref_h": -2174420.0,
+      "ref_s": 94.01,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        238.64,
+        -2001.3,
+        0.0,
+        -116240000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 4.98,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000524,
+        -1.35e-05,
+        -1.3e-08,
+        4.14e-10
+      ],
+      "t_fusion": 2163.0,
+      "s_fusion": 57.2,
+      "cp_liquid": 271.0,
+      "t_glass": 0.0
+    },
+    {
+      "label": "NiSi0.5O2",
+      "ref_h": -697650.0,
+      "ref_s": 64.05,
+      "ref_v": 2.1295,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        107.4985,
+        -515.375,
+        -2472265.0,
+        311875000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 2.48,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000292,
+        -1.395e-05,
+        -1.15e-08,
+        7.3e-10
+      ],
+      "t_fusion": 1923.0,
+      "s_fusion": 29.0,
+      "cp_liquid": 119.3,
+      "t_glass": 0.0
+    },
+    {
+      "label": "CoSi0.5O2",
+      "ref_h": -707050.0,
+      "ref_s": 71.3,
+      "ref_v": 2.2295,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        100.524,
+        -18.45,
+        -3590500.0,
+        450250000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 2.3,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000292,
+        -1.395e-05,
+        -1.15e-08,
+        7.3e-10
+      ],
+      "t_fusion": 1688.0,
+      "s_fusion": 29.0,
+      "cp_liquid": 125.3,
+      "t_glass": 0.0
+    },
+    {
+      "label": "CaSiO3",
+      "ref_h": -1627427.0,
+      "ref_s": 85.279,
+      "ref_v": 4.016,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        141.16,
+        -417.2,
+        -5857600.0,
+        940740000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 4.347,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000292,
+        -1.55e-05,
+        -1.6e-08,
+        3.89e-10
+      ],
+      "t_fusion": 1817.0,
+      "s_fusion": 31.5,
+      "cp_liquid": 172.4,
+      "t_glass": 0.0
+    },
+    {
+      "label": "Na2SiO3",
+      "ref_h": -1561426.96,
+      "ref_s": 113.84664000000001,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        234.77,
+        -2218.9,
+        0.0,
+        135300000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 5.568,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000741,
+        -4.29e-05,
+        -5.3e-08,
+        8.4e-10
+      ],
+      "t_fusion": 1361.0,
+      "s_fusion": 38.34,
+      "cp_liquid": 180.2,
+      "t_glass": 0.0
+    },
+    {
+      "label": "KAlSiO4",
+      "ref_h": -2111813.55,
+      "ref_s": 133.9653,
+      "ref_v": 5.989,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        186.0,
+        0.0,
+        -13106700.0,
+        2138930000.0,
+        800.15,
+        1154.0,
+        -0.07096454,
+        0.00021682
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 6.8375,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0007265,
+        -6.395e-05,
+        -4.6e-08,
+        1.21e-09
+      ],
+      "t_fusion": 2023.15,
+      "s_fusion": 24.5,
+      "cp_liquid": 217.0,
+      "t_glass": 0.0
+    },
+    {
+      "label": "Ca3(PO4)2",
+      "ref_h": -4097169.0,
+      "ref_s": 235.978,
+      "ref_v": 9.762,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        402.997,
+        -2808.35,
+        0.0,
+        -326230000.0,
+        1373.0,
+        14059.0,
+        0.025427,
+        0.00019255
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 10.7382,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "t_fusion": 1943.15,
+      "s_fusion": 35.69,
+      "cp_liquid": 574.67,
+      "t_glass": 0.0
+    },
+    {
+      "label": "CO2",
+      "ref_h": 0.0,
+      "ref_s": 0.0,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 0.0,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "t_fusion": 1000.0,
+      "s_fusion": 0.0,
+      "cp_liquid": 0.0,
+      "t_glass": 0.0
+    },
+    {
+      "label": "SO3",
+      "ref_h": 0.0,
+      "ref_s": 0.0,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 0.0,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "t_fusion": 1000.0,
+      "s_fusion": 0.0,
+      "cp_liquid": 0.0,
+      "t_glass": 0.0
+    },
+    {
+      "label": "Cl2O-1",
+      "ref_h": 0.0,
+      "ref_s": 0.0,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 0.0,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "t_fusion": 1000.0,
+      "s_fusion": 0.0,
+      "cp_liquid": 0.0,
+      "t_glass": 0.0
+    },
+    {
+      "label": "F2O-1",
+      "ref_h": 0.0,
+      "ref_s": 0.0,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 0.0,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "t_fusion": 1000.0,
+      "s_fusion": 0.0,
+      "cp_liquid": 0.0,
+      "t_glass": 0.0
+    },
+    {
+      "label": "H2O",
+      "ref_h": 0.0,
+      "ref_s": 0.0,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 0.0,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "t_fusion": 1000.0,
+      "s_fusion": 0.0,
+      "cp_liquid": 0.0,
+      "t_glass": 0.0
+    },
+    {
+      "label": "CaCO3",
+      "ref_h": 0.0,
+      "ref_s": 0.0,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 0.0,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "t_fusion": 1000.0,
+      "s_fusion": 0.0,
+      "cp_liquid": 0.0,
+      "t_glass": 0.0
+    }
+  ],
+  "meltsLiquid": [
+    {
+      "label": "SiO2",
+      "ref_h": -906377.0,
+      "ref_s": 46.029,
+      "ref_v": 2.73,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        83.51,
+        -374.7,
+        -2455400.0,
+        280070000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 2.69,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        -1.89e-05,
+        1.3e-08,
+        3.6e-10
+      ],
+      "t_fusion": 1999.0,
+      "s_fusion": 4.46,
+      "cp_liquid": 82.6,
+      "t_glass": 0.0
+    },
+    {
+      "label": "TiO2",
+      "ref_h": -944750.0,
+      "ref_s": 50.46,
+      "ref_v": 1.882,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        77.84,
+        0.0,
+        -3367800.0,
+        402940000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 2.316,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0007246,
+        -2.31e-05,
+        0.0,
+        5e-10
+      ],
+      "t_fusion": 1870.0,
+      "s_fusion": 35.824,
+      "cp_liquid": 109.2,
+      "t_glass": 0.0
+    },
+    {
+      "label": "Al2O3",
+      "ref_h": -1675700.0,
+      "ref_s": 50.82,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        155.02,
+        -828.4,
+        -3861400.0,
+        409080000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 3.711,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000262,
+        -2.26e-05,
+        2.7e-08,
+        4e-10
+      ],
+      "t_fusion": 2319.65,
+      "s_fusion": 48.61,
+      "cp_liquid": 170.3,
+      "t_glass": 0.0
+    },
+    {
+      "label": "Fe2O3",
+      "ref_h": -822000.0,
+      "ref_s": 87.4,
+      "ref_v": 3.027,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        146.86,
+        0.0,
+        -5576800.0,
+        525630000.0,
+        955.0,
+        1287.0,
+        -0.07403,
+        0.00027921
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 4.213,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000909,
+        -2.53e-05,
+        3.1e-08,
+        4.4e-10
+      ],
+      "t_fusion": 1895.0,
+      "s_fusion": 60.41,
+      "cp_liquid": 240.9,
+      "t_glass": 0.0
+    },
+    {
+      "label": "MgCr2O4",
+      "ref_h": -1783640.0,
+      "ref_s": 106.02,
+      "ref_v": 4.356,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        201.981,
+        -551.9,
+        -5784400.0,
+        577290000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 5.358,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.001171,
+        -2.26e-05,
+        1.8e-08,
+        4.67e-10
+      ],
+      "t_fusion": 2673.15,
+      "s_fusion": 73.22,
+      "cp_liquid": 335.1,
+      "t_glass": 0.0
+    },
+    {
+      "label": "Fe2SiO4",
+      "ref_h": -1479360.0,
+      "ref_s": 150.93,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        248.93,
+        -1923.9,
+        0.0,
+        -139100000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 5.42,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000584,
+        -2.79e-05,
+        -2.3e-08,
+        1.46e-09
+      ],
+      "t_fusion": 1490.0,
+      "s_fusion": 59.9,
+      "cp_liquid": 240.2,
+      "t_glass": 0.0
+    },
+    {
+      "label": "MnSi0.5O2",
+      "ref_h": -866000.0,
+      "ref_s": 77.95,
+      "ref_v": 2.4445,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        109.945,
+        -635.5,
+        -1024800.0,
+        88260000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 2.84,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000292,
+        -1.395e-05,
+        -1.15e-08,
+        7.3e-10
+      ],
+      "t_fusion": 1620.0,
+      "s_fusion": 27.6,
+      "cp_liquid": 121.6,
+      "t_glass": 0.0
+    },
+    {
+      "label": "Mg2SiO4",
+      "ref_h": -2174420.0,
+      "ref_s": 94.01,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        238.64,
+        -2001.3,
+        0.0,
+        -116240000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 4.98,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000524,
+        -1.35e-05,
+        -1.3e-08,
+        4.14e-10
+      ],
+      "t_fusion": 2163.0,
+      "s_fusion": 57.2,
+      "cp_liquid": 271.0,
+      "t_glass": 0.0
+    },
+    {
+      "label": "NiSi0.5O2",
+      "ref_h": -697650.0,
+      "ref_s": 64.05,
+      "ref_v": 2.1295,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        107.4985,
+        -515.375,
+        -2472265.0,
+        311875000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 2.48,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000292,
+        -1.395e-05,
+        -1.15e-08,
+        7.3e-10
+      ],
+      "t_fusion": 1923.0,
+      "s_fusion": 29.0,
+      "cp_liquid": 119.3,
+      "t_glass": 0.0
+    },
+    {
+      "label": "CoSi0.5O2",
+      "ref_h": -707050.0,
+      "ref_s": 71.3,
+      "ref_v": 2.2295,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        100.524,
+        -18.45,
+        -3590500.0,
+        450250000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 2.3,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000292,
+        -1.395e-05,
+        -1.15e-08,
+        7.3e-10
+      ],
+      "t_fusion": 1688.0,
+      "s_fusion": 29.0,
+      "cp_liquid": 125.3,
+      "t_glass": 0.0
+    },
+    {
+      "label": "CaSiO3",
+      "ref_h": -1627427.0,
+      "ref_s": 85.279,
+      "ref_v": 4.016,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        141.16,
+        -417.2,
+        -5857600.0,
+        940740000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 4.347,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000292,
+        -1.55e-05,
+        -1.6e-08,
+        3.89e-10
+      ],
+      "t_fusion": 1817.0,
+      "s_fusion": 31.5,
+      "cp_liquid": 172.4,
+      "t_glass": 0.0
+    },
+    {
+      "label": "Na2SiO3",
+      "ref_h": -1561426.96,
+      "ref_s": 113.84664000000001,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        234.77,
+        -2218.9,
+        0.0,
+        135300000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 5.568,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000741,
+        -4.29e-05,
+        -5.3e-08,
+        8.4e-10
+      ],
+      "t_fusion": 1361.0,
+      "s_fusion": 38.34,
+      "cp_liquid": 180.2,
+      "t_glass": 0.0
+    },
+    {
+      "label": "KAlSiO4",
+      "ref_h": -2111813.55,
+      "ref_s": 133.9653,
+      "ref_v": 5.989,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        186.0,
+        0.0,
+        -13106700.0,
+        2138930000.0,
+        800.15,
+        1154.0,
+        -0.07096454,
+        0.00021682
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 6.8375,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0007265,
+        -6.395e-05,
+        -4.6e-08,
+        1.21e-09
+      ],
+      "t_fusion": 2023.15,
+      "s_fusion": 24.5,
+      "cp_liquid": 217.0,
+      "t_glass": 0.0
+    },
+    {
+      "label": "Ca3(PO4)2",
+      "ref_h": -4097169.0,
+      "ref_s": 235.978,
+      "ref_v": 9.762,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        402.997,
+        -2808.35,
+        0.0,
+        -326230000.0,
+        1373.0,
+        14059.0,
+        0.025427,
+        0.00019255
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 10.7382,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "t_fusion": 1943.15,
+      "s_fusion": 35.69,
+      "cp_liquid": 574.67,
+      "t_glass": 0.0
+    },
+    {
+      "label": "CO2",
+      "ref_h": 0.0,
+      "ref_s": 0.0,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 0.0,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "t_fusion": 1000.0,
+      "s_fusion": 0.0,
+      "cp_liquid": 0.0,
+      "t_glass": 0.0
+    },
+    {
+      "label": "SO3",
+      "ref_h": 0.0,
+      "ref_s": 0.0,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 0.0,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "t_fusion": 1000.0,
+      "s_fusion": 0.0,
+      "cp_liquid": 0.0,
+      "t_glass": 0.0
+    },
+    {
+      "label": "Cl2O-1",
+      "ref_h": 0.0,
+      "ref_s": 0.0,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 0.0,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "t_fusion": 1000.0,
+      "s_fusion": 0.0,
+      "cp_liquid": 0.0,
+      "t_glass": 0.0
+    },
+    {
+      "label": "F2O-1",
+      "ref_h": 0.0,
+      "ref_s": 0.0,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 0.0,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "t_fusion": 1000.0,
+      "s_fusion": 0.0,
+      "cp_liquid": 0.0,
+      "t_glass": 0.0
+    },
+    {
+      "label": "H2O",
+      "ref_h": 0.0,
+      "ref_s": 0.0,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 0.0,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "t_fusion": 1000.0,
+      "s_fusion": 0.0,
+      "cp_liquid": 0.0,
+      "t_glass": 0.0
+    }
+  ],
+  "meltsFluidLiquid": [
+    {
+      "label": "SiO2",
+      "ref_h": -906377.0,
+      "ref_s": 46.029,
+      "ref_v": 2.73,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        83.51,
+        -374.7,
+        -2455400.0,
+        280070000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 2.69,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        -1.89e-05,
+        1.3e-08,
+        3.6e-10
+      ],
+      "t_fusion": 1999.0,
+      "s_fusion": 4.46,
+      "cp_liquid": 82.6,
+      "t_glass": 0.0
+    },
+    {
+      "label": "TiO2",
+      "ref_h": -944750.0,
+      "ref_s": 50.46,
+      "ref_v": 1.882,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        77.84,
+        0.0,
+        -3367800.0,
+        402940000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 2.316,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0007246,
+        -2.31e-05,
+        0.0,
+        5e-10
+      ],
+      "t_fusion": 1870.0,
+      "s_fusion": 35.824,
+      "cp_liquid": 109.2,
+      "t_glass": 0.0
+    },
+    {
+      "label": "Al2O3",
+      "ref_h": -1675700.0,
+      "ref_s": 50.82,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        155.02,
+        -828.4,
+        -3861400.0,
+        409080000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 3.711,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000262,
+        -2.26e-05,
+        2.7e-08,
+        4e-10
+      ],
+      "t_fusion": 2319.65,
+      "s_fusion": 48.61,
+      "cp_liquid": 170.3,
+      "t_glass": 0.0
+    },
+    {
+      "label": "Fe2O3",
+      "ref_h": -822000.0,
+      "ref_s": 87.4,
+      "ref_v": 3.027,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        146.86,
+        0.0,
+        -5576800.0,
+        525630000.0,
+        955.0,
+        1287.0,
+        -0.07403,
+        0.00027921
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 4.213,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000909,
+        -2.53e-05,
+        3.1e-08,
+        4.4e-10
+      ],
+      "t_fusion": 1895.0,
+      "s_fusion": 60.41,
+      "cp_liquid": 240.9,
+      "t_glass": 0.0
+    },
+    {
+      "label": "MgCr2O4",
+      "ref_h": -1783640.0,
+      "ref_s": 106.02,
+      "ref_v": 4.356,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        201.981,
+        -551.9,
+        -5784400.0,
+        577290000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 5.358,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.001171,
+        -2.26e-05,
+        1.8e-08,
+        4.67e-10
+      ],
+      "t_fusion": 2673.15,
+      "s_fusion": 73.22,
+      "cp_liquid": 335.1,
+      "t_glass": 0.0
+    },
+    {
+      "label": "Fe2SiO4",
+      "ref_h": -1479360.0,
+      "ref_s": 150.93,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        248.93,
+        -1923.9,
+        0.0,
+        -139100000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 5.42,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000584,
+        -2.79e-05,
+        -2.3e-08,
+        1.46e-09
+      ],
+      "t_fusion": 1490.0,
+      "s_fusion": 59.9,
+      "cp_liquid": 240.2,
+      "t_glass": 0.0
+    },
+    {
+      "label": "MnSi0.5O2",
+      "ref_h": -866000.0,
+      "ref_s": 77.95,
+      "ref_v": 2.4445,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        109.945,
+        -635.5,
+        -1024800.0,
+        88260000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 2.84,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000292,
+        -1.395e-05,
+        -1.15e-08,
+        7.3e-10
+      ],
+      "t_fusion": 1620.0,
+      "s_fusion": 27.6,
+      "cp_liquid": 121.6,
+      "t_glass": 0.0
+    },
+    {
+      "label": "Mg2SiO4",
+      "ref_h": -2174420.0,
+      "ref_s": 94.01,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        238.64,
+        -2001.3,
+        0.0,
+        -116240000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 4.98,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000524,
+        -1.35e-05,
+        -1.3e-08,
+        4.14e-10
+      ],
+      "t_fusion": 2163.0,
+      "s_fusion": 57.2,
+      "cp_liquid": 271.0,
+      "t_glass": 0.0
+    },
+    {
+      "label": "NiSi0.5O2",
+      "ref_h": -697650.0,
+      "ref_s": 64.05,
+      "ref_v": 2.1295,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        107.4985,
+        -515.375,
+        -2472265.0,
+        311875000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 2.48,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000292,
+        -1.395e-05,
+        -1.15e-08,
+        7.3e-10
+      ],
+      "t_fusion": 1923.0,
+      "s_fusion": 29.0,
+      "cp_liquid": 119.3,
+      "t_glass": 0.0
+    },
+    {
+      "label": "CoSi0.5O2",
+      "ref_h": -707050.0,
+      "ref_s": 71.3,
+      "ref_v": 2.2295,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        100.524,
+        -18.45,
+        -3590500.0,
+        450250000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 2.3,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000292,
+        -1.395e-05,
+        -1.15e-08,
+        7.3e-10
+      ],
+      "t_fusion": 1688.0,
+      "s_fusion": 29.0,
+      "cp_liquid": 125.3,
+      "t_glass": 0.0
+    },
+    {
+      "label": "CaSiO3",
+      "ref_h": -1627427.0,
+      "ref_s": 85.279,
+      "ref_v": 4.016,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        141.16,
+        -417.2,
+        -5857600.0,
+        940740000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 4.347,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000292,
+        -1.55e-05,
+        -1.6e-08,
+        3.89e-10
+      ],
+      "t_fusion": 1817.0,
+      "s_fusion": 31.5,
+      "cp_liquid": 172.4,
+      "t_glass": 0.0
+    },
+    {
+      "label": "Na2SiO3",
+      "ref_h": -1561426.96,
+      "ref_s": 113.84664000000001,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        234.77,
+        -2218.9,
+        0.0,
+        135300000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 5.568,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.000741,
+        -4.29e-05,
+        -5.3e-08,
+        8.4e-10
+      ],
+      "t_fusion": 1361.0,
+      "s_fusion": 38.34,
+      "cp_liquid": 180.2,
+      "t_glass": 0.0
+    },
+    {
+      "label": "KAlSiO4",
+      "ref_h": -2111813.55,
+      "ref_s": 133.9653,
+      "ref_v": 5.989,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        186.0,
+        0.0,
+        -13106700.0,
+        2138930000.0,
+        800.15,
+        1154.0,
+        -0.07096454,
+        0.00021682
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 6.8375,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0007265,
+        -6.395e-05,
+        -4.6e-08,
+        1.21e-09
+      ],
+      "t_fusion": 2023.15,
+      "s_fusion": 24.5,
+      "cp_liquid": 217.0,
+      "t_glass": 0.0
+    },
+    {
+      "label": "Ca3(PO4)2",
+      "ref_h": -4097169.0,
+      "ref_s": 235.978,
+      "ref_v": 9.762,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        402.997,
+        -2808.35,
+        0.0,
+        -326230000.0,
+        1373.0,
+        14059.0,
+        0.025427,
+        0.00019255
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 10.7382,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "t_fusion": 1943.15,
+      "s_fusion": 35.69,
+      "cp_liquid": 574.67,
+      "t_glass": 0.0
+    },
+    {
+      "label": "CO2",
+      "ref_h": 0.0,
+      "ref_s": 0.0,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 0.0,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "t_fusion": 1000.0,
+      "s_fusion": 0.0,
+      "cp_liquid": 0.0,
+      "t_glass": 0.0
+    },
+    {
+      "label": "SO3",
+      "ref_h": 0.0,
+      "ref_s": 0.0,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 0.0,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "t_fusion": 1000.0,
+      "s_fusion": 0.0,
+      "cp_liquid": 0.0,
+      "t_glass": 0.0
+    },
+    {
+      "label": "Cl2O-1",
+      "ref_h": 0.0,
+      "ref_s": 0.0,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 0.0,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "t_fusion": 1000.0,
+      "s_fusion": 0.0,
+      "cp_liquid": 0.0,
+      "t_glass": 0.0
+    },
+    {
+      "label": "F2O-1",
+      "ref_h": 0.0,
+      "ref_s": 0.0,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 0.0,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "t_fusion": 1000.0,
+      "s_fusion": 0.0,
+      "cp_liquid": 0.0,
+      "t_glass": 0.0
+    },
+    {
+      "label": "H2O",
+      "ref_h": 0.0,
+      "ref_s": 0.0,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 0.0,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "t_fusion": 1000.0,
+      "s_fusion": 0.0,
+      "cp_liquid": 0.0,
+      "t_glass": 0.0
+    },
+    {
+      "label": "CaCO3",
+      "ref_h": 0.0,
+      "ref_s": 0.0,
+      "ref_v": 0.0,
+      "ref_cp_type": "CP_BERMAN",
+      "ref_cp_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref_eos_type": "EOS_BERMAN",
+      "ref_eos_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "v_liq": 0.0,
+      "kress_type": "EOS_KRESS",
+      "kress_coeffs": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "t_fusion": 1000.0,
+      "s_fusion": 0.0,
+      "cp_liquid": 0.0,
+      "t_glass": 0.0
+    }
+  ]
+}

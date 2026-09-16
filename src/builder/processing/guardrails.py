@@ -17,7 +17,18 @@ A uniform factor applied to every phase at once would be harmless -- specific en
 is intensive -- but that is not what the code does.
 
 Lifting this requires recomputing bulk entropy from the weighted phase-wise entropies
-(collected for MELTS, not yet wired). Until then these raise.
+(collected for MELTS, not yet wired).
+
+The hazard above is specifically an entropy-column hazard, not a resampling hazard:
+resampling never touches Pressure or Temperature, and specific entropy is the only
+attached label that abundance-weighted perturbation silently invalidates. So
+`check_resampling_config` below runs once, at the top of `process_for_ML`, before any
+table is opened: it raises `ResamplingNotSupported` only when an entropy column
+('S(System_main)', 'S(System_main) / mass(System_main)', 'S(J/g/K)(System_main)') is a
+configured feature or free output, and otherwise just prints a loud warning and lets
+the configured resampling proceed. The deep call sites inside `BigMetaTable`/
+`MLexporter` that used to hard-block any non-identity multiplier no longer do -- this
+upfront check is the single place that decision gets made, before any data is read.
 
 Derivative sidecars and column-moving operations
 ------------------------------------------------
@@ -72,6 +83,80 @@ def assert_identity_multipliers(bounds: Any, caller: str) -> None:
         "To lift this, recompute bulk entropy as the mass-weighted sum of phase-wise\n"
         "entropies after resampling, then relax the guard here."
     )
+
+
+ENTROPY_LABELS = frozenset({
+    'S(System_main)',
+    'S(System_main) / mass(System_main)',
+    'S(J/g/K)(System_main)',
+})
+
+
+def entropy_labels_present(feature_names: Any, free_outputs: Any) -> bool:
+    """True if an entropy column is a configured feature or free output."""
+    names = set(feature_names or []) | set(free_outputs or [])
+    return bool(names & ENTROPY_LABELS)
+
+
+def check_resampling_config(upsample_enabled: bool, upsample_cfg: dict, resampling_cfg: dict,
+                             feature_names: Any, free_outputs: Any) -> None:
+    """Validate abundance-resampling config before any table is opened.
+
+    Mirrors exactly which bounds `process_for_ML` will actually use:
+    `upsampling.phases`/`test_set_phases` and `resampling.train_bounds` only take
+    effect when `upsample_enabled`; `resampling.test_bounds` is always applied.
+    Non-identity bounds among those are only a hazard while an entropy column (see
+    `ENTROPY_LABELS`) is a configured feature or free output -- resampling doesn't
+    touch Pressure or Temperature either way. So: raise if entropy is live, else warn
+    loudly and return so the caller can proceed.
+    """
+    bounds_by_source = []
+    if upsample_enabled:
+        for section in ('phases', 'test_set_phases'):
+            for phase, phase_cfg in ((upsample_cfg or {}).get(section) or {}).items():
+                bounds_by_source.append((
+                    f"upsampling.{section}.{phase}.multiplier_bounds",
+                    (phase_cfg or {}).get('multiplier_bounds'),
+                ))
+        for bounds in (resampling_cfg or {}).get('train_bounds') or []:
+            bounds_by_source.append(('resampling.train_bounds', bounds))
+    for bounds in (resampling_cfg or {}).get('test_bounds') or []:
+        bounds_by_source.append(('resampling.test_bounds', bounds))
+
+    non_identity = [(name, b) for name, b in bounds_by_source if not _is_identity(b)]
+    if not non_identity:
+        return
+
+    listing = "\n".join(f"  - {name}: {b}" for name, b in non_identity)
+
+    if entropy_labels_present(feature_names, free_outputs):
+        raise ResamplingNotSupported(
+            "Abundance resampling is configured with non-identity multiplier bounds "
+            "while an entropy column is a configured feature or free output:\n"
+            f"{listing}\n"
+            "Independent per-phase multipliers change the assemblage's relative\n"
+            "proportions, hence its bulk composition and specific entropy, while the\n"
+            "stored S(J/g/K) column still holds the value computed for the unresampled\n"
+            "assemblage. Training an isentropic emulator on that teaches it a wrong S.\n"
+            "Remove the entropy column from featureNames/free_outputs, or pin the\n"
+            "bounds above back to [1, 1], before running this recipe.\n"
+            "To lift this properly, recompute bulk entropy as the mass-weighted sum of\n"
+            "phase-wise entropies after resampling, then relax this guard in\n"
+            "builder/processing/guardrails.py."
+        )
+
+    print("!" * 78)
+    print("[GUARDRAIL WARNING] Abundance resampling is configured with non-identity "
+          "multiplier bounds:")
+    print(listing)
+    print("Independent per-phase multipliers change the relative proportions -- and\n"
+          "therefore the bulk composition -- of every resampled row. No entropy column\n"
+          f"({', '.join(sorted(ENTROPY_LABELS))}) is currently a\n"
+          "configured feature or free output, so nothing downstream is taught a stale S;\n"
+          "Pressure and Temperature are untouched by resampling either way. If an\n"
+          "entropy column is added to featureNames/free_outputs later, this check will\n"
+          "raise instead -- re-verify these bounds before overriding it.")
+    print("!" * 78)
 
 
 def assert_alias_safe(bounds: Any, model: str, caller: str) -> None:
