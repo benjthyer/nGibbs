@@ -37,9 +37,15 @@ from .EOS_arithmetic_MELTS.melts_vec import (
     compute_feldspar_solution as melts_compute_feldspar_solution,
     compute_olivine_solution as melts_compute_olivine_solution,
     compute_clinopyroxene_solution as melts_compute_clinopyroxene_solution,
+    compute_orthopyroxene_solution as melts_compute_orthopyroxene_solution,
+    compute_spinel_solution as melts_compute_spinel_solution,
+    compute_rhm_oxide_solution as melts_compute_rhm_oxide_solution,
     feldspar as _melts_feldspar,
     olivine as _melts_olivine,
     clinopyroxene as _melts_clinopyroxene,
+    orthopyroxene as _melts_orthopyroxene,
+    spinel as _melts_spinel,
+    rhomsghiorso as _melts_rhomsghiorso,
     BARS_PER_GPA as _MELTS_BARS_PER_GPA,
 )
 
@@ -2306,23 +2312,24 @@ class MELTSAPI:
         'olivine':     (_melts_olivine.ENDMEMBERS,  melts_compute_olivine_solution),
         'clinopyroxene': (_melts_clinopyroxene.ENDMEMBERS, melts_compute_clinopyroxene_solution),
         'cpx':           (_melts_clinopyroxene.ENDMEMBERS, melts_compute_clinopyroxene_solution),
+        'orthopyroxene': (_melts_orthopyroxene.ENDMEMBERS, melts_compute_orthopyroxene_solution),
+        'opx':           (_melts_orthopyroxene.ENDMEMBERS, melts_compute_orthopyroxene_solution),
+        'spinel':        (_melts_spinel.ENDMEMBERS, melts_compute_spinel_solution),
+        'sp':            (_melts_spinel.ENDMEMBERS, melts_compute_spinel_solution),
+        'rhm-oxide':          (_melts_rhomsghiorso.ENDMEMBERS, melts_compute_rhm_oxide_solution),
+        'rhombohedral-oxide': (_melts_rhomsghiorso.ENDMEMBERS, melts_compute_rhm_oxide_solution),
+        'rhm_oxide':          (_melts_rhomsghiorso.ENDMEMBERS, melts_compute_rhm_oxide_solution),
     }
     # Phases MELTS models as solid solutions that melts_vec does NOT yet
-    # implement a mixing model for (clinopyroxene/orthopyroxene, spinel,
-    # rhombohedral-oxide -- see EOS_arithmetic_MELTS/melts_vec/__init__.py's
-    # docstring for why: much larger parameter surface, deferred pending a
-    # more automated extraction+verification approach). Recognised purely so
+    # implement a mixing model for. Recognised purely so
     # get_property_melts_vectorized_from_assemblage can name them in its
     # coverage report / strict-mode error rather than just silently ignoring
     # an unrecognised key.
     _MELTS_UNSUPPORTED_SOLUTION_PHASES = frozenset({
-        'orthopyroxene', 'opx', 'spinel', 'sp', 'rhm-oxide',
-        'rhombohedral-oxide', 'rhm_oxide',
         # 'pyroxene' is deliberately left here too: unlike 'clinopyroxene'/'cpx'
-        # (unambiguous), a bare 'pyroxene' key could mean either clino- or
-        # orthopyroxene, and only the former has a mixing model implemented, so
-        # it stays unsupported rather than silently guessing which one a caller
-        # meant.
+        # and 'orthopyroxene'/'opx' (both unambiguous), a bare 'pyroxene' key
+        # could mean either structural state, so it stays unsupported rather
+        # than silently guessing which one a caller meant.
         'pyroxene',
     })
     _MELTS_LIQUID_PHASE_NAMES = frozenset({'liquid', 'melts-liquid', 'melt'})
@@ -2361,6 +2368,18 @@ class MELTSAPI:
               - 'clinopyroxene' / 'cpx': (B, 7), melts_vec.clinopyroxene.
                 ENDMEMBERS order (diopside, clinoenstatite, hedenbergite,
                 alumino-buffonite, buffonite, essenite, jadeite).
+              - 'orthopyroxene' / 'opx': (B, 7), melts_vec.orthopyroxene.
+                ENDMEMBERS order (diopside, clinoenstatite, hedenbergite,
+                alumino-buffonite, buffonite, essenite, jadeite) -- the same
+                names/order as clinopyroxene (both reference the same
+                sol_struct_data.json endmember block).
+              - 'spinel' / 'sp': (B, 5), melts_vec.spinel.ENDMEMBERS order
+                (chromite, hercynite, magnetite, spinel, ulvospinel).
+              - 'rhm-oxide' / 'rhombohedral-oxide' / 'rhm_oxide': (B, 5),
+                melts_vec.rhomsghiorso.ENDMEMBERS order (geikielite, hematite,
+                ilmenite, pyrophanite, corundum). For a pMELTS-calibrated
+                composition (which omits corundum entirely) pass 0 in the
+                last column.
             Any other key is treated as a single (possibly pure) phase
             evaluated via the pure-endmember EOS only (see "ideal-only
             phases" below) -- pass its melts_vec solid-endmember label(s)
@@ -2404,11 +2423,11 @@ class MELTSAPI:
         derived from V/dVdT/dVdP exactly as compute()/solid_solutions.py do
         for a single phase. This is NOT necessarily the properties of the
         WHOLE assemblage: any phase in _MELTS_UNSUPPORTED_SOLUTION_PHASES
-        (pyroxene, spinel, rhm-oxide) is excluded from the sum entirely
+        (pyroxene) is excluded from the sum entirely
         (its moles still count toward the coverage denominator). Always
         check 'melts_coverage_fraction' -- the fraction of total assemblage
         moles actually covered -- before trusting the bulk numbers for a
-        pyroxene- or spinel-bearing assemblage; request it explicitly via
+        pyroxene-bearing assemblage; request it explicitly via
         property_names or read it off the returned dict's
         'melts_coverage_fraction' key, which is always included.
 
@@ -2443,11 +2462,12 @@ class MELTSAPI:
             checkpoint's ml_indexer this session, though, so verify the
             label order (e.g. via ``ml_indexer.detail_label_indices``)
             before wiring it up for real use.
-          - orthopyroxene/spinel/rhombohedral-oxide mixing models are simply
-            not implemented yet (see melts_vec's __init__.py docstring);
-            clinopyroxene now IS supported. Any assemblage containing an
-            unsupported phase is necessarily partially covered here, see
-            'melts_coverage_fraction'.
+          - clinopyroxene, orthopyroxene, spinel, and rhombohedral-oxide are
+            all supported now (see melts_vec's __init__.py docstring for each
+            phase's own architecture notes). Only a bare 'pyroxene' key stays
+            unsupported (structural state is ambiguous). Any assemblage
+            containing an unsupported phase is necessarily partially
+            covered here, see 'melts_coverage_fraction'.
         """
         if self.melts_solid_params is None or self.melts_liquid_params is None:
             raise RuntimeError(

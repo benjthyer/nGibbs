@@ -1,0 +1,36 @@
+Title: Early WR Bishop Tuff - Hildreth 1979. 
+Output: both
+Initial Pressure: 1500
+Final Pressure: 1500
+Increment Pressure: 0
+Initial Temperature: 1200
+Final Temperature: 600
+Increment Temperature: -1
+Log fo2 Path: FMQ
+Log fo2 Offset: 2.0
+Initial Composition: SiO2 77.4
+Initial Composition: TiO2 0.07
+Initial Composition: Al2O3 12.3
+Initial Composition: FeO 0.7
+Initial Composition: MgO 0.01
+Initial Composition: CaO 0.45
+Initial Composition: Na2O 3.9
+Initial Composition: K2O 4.8
+Initial Composition: P2O5 0.01
+Initial Composition: H2O 0.3
+Initial Composition: CO2 0.1
+Suppress: rutile
+Suppress: sphene
+Suppress: melilite
+Suppress: aegirine
+Suppress: aenigmatite
+Suppress: cummingtonite
+Suppress: clinoamphibole
+Suppress: orthoamphibole
+Suppress: cristobalite
+Suppress: kalsilite
+Suppress: corundum
+Suppress: rutile
+Suppress: perovskite
+Suppress: ortho-oxide
+Suppress: sillimanite

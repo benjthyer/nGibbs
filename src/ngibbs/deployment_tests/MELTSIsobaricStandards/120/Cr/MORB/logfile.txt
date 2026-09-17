@@ -1,0 +1,10 @@
+ALPHAMELTS_MINT 500
+ALPHAMELTS_MAXT 2000
+ALPHAMELTS_DELTAT -1
+
+! <><> alphaMELTS 2.3 run by bthyer <><> 
+! Time started: Sep 17 2026 at 12:13 
+
+! Command line: -m input.melts -f settings.txt -b 120batch 
+
+! Batch file used: 120batch 

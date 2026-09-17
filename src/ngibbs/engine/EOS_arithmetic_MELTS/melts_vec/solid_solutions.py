@@ -39,6 +39,9 @@ from .compute import compute
 from . import feldspar as _feldspar
 from . import olivine as _olivine
 from . import clinopyroxene as _clinopyroxene
+from . import orthopyroxene as _orthopyroxene
+from . import spinel as _spinel
+from . import rhomsghiorso as _rhomsghiorso
 
 
 def _weighted_pure_sum(T, P, params, names, X):
@@ -187,3 +190,183 @@ def compute_clinopyroxene_solution(T, P, X, solid_params, n_iter=60) -> dict:
                 Cp=Cp, dCpdT=dCpdT, G=G, H=H, S=S,
                 activities=mix["activities"], mu=mix["mu"], s_eq=mix["s_eq"],
                 endmembers=_clinopyroxene.ENDMEMBERS)
+
+
+def compute_orthopyroxene_solution(T, P, X, solid_params, n_iter=60) -> dict:
+    """Bulk (diopside, clinoenstatite, hedenbergite, alumino-buffonite,
+    buffonite, essenite, jadeite) orthopyroxene solid-solution properties.
+
+    See orthopyroxene.py's module docstring for the scope of this
+    translation (the "clino=FALSE" MIX-branch Taylor coefficients used
+    for the bulk composition, vs. the "clino=TRUE" PURE-branch reused
+    verbatim from clinopyroxene.py for the pure-endmember reference and
+    essenite's own internal ordering -- both C-harness-verified this
+    session, including the nonzero H0/S0/V0 constant terms that have no
+    analogue in clinopyroxene.py).
+
+    `_weighted_pure_sum` below looks up the standard-state (Berman/Vinet)
+    pure-endmember EOS by name via `orthopyroxene.ENDMEMBERS` (the same
+    7 names as clinopyroxene.ENDMEMBERS -- literally the same list
+    object, since orthopyroxene.py imports it directly rather than
+    redefining it). `sol_struct_data.json`'s `meltsSolids` table lists
+    these 7 names TWICE (once in a clinopyroxene-context block, once in
+    an orthopyroxene-context block) with byte-identical h/s/v/Cp/EOS
+    values in both occurrences (confirmed by direct inspection) -- so
+    which of the two duplicate rows `params.select()`'s "first match"
+    label lookup resolves to is immaterial here.
+
+    Parameters
+    ----------
+    T, P : (B,) arrays.
+    X : (B, 7) mole fractions, in orthopyroxene.ENDMEMBERS order
+        (diopside, clinoenstatite, hedenbergite, alumino-buffonite,
+        buffonite, essenite, jadeite; should sum to 1 per row).
+    solid_params : MELTSSolidParams.
+
+    Returns dict of (B,) arrays: V, dVdT, dVdP, K, alpha, Cp, dCpdT, G,
+    H, S, plus `activities`/`mu` (B,7) and `s_eq` (B,2) the converged
+    main-ordering parameters.
+    """
+    T = np.asarray(T, dtype=np.float64)
+    P = np.asarray(P, dtype=np.float64)
+    X = np.asarray(X, dtype=np.float64)
+
+    r = _orthopyroxene.x_to_r(X)   # (B,6)
+
+    pure_sum = _weighted_pure_sum(T, P, solid_params, _orthopyroxene.ENDMEMBERS, X)
+    mix = _orthopyroxene.solution_thermo(r, T, P, n_iter=n_iter)
+
+    V = pure_sum["V"] + mix["V_mix"]
+    dVdT = pure_sum["dVdT"] + mix["dVdT_mix"]
+    dVdP = pure_sum["dVdP"] + mix["dVdP_mix"]
+    H = pure_sum["H"] + mix["H_mix"]
+    S = pure_sum["S"] + mix["S_mix"]
+    Cp = pure_sum["Cp"] + mix["Cp_mix"]
+    dCpdT = pure_sum["dCpdT"] + mix["dCpdT_mix"]
+    G = H - T*S
+
+    with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
+        K = np.where(dVdP != 0.0, -V/dVdP, np.inf)
+        alpha = dVdT/V
+
+    return dict(V=V, dVdT=dVdT, dVdP=dVdP, K=K, alpha=alpha,
+                Cp=Cp, dCpdT=dCpdT, G=G, H=H, S=S,
+                activities=mix["activities"], mu=mix["mu"], s_eq=mix["s_eq"],
+                endmembers=_orthopyroxene.ENDMEMBERS)
+
+
+def compute_spinel_solution(T, P, X, solid_params, n_iter=60) -> dict:
+    """Bulk (chromite, hercynite, magnetite, spinel, ulvospinel) spinel
+    solid-solution properties.
+
+    See spinel.py's module docstring for the scope of this translation:
+    unlike clinopyroxene.py/orthopyroxene.py, spinel.c has NO separate
+    PURE-vs-MIX Taylor-coefficient reference frame (pureOrder() and the
+    bulk order() share the exact same coefficients), and the internal
+    ordering solve (3 site-occupancy parameters s0/s1/s2) needed a
+    combined backtracking-line-search + physical-gating Newton solver
+    (`spinel.solve_ordering`) beyond the plain numerically-Jacobian'd
+    solve every other phase uses, to correctly handle both interior
+    compositions AND the genuine physical degeneracies at 3 of the 5
+    pure-endmember vertices (an entire cation type absent) -- both
+    verified bit-for-bit against a standalone C harness
+    (`tests/verify_spinel.c`) this session.
+
+    Parameters
+    ----------
+    T, P : (B,) arrays.
+    X : (B, 5) mole fractions, in spinel.ENDMEMBERS order (chromite,
+        hercynite, magnetite, spinel, ulvospinel; should sum to 1 per
+        row).
+    solid_params : MELTSSolidParams.
+
+    Returns dict of (B,) arrays: V, dVdT, dVdP, K, alpha, Cp, dCpdT, G,
+    H, S, plus `activities`/`mu` (B,5) and `s_eq` (B,3) the converged
+    main-ordering parameters.
+    """
+    T = np.asarray(T, dtype=np.float64)
+    P = np.asarray(P, dtype=np.float64)
+    X = np.asarray(X, dtype=np.float64)
+
+    r = _spinel.x_to_r(X)   # (B,4)
+
+    pure_sum = _weighted_pure_sum(T, P, solid_params, _spinel.ENDMEMBERS, X)
+    mix = _spinel.solution_thermo(r, T, P, n_iter=n_iter)
+
+    V = pure_sum["V"] + mix["V_mix"]
+    dVdT = pure_sum["dVdT"] + mix["dVdT_mix"]
+    dVdP = pure_sum["dVdP"] + mix["dVdP_mix"]
+    H = pure_sum["H"] + mix["H_mix"]
+    S = pure_sum["S"] + mix["S_mix"]
+    Cp = pure_sum["Cp"] + mix["Cp_mix"]
+    dCpdT = pure_sum["dCpdT"] + mix["dCpdT_mix"]
+    G = H - T*S
+
+    with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
+        K = np.where(dVdP != 0.0, -V/dVdP, np.inf)
+        alpha = dVdT/V
+
+    return dict(V=V, dVdT=dVdT, dVdP=dVdP, K=K, alpha=alpha,
+                Cp=Cp, dCpdT=dCpdT, G=G, H=H, S=S,
+                activities=mix["activities"], mu=mix["mu"], s_eq=mix["s_eq"],
+                endmembers=_spinel.ENDMEMBERS)
+
+
+def compute_rhm_oxide_solution(T, P, X, solid_params, n_iter=100) -> dict:
+    """Bulk (geikielite, hematite, ilmenite, pyrophanite, corundum)
+    rhombohedral-oxide solid-solution properties.
+
+    See rhomsghiorso.py's module docstring for the scope of this
+    translation: three DECOUPLED per-component 1-D Landau ordering
+    parameters (s0<->ilmenite, s1<->geikielite, s2<->pyrophanite;
+    hematite/corundum have none), a short-range-order cubic spline
+    (`fSRO`, currently calibrated to a constant), and the G-T*dG/dT (not
+    raw H/S macro) reporting convention `hmixMsg`/`smixMsg` use for
+    hmix/smix (both bulk and pure) -- all verified bit-for-bit against a
+    standalone C harness (`tests/verify_rhomsghiorso.c`) this session.
+    pMELTS omits the corundum endmember entirely (`sol_struct_data.json`'s
+    `pMeltsSolids` table has only 4 rhm-oxide rows, no Al2O3) -- this
+    general 5-endmember model reduces correctly to that case simply by
+    never allocating moles to `X[:, 4]` (corundum's own r[3]=X_corundum
+    then stays 0 and every corundum term vanishes cleanly); no separate
+    code path exists or is needed for that calibration.
+
+    Parameters
+    ----------
+    T, P : (B,) arrays.
+    X : (B, 5) mole fractions, in rhomsghiorso.ENDMEMBERS order
+        (geikielite, hematite, ilmenite, pyrophanite, corundum; should
+        sum to 1 per row -- for a pMELTS-calibrated composition with no
+        corundum, pass 0 in the last column).
+    solid_params : MELTSSolidParams.
+
+    Returns dict of (B,) arrays: V, dVdT, dVdP, K, alpha, Cp, dCpdT, G,
+    H, S, plus `activities`/`mu` (B,5) and `s_eq` (B,3) the converged
+    ilmenite/geikielite/pyrophanite ordering parameters.
+    """
+    T = np.asarray(T, dtype=np.float64)
+    P = np.asarray(P, dtype=np.float64)
+    X = np.asarray(X, dtype=np.float64)
+
+    r = _rhomsghiorso.x_to_r(X)   # (B,4)
+
+    pure_sum = _weighted_pure_sum(T, P, solid_params, _rhomsghiorso.ENDMEMBERS, X)
+    mix = _rhomsghiorso.solution_thermo(r, T, P, n_iter=n_iter)
+
+    V = pure_sum["V"] + mix["V_mix"]
+    dVdT = pure_sum["dVdT"] + mix["dVdT_mix"]
+    dVdP = pure_sum["dVdP"] + mix["dVdP_mix"]
+    H = pure_sum["H"] + mix["H_mix"]
+    S = pure_sum["S"] + mix["S_mix"]
+    Cp = pure_sum["Cp"] + mix["Cp_mix"]
+    dCpdT = pure_sum["dCpdT"] + mix["dCpdT_mix"]
+    G = H - T*S
+
+    with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
+        K = np.where(dVdP != 0.0, -V/dVdP, np.inf)
+        alpha = dVdT/V
+
+    return dict(V=V, dVdT=dVdT, dVdP=dVdP, K=K, alpha=alpha,
+                Cp=Cp, dCpdT=dCpdT, G=G, H=H, S=S,
+                activities=mix["activities"], mu=mix["mu"], s_eq=mix["s_eq"],
+                endmembers=_rhomsghiorso.ENDMEMBERS)

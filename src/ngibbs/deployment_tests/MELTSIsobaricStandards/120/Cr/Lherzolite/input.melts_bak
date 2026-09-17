@@ -1,0 +1,37 @@
+Title: (Carbonated) Lherzolite, Perc3, Dasgupta and Hirshmann, 2007 
+
+Output: both
+Initial Pressure: 9000
+Final Pressure: 9000
+Increment Pressure: 0
+Initial Temperature: 1800
+Final Temperature: 700
+Increment Temperature: -1
+Log fo2 Path: FMQ
+Log fo2 Offset: -2
+Initial Composition: SiO2 43.64
+Initial Composition: TiO2 0.2
+Initial Composition: Al2O3 3.63
+Initial Composition: Fe2O3 0.89
+Initial Composition: Cr2O3 0.22
+Initial Composition: FeO 8.08
+Initial Composition: MgO 39.27
+Initial Composition: CaO 3.52
+Initial Composition: Na2O 0.3
+Initial Composition: K2O 0.01
+!Initial Composition: CO2 1.02
+Suppress: rutile
+Suppress: sphene
+Suppress: melilite
+Suppress: aegirine
+Suppress: aenigmatite
+Suppress: cummingtonite
+Suppress: clinoamphibole
+Suppress: orthoamphibole
+Suppress: cristobalite
+Suppress: kalsilite
+Suppress: corundum
+Suppress: rutile
+Suppress: perovskite
+Suppress: ortho-oxide
+Suppress: sillimanite
