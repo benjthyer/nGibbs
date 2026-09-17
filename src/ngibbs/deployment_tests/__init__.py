@@ -18,6 +18,12 @@ from .meltstable_comparison import (
     run_meltstable_phase_comparison,
     run_meltstable_property_comparison,
 )
+from .quality_thresholds import (
+    check_meltstable_quality,
+    check_phase_quality,
+    EmulatorQualityError,
+    QualityFailure,
+)
 
 __all__ = [
     "evaluate_emulator_quality",
@@ -25,4 +31,8 @@ __all__ = [
     "METRIC_DESCRIPTIONS",
     "run_meltstable_phase_comparison",
     "run_meltstable_property_comparison",
+    "check_meltstable_quality",
+    "check_phase_quality",
+    "EmulatorQualityError",
+    "QualityFailure",
 ]
