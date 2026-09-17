@@ -816,6 +816,52 @@ class EmulatorAPI:
             return getattr(self._cpu_api.isentropic_emulator, name, None)
         return None
 
+    def training_pressure_bounds(self, pathway: str = 'both') -> Tuple[float, float]:
+        """Return the pressure interval represented by the model normalizers.
+
+        Bounds are reconstructed from the normalized ``P(GPa)(System_main)``
+        feature rather than from a separate archive statistics file.  ``both``
+        returns the intersection of the isothermal and isentropic intervals.
+        """
+        pathways = {
+            'isothermal': self.isothermal_emulator,
+            'isentropic': self.isentropic_emulator,
+        }
+        if pathway == 'both':
+            selected = list(pathways)
+        elif pathway in pathways:
+            selected = [pathway]
+        else:
+            raise ValueError(
+                f"Unknown pathway {pathway!r}; expected 'isothermal', "
+                "'isentropic', or 'both'"
+            )
+
+        bounds = []
+        for name in selected:
+            emulator = pathways[name]
+            feature_names = list(emulator.ml_indexer.featureNames)
+            try:
+                pressure_idx = feature_names.index('P(GPa)(System_main)')
+            except ValueError as exc:
+                raise ValueError(
+                    f"{name} model has no 'P(GPa)(System_main)' feature: "
+                    f"{feature_names}"
+                ) from exc
+            normalizer = emulator.ml_indexer.feature_normalizer
+            if normalizer is None:
+                raise ValueError(f"{name} model has no feature normalizer")
+            minimum = float(normalizer.miner[pressure_idx].item())
+            span = float(normalizer.ranger[pressure_idx].item())
+            if not np.isfinite(minimum) or not np.isfinite(span) or span <= 0:
+                raise ValueError(
+                    f"{name} model has invalid pressure normalizer values: "
+                    f"min={minimum}, range={span}"
+                )
+            bounds.append((minimum, minimum + span))
+
+        return max(lower for lower, _ in bounds), min(upper for _, upper in bounds)
+
     def _compute_bulk_EOS_properties(
         self,
         component_moles: torch.Tensor,
