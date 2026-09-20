@@ -28,6 +28,10 @@ Quick start
 >>> from melts_vec import compute_rhm_oxide_solution
 >>> rhm = compute_rhm_oxide_solution(T, P, X_rhm, sparams)
 
+>>> from melts_vec import oxides_to_liquid_components
+>>> X_liq = oxides_to_liquid_components({'SiO2': ..., 'MgO': ..., ...})   # (B, 19) component moles
+>>> liquid = compute_liquid_bulk(T, P, X_liq, lparams)
+
 Scope
 -----
 - DONE, verified bit-for-bit against a standalone C harness built from
@@ -114,6 +118,10 @@ from .solid_solutions import (
     compute_feldspar_solution, compute_olivine_solution, compute_clinopyroxene_solution,
     compute_orthopyroxene_solution, compute_spinel_solution, compute_rhm_oxide_solution,
 )
+from .liquid_speciation import (
+    oxides_to_liquid_components, liquid_components_to_oxides,
+    liquid_component_si_al_coeffs, LIQUID_COMPONENT_LABELS,
+)
 
 __all__ = [
     'load_solids', 'MELTSSolidParams', 'DEFAULT_TABLE',
@@ -130,4 +138,6 @@ __all__ = [
     'molar_mass', 'molar_mass_from_formula', 'molar_masses',
     'compute_feldspar_solution', 'compute_olivine_solution', 'compute_clinopyroxene_solution',
     'compute_orthopyroxene_solution', 'compute_spinel_solution', 'compute_rhm_oxide_solution',
+    'oxides_to_liquid_components', 'liquid_components_to_oxides',
+    'liquid_component_si_al_coeffs', 'LIQUID_COMPONENT_LABELS',
 ]

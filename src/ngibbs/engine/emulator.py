@@ -672,6 +672,79 @@ class NN_MELTS:
         unNormed_out = torch.cat([unNormed, ferric], dim=1)
         return unNormed_out
 
+    def get_liquid_oxides(self, componentMoles, features, compToOx=None, Normalize=True):
+        """
+        Molar liquid-oxide composition, with iron already speciated into
+        FeO/Fe2O3 -- this is the "liquid_oxides" input MELTSAPI.
+        get_property_melts_vectorized_from_assemblage expects (see that
+        method's own docstring in API.py).
+
+        This factors out exactly the liquid-phase slice of what
+        make_phase_tables already does for every phase in one pass (the
+        same self.ml_indexer.compToOx component->oxide projection, then
+        self.Iron_Speciator for models where ferric iron isn't already a
+        distinct tracked species) -- deliberately mirroring
+        make_phase_tables's own tensor construction line for line (same
+        compPhaseMap/einsum/comp_phasedict indexing) rather than a
+        "simplified" reimplementation, so this inherits make_phase_tables's
+        already-exercised correctness instead of risking a fresh P-vs-VP
+        indexing mistake. NOT yet cross-checked against a real trained
+        checkpoint's ml_indexer in this session -- verify comp_phasedict/
+        mass_phasedict resolve as expected here before relying on this for
+        real work (see get_property_melts_vectorized_from_assemblage's own
+        "Scope and known gaps" docstring section for the same caveat).
+
+        Parameters
+        ----------
+        componentMoles : torch.Tensor, shape (B, C)
+            Raw or mass-balanced component moles in self.ml_indexer.
+            label_names order -- e.g. the 'component_moles' or 'chem_out'
+            output of forwardMB/forwardNN for this batch.
+        features : torch.Tensor, shape (B, F)
+            The SAME features passed to forwardNN/forwardMB for this batch
+            (P, T, fO2, ...) -- Iron_Speciator reads P/T/fO2 off of these
+            when the model needs them (open/fO2-buffered models only;
+            ignored entirely for closed models where Fe3+ is already a
+            distinct tracked component -- see the 'Fe3' not in self.Elkeys
+            branch below, identical to make_phase_tables's own).
+        compToOx : torch.Tensor, shape (C, O), optional
+            Defaults to self.ml_indexer.compToOx.
+        Normalize : bool, default=True
+            Whether `features` is normalized already (mirrors Iron_
+            Speciator's own Normedfeatures convention) -- pass
+            Normalize=False if `features` is raw/unnormalized.
+
+        Returns
+        -------
+        torch.Tensor, shape (B, O) or (B, O+1)
+            Molar oxide composition of the liquid phase. For a closed
+            model (Fe3+ already a distinct ml_indexer component), this is
+            self.ml_indexer.compToOx's own O-column oxide order, Fe2O3
+            already correct, unchanged. For an open (fO2-buffered) model,
+            this is that same O-column order with one Fe2O3 column
+            APPENDED at the end (mirrors Iron_Speciator's own output
+            convention: its "oxides" input excludes Fe2O3, and it appends
+            a freshly computed Fe2O3 column) -- i.e. Elkeys+1 columns.
+        """
+        if compToOx is None:
+            compToOx = torch.tensor(self.ml_indexer.compToOx, dtype=torch.float32, device=self.dev)
+        compPhaseMap = torch.tensor(self.ml_indexer.phaseToCompMap.T, dtype=torch.float32, device=self.dev)
+
+        # Same construction as make_phase_tables: (B, C, P) masked component
+        # moles, projected through compToOx to (B, P, O), then pick out the
+        # liquid phase's own row -- P here is comp_phasedict's index space
+        # (compositionally-variable phases), matching make_phase_tables's
+        # own indexing of phaseOxMolar by comp_phasedict, not mass_phasedict.
+        phaseComps = componentMoles.unsqueeze(-1) * compPhaseMap  # (B, C, P)
+        phaseOxMolar = torch.einsum("bcp,co->bpo", phaseComps, compToOx)  # (B, P, O)
+        liqOxMolar = phaseOxMolar[:, self.ml_indexer.comp_phasedict['melts-liquid']]  # (B, O)
+
+        if 'Fe3' not in self.Elkeys:  # open/fO2-buffered model: speciate
+            normed = features if Normalize else self.norm_features.norm(features)
+            return self.Iron_Speciator(oxides=liqOxMolar.to(self.dev), Normedfeatures=normed.to(self.dev))
+        return liqOxMolar  # closed model: Fe3+ already its own component, Fe2O3 column already correct
+
+
     def batched_lstsq_masked(self, A, b, mask=None, rcond=1e-6):
         """
         Batched least squares with optional masking.
