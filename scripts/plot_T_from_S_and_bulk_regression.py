@@ -167,7 +167,10 @@ def parse_args() -> argparse.Namespace:
         "--csv",
         type=Path,
         default=Path("data/MELTStables/HeFESTo/HeFESTo_TrainsetMar2NTP.csv"),
-        help="Path to HeFESTo data (standalone CSV, or BigMetaTable .npy/.csv pair).",
+        help=(
+            "Path to HeFESTo data (standalone CSV, BigMetaTable .npy/.csv pair, "
+            "or ML-ready bundle .tar.gz)."
+        ),
     )
     parser.add_argument(
         "--out",
@@ -197,8 +200,9 @@ def main() -> None:
     args = parse_args()
     out_path = args.out
     if out_path is None:
-        csv_base = args.csv if args.csv.suffix else args.csv
-        out_path = plot_path(f"{csv_base.stem}_regression_diagnostics.png")
+        name = args.csv.name
+        stem = name[: -len(".tar.gz")] if name.endswith(".tar.gz") else args.csv.stem
+        out_path = plot_path(f"{stem}_regression_diagnostics.png")
     plot_regression_diagnostics(args.csv, out_path, args.threshold, p_max=args.p_max)
 
 

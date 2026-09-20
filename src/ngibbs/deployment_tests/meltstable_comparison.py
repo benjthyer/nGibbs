@@ -3,23 +3,41 @@
 The packaged, ``builder``-free equivalent of
 ``scripts/property_comparison_meltstable.py`` and
 ``scripts/phase_comparison_meltstable.py``.  Ground truth is a directory of
-MELTStable-format adiabat CSVs (one bulk composition each, swept over pressure);
-the shipped set lives in ``deployment_tests/HeFESToAdiabatStandards/``.
+RAW HeFESTo simulation output folders (one per standard rock, each an
+isobaric/isentropic-sweep run containing ``control`` + ``fort.56`` + ``fort.99``),
+read straight off disk exactly the way ``melts_comparison.py`` reads raw
+alphaMELTS output -- never a pre-baked MELTStable CSV. The shipped set lives in
+``deployment_tests/HeFESToAdiabatStandards/<rock>/``.
+
+The low-level fort.*/``control`` parsers (``_parse_control_file``,
+``_parse_fort56``, ``load_fort99_componentMoles``, ...) live in
+``ngibbs.utils.file_utils`` -- the same "builder-free" module
+``src/builder/HeFESTo/HeFESTo_functions.py`` itself imports them from -- so this
+stays dependency-free of the dev-only ``builder`` package while sharing its
+exact parsing logic.
+
+Bulk composition comes from the ``control`` file's element-mole block, which
+HeFESTo normalizes to a fixed total-moles basis (commonly ~24 for mantle
+compositions -- see ``HeFESTo_functions._normalize_total_moles``), NOT to
+mole fraction (sum == 1) the way nGibbs' own 'elements' composition space
+does. ``_load_composition`` renormalizes it to sum == 1 before it's used
+anywhere (fed to the emulator here, or overlaid on the training-coverage
+Harker plots in ``training_coverage.py``) -- without this, every standard-rock
+point sits off-scale by that same total-moles factor.
 
 Two entry points, both taking an already-constructed ``HeFESToAPI``:
 
 * ``run_meltstable_property_comparison`` — rho / VP / VS / S / Cp / KS / alpha
   from three sources (isentropic emulation, isothermal emulation, real assemblage
-  through the internal vectorised EOS) against the CSV's ``(System_main)``
-  columns; writes the two comparison figures and a wide error-stats table with
-  three rows per CSV.
+  through the internal vectorised EOS) against fort.56's own bulk columns;
+  writes the two comparison figures and a wide error-stats table with three
+  rows per standard rock.
 * ``run_meltstable_phase_comparison`` — stacked phase-abundance diagrams
   (GT vs emulator, both pathways) plus a per-phase phase-fraction error table.
 """
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Dict, List
 
@@ -31,6 +49,15 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from ngibbs.engine.EOS_arithmetic.hefesto_vec import compute_within_phase_frac
+from ngibbs.utils.file_utils import (
+    _parse_control_file,
+    _parse_fort56,
+    _safe_read_ws_table,
+    load_fort99_componentMoles,
+    _resolve_component_name_from_abbr,
+    _resolve_component_phase,
+    _build_reverse_component_phase_map,
+)
 from ._phase_plotting import (
     phase_colors, build_ordered_phases, draw_phase_stack, flagged_pressure_spans,
 )
@@ -40,12 +67,12 @@ ELEMENT_KEYS = ['Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O']
 PACKAGE_DIR = Path(__file__).resolve().parent
 DEFAULT_TABLE_DIR = PACKAGE_DIR / 'HeFESToAdiabatStandards'
 
-SYSTEM_SUFFIX = '(System_main)'
-P_COL = f'P(GPa){SYSTEM_SUFFIX}'
-T_COL = f'T(K){SYSTEM_SUFFIX}'
-S_COL = f'S(J/g/K){SYSTEM_SUFFIX}'
+# fort.56's own (bare, un-suffixed) column names for P/T/S.
+P_COL = 'P(GPa)'
+T_COL = 'T(K)'
+S_COL = 'S(J/g/K)'
 
-# EOS property key -> (MELTStable column token, short name, EOS->table unit scale).
+# EOS property key -> (fort.56 column token, short name, EOS->table unit scale).
 # The scale brings the internally-computed EOS value into the table column's
 # units: 1.0 everywhere except thermal expansivity, where the EOS returns
 # ``alptot`` in 1/K and the table stores alptot * 1e5.
@@ -60,7 +87,6 @@ PROPERTY_MAP = {
 }
 
 MISSING_PHASE_FRACTION_THRESHOLD = 1.0e-3
-_TOTAL_MOLES_RE = re.compile(r'total \(moles\)\((.+)\)$')
 
 
 # --------------------------------------------------------------------------- #
@@ -73,53 +99,49 @@ def _to_numpy(x) -> np.ndarray:
 
 
 def find_tables(table_dir, tables: List[str] = None) -> List[Path]:
+    """Raw HeFESTo simulation directories (each holding ``control`` +
+    ``fort.56`` + ``fort.99``) to use as standard-rock ground truth, one per
+    rock -- the HeFESTo analogue of ``melts_comparison.find_tables`` finding
+    raw alphaMELTS run folders."""
     table_dir = Path(table_dir)
     if tables:
         out = []
         for t in tables:
             p = Path(t)
-            if not p.exists():
+            if not p.is_dir():
                 p = table_dir / t
-            if not p.exists() and not str(t).endswith('.csv'):
-                p = table_dir / f'{t}.csv'
-            if not p.exists():
-                raise FileNotFoundError(f'MELTStable CSV not found: {t}')
+            if not p.is_dir():
+                raise FileNotFoundError(f'HeFESTo simulation directory not found: {t}')
             out.append(p)
         return out
     if not table_dir.is_dir():
-        raise NotADirectoryError(f'MELTStable table directory does not exist: {table_dir}')
-    out = sorted(table_dir.glob('*.csv'))
+        raise NotADirectoryError(f'HeFESTo standards directory does not exist: {table_dir}')
+    out = sorted(p for p in table_dir.iterdir()
+                 if p.is_dir() and (p / 'control').exists() and (p / 'fort.56').exists())
     if not out:
-        raise FileNotFoundError(f'No *.csv MELTStable files in {table_dir}')
+        raise FileNotFoundError(
+            f'No HeFESTo simulation directories (control + fort.56) found in {table_dir}')
     return out
 
 
-def _load_composition(df: pd.DataFrame) -> Dict[str, float]:
-    comp = {}
-    for k in ELEMENT_KEYS:
-        col = f'{k}(Bulk_comp_elements)'
-        if col not in df.columns:
-            raise KeyError(f'MELTStable table missing bulk-composition column {col!r}')
-        comp[k] = float(pd.to_numeric(df[col], errors='coerce').iloc[0])
-    return comp
+def _load_composition(sim_dir: Path) -> Dict[str, float]:
+    """Bulk element mole FRACTION (sum == 1) for this standard rock, read
+    straight off its ``control`` file and renormalized -- see module
+    docstring for why the raw control-file values (HeFESTo's own fixed
+    total-moles basis) can't be fed to the emulator or plotted against its
+    training data unrenormalized."""
+    element_moles, _ = _parse_control_file(str(Path(sim_dir) / 'control'))
+    total = sum(element_moles.get(k, 0.0) for k in ELEMENT_KEYS)
+    if total <= 0:
+        raise ValueError(f'Non-positive total element moles in {sim_dir}/control')
+    return {k: element_moles.get(k, 0.0) / total for k in ELEMENT_KEYS}
 
 
-def _load_component_moles(df: pd.DataFrame, indexer) -> np.ndarray:
-    """Extensive component moles aligned to ``indexer.label_names``.
-
-    HeFESTo MELTStable phases store each endmember as an extensive mole count in
-    a ``'<endmember>(<phase>)'`` column (they sum to ``'total (moles)(<phase>)'``).
-    Iterating ``label_indices`` phase-by-phase keeps the two ``magnetite``
-    components (spinel vs ferropericlase) in their correct slots.
-    """
-    n = len(df)
-    cm = np.zeros((n, len(indexer.label_names)), dtype=np.float64)
-    for phase, idxs in indexer.label_indices.items():
-        for j in np.asarray(idxs, dtype=np.int64):
-            col = f'{indexer.label_names[j]}({phase})'
-            if col in df.columns:
-                cm[:, j] = pd.to_numeric(df[col], errors='coerce').fillna(0.0).to_numpy(dtype=np.float64)
-    return cm
+def _load_component_moles(sim_dir: Path, indexer) -> np.ndarray:
+    """Extensive component moles aligned to ``indexer.label_names``, read
+    straight off this simulation's ``fort.99`` (see
+    ``ngibbs.utils.file_utils.load_fort99_componentMoles``)."""
+    return load_fort99_componentMoles(str(sim_dir), indexer)
 
 
 def _expand_chem_out_to_components(chem_out: np.ndarray, indexer) -> np.ndarray:
@@ -130,20 +152,43 @@ def _expand_chem_out_to_components(chem_out: np.ndarray, indexer) -> np.ndarray:
     return full
 
 
-def _phase_totals(df: pd.DataFrame) -> Dict[str, np.ndarray]:
-    out = {}
-    for col in df.columns:
-        m = _TOTAL_MOLES_RE.match(col)
-        if m:
-            out[m.group(1)] = pd.to_numeric(df[col], errors='coerce').fillna(0.0).to_numpy(dtype=np.float64)
-    return out
+def _load_fort99_phase_totals(sim_dir: Path) -> Dict[str, np.ndarray]:
+    """{phase_name: (n,) extensive mole total}, from EVERY component column
+    in this simulation's ``fort.99`` -- including phases this checkpoint's
+    ml_indexer doesn't track (grouped under their own raw fort.99
+    abbreviation instead of being silently dropped), so the true system
+    total and ``_check_missing_phases``'s "unrepresented phase" detection
+    both stay correct. The HeFESTo analogue of a MELTStable CSV's
+    ``'total (moles)(<phase>)'`` columns, computed directly instead of
+    reading a pre-aggregated column."""
+    sim_dir = Path(sim_dir)
+    _, control_component_to_phase_abbr = _parse_control_file(str(sim_dir / 'control'))
+    comp_df = _safe_read_ws_table(str(sim_dir / 'fort.99'), skiprows=0)
+    reverse_map = _build_reverse_component_phase_map()
+    component_cols = list(comp_df.columns)[3:-2]
+    n = len(comp_df)
+    totals: Dict[str, np.ndarray] = {}
+    for comp_abbr in component_cols:
+        comp_abbr_str = str(comp_abbr).strip()
+        comp_name = _resolve_component_name_from_abbr(comp_abbr_str)
+        phase_name = _resolve_component_phase(
+            component_abbr=comp_abbr_str, component_name=comp_name,
+            reverse_component_phase_map=reverse_map,
+            control_component_to_phase_abbr=control_component_to_phase_abbr,
+        ) or comp_abbr_str
+        values = pd.to_numeric(comp_df[comp_abbr], errors='coerce').fillna(0.0).to_numpy(dtype=np.float64)
+        totals[phase_name] = totals.get(phase_name, np.zeros(n)) + values
+    return totals
 
 
-def _read_conditions(csv_path: Path):
-    df = pd.read_csv(csv_path)
+def _read_conditions(sim_dir: Path):
+    """(fort.56 DataFrame, P_GPa, T_K, S_JgK) straight off this simulation's
+    fort.56."""
+    sim_dir = Path(sim_dir)
+    df = _parse_fort56(str(sim_dir / 'fort.56'))
     for col in (P_COL, T_COL, S_COL):
         if col not in df.columns:
-            raise KeyError(f'{csv_path.name} missing required column {col!r}')
+            raise KeyError(f'{sim_dir.name}/fort.56 missing required column {col!r}')
     P = pd.to_numeric(df[P_COL], errors='coerce').to_numpy(dtype=np.float64)
     T = pd.to_numeric(df[T_COL], errors='coerce').to_numpy(dtype=np.float64)
     S = pd.to_numeric(df[S_COL], errors='coerce').to_numpy(dtype=np.float64)
@@ -234,9 +279,9 @@ def run_meltstable_property_comparison(
     fig_prefix: str = 'meltstable_property_comparison',
 ) -> Dict[str, object]:
     """Compare bulk EOS properties (incl. thermal expansivity) against the
-    MELTStable adiabat standards.  Writes two figures and one wide stats table
-    (three rows per CSV: isentropic emulation, isothermal emulation, real
-    assemblage through the internal EOS).
+    raw HeFESTo standard-rock simulations.  Writes two figures and one wide
+    stats table (three rows per rock: isentropic emulation, isothermal
+    emulation, real assemblage through the internal EOS).
     """
     table_dir = Path(table_dir) if table_dir is not None else DEFAULT_TABLE_DIR
     out_dir = Path(out_dir)
@@ -252,7 +297,7 @@ def run_meltstable_property_comparison(
         composition = _load_composition(df)
         name = csv_path.stem
 
-        gt_cm = _load_component_moles(df, indexer)
+        gt_cm = _load_component_moles(sim_dir, indexer)
         gt_wpf = compute_within_phase_frac(gt_cm, list(indexer.label_indices.values()))
         gt_props = _eval_assemblage(api, gt_cm, P, T, gt_wpf)
 
@@ -265,8 +310,7 @@ def run_meltstable_property_comparison(
 
         table_vals = {}
         for key, (tok, short, scale) in PROPERTY_MAP.items():
-            table_vals[key] = pd.to_numeric(
-                df[f'{tok}{SYSTEM_SUFFIX}'], errors='coerce').to_numpy(dtype=np.float64)
+            table_vals[key] = pd.to_numeric(df[tok], errors='coerce').to_numpy(dtype=np.float64)
 
         sources = {
             'emulation_isentropic': isen_props,
@@ -350,9 +394,7 @@ def _plot_properties(results, mode, save_path):
 # --------------------------------------------------------------------------- #
 # phase comparison
 # --------------------------------------------------------------------------- #
-def _gt_phase_fractions(df, mass_phasedict):
-    totals = _phase_totals(df)
-    n = len(df)
+def _gt_phase_fractions(totals: Dict[str, np.ndarray], mass_phasedict, n: int):
     n_phases = max(mass_phasedict.values()) + 1
     pm = np.zeros((n, n_phases), dtype=np.float64)
     for phase, col in mass_phasedict.items():
@@ -363,9 +405,8 @@ def _gt_phase_fractions(df, mass_phasedict):
     return pm / grand[:, None]
 
 
-def _check_missing_phases(df, mass_phasedict, P):
-    totals = _phase_totals(df)
-    n = len(df)
+def _check_missing_phases(totals: Dict[str, np.ndarray], mass_phasedict, P):
+    n = len(P)
     total_all = np.sum(np.stack(list(totals.values()), axis=1), axis=1) if totals else np.zeros(n)
     safe = np.where(total_all > 0, total_all, 1.0)
     represented = set(mass_phasedict)
@@ -418,15 +459,16 @@ def run_meltstable_phase_comparison(
 
     results = []
     stat_rows = []
-    for csv_path in chosen:
-        df, P, T, S = _read_conditions(csv_path)
+    for sim_dir in chosen:
+        df, P, T, S = _read_conditions(sim_dir)
         df, P, T, S = _restrict_to_training_pressure_range(api, df, P, T, S)
-        composition = _load_composition(df)
-        name = csv_path.stem
-        gt_pf = _gt_phase_fractions(df, mass_phasedict)
+        composition = _load_composition(sim_dir)
+        name = sim_dir.name
+        phase_totals = _load_fort99_phase_totals(sim_dir)
+        gt_pf = _gt_phase_fractions(phase_totals, mass_phasedict, len(P))
         iso_pf = _emulator_phase_fractions(api, P, T, composition, 'T(K)(System_main)')
         isen_pf = _emulator_phase_fractions(api, P, S, composition, 'S(J/g/K)(System_main)')
-        coverage = _check_missing_phases(df, mass_phasedict, P)
+        coverage = _check_missing_phases(phase_totals, mass_phasedict, P)
 
         inv = {v: k for k, v in mass_phasedict.items()}
         for pathway, pred in (('isothermal', iso_pf), ('isentropic', isen_pf)):

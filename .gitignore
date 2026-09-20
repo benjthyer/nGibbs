@@ -206,6 +206,8 @@ melts_vec/tests
 src/ngibbs/engine/EOS_arithmetic_MELTS/melts_vec/tests
 *claude*
 *Claude*
+*scratch*
+*Scratch*
 
 # Windows / WSL "mark of the web" alternate-data-stream sidecars, anywhere.
 *.Identifier

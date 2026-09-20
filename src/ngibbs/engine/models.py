@@ -12,44 +12,11 @@ from pathlib import Path
 
 from .API import HeFESToAPI, MELTSAPI
 
-# Model paths - resolved relative to the engine package location
+# Model paths - resolved relative to the engine package location. Each
+# directory self-contains its checkpoints (*.tar/*.pt) and, alongside them
+# or under the sibling deployment_tests/, its *_Test_subset*.tar.gz quality
+# bundle -- both auto-discovered by EmulatorAPI.__init__ (see its docstring).
 _this_file_dir = Path(__file__).parent
-_HeFESTo_dir = _this_file_dir / "TrainedModels" / "HeFESTo_Adiabats_Light"
-_HeFESTo_heavy_dir = _this_file_dir / "TrainedModels" / "HeFESTo_EarthAdiabats_Heavy"
-_HeFESTo_Mars_dir = _this_file_dir / "TrainedModels" / "HeFESTo_Mars"
-_MELTS102_dir = _this_file_dir / "TrainedModels" / "MELTS102"
-_MELTS120_dir = _this_file_dir / "TrainedModels" / "MELTS120"
-
-# Ground-truth data shipped for the deployable .test() self-checks.
-_deploy_tests_dir = _this_file_dir.parent / "deployment_tests"
-_HeFESTo_adiabat_standards = _deploy_tests_dir / "HeFESToAdiabatStandards"
-
-
-def _bundle(name: str) -> str:
-    """Absolute path to a test bundle in the deployment_tests directory. The
-    file need not exist yet -- .test() skips a configured-but-absent bundle with
-    a note, so every emulator's slot is wired here as a template."""
-    return str(_deploy_tests_dir / f"{name}_Test_subset15000.tar.gz")
-
-
-def _hefesto_test_bundles(stem) -> dict:
-    """{'isothermal': NPT bundle, 'isentropic': NPS bundle} for a HeFESTo model.
-    `variant` is the model tag, e.g. 'light', 'heavy', 'Mars'."""
-    return {
-        "isothermal": _bundle(f"HeFESTo_{stem}_NPT"),
-        "isentropic": _bundle(f"HeFESTo_{stem}_NPS"),
-    }
-
-
-def _melts_test_bundles(gen: str, cr: bool) -> dict:
-    """The three bundles for one Cr / NoCr MELTS sub-API: NPT (closed), NPS,
-    and NPT (open oxygen). `gen` is '102' or '120'."""
-    tag = "Cr" if cr else "NoCr"
-    return {
-        "isothermal": _bundle(f"{gen}Closed_{tag}_NPT"),
-        "isentropic": _bundle(f"{gen}Closed_{tag}_NPS"),
-        "openox":     _bundle(f"{gen}Open_{tag}_NPT"),
-    }
 
 # Model name -> (API class, constructor kwargs minus `device`). Each entry is
 # written once here; the CPU and GPU singleton dicts below both build from
@@ -62,14 +29,20 @@ def _melts_test_bundles(gen: str, cr: bool) -> dict:
 _MODEL_SPECS = {
     "HeFESToEmulator": (
         HeFESToAPI,
-        dict(
-            isothermal_model_path=str(_HeFESTo_dir / "HeFESTo_Earth_Adiabat_NPT_light.tar"),
-            isentropic_model_path=str(_HeFESTo_dir / "HeFESTo_Earth_Adiabat_NPS_light.tar"),
-            temperature_model_path=str(_HeFESTo_dir / "Residual_T_from_S_NN_light.pt"),
-            test_bundles=_hefesto_test_bundles("Earth_Adiabat"),
-            test_meltstable_dir=str(_HeFESTo_adiabat_standards),
-        ),
-    ), 
+        dict(model_dir=str(_this_file_dir / "TrainedModels" / "HeFESToEarthAdiabat")),
+    ),
+    "MELTS120Emulator": (
+        MELTSAPI,
+        dict(model_dir=str(_this_file_dir / "TrainedModels" / "120")),
+    ),
+    "HeFESToMarsEmulator": (
+        HeFESToAPI,
+        dict(model_dir=str(_this_file_dir / "TrainedModels" / "HeFESToMars")),
+    ),
+    "HeFESToMarsGatedEmulator": (
+        HeFESToAPI,
+        dict(model_dir=str(_this_file_dir / "TrainedModels" / "HeFESToMarsGated")),
+    ),
 }
 
 # CPU_MODELS is always fully populated; GPU_MODELS only gains entries when

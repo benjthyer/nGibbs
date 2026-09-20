@@ -47,9 +47,13 @@ from .EOS_arithmetic_MELTS.melts_vec import (
     spinel as _melts_spinel,
     rhomsghiorso as _melts_rhomsghiorso,
     BARS_PER_GPA as _MELTS_BARS_PER_GPA,
+    oxides_to_liquid_components as _melts_oxides_to_liquid_components,
 )
 
-from ..config.constants import OXIDE_MOLAR_MASSES as oxide_molar_masses, ptt_longs, ptt_order_oxides, ptt_to_short, ptt_oxide_indexer, HeFESTo_snames_long
+from ..config.constants import (
+    OXIDE_MOLAR_MASSES as oxide_molar_masses, ptt_longs, ptt_order_oxides, ptt_to_short,
+    ptt_oxide_indexer, HeFESTo_snames_long, default_Oxides as _DEFAULT_LIQUID_OXIDE_LABELS,
+)
 
 ferric_to_ferrous_ratio =  (2*oxide_molar_masses['FeO'])/oxide_molar_masses['Fe2O3']
 snames_dict = {name: i for i, name in enumerate(HeFESTo_snames_long)}
@@ -523,6 +527,230 @@ def create_isentrope_design_matrix(
     return design
 
 
+# --------------------------------------------------------------------------- #
+# Single-directory model discovery (EmulatorAPI / HeFESToAPI / MELTSAPI)
+#
+# Replaces the old "long list of explicit checkpoint-path kwargs" constructors:
+# callers now point at one directory (typically engine/TrainedModels/<Family>/)
+# and everything else -- which checkpoint is isothermal/isentropic/openox,
+# which file is the temperature FCNN, which *_Test_subset*.tar.gz quality-eval
+# bundle and which standards directory belong to it -- is found by filename
+# convention. See EmulatorAPI.__init__'s docstring for the convention itself.
+# --------------------------------------------------------------------------- #
+import re as _re
+import warnings as _warnings
+
+
+def _deployment_tests_root() -> Path:
+    """The ``ngibbs/deployment_tests/`` directory (sibling of ``engine/``),
+    searched recursively for *_Test_subset*.tar.gz quality bundles and,
+    one level deep, for standards directories."""
+    return Path(__file__).resolve().parent.parent / 'deployment_tests'
+
+
+def _checkpoint_tokens(path: Path) -> list:
+    """Lowercase '_'/non-alnum-delimited tokens from a checkpoint's filename
+    (extension stripped)."""
+    return [t for t in _re.split(r'[^A-Za-z0-9]+', path.stem.lower()) if t]
+
+
+def _classify_checkpoint_kind(path: Path):
+    """'isothermal' | 'isentropic' | 'openox' | None, from filename tokens.
+
+    Checked in this order because MELTS's open-system checkpoints (e.g.
+    '120SedIgOpen_NoCr_train2.tar') carry neither an 'npt' nor an 'nps'
+    token at all -- only the closed-system isothermal/isentropic checkpoints
+    do. The 'open'/'openox' check is a plain case-insensitive substring
+    search on the filename, rather than a check against ``_checkpoint_tokens``,
+    because real MELTS filenames glue it to its neighbor with no delimiter
+    ('SedIgOpen') -- underscore-only tokenization would never isolate it.
+    """
+    if 'open' in path.stem.lower():
+        return 'openox'
+    tokens = _checkpoint_tokens(path)
+    if 'npt' in tokens or 'isothermal' in tokens:
+        return 'isothermal'
+    if 'nps' in tokens or 'isentropic' in tokens:
+        return 'isentropic'
+    return None
+
+
+def _classify_checkpoint_variant(path: Path):
+    """'cr' | 'nocr' | None, from filename tokens (MELTS Cr/NoCr split).
+    'nocr' is checked as its own whole token, never mistaken for 'cr' inside
+    a longer word, since tokens are already split on non-alnum boundaries."""
+    tokens = _checkpoint_tokens(path)
+    if 'nocr' in tokens:
+        return 'nocr'
+    if 'cr' in tokens:
+        return 'cr'
+    return None
+
+
+def _discover_checkpoints(model_dir: Path, variant: Optional[str] = None) -> dict:
+    """Scan ``model_dir`` (non-recursive) for checkpoint files.
+
+    Returns {'isothermal': Path|None, 'isentropic': Path|None,
+    'openox': Path|None, 'temperature': Path|None}. When ``variant`` is
+    given ('cr'/'nocr'), a *.tar whose filename carries the OTHER variant's
+    token is skipped (a *.tar with no variant token at all, e.g. every
+    HeFESTo checkpoint, is never filtered — HeFESTo has no Cr/NoCr concept).
+    """
+    model_dir = Path(model_dir)
+    result = {'isothermal': None, 'isentropic': None, 'openox': None, 'temperature': None}
+    for p in sorted(model_dir.glob('*.tar')):
+        v = _classify_checkpoint_variant(p)
+        if variant is not None and v is not None and v != variant:
+            continue
+        kind = _classify_checkpoint_kind(p)
+        if kind is None:
+            continue
+        if result[kind] is not None:
+            _warnings.warn(
+                f"Multiple '{kind}' checkpoints found in {model_dir}"
+                + (f" for variant={variant!r}" if variant else "")
+                + f"; using {result[kind].name}, ignoring {p.name}."
+            )
+            continue
+        result[kind] = p
+
+    pt_files = sorted(model_dir.glob('*.pt'))
+    if variant is not None:
+        filtered = [p for p in pt_files if _classify_checkpoint_variant(p) in (None, variant)]
+        if filtered:
+            pt_files = filtered
+    if len(pt_files) == 1:
+        result['temperature'] = pt_files[0]
+    elif len(pt_files) > 1:
+        _warnings.warn(
+            f"Multiple candidate temperature checkpoints found in {model_dir}"
+            + (f" for variant={variant!r}" if variant else "")
+            + f": {[p.name for p in pt_files]}; none picked (ambiguous)."
+        )
+    return result
+
+
+def _discover_test_bundle(
+    deployment_tests_root: Path,
+    checkpoint_path: Path,
+    model_dir: Optional[Path] = None,
+) -> Optional[Path]:
+    """Find the ``*_Test_subset*.tar.gz`` quality-eval bundle matching
+    ``checkpoint_path``.
+
+    Candidates are gathered from ``model_dir`` itself first (non-recursive --
+    the normal layout keeps a checkpoint and its bundle side by side, e.g.
+    'TrainedModels/120/120SedIgClosed_NoCr_NPT.tar' next to
+    '120SedIgClosed_NoCr_NPT_Test_subset15000.tar.gz'), then, as a fallback
+    for older layouts, recursively under ``deployment_tests_root``.
+
+    Matching is primarily by (kind, variant) classification -- the same
+    ``_classify_checkpoint_kind``/``_classify_checkpoint_variant`` used for
+    checkpoints themselves -- rather than a literal filename-prefix match,
+    so an arbitrary training-run or descriptor suffix on either the
+    checkpoint or the bundle ('_train2', '_light', '_tune3', ...) never
+    breaks the match. Falls back to the old prefix heuristic (checkpoint
+    basename, with a trailing ``_train<N>`` and its extension stripped, as a
+    prefix of the bundle's basename) only if no bundle's kind/variant can be
+    classified.
+
+    ``model_dir`` is tried alone first, and only if it yields nothing is the
+    search widened to ``deployment_tests_root`` -- so a bundle that already
+    resolves unambiguously next to its checkpoint is never second-guessed
+    against (and never spuriously warns about) an unrelated same-named file
+    living elsewhere under ``deployment_tests_root``.
+    """
+    ckpt_kind = _classify_checkpoint_kind(checkpoint_path)
+    ckpt_variant = _classify_checkpoint_variant(checkpoint_path)
+
+    def _best(candidates):
+        if not candidates:
+            return None
+        matches = [
+            c for c in candidates
+            if _classify_checkpoint_kind(c) == ckpt_kind
+            and _classify_checkpoint_variant(c) == ckpt_variant
+        ]
+        if not matches:
+            prefix = _re.sub(r'(_train\d+)?\.tar$', '', checkpoint_path.name, flags=_re.IGNORECASE)
+            matches = [c for c in candidates if c.name.lower().startswith(prefix.lower())]
+        if not matches:
+            return None
+        if len(matches) > 1:
+            ckpt_stem = checkpoint_path.stem.lower()
+            matches.sort(key=lambda c: (not c.name.lower().startswith(ckpt_stem), c.name))
+            _warnings.warn(
+                f"Multiple test bundles match checkpoint {checkpoint_path.name}: "
+                f"{[m.name for m in matches]}; using {matches[0].name}."
+            )
+        return matches[0]
+
+    if model_dir is not None and Path(model_dir).is_dir():
+        found = _best(sorted(Path(model_dir).glob('*Test_subset*.tar.gz')))
+        if found is not None:
+            return found
+
+    if deployment_tests_root.is_dir():
+        return _best(sorted(deployment_tests_root.rglob('*Test_subset*.tar.gz')))
+    return None
+
+
+def _name_tokens(name: str) -> set:
+    """Fuzzy, case/plural-insensitive token set for a directory or file name,
+    splitting on non-alnum boundaries, camelCase, ALLCAPSWord boundaries, and
+    letter-digit boundaries (so 'MELTS120' -> {'melts', '120'} and
+    'MELTSIsobaricStandards' -> {'melts', 'isobaric', 'standard'})."""
+    s = _re.sub(r'(?<=[a-z0-9])(?=[A-Z])', '_', name)
+    s = _re.sub(r'(?<=[A-Z])(?=[A-Z][a-z])', '_', s)
+    s = _re.sub(r'(?<=[A-Za-z])(?=[0-9])', '_', s)
+    s = _re.sub(r'(?<=[0-9])(?=[A-Za-z])', '_', s)
+    out = set()
+    for t in _re.split(r'[^A-Za-z0-9]+', s):
+        t = t.lower()
+        if not t:
+            continue
+        if t.endswith('s') and len(t) > 3 and not t.isdigit():
+            t = t[:-1]
+        out.add(t)
+    return out
+
+
+def _discover_standards_dir(deployment_tests_root: Path, model_dir: Path) -> Optional[Path]:
+    """Best-effort match of a 'standards' comparison directory (MELTS's raw
+    alphaMELTS isobaric-cooling standards, or HeFESTo's MELTStable-format CSV
+    directory) under ``deployment_tests_root`` to ``model_dir``'s model
+    family, by fuzzy token overlap (see ``_name_tokens``).
+
+    A model_dir named after a bare version number (MELTS's '120', say) shares
+    no name token at all with a directory like 'MELTSIsobaricStandards' --
+    the overlap is only findable one level down, in a numeric-named
+    subdirectory ('MELTSIsobaricStandards/120'). So for each 'standard'
+    candidate, a numeric-named subdirectory matching one of model_dir's own
+    numeric tokens counts as a match in its own right (and is what gets
+    returned for that candidate), on top of plain top-level name overlap.
+    Returns None if nothing scores > 0 either way.
+    """
+    if not deployment_tests_root.is_dir():
+        return None
+    target = _name_tokens(model_dir.name)
+    numeric_tokens = {t for t in target if t.isdigit()}
+    candidates = [d for d in deployment_tests_root.iterdir()
+                  if d.is_dir() and 'standard' in _name_tokens(d.name)]
+    best_score, best_result = 0, None
+    for c in candidates:
+        score = len(_name_tokens(c.name) & target)
+        result = c
+        if numeric_tokens:
+            for sub in sorted(c.iterdir()):
+                if sub.is_dir() and sub.name in numeric_tokens:
+                    score = max(score, 1)
+                    result = sub
+                    break
+        if score > best_score:
+            best_score, best_result = score, result
+    return best_result
+
+
 class EmulatorAPI:
     """
     Base API for thermodynamic emulators.
@@ -537,43 +765,67 @@ class EmulatorAPI:
     an equation-of-state backend for entropy and bulk property evaluation.
     """
 
+    # Composition space of this API's own Test_subset bundles, for
+    # test()'s training-coverage plots (see training_coverage.py):
+    # 'oxides' (oxide mole fraction, MELTS's native convention -- also the
+    # right default for a bare EmulatorAPI, since MELTSAPI builds its two
+    # sub-APIs directly as plain EmulatorAPI instances) or 'elements'
+    # (elemental mole fraction, HeFESTo's convention -- see
+    # emulator.py's ``reorder_input_table``). HeFESToAPI overrides this.
+    _composition_space = 'oxides'
+
     def __init__(
         self,
-        isothermal_model_path: Union[str, Path],
-        isentropic_model_path: Union[str, Path],
-        temperature_model_path: Optional[Union[str, Path]] = None,
+        model_dir: Union[str, Path],
+        *,
         device: str = 'cpu',
         verbose: bool = False,
-        openox_model_path: Optional[Union[str, Path]] = None,
         mass_balance: str = 'iterative',
-        test_bundles: Optional[Dict[str, Union[str, Path]]] = None,
+        variant: Optional[str] = None,
     ):
         """
-        Initialize the emulator API with neural network models.
+        Initialize the emulator API by pointing at a single directory.
 
         Parameters
         ----------
-        isothermal_model_path : str or Path
-            Path to isothermal emulator checkpoint
-        isentropic_model_path : str or Path
-            Path to isentropic emulator checkpoint
-        temperature_model_path : str or Path, optional
-            Path to temperature FCNN checkpoint
+        model_dir : str or Path
+            Directory holding this model family's checkpoint files (e.g.
+            ``engine/TrainedModels/HeFESTo_Adiabats/``). Checkpoints are
+            auto-discovered by filename convention, scanning ``model_dir``
+            itself (non-recursive):
+
+            - a ``*.tar`` whose filename contains 'NPT' or 'isothermal' is
+              the isothermal (closed, T-input) emulator
+            - a ``*.tar`` containing 'NPS' or 'isentropic' is the isentropic
+              (closed, S-input) emulator
+            - a ``*.tar`` containing 'open' or 'openox' is the open-oxygen
+              (fO2-buffered) emulator
+            - a single ``*.pt`` file is the temperature FCNN
+
+            At least one of the isothermal/isentropic checkpoints must be
+            found, or construction raises ``FileNotFoundError``.
+
+            The matching ``*_Test_subset*.tar.gz`` quality-eval bundle for
+            each discovered checkpoint (ground truth for ``self.test()``) is
+            auto-discovered by kind/variant, checked first inside
+            ``model_dir`` itself (bundles normally sit right next to their
+            checkpoint) and, as a fallback, recursively under the sibling
+            ``deployment_tests/`` directory — wherever you've organized it.
+            A checkpoint with no matching bundle is simply skipped from
+            ``self.test()`` (see its docstring).
         device : str, default='cpu'
             Torch device ('cpu' or 'cuda')
         verbose : bool, default=False
             Print initialization messages
-        openox_model_path : str or Path, optional
-            Path to open oxygen (fO2-buffered) emulator checkpoint. When
-            provided, inputs containing 'logfO2-QFM(System_main)' are
-            routed to this model instead of the isothermal emulator.
         mass_balance : {'iterative', 'pinv', 'none'}, default='iterative'
             Mass-balance correction every wrapped `NN_MELTS` applies by default
             (see `NN_MELTS.forwardMB`). The choice is model-agnostic.
-        test_bundles : dict, optional
-            {'isothermal'|'isentropic'|'openox': path-to-ML-ready-bundle}. Ground
-            truth for `self.test()`; one quality-metrics table is produced per
-            configured emulator whose bundle file is present.
+        variant : {'cr', 'nocr'}, optional
+            Internal — restricts checkpoint discovery within ``model_dir`` to
+            filenames carrying this Cr/NoCr token (used by ``MELTSAPI`` to
+            build its two sub-APIs out of one shared ``model_dir``, since
+            both variants' checkpoints live side by side there). Leave as
+            None when constructing ``EmulatorAPI``/``HeFESToAPI`` directly.
         """
         if verbose:
             print("[INFO] Initializing EmulatorAPI...")
@@ -582,28 +834,57 @@ class EmulatorAPI:
         self.verbose = verbose
         self.modelType = self.__class__.__name__
         self._mass_balance = mass_balance
+        self._model_dir = str(Path(model_dir).resolve())
+        self._variant = variant
+
+        found = _discover_checkpoints(Path(model_dir), variant=variant)
+        isothermal_model_path = found['isothermal']
+        isentropic_model_path = found['isentropic']
+        openox_model_path = found['openox']
+        temperature_model_path = found['temperature']
+
+        if isothermal_model_path is None and isentropic_model_path is None:
+            raise FileNotFoundError(
+                f"No isothermal (NPT) or isentropic (NPS) checkpoint (*.tar) found in "
+                f"{model_dir}" + (f" for variant={variant!r}" if variant else "") +
+                ". Expected a filename containing 'NPT' or 'NPS'."
+            )
 
         # Store paths so _clone_as_cpu can rebuild this instance on another device
-        self._iso_path  = str(isothermal_model_path)
-        self._isen_path = str(isentropic_model_path)
+        self._iso_path  = str(isothermal_model_path) if isothermal_model_path is not None else None
+        self._isen_path = str(isentropic_model_path) if isentropic_model_path is not None else None
         self._temp_path = str(temperature_model_path) if temperature_model_path is not None else None
         self._open_path = str(openox_model_path) if openox_model_path is not None else None
 
         # Ground-truth data for self.test(): one ML-ready bundle per emulator,
-        # keyed by {'isothermal', 'isentropic', 'openox'}. self.test() scores
+        # keyed by {'isothermal', 'isentropic', 'openox'}, auto-discovered
+        # under the sibling deployment_tests/ directory. self.test() scores
         # every configured emulator whose bundle file exists and writes the
-        # metrics tables into self.home_dir (the isothermal model's directory).
-        self._test_bundles = {
-            k: str(v) for k, v in dict(test_bundles or {}).items() if v is not None
-        }
+        # metrics tables into self.home_dir (== model_dir) / 'deployment_test'.
+        _dep_root = _deployment_tests_root()
+        self._test_bundles = {}
+        for _kind, _path in (('isothermal', isothermal_model_path),
+                              ('isentropic', isentropic_model_path),
+                              ('openox', openox_model_path)):
+            if _path is None:
+                continue
+            _bundle = _discover_test_bundle(_dep_root, _path, model_dir=Path(model_dir))
+            if _bundle is not None:
+                self._test_bundles[_kind] = str(_bundle)
 
-        if verbose:
-            print(f"  Loading isothermal emulator: {isothermal_model_path}")
-        self.isothermal_emulator = self._load_emulator(isothermal_model_path, device, verbose, mass_balance)
+        if isothermal_model_path is not None:
+            if verbose:
+                print(f"  Loading isothermal emulator: {isothermal_model_path}")
+            self.isothermal_emulator = self._load_emulator(isothermal_model_path, device, verbose, mass_balance)
+        else:
+            self.isothermal_emulator = None
 
-        if verbose:
-            print(f"  Loading isentropic emulator: {isentropic_model_path}")
-        self.isentropic_emulator = self._load_emulator(isentropic_model_path, device, verbose, mass_balance)
+        if isentropic_model_path is not None:
+            if verbose:
+                print(f"  Loading isentropic emulator: {isentropic_model_path}")
+            self.isentropic_emulator = self._load_emulator(isentropic_model_path, device, verbose, mass_balance)
+        else:
+            self.isentropic_emulator = None
 
         if openox_model_path is not None:
             if verbose:
@@ -617,7 +898,7 @@ class EmulatorAPI:
                 print(f"  Loading temperature FCNN: {temperature_model_path}")
             self._setup_temperature_model(temperature_model_path, verbose)
         elif verbose:
-            print("  No temperature model provided; temperature predictions will be unavailable.")
+            print("  No temperature model found; temperature predictions will be unavailable.")
 
         # Use first available emulator to build the composition parser
         _parser_src = self.isothermal_emulator or self.isentropic_emulator or self.open_emulator
@@ -665,19 +946,34 @@ class EmulatorAPI:
         arguments (e.g. control_path for HeFESToAPI).
         """
         return EmulatorAPI(
-            self._iso_path, self._isen_path, self._temp_path,
+            self._model_dir,
             device='cpu', verbose=False,
-            openox_model_path=self._open_path,
             mass_balance=self._mass_balance,
-            test_bundles=self._test_bundles,
+            variant=self._variant,
         )
 
     @property
     def home_dir(self) -> Path:
-        """Directory the emulator "lives" in — the parent of the isothermal model
-        file. ``test()`` writes its outputs into ``home_dir / 'deployment_test'``.
+        """The model_dir this emulator was constructed from. ``test()`` writes
+        its outputs into ``home_dir / 'deployment_test'``.
         """
-        return Path(self._iso_path).resolve().parent
+        return Path(self._model_dir)
+
+    def _coverage_standards(self, kind: str):
+        """Hook for ``test()``'s training-coverage plots: return a
+        ``(P, T, S, comp_dict, rock_ids)`` standard-rock overlay tuple (as
+        ``training_coverage.melts_standard_points``/``hefesto_standard_points``
+        return) for the emulator named ``kind`` ('isothermal'/'isentropic'/
+        'openox'), or None to omit the 'x' overlay entirely.
+
+        The base implementation defers to an instance attribute,
+        ``self._coverage_standards_fn``, when one is set -- this is how
+        ``MELTSAPI`` wires standards into its two plain-``EmulatorAPI``
+        sub-APIs without either of them needing their own subclass.
+        ``HeFESToAPI`` overrides this method directly instead.
+        """
+        fn = getattr(self, '_coverage_standards_fn', None)
+        return fn(kind) if fn is not None else None
 
     def test(
         self,
@@ -687,6 +983,8 @@ class EmulatorAPI:
         seed: int = 1337,
         write_outputs: bool = True,
         verbose: bool = True,
+        allow_missing_models: bool = False,
+        plot_coverage: bool = True,
     ) -> Dict[str, object]:
         """Run the deployable emulator quality test against the bundled ground truth.
 
@@ -696,11 +994,39 @@ class EmulatorAPI:
         this API wraps: per-phase precision / recall / proportion-in-dataset /
         abundance error / per-oxide within-phase composition error, assembled
         into one ``metrics x phases`` table per emulator (phase columns ordered
-        most- to least-abundant in the bundle). A bundle whose file is missing
-        is skipped with a note.
+        most- to least-abundant in the bundle).
 
-        Quality metrics only — tolerances / pass-fail are applied by a separate
-        layer that consumes the returned tables.
+        A bundle is "missing" when its emulator was never loaded (no checkpoint
+        path given at construction — e.g. MELTS120 has no temperature model at
+        all, and its Cr variant has no openox checkpoint) or its bundle file
+        isn't present on disk. Either way it's always skipped from evaluation
+        (only the available portions are ever scored) — ``allow_missing_models``
+        controls whether that gap is also fatal:
+
+        - ``False`` (default): evaluate every available emulator exactly as
+          below, then raise ``RuntimeError`` naming whichever configured
+          emulator(s) were skipped. Use this for a deployment gate where every
+          configured model is expected to be present.
+        - ``True``: keep the previous behaviour — skipped emulators are noted
+          in the returned ``'skipped_bundles'`` list and never fail the test.
+          Use this when some models are known/expected to be absent (e.g. no
+          temperature model, or a Cr-variant model that was never trained) and
+          you only want the available portions graded.
+
+        Quality metrics only — tolerances / pass-fail on the metrics THEMSELVES
+        are applied by a separate layer that consumes the returned tables
+        (``assert_quality``); ``allow_missing_models`` only governs whether
+        missing models are themselves treated as a failure.
+
+        ``plot_coverage`` (default True): for each evaluated emulator, also
+        render the 4 training-data-context diagnostic plots (P vs S, P vs T,
+        SiO2/Si Harker grid, MgO/Mg Harker grid -- see
+        ``ngibbs.deployment_tests.training_coverage``) of that emulator's own
+        Test_subset bundle, with real standard-rock conditions overlaid as
+        'x' markers when a subclass provides them (``_coverage_standards``).
+        Written to ``<output_dir>/plots/`` alongside the CSVs; skipped
+        entirely when ``write_outputs`` is False. A plotting failure for one
+        emulator only warns -- it never fails the test.
 
         Returns
         -------
@@ -708,6 +1034,8 @@ class EmulatorAPI:
             'quality_metrics' : {emulator_name: DataFrame}
             'meta'            : {emulator_name: dict}
             'skipped_bundles' : list of emulator names whose bundle was absent
+            'coverage_plots'  : {emulator_name: {plot_key: Path}} (only present
+                when ``plot_coverage`` and ``write_outputs`` are both True)
         Each table is written to ``<output_dir>/emulator_quality_<name>.csv``
         (NaN as ``--``) when ``write_outputs``, alongside
         ``emulator_quality_legend.txt``.
@@ -751,7 +1079,37 @@ class EmulatorAPI:
         if write_outputs and quality:
             (out_dir / 'emulator_quality_legend.txt').write_text(legend_text())
 
-        return {'quality_metrics': quality, 'meta': meta, 'skipped_bundles': skipped}
+        if skipped and not allow_missing_models:
+            raise RuntimeError(
+                f"{self.__class__.__name__}.test(): configured emulator(s) "
+                f"{skipped} have no available checkpoint/bundle and "
+                "allow_missing_models=False. Pass allow_missing_models=True to "
+                "evaluate only the available portions instead of failing."
+            )
+
+        result = {'quality_metrics': quality, 'meta': meta, 'skipped_bundles': skipped}
+
+        if plot_coverage and write_outputs:
+            from ngibbs.deployment_tests.training_coverage import plot_training_coverage
+            plots_dir = out_dir / 'plots'
+            coverage_plots = {}
+            for name, bundle in self._test_bundles.items():
+                if name in skipped or not Path(bundle).exists():
+                    continue
+                try:
+                    coverage_plots[name] = plot_training_coverage(
+                        bundle, plots_dir,
+                        composition_space=self._composition_space,
+                        model_label=f'{self.modelType}_{name}',
+                        standards=self._coverage_standards(name),
+                    )
+                    if verbose:
+                        print(f"[test]   coverage plots -> {plots_dir}/{self.modelType}_{name}_*.png")
+                except Exception as e:
+                    _warnings.warn(f"Training-coverage plots failed for '{name}' bundle: {e}")
+            result['coverage_plots'] = coverage_plots
+
+        return result
 
     def assert_quality(
         self,
@@ -761,6 +1119,7 @@ class EmulatorAPI:
         seed: int = 1337,
         write_outputs: bool = True,
         verbose: bool = True,
+        allow_missing_models: bool = False,
     ) -> Dict[str, object]:
         """Run ``self.test()`` and enforce the deployment quality gate on the result.
 
@@ -772,11 +1131,20 @@ class EmulatorAPI:
         ``meltstable_property_errors`` (currently ``HeFESToAPI``) additionally get
         those EOS-property tolerances checked.
 
+        ``allow_missing_models`` is forwarded to ``test()`` unchanged: with the
+        default ``False``, a configured emulator with no available checkpoint/
+        bundle fails the gate (via ``test()``'s own ``RuntimeError``) just like
+        any other quality failure; ``True`` lets ``test()`` silently grade only
+        the available portions (see ``test()``'s docstring).
+
         Raises
         ------
         EmulatorQualityError
             If any threshold is missed; the exception's ``.failures`` lists every
             violation (see ``QualityFailure``).
+        RuntimeError
+            If ``allow_missing_models=False`` and a configured emulator has no
+            available checkpoint/bundle (raised by ``test()``).
 
         Returns
         -------
@@ -791,6 +1159,7 @@ class EmulatorAPI:
         result = self.test(
             output_dir=output_dir, max_samples=max_samples, seed=seed,
             write_outputs=write_outputs, verbose=verbose,
+            allow_missing_models=allow_missing_models,
         )
         failures = check_phase_quality(result['quality_metrics'])
         if 'meltstable_property_errors' in result:
@@ -1748,68 +2117,74 @@ class HeFESToAPI(EmulatorAPI):
     the HeFESTo mineral physics database.
     """
 
+    _composition_space = 'elements'
+
     def __init__(
         self,
-        isothermal_model_path: Union[str, Path],
-        isentropic_model_path: Union[str, Path],
-        temperature_model_path: Optional[Union[str, Path]] = None,
+        model_dir: Union[str, Path],
+        *,
         device: str = 'cpu',
         verbose: bool = False,
         control_path: Optional[Union[str, Path]] = None,
         param_dir: Optional[Union[str, Path]] = None,
         npz_path: Optional[Union[str, Path]] = None,
         mass_balance: str = 'iterative',
-        test_bundles: Optional[Dict[str, Union[str, Path]]] = None,
-        test_meltstable_dir: Optional[Union[str, Path]] = None,
     ):
         """
-        Initialize HeFESTo API with emulator models and phases.
+        Initialize HeFESTo API by pointing at a single directory.
 
         Parameters
         ----------
-        isothermal_model_path : str or Path
-            Path to isothermal emulator checkpoint
-        isentropic_model_path : str or Path
-            Path to isentropic emulator checkpoint
-        temperature_model_path : str or Path, optional
-            Path to temperature FCNN checkpoint
+        model_dir : str or Path
+            Directory holding this HeFESTo model's checkpoint files (e.g.
+            ``engine/TrainedModels/HeFESTo_Adiabats/``). See
+            ``EmulatorAPI.__init__``'s docstring for the checkpoint/test-
+            bundle discovery convention (isothermal/isentropic/temperature
+            checkpoints found in ``model_dir`` itself; the matching
+            ``*_Test_subset*.tar.gz`` quality bundles found recursively under
+            the sibling ``deployment_tests/``). The MELTStable-format
+            standards directory for the HeFESTo-specific bulk-property/
+            phase-abundance comparison in ``self.test()`` is auto-discovered
+            the same way, by fuzzy name match against ``model_dir``'s name
+            (e.g. ``engine/TrainedModels/HeFESTo_Adiabats`` ->
+            ``deployment_tests/HeFESToAdiabatStandards``); left unconfigured
+            (comparison skipped, not failed) if nothing matches.
         device : str, default='cpu'
             Torch device ('cpu' or 'cuda')
         verbose : bool, default=False
             Print initialization messages
         control_path : str or Path, optional
             Path to a HeFESTo control file. Required to use
-            get_property_hefesto_vectorized_from_assemblage.
+            get_property_hefesto_vectorized_from_assemblage. These are shared
+            physics-parameter files, not part of ``model_dir``'s per-checkpoint
+            discovery — defaults to the packaged BENCHMARK control file.
         param_dir : str or Path, optional
             Override for the parameter directory embedded in the control file
             (e.g. path to HeFESTo_Parameters_010123/).
         npz_path : str or Path, optional
             Path to a pre-built DOS-table .npz file for the HeFESTo EOS kernel.
-        test_bundles : dict, optional
-            {'isothermal' (NPT) / 'isentropic' (NPS): ML-ready bundle path} for
-            the base emulator quality test.
-        test_meltstable_dir : str or Path, optional
-            Directory of MELTStable adiabat CSVs for the HeFESTo-specific
-            bulk-property + phase-abundance comparison against the internal EOS.
         """
         if verbose:
             print("[INFO] Initializing HeFESToAPI...")
 
         super().__init__(
-            isothermal_model_path,
-            isentropic_model_path,
-            temperature_model_path,
-            device,
-            verbose,
+            model_dir,
+            device=device,
+            verbose=verbose,
             mass_balance=mass_balance,
-            test_bundles=test_bundles,
         )
 
         # Directory of MELTStable adiabat CSVs for the HeFESTo-specific part of
         # self.test() (bulk-property + phase-abundance comparison vs the
-        # internal vectorised EOS).
-        self._test_meltstable_dir = str(test_meltstable_dir) if test_meltstable_dir is not None else None
+        # internal vectorised EOS), auto-discovered by fuzzy name match
+        # against model_dir under the sibling deployment_tests/ directory.
+        _standards = _discover_standards_dir(_deployment_tests_root(), Path(model_dir))
+        self._test_meltstable_dir = str(_standards) if _standards is not None else None
 
+        assert self.isothermal_emulator is not None and self.isentropic_emulator is not None, (
+            "HeFESToAPI requires both an isothermal (NPT) and isentropic (NPS) "
+            f"checkpoint in {model_dir}."
+        )
         assert self.isothermal_emulator.ml_indexer.label_names == self.isentropic_emulator.ml_indexer.label_names # Assume the label names are model-agnostic
 
         # Known label collision: some checkpoints' ml_indexer.label_names carry the
@@ -1867,20 +2242,26 @@ class HeFESToAPI(EmulatorAPI):
         # __init_subclass__ wrapper creates the CPU twin automatically
         # after this __init__ returns — no manual call needed here.
 
+    def _coverage_standards(self, kind: str):
+        """The same standard adiabats (BASALT/DMM/HTZ) overlay every kind of
+        emulator ('isothermal'/'isentropic') -- HeFESTo has no Cr/NoCr split
+        to distinguish them by. Returns None if no standards dir was
+        auto-discovered for this ``model_dir`` (``self._test_meltstable_dir``)."""
+        if self._test_meltstable_dir is None:
+            return None
+        from ngibbs.deployment_tests.training_coverage import hefesto_standard_points
+        return hefesto_standard_points(self._test_meltstable_dir)
+
     def _clone_as_cpu(self):
-        """Return a CPU HeFESToAPI with the same model paths and EOS params."""
+        """Return a CPU HeFESToAPI with the same model_dir and EOS params."""
         return HeFESToAPI(
-            isothermal_model_path=self._iso_path,
-            isentropic_model_path=self._isen_path,
-            temperature_model_path=self._temp_path,
+            self._model_dir,
             device='cpu',
             verbose=False,
             control_path=self._control_path,
             param_dir=self._param_dir,
             npz_path=self._npz_path,
             mass_balance=self._mass_balance,
-            test_bundles=self._test_bundles,
-            test_meltstable_dir=self._test_meltstable_dir,
         )
 
     def test(
@@ -1891,11 +2272,17 @@ class HeFESToAPI(EmulatorAPI):
         seed: int = 1337,
         write_outputs: bool = True,
         verbose: bool = True,
+        allow_missing_models: bool = False,
     ) -> Dict[str, object]:
         """HeFESTo deployable test: the base emulator quality metrics (one table
         per configured NPT / NPS bundle) plus a MELTStable comparison of bulk EOS
         properties (rho, VP, VS, S, Cp, KS, thermal expansivity) and phase
         abundances against the internal vectorised HeFESTo EOS.
+
+        ``allow_missing_models`` is forwarded to the base ``EmulatorAPI.test()``
+        unchanged -- see its docstring. It does not affect the MELTStable EOS
+        comparison below, which is skipped (not failed) whenever no MELTStable
+        directory is configured, independent of this flag.
 
         All outputs (a quality-metrics CSV per emulator, two property + two phase
         figures, a property-error table and a phase-error table) are written to
@@ -1910,6 +2297,7 @@ class HeFESToAPI(EmulatorAPI):
         result = super().test(
             output_dir=out_dir, max_samples=max_samples, seed=seed,
             write_outputs=write_outputs, verbose=verbose,
+            allow_missing_models=allow_missing_models,
         )
 
         if self._test_meltstable_dir is None:
@@ -2231,25 +2619,18 @@ class MELTSAPI:
 
     def __init__(
         self,
-        isothermal_NoCr_model_path: Union[str, Path],
-        isothermal_Cr_model_path: Union[str, Path],
-        isentropic_NoCr_model_path: Union[str, Path],
-        isentropic_Cr_model_path: Union[str, Path],
-        temperature_NoCr_model_path: Optional[Union[str, Path]] = None,
-        temperature_Cr_model_path: Optional[Union[str, Path]] = None,
-        openox_NoCr_model_path: Optional[Union[str, Path]] = None,
-        openox_Cr_model_path: Optional[Union[str, Path]] = None,
+        model_dir: Union[str, Path],
+        *,
         device: str = 'cpu',
         verbose: bool = False,
         mass_balance: str = 'iterative',
-        test_NoCr_bundles: Optional[Dict[str, Union[str, Path]]] = None,
-        test_Cr_bundles: Optional[Dict[str, Union[str, Path]]] = None,
         load_melts_eos: bool = True,
         melts_solid_params_path: Optional[Union[str, Path]] = None,
         melts_liquid_params_path: Optional[Union[str, Path]] = None,
     ):
         """
-        Initialize MELTS API, building NoCr and Cr sub-APIs.
+        Initialize MELTS API by pointing at a single directory, building the
+        NoCr and Cr sub-APIs from the Cr/NoCr-tagged checkpoints inside it.
 
         Each sub-API holds up to three emulators: isothermal (closed, T input),
         isentropic (closed, S input), and open oxygen (fO2-buffered, T + logfO2
@@ -2259,32 +2640,21 @@ class MELTSAPI:
 
         Parameters
         ----------
-        isothermal_NoCr_model_path : str or Path
-            Path to isothermal emulator checkpoint (NoCr)
-        isothermal_Cr_model_path : str or Path
-            Path to isothermal emulator checkpoint (Cr)
-        isentropic_NoCr_model_path : str or Path
-            Path to isentropic emulator checkpoint (NoCr)
-        isentropic_Cr_model_path : str or Path
-            Path to isentropic emulator checkpoint (Cr)
-        temperature_NoCr_model_path : str or Path, optional
-            Path to temperature FCNN checkpoint (NoCr)
-        temperature_Cr_model_path : str or Path, optional
-            Path to temperature FCNN checkpoint (Cr)
-        openox_NoCr_model_path : str or Path, optional
-            Path to open oxygen (fO2-buffered) emulator checkpoint (NoCr).
-            Required to use inputs containing 'logfO2-QFM(System_main)'.
-        openox_Cr_model_path : str or Path, optional
-            Path to open oxygen (fO2-buffered) emulator checkpoint (Cr).
+        model_dir : str or Path
+            Directory holding both the Cr- and NoCr-tagged checkpoints for
+            this MELTS model family (e.g. ``engine/TrainedModels/MELTS120/``,
+            which holds ``120SedIgClosed_{Cr,NoCr}_{NPT,NPS}_train2.tar`` and
+            ``120SedIgOpen_{Cr,NoCr}_train2.tar`` side by side). Each
+            checkpoint's Cr/NoCr sub-API and isothermal/isentropic/openox
+            role are auto-discovered from its filename — see
+            ``EmulatorAPI.__init__``'s docstring for the exact convention.
+            The matching ``*_Test_subset*.tar.gz`` quality bundles (up to six,
+            consumed by ``self.test()``) are located the same way, under the
+            sibling ``deployment_tests/`` directory.
         device : str, default='cpu'
             Torch device ('cpu' or 'cuda')
         verbose : bool, default=False
             Print initialization messages
-        test_NoCr_bundles, test_Cr_bundles : dict, optional
-            {'isothermal' (NPT closed) / 'isentropic' (NPS) / 'openox' (NPT
-            open): ML-ready bundle path} for the NoCr and Cr sub-APIs
-            respectively — up to six bundles in total. Consumed by
-            ``self.test()``.
         load_melts_eos : bool, default=True
             Load the vectorised MELTS EOS parameter tables (melts_vec) needed
             by get_property_melts_vectorized_from_assemblage. These ship as
@@ -2295,34 +2665,43 @@ class MELTSAPI:
             Override the packaged sol_struct_data.json / liq_struct_data.json
             (see EOS_arithmetic_MELTS/melts_vec/params.py, liquid_params.py).
         """
+        self._model_dir = str(Path(model_dir).resolve())
         if verbose:
             print("[INFO] Initializing MELTSAPI (NoCr)...")
         self.nocr = EmulatorAPI(
-            isothermal_NoCr_model_path,
-            isentropic_NoCr_model_path,
-            temperature_NoCr_model_path,
-            device,
-            verbose,
-            openox_model_path=openox_NoCr_model_path,
+            model_dir,
+            device=device,
+            verbose=verbose,
             mass_balance=mass_balance,
-            test_bundles=test_NoCr_bundles,
+            variant='nocr',
         )
         if verbose:
             print("[INFO] Initializing MELTSAPI (Cr)...")
         self.cr = EmulatorAPI(
-            isothermal_Cr_model_path,
-            isentropic_Cr_model_path,
-            temperature_Cr_model_path,
-            device,
-            verbose,
-            openox_model_path=openox_Cr_model_path,
+            model_dir,
+            device=device,
+            verbose=verbose,
             mass_balance=mass_balance,
-            test_bundles=test_Cr_bundles,
+            variant='cr',
         )
         self.device = torch.device(device)
         self.verbose = verbose
         self.nocr.modelType = "MELTSAPI"
         self.cr.modelType = "MELTSAPI"
+
+        # Wire the MELTSIsobaricStandards overlay into each sub-API's own
+        # test()-time training-coverage plots (see EmulatorAPI._coverage_standards)
+        # -- auto-discovered the same way MELTSAPI.test() finds its own
+        # standards_dir default, just done once here up front.
+        _std_dir = _discover_standards_dir(_deployment_tests_root(), Path(model_dir))
+        if _std_dir is not None:
+            from ngibbs.deployment_tests.training_coverage import melts_standard_points
+            self.nocr._coverage_standards_fn = (
+                lambda kind, d=_std_dir: melts_standard_points(d, variant='NoCr')
+            )
+            self.cr._coverage_standards_fn = (
+                lambda kind, d=_std_dir: melts_standard_points(d, variant='Cr')
+            )
 
         # Vectorised MELTS EOS (melts_vec): solid-endmember + liquid + the
         # feldspar/olivine solid-solution mixing models. See
@@ -2378,22 +2757,79 @@ class MELTSAPI:
     def divide_ptt_tables(self, ptt_out, tableIDX):
         return self.cr.divide_ptt_tables(ptt_out, tableIDX) # Function is agnostic of model.
 
-    def test(self, output_dir=None, **kwargs) -> dict:
-        """Run the deployable quality test on both sub-APIs (NoCr and Cr).
+    def test(self, output_dir=None, *, standards_dir=None, allow_missing_models: bool = False,
+             **kwargs) -> dict:
+        """MELTS deployable test: the base per-sub-API (NoCr/Cr) emulator
+        quality metrics, exactly as before, PLUS the MELTSIsobaricStandards
+        property/phase comparison (``run_melts_property_comparison`` /
+        ``run_melts_phase_comparison`` in ``ngibbs.deployment_tests.
+        melts_comparison``) against the internal vectorised MELTS EOS -- the
+        MELTS analogue of ``HeFESToAPI.test()``'s MELTStable comparison.
 
         Each sub-API scores every configured emulator (isothermal / isentropic /
         openox) whose bundle file is present — up to six tables in total. The
         NoCr and Cr outputs are split into ``deployment_test/nocr`` and
-        ``deployment_test/cr`` (the two share a model directory). A sub-API with
-        no ``test_*_bundles`` dict at all raises.
+        ``deployment_test/cr`` (the two share a model directory).
 
-        Returns ``{'nocr': <result dict>, 'cr': <result dict>}``.
+        ``allow_missing_models`` is forwarded to each sub-API's own
+        ``EmulatorAPI.test()`` unchanged (see its docstring) -- with the
+        default ``False``, a configured-but-absent emulator bundle (for
+        either sub-API) fails the test. MELTS120 has no temperature model at
+        all and no Cr openox checkpoint; as long as those aren't wired into
+        ``test_*_bundles`` in the first place they're never seen as "missing"
+        here, so ``allow_missing_models`` only matters for bundles that ARE
+        configured but whose checkpoint/bundle file happens to be absent.
+        This flag does not gate the MELTSIsobaricStandards comparison below
+        (that comparison reports actual emulator-vs-GT error, not model
+        presence/absence, and is skipped rather than failed when
+        ``standards_dir`` doesn't exist or ``load_melts_eos=False``).
+
+        ``standards_dir`` : optional override for the auto-discovered
+        standards directory (``_discover_standards_dir``, matched to this
+        MELTSAPI's own ``model_dir`` by name, e.g. 'TrainedModels/120' ->
+        'deployment_tests/MELTSIsobaricStandards/120'), which itself falls
+        back to ``melts_comparison.DEFAULT_STANDARDS_DIR`` if nothing is
+        found.
+
+        Returns ``{'nocr': <result dict>, 'cr': <result dict>,
+        'melts_property_errors': DataFrame, 'melts_phase_errors': DataFrame,
+        'figures': {...}}`` (the last three keys omitted if the
+        MELTSIsobaricStandards comparison was skipped).
         """
         out = {}
         for tag, sub in (('nocr', self.nocr), ('cr', self.cr)):
             sub_dir = (Path(output_dir) / tag if output_dir is not None
                        else sub.home_dir / 'deployment_test' / tag)
-            out[tag] = sub.test(output_dir=sub_dir, **kwargs)
+            out[tag] = sub.test(output_dir=sub_dir, allow_missing_models=allow_missing_models, **kwargs)
+
+        if self.melts_solid_params is None or self.melts_liquid_params is None:
+            # load_melts_eos=False at construction: the internal-EOS
+            # comparison needs melts_vec's own parameter tables.
+            return out
+
+        from ngibbs.deployment_tests.melts_comparison import (
+            DEFAULT_STANDARDS_DIR, run_melts_phase_comparison, run_melts_property_comparison,
+        )
+        if standards_dir is not None:
+            std_dir = Path(standards_dir)
+        else:
+            std_dir = _discover_standards_dir(_deployment_tests_root(), Path(self._model_dir))
+            if std_dir is None:
+                std_dir = DEFAULT_STANDARDS_DIR
+        if not std_dir.exists():
+            return out
+
+        comp_out_dir = Path(output_dir) if output_dir is not None else self.nocr.home_dir / 'deployment_test'
+        prop = run_melts_property_comparison(self, std_dir, comp_out_dir)
+        phase = run_melts_phase_comparison(self, std_dir, comp_out_dir)
+        out['melts_property_errors'] = prop['property_errors']
+        out['melts_phase_errors'] = phase['phase_errors']
+        # prop['figures'] and phase['figures'] both use the keys
+        # 'isothermal'/'isentropic' -- prefix so neither clobbers the other.
+        out['figures'] = {
+            **{f'property_{k}': v for k, v in prop['figures'].items()},
+            **{f'phase_{k}': v for k, v in phase['figures'].items()},
+        }
         return out
 
     def assert_quality(self, output_dir=None, **kwargs) -> dict:
@@ -2450,6 +2886,8 @@ class MELTSAPI:
         PT: torch.Tensor,
         property_names: Sequence[str] = ('V', 'Cp', 'K', 'alpha', 'G', 'H', 'S'),
         strict: bool = False,
+        liquid_oxides: Optional[Union[torch.Tensor, np.ndarray]] = None,
+        liquid_oxide_labels: Optional[Sequence[str]] = None,
     ) -> Dict[str, np.ndarray]:
         """
         Compute bulk thermodynamic properties of a MELTS assemblage using the
@@ -2523,6 +2961,41 @@ class MELTSAPI:
             (rather than silently excluding it from the bulk aggregate --
             see below).
 
+        liquid_oxides : array-like, shape (B, O), optional
+            Molar oxide composition of the liquid, with iron ALREADY
+            speciated into FeO/Fe2O3 -- e.g. straight from
+            NN_MELTS.get_liquid_oxides(). Column order defaults to
+            config.constants.default_Oxides (SiO2, TiO2, Al2O3, FeO, MgO,
+            CaO, Na2O, K2O, P2O5, H2O, Cr2O3, MnO, NiO, CO2, Fe2O3); pass
+            liquid_oxide_labels for a different order/set of columns
+            (unrecognised oxides -- e.g. CoO, SO3, Cl, F, which no current
+            nGibbs checkpoint tracks -- default to 0, see melts_vec.
+            oxides_to_liquid_components's own docstring for the full
+            recognised-key list).
+
+            When given, this REPLACES whatever the 'melts-liquid'/'liquid'/
+            'melt' key in phase_composition carries: melts_vec's own 19-
+            component basis is built from these oxides via melts_vec.
+            oxides_to_liquid_components, following MELTS's own fixed
+            component-construction order (chromite before olivine's
+            forsterite component claims the remaining MgO, apatite before
+            wollastonite claims the remaining CaO, leucite/kalsilite before
+            whatever Al2O3 is left over becomes the Al2O3 component itself,
+            SiO2 resolved last as everyone else's leftover -- see that
+            function's own docstring for the full derivation). This is the
+            intended way to feed the trained emulator's raw liquid output
+            into this method -- see "Scope and known gaps" below.
+
+            phase_composition must still include a 'melts-liquid' (or
+            alias) key when liquid_oxides is given, so its phase_moles
+            entry is still counted in the bulk aggregate -- that key's own
+            composition VALUE is ignored and can be any correctly-shaped
+            placeholder (e.g. zeros); only its phase_moles weight matters.
+        liquid_oxide_labels : sequence of str, optional
+            Column labels for liquid_oxides, if not config.constants.
+            default_Oxides's own order (length must match liquid_oxides's
+            last dimension).
+
         Bulk aggregation
         ----------------
         Bulk V/dVdT/dVdP/H/S/Cp/dCpdT are the phase-mole-weighted sum over
@@ -2546,18 +3019,43 @@ class MELTSAPI:
         not the trained MELTS neural-network emulator's raw output space.
         Bridging the two is a real, separate translation task that was
         looked into but deliberately NOT done this pass:
-          - For 'melts-liquid', nMELTS's ml_indexer represents the liquid's
-            ML-output composition as ELEMENTAL mole fractions (Si, Ti, Al,
-            Fe, Mg, Ca, Na, K, P, H, Cr, Mn, Ni -- see
-            config/README_MLIndexer.md: "'melts-liquid' components come
-            from Elkeys, not components_in_phases"), not the 19-component
-            meltsLiquid oxide-component table melts_vec.liquid_eos expects.
-            Converting one to the other is MAGMA's own conLiq() (sources/
-            liquid.c) -- which includes an fO2-dependent Fe2+/Fe3+
-            equilibrium partition, not a fixed linear map -- and has not
-            been translated. Passing raw ml_indexer liquid output straight
-            into this method's 'melts-liquid' slot WILL give wrong numbers;
-            don't do it without that conversion in between.
+          - For 'melts-liquid': DONE, via the liquid_oxides parameter above,
+            rather than by reworking this method's own phase_composition
+            slot. nMELTS's ml_indexer represents the liquid's ML-output
+            composition as ELEMENTAL mole fractions (Si, Ti, Al, Fe, Mg,
+            Ca, Na, K, P, H, Cr, Mn, Ni -- see config/README_MLIndexer.md:
+            "'melts-liquid' components come from Elkeys, not
+            components_in_phases"), not the 19-component meltsLiquid
+            oxide-component table melts_vec.liquid_eos expects, and
+            getting from one to the other is genuinely two separate
+            problems, both now addressed:
+              (a) the fO2-dependent Fe2+/Fe3+ equilibrium partition --
+                  MAGMA's own conLiq_v34() (sources/liquid_v34.c) turned
+                  out to already have an independent Python translation in
+                  this codebase (emulator.Fe2O3_FeO_ratio /
+                  QFM_fO2_torch, matching conLiq_v34's Kress & Carmichael
+                  1991 coefficients exactly), just not wired up to
+                  melts_vec -- NN_MELTS.get_liquid_oxides() now exposes it
+                  for this purpose (via the existing Iron_Speciator, for
+                  open/fO2-buffered models only; closed models carry Fe3+
+                  as their own tracked component already and need no
+                  speciation step at all -- see get_liquid_oxides's own
+                  docstring);
+              (b) going from 14 elemental oxides to 19 melts_vec
+                  components is NOT a fixed linear map either (several
+                  components share SiO2/Al2O3 as a "pool" oxide) -- this
+                  is genuine stoichiometric bookkeeping, not equilibrium
+                  chemistry, and is unrelated to conLiq; melts_vec.
+                  oxides_to_liquid_components() implements MELTS's own
+                  fixed component-construction order for it (see that
+                  function's module docstring for the full derivation),
+                  verified by a 20,000-row round-trip mass-balance closure
+                  test against melts_vec's own (linear) component->oxide
+                  map.
+            Passing raw ml_indexer liquid output straight into this
+            method's 'melts-liquid' phase_composition slot still WILL give
+            wrong numbers -- use the liquid_oxides parameter instead, fed
+            from NN_MELTS.get_liquid_oxides()'s output.
           - For 'feldspar'/'olivine', nMELTS's components_in_phases already
             appears to use plain MELTS endmember names directly as its
             per-phase component labels (per the README's own
@@ -2595,6 +3093,29 @@ class MELTSAPI:
         T = PT_np[:, 1]
         B = PT_np.shape[0]
 
+        # liquid_oxides, if given, takes over the 'melts-liquid' slot entirely:
+        # build melts_vec's 19-component mole-fraction array from it up front,
+        # via MELTS's own (non-linear, order-dependent) oxide->component
+        # construction -- see oxides_to_liquid_components's own docstring and
+        # this method's "Scope and known gaps" section above.
+        liquid_X_override = None
+        if liquid_oxides is not None:
+            labels = list(liquid_oxide_labels) if liquid_oxide_labels is not None else list(_DEFAULT_LIQUID_OXIDE_LABELS)
+            liq_ox_np = _np(liquid_oxides)
+            if liq_ox_np.shape[-1] != len(labels):
+                raise ValueError(
+                    f"liquid_oxides has {liq_ox_np.shape[-1]} columns but "
+                    f"{len(labels)} liquid_oxide_labels were given/defaulted "
+                    f"({labels})."
+                )
+            oxide_dict = {lbl: liq_ox_np[:, i] for i, lbl in enumerate(labels)}
+            liquid_component_moles = _melts_oxides_to_liquid_components(oxide_dict, self.melts_liquid_params)
+            row_sum = liquid_component_moles.sum(axis=-1, keepdims=True)
+            liquid_X_override = np.divide(
+                liquid_component_moles, row_sum,
+                out=np.zeros_like(liquid_component_moles), where=(row_sum != 0.0),
+            )
+
         per_phase: Dict[str, Dict[str, np.ndarray]] = {}
         total_moles = np.zeros(B, dtype=np.float64)
         covered_moles = np.zeros(B, dtype=np.float64)
@@ -2608,6 +3129,9 @@ class MELTSAPI:
             total_moles = total_moles + moles
 
             phase_key = phase_name.strip().lower()
+            if phase_key in self._MELTS_LIQUID_PHASE_NAMES and liquid_X_override is not None:
+                X_np = liquid_X_override  # liquid_oxides overrides phase_composition's own liquid entry
+
             result = None
             if phase_key in self._MELTS_LIQUID_PHASE_NAMES:
                 result = melts_compute_liquid_bulk(T, P_bar, X_np, self.melts_liquid_params)
