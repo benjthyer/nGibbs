@@ -549,9 +549,19 @@ def main() -> None:
     # differently-scaled inputs at eval time. (Test's own feature_bounds.json,
     # if present, is just a diagnostic of Test's own P/T/fO2 range - not used
     # here.)
-    test_set, _ = load_ML_data(test_bundle, only_VP=only_vp,
+    test_set, test_ml_indexer = load_ML_data(test_bundle, only_VP=only_vp,
                                feature_normalizer=ml_indexer.feature_normalizer,
                                with_derivatives=True if _wants_derivs else False)
+
+    # T0 (per-phase vanishing-abundance scale, see NN_continuous.py's upper_forward) is
+    # cheap to approximate from either split -- Train and Test are generated the same way
+    # and have similar distributions -- so a Train bundle exported/backfilled without it
+    # doesn't have to block boundary_temperature training. Train's own T0 still wins
+    # whenever it has one; Test is only a fallback, never an override, so a real Train T0
+    # is never silently replaced by a differently-distributed Test one.
+    if getattr(ml_indexer, 'T0', None) is None and getattr(test_ml_indexer, 'T0', None) is not None:
+        print("Train bundle has no T0; falling back to Test bundle's T0.")
+        ml_indexer.T0 = test_ml_indexer.T0
 
     print(f"MOLAR EPSILON FROM LOADED DATA: {ml_indexer.molar_epsilon}")
 
