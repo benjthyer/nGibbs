@@ -113,7 +113,7 @@ from . import orthopyroxene
 from . import spinel
 from . import rhomsghiorso
 from . import molar_mass
-from .molar_mass import molar_mass_from_formula, molar_masses
+from .molar_mass import molar_mass_from_formula, molar_masses, liquid_molar_masses
 from .solid_solutions import (
     compute_feldspar_solution, compute_olivine_solution, compute_clinopyroxene_solution,
     compute_orthopyroxene_solution, compute_spinel_solution, compute_rhm_oxide_solution,
@@ -135,7 +135,7 @@ __all__ = [
     'kress_component', 'compute_liquid_components', 'compute_liquid_bulk',
     'newton_solve_ordering', 'darken_activities',
     'feldspar', 'olivine', 'clinopyroxene', 'orthopyroxene', 'spinel', 'rhomsghiorso',
-    'molar_mass', 'molar_mass_from_formula', 'molar_masses',
+    'molar_mass', 'molar_mass_from_formula', 'molar_masses', 'liquid_molar_masses',
     'compute_feldspar_solution', 'compute_olivine_solution', 'compute_clinopyroxene_solution',
     'compute_orthopyroxene_solution', 'compute_spinel_solution', 'compute_rhm_oxide_solution',
     'oxides_to_liquid_components', 'liquid_components_to_oxides',

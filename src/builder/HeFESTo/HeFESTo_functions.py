@@ -2117,136 +2117,14 @@ def prepare_HeFESTo_single_composition_directory(
 # It has been removed so the canonical, row-filtering implementation is used.
 
 
-def load_fort99_component_moles_and_labels(sim_dir: str, indexer) -> Tuple[np.ndarray, np.ndarray]:
-    """Load fort.99 components into an extensive component-moles array and
-    compute intensive (VC) and molar (P) phase labels using an ml_indexer.
-
-    Parameters
-    ----------
-    sim_dir : str
-        Directory containing a `fort.99` file.
-    indexer : object
-        ml_indexer providing `label_names` (component labels) and
-        `phaseToCompMap` (2D array-like with shape [n_phases, n_components]).
-
-    Returns
-    -------
-    VC : np.ndarray
-        Intensive phase labels with shape (n_rows, n_phases). Contains component proportions that sum to 1 across each phase
-    P : np.ndarray
-        Molar phase labels (phase moles) with shape (n_rows, n_phases).
-    """
-    sim_dir = Path(sim_dir)
-    fort99_path = sim_dir / 'fort.99'
-    if not fort99_path.exists() or not fort99_path.is_file():
-        raise FileNotFoundError(f'fort.99 not found in: {sim_dir}')
-
-    comp_df = _safe_read_ws_table(str(fort99_path), skiprows=0)
-    if comp_df.shape[1] < 6:
-        raise ValueError('fort.99 has insufficient columns to parse components')
-
-    nrows = len(comp_df)
-    component_count = len(getattr(indexer, 'label_names', []))
-    if component_count == 0:
-        raise ValueError('Indexer must expose non-empty `label_names`')
-
-    # Prepare an (nrows, n_components) array filled with zeros
-    component_moles = np.zeros((nrows, component_count), dtype=float)
-
-    # fort.99 component columns convention: skip first 3 and last 2 columns
-    component_cols = list(comp_df.columns)[3:-2]
-    for comp_abbr in component_cols:
-        comp_abbr_str = str(comp_abbr).strip()
-        comp_name = _resolve_component_name_from_abbr(comp_abbr_str)
-        try:
-            comp_idx = list(indexer.label_names).index(comp_name)
-        except ValueError:
-            # component not present in indexer; skip it
-            continue
-        values = pd.to_numeric(comp_df[comp_abbr], errors='coerce').fillna(0.0).to_numpy(dtype=float)
-        component_moles[:, comp_idx] = values
-
-    # Validate phaseToCompMap and compute phase molar amounts P
-    p_to_c = np.asarray(getattr(indexer, 'phaseToCompMap', None), dtype=float)
-    if p_to_c is None or p_to_c.ndim != 2 or p_to_c.shape[1] != component_count:
-        raise ValueError('Indexer must expose `phaseToCompMap` with shape [n_phases, n_components]')
-
-    # P: molar phase amounts per row (nrows, n_phases)
-    P = component_moles @ p_to_c.T
-
-    # VC: intensive labels (normalized component fractions of variable composition phases per row)
-    phaseComponentMoles = component_moles[:, None, :] * p_to_c[None, :, :]  # (nrows, n_phases, n_components)
-
-    comp_sums = np.sum(phaseComponentMoles, axis=2, keepdims=True)
-    print(comp_sums)
-    # avoid divide-by-zero: if sum==0 leave row as zeros
-    with np.errstate(invalid='ignore', divide='ignore'):
-        VC =np.einsum('bpc,pc->bc', np.divide(phaseComponentMoles, comp_sums, where=(comp_sums > 0)), p_to_c) @ indexer.variedToAllComp.T # (nrows, n_variable_comps)
-    print(f"Shape of VC: {VC.shape}, should be {len(indexer.compositionally_variable_subset)} Shape of P: {P.shape}")
-    print(VC)
-    return VC, P
-
-
-def load_fort99_componentMoles(sim_dir: str, indexer) -> np.ndarray:
-    """Load fort.99 components into an extensive component-moles array.
-
-    Parses the whitespace-delimited fort.99 file, resolves each column's
-    abbreviation to a canonical component name via the indexer, and returns
-    the component moles as a dense array aligned to ``indexer.label_names``.
-    Components not present in the indexer are silently skipped.
-
-    This is the lower-level companion to ``load_fort99_component_moles_and_labels``:
-    it returns only the raw mole array without computing phase-label projections.
-    The result can be passed directly to
-    ``HeFESToEmulatorCPU.get_property_hefesto_vectorized_from_assemblage``.
-
-    Parameters
-    ----------
-    sim_dir : str
-        Directory containing a ``fort.99`` file.
-    indexer : object
-        ml_indexer providing ``label_names`` (list of component names) used to
-        align fort.99 columns to the correct output positions.
-
-    Returns
-    -------
-    component_moles : np.ndarray
-        Array of shape ``(n_rows, n_components)`` where ``n_components`` is
-        ``len(indexer.label_names)``. Each row corresponds to one P–T step
-        in the simulation; each column is the molar abundance of the
-        corresponding component.
-    """
-    sim_dir = Path(sim_dir)
-    fort99_path = sim_dir / 'fort.99'
-    if not fort99_path.exists() or not fort99_path.is_file():
-        raise FileNotFoundError(f'fort.99 not found in: {sim_dir}')
-
-    comp_df = _safe_read_ws_table(str(fort99_path), skiprows=0)
-    if comp_df.shape[1] < 6:
-        raise ValueError('fort.99 has insufficient columns to parse components')
-
-    nrows = len(comp_df)
-    component_count = len(getattr(indexer, 'label_names', []))
-    if component_count == 0:
-        raise ValueError('Indexer must expose non-empty `label_names`')
-
-    # Prepare an (nrows, n_components) array filled with zeros
-    component_moles = np.zeros((nrows, component_count), dtype=float)
-
-    # fort.99 component columns convention: skip first 3 and last 2 columns
-    component_cols = list(comp_df.columns)[3:-2]
-    for comp_abbr in component_cols:
-        comp_abbr_str = str(comp_abbr).strip()
-        comp_name = _resolve_component_name_from_abbr(comp_abbr_str)
-        try:
-            comp_idx = list(indexer.label_names).index(comp_name)
-        except ValueError:
-            # component not present in indexer; skip it
-            continue
-        values = pd.to_numeric(comp_df[comp_abbr], errors='coerce').fillna(0.0).to_numpy(dtype=float)
-        component_moles[:, comp_idx] = values
-    return component_moles
-
+# NOTE: local `load_fort99_component_moles_and_labels` and `load_fort99_componentMoles`
+# used to be defined here. They shadowed the versions imported from
+# ngibbs.utils.file_utils at the top of this module (same naive, non-phase-scoped
+# `label_names.index(comp_name)` lookup that produced the "present in fort.99 but not
+# found in indexer" warnings for magnetite:spinel / magnetite:ferropericlase -- see
+# docs/FINDING_spinel_magnetite.md and docs/DESIGN_component_identity.md), so this file's
+# own callers were silently exercising the stale local copy instead of the maintained one.
+# Removed so every caller uses the single implementation that ships with ngibbs.
 
 
 def _extract_sim_id(sim_name: str) -> Optional[int]:

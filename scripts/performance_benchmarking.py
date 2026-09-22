@@ -32,8 +32,6 @@ if str(repo_root / "scripts") not in sys.path:
 from _plot_output import plot_path
 
 # Import utilities and API
-from ngibbs.utils.math_utils import grid_sample, grid_sample_explicit
-from ngibbs.engine.API import HeFESToAPI
 from ngibbs.engine.models import HeFESToEmulatorCPU, HeFESToEmulatorGPU
 from ngibbs.config.constants import HEFESTO_ABBREVIATION_TO_SHORT_NAMES
 REV_HEFESTO_ABBREVIATION_TO_SHORT_NAMES = {v: k for k, v in HEFESTO_ABBREVIATION_TO_SHORT_NAMES.items()}

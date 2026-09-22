@@ -48,6 +48,8 @@ from .EOS_arithmetic_MELTS.melts_vec import (
     rhomsghiorso as _melts_rhomsghiorso,
     BARS_PER_GPA as _MELTS_BARS_PER_GPA,
     oxides_to_liquid_components as _melts_oxides_to_liquid_components,
+    molar_masses as _melts_molar_masses,
+    liquid_molar_masses as _melts_liquid_molar_masses,
 )
 
 from ..config.constants import (
@@ -1151,6 +1153,7 @@ class EmulatorAPI:
         The same dict ``test()`` returns, plus ``'failures': []`` on success.
         """
         from ngibbs.deployment_tests.quality_thresholds import (
+            check_fort99_import_quality,
             check_meltstable_quality,
             check_phase_quality,
             EmulatorQualityError,
@@ -1164,6 +1167,8 @@ class EmulatorAPI:
         failures = check_phase_quality(result['quality_metrics'])
         if 'meltstable_property_errors' in result:
             failures += check_meltstable_quality(result['meltstable_property_errors'])
+        if result.get('fort99_unmapped_components'):
+            failures += check_fort99_import_quality(result['fort99_unmapped_components'])
 
         result['failures'] = failures
         if failures:
@@ -2292,6 +2297,16 @@ class HeFESToAPI(EmulatorAPI):
             run_meltstable_phase_comparison,
             run_meltstable_property_comparison,
         )
+        from ngibbs.utils.file_utils import (
+            reset_unmapped_fort99_components,
+            get_unmapped_fort99_components,
+        )
+
+        # Reset before anything in this test() call touches fort.99, so the tally
+        # captured below reflects only THIS run (the base test() doesn't read
+        # fort.99 today, but scoping the reset here rather than just around the
+        # MELTStable calls below means it stays correct if that ever changes).
+        reset_unmapped_fort99_components()
 
         out_dir = Path(output_dir) if output_dir is not None else self.home_dir / 'deployment_test'
         result = super().test(
@@ -2303,6 +2318,7 @@ class HeFESToAPI(EmulatorAPI):
         if self._test_meltstable_dir is None:
             if verbose:
                 print("[test]   no MELTStable directory configured; skipping EOS comparison.")
+            result['fort99_unmapped_components'] = get_unmapped_fort99_components()
             return result
 
         if self.hefesto_params is None:
@@ -2318,6 +2334,7 @@ class HeFESToAPI(EmulatorAPI):
         result['meltstable_phase_errors'] = phase['phase_errors']
         result['meltstable_unrepresented_phases'] = phase['unrepresented_phases']
         result['figures'] = {**prop['figures'], **phase['figures']}
+        result['fort99_unmapped_components'] = get_unmapped_fort99_components()
         if write_outputs and verbose:
             print(f"[test]   wrote MELTStable tables + figures to {out_dir}")
         return result
@@ -2833,17 +2850,55 @@ class MELTSAPI:
         return out
 
     def assert_quality(self, output_dir=None, **kwargs) -> dict:
-        """Run ``assert_quality()`` on both sub-APIs (NoCr and Cr).
+        """Run ``self.test()`` (NoCr + Cr sub-API metrics, plus the
+        MELTSIsobaricStandards property/phase comparison) and enforce the
+        deployment quality gate on the COMBINED result.
 
-        Raises ``EmulatorQualityError`` (from whichever sub-API fails first) if
-        either misses a threshold. Returns ``{'nocr': <result dict>, 'cr': <result dict>}``.
+        This used to call ``sub.assert_quality()`` on NoCr then Cr in a
+        plain loop -- since each sub-call raises on its own first threshold
+        miss, a NoCr failure aborted the loop before Cr was ever evaluated
+        at all, and the MELTSIsobaricStandards comparison (only reachable
+        through ``MELTSAPI.test()``, never through a sub-API's own
+        ``EmulatorAPI.test()``) was never run or gated during
+        ``assert_quality()`` in the first place. Both are fixed here: NoCr
+        and Cr are always both fully evaluated (``self.test()`` itself never
+        aborts early on a quality threshold -- only on a genuinely missing
+        checkpoint/bundle, via its own ``allow_missing_models`` contract),
+        and every failure -- phase precision/recall/abundance/oxide error in
+        either sub-API, plus (whenever the standards comparison ran) the
+        ``melts_property_errors`` EOS-property thresholds
+        (``check_melts_quality``, the MELTS analogue of HeFESTo's
+        ``check_meltstable_quality``) -- is collected into ONE combined
+        ``EmulatorQualityError`` rather than raising on the first miss found.
+
+        Each per-sub-API phase-quality failure's ``.where`` is prefixed with
+        ``'nocr/'`` or ``'cr/'`` so failures from both variants are
+        distinguishable in the combined failure list.
+
+        Returns the same dict ``self.test()`` returns, plus ``'failures': []``
+        on success.
         """
-        out = {}
-        for tag, sub in (('nocr', self.nocr), ('cr', self.cr)):
-            sub_dir = (Path(output_dir) / tag if output_dir is not None
-                       else sub.home_dir / 'deployment_test' / tag)
-            out[tag] = sub.assert_quality(output_dir=sub_dir, **kwargs)
-        return out
+        from ngibbs.deployment_tests.quality_thresholds import (
+            check_melts_quality, check_phase_quality, EmulatorQualityError,
+        )
+
+        result = self.test(output_dir=output_dir, **kwargs)
+
+        failures = []
+        for tag in ('nocr', 'cr'):
+            sub_failures = check_phase_quality(result[tag]['quality_metrics'])
+            for f in sub_failures:
+                f.where = f'{tag}/{f.where}'
+            failures += sub_failures
+        if 'melts_property_errors' in result:
+            failures += check_melts_quality(result['melts_property_errors'])
+
+        result['failures'] = failures
+        if failures:
+            raise EmulatorQualityError(self.__class__.__name__, failures, result=result)
+        if kwargs.get('verbose', True):
+            print(f"[test]   {self.__class__.__name__}: all deployment quality checks passed.")
+        return result
 
     # ── Vectorised MELTS EOS (melts_vec) ──────────────────────────────────────
     # Phase-name -> (endmember list, solution-model function) for the phases
@@ -2948,13 +3003,25 @@ class MELTSAPI:
         property_names : sequence of str
             Bulk (B,) keys to return: 'V' (J/bar), 'dVdT', 'dVdP', 'K' (bar),
             'alpha' (1/K), 'Cp' (J/mol/K), 'dCpdT', 'G', 'H' (J/mol), 'S'
-            (J/mol/K). (No 'rho' -- melts_vec's extracted parameter tables
-            don't carry a verified per-endmember molar mass yet, see Scope
-            below.) Also accepts 'melts_coverage_fraction' (the mole
-            fraction of the total assemblage actually covered by a
-            supported phase -- see below) and 'per_phase' (returns the raw
-            per-phase dicts, keyed by the phase names in phase_composition,
-            instead of/alongside the bulk aggregate).
+            (J/mol/K), 'rho' (g/cm3 -- see "Density (rho)" below), 'mass'
+            (the assemblage's own mole-weighted mean molar mass, g/mol --
+            mostly a diagnostic/intermediate, but occasionally useful on
+            its own). Also accepts:
+              - 'melts_coverage_fraction': the mole fraction of the total
+                assemblage actually covered by a supported phase (see
+                "Bulk aggregation" below).
+              - 'per_phase': the raw per-phase dicts, keyed by the phase
+                names in phase_composition, instead of/alongside the bulk
+                aggregate -- each per-phase dict also now carries its own
+                'mass' (that phase's own mean molar mass, g/mol).
+              - 'bulk': every bulk aggregate key above (V, dVdT, dVdP, H, S,
+                Cp, dCpdT, G, K, alpha, rho, mass) PLUS
+                'melts_coverage_fraction', bundled into one nested dict --
+                the bulk-aggregate mirror of 'per_phase', for a caller that
+                wants everything in a single, self-contained result rather
+                than listing every key it needs. ``property_names=('bulk',
+                'per_phase')`` gets you both the phase-by-phase breakdown
+                and the whole-assemblage aggregate from one call.
         strict : bool, default=False
             If True, raise ValueError when phase_composition contains a key
             in _MELTS_UNSUPPORTED_SOLUTION_PHASES with nonzero phase_moles
@@ -3012,6 +3079,35 @@ class MELTSAPI:
         pyroxene-bearing assemblage; request it explicitly via
         property_names or read it off the returned dict's
         'melts_coverage_fraction' key, which is always included.
+
+        Density (rho)
+        --------------
+        rho IS now computed (previously not -- see the project plan doc's
+        note on this for the history). Every phase this method can compute
+        has a per-endmember/per-component molar mass available: solid
+        endmembers via melts_vec.molar_mass.molar_masses() (parses each
+        endmember's `formula` field in sol_struct_data.json -- built for
+        the MELTStables/raw-output benchmarks, see the project plan doc)
+        and, new this pass, meltsLiquid's 19 components via
+        melts_vec.molar_mass.liquid_molar_masses() (parses each
+        component's own LABEL directly, since for meltsLiquid the label IS
+        the formula -- e.g. "Mg2SiO4", "KAlSiO4" -- except the two halogen
+        components Cl2O-1/F2O-1, resolved via molar_mass.FORMULA_OVERRIDES,
+        which also required adding S/Cl/F to molar_mass.ATOMIC_WEIGHTS,
+        since no *solid* endmember formula had ever needed them). Each
+        phase's own mean molar mass is its composition-weighted dot product
+        with that phase's endmember/component molar-mass vector; the
+        assemblage's bulk mean molar mass ('mass', g/mol) is then the SAME
+        mole-weighted aggregation already used for V/H/S/Cp/etc. above, and
+
+            rho = mass / (10 * V)                      [g/cm3]
+
+        (the *10 converts V from J/bar to cm3, exactly as elsewhere in this
+        package, e.g. our_V_cc_per_mol = V_Jbar*10 in
+        scripts/benchmark_raw_melts_outputs.py). rho is 0/0 -> NaN when
+        nothing was covered. It carries the SAME "excludes
+        _MELTS_UNSUPPORTED_SOLUTION_PHASES" caveat as every other bulk
+        aggregate key above -- check 'melts_coverage_fraction' here too.
 
         Scope and known gaps
         ---------------------
@@ -3120,7 +3216,15 @@ class MELTSAPI:
         total_moles = np.zeros(B, dtype=np.float64)
         covered_moles = np.zeros(B, dtype=np.float64)
 
-        acc_keys = ('V', 'dVdT', 'dVdP', 'H', 'S', 'Cp', 'dCpdT')
+        # 'mass' (that phase's own mean molar mass, g/mol -- see "Density
+        # (rho)" in the docstring above) is accumulated through the exact
+        # same moles-weighted-sum machinery as every EOS output below, so it
+        # is folded into acc_keys/acc rather than given a separate code
+        # path; _EOS_ACC_KEYS is kept separate only because the pure-phase
+        # fallback branch below needs to squeeze its (B,1)-shaped EOS
+        # outputs before 'mass' (computed after that branch resolves) exists.
+        _EOS_ACC_KEYS = ('V', 'dVdT', 'dVdP', 'H', 'S', 'Cp', 'dCpdT')
+        acc_keys = _EOS_ACC_KEYS + ('mass',)
         acc = {k: np.zeros(B, dtype=np.float64) for k in acc_keys}
 
         for phase_name, X in phase_composition.items():
@@ -3133,11 +3237,14 @@ class MELTSAPI:
                 X_np = liquid_X_override  # liquid_oxides overrides phase_composition's own liquid entry
 
             result = None
+            mw_vec = None  # this phase's own (n_endmembers,) molar-mass vector, g/mol
             if phase_key in self._MELTS_LIQUID_PHASE_NAMES:
                 result = melts_compute_liquid_bulk(T, P_bar, X_np, self.melts_liquid_params)
+                mw_vec = _melts_liquid_molar_masses(self.melts_liquid_params)
             elif phase_key in self._MELTS_SOLUTION_PHASES:
                 endmembers, fn = self._MELTS_SOLUTION_PHASES[phase_key]
                 result = fn(T, P_bar, X_np, self.melts_solid_params)
+                mw_vec = _melts_molar_masses(self.melts_solid_params, names=endmembers)
             elif phase_key in self._MELTS_UNSUPPORTED_SOLUTION_PHASES:
                 if strict and np.any(moles != 0.0):
                     raise ValueError(
@@ -3153,8 +3260,15 @@ class MELTSAPI:
                 # Single pure phase fallback: X_np expected (B, 1), all ones.
                 from .EOS_arithmetic_MELTS.melts_vec import compute as melts_compute
                 result = melts_compute(T, P_bar, self.melts_solid_params, names=[phase_name])
-                for k in acc_keys:
+                for k in _EOS_ACC_KEYS:
                     result[k] = result[k][:, 0]
+                mw_vec = _melts_molar_masses(self.melts_solid_params, names=[phase_name])
+
+            # Composition-weighted mean molar mass of this phase, (B,) g/mol
+            # -- X_np's columns are already in mw_vec's own endmember/
+            # component order in every branch above (liquid_params.labels,
+            # this phase's ENDMEMBERS tuple, or the single [phase_name]).
+            result['mass'] = X_np @ mw_vec
 
             per_phase[phase_name] = result
             covered_moles = covered_moles + moles
@@ -3162,7 +3276,7 @@ class MELTSAPI:
                 if k in result:
                     acc[k] = acc[k] + moles * result[k]
 
-            del X_np, moles, result
+            del X_np, moles, result, mw_vec
 
         with np.errstate(divide='ignore', invalid='ignore'):
             for k in acc_keys:
@@ -3172,24 +3286,33 @@ class MELTSAPI:
         with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
             K = np.where(acc['dVdP'] != 0.0, -acc['V'] / acc['dVdP'], np.inf)
             alpha = np.where(acc['V'] != 0.0, acc['dVdT'] / acc['V'], 0.0)
+            # rho = mass / volume; V is J/bar (== 0.1 cm3), so *10 -> cm3.
+            # acc['mass'] and acc['V'] are both the SAME covered_moles-
+            # weighted mean (per mole of assemblage), so this ratio is
+            # exactly (total mass, g) / (total volume, cm3) -- the
+            # covered_moles factor common to both cancels.
+            rho = np.where(acc['V'] != 0.0, acc['mass'] / (10.0 * acc['V']), np.nan)
         coverage = np.where(total_moles != 0.0, covered_moles / np.where(total_moles != 0.0, total_moles, 1.0), 0.0)
 
         full = dict(acc)
         full['G'] = G
         full['K'] = K
         full['alpha'] = alpha
+        full['rho'] = rho
         full['melts_coverage_fraction'] = coverage
 
         out = {}
         for prop in property_names:
             if prop == 'per_phase':
                 out['per_phase'] = per_phase
+            elif prop == 'bulk':
+                out['bulk'] = dict(full)
             elif prop in full:
                 out[prop] = full[prop]
             else:
                 raise ValueError(
                     f"Unknown property {prop!r}. Available keys: "
-                    f"{sorted(full.keys()) + ['per_phase']}"
+                    f"{sorted(full.keys()) + ['per_phase', 'bulk']}"
                 )
         out['melts_coverage_fraction'] = coverage
         return out

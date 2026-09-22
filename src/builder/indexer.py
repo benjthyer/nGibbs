@@ -580,6 +580,26 @@ class DatasetIndexer:
                         f'{abbr!r} -> {long_name!r} but phase {key_phase!r} has no '
                         f'{species!r} column; its values would be written nowhere')
 
+            # Invariant 2 above checks the SCHEMA (`MELTS_indices`, the raw parsed-header
+            # dict). That is not what actually resolves a fort.99 column at runtime --
+            # `load_fort99_componentMoles` receives a plain `ml_indexer` (no
+            # `MELTS_indices` attribute at all) and resolves through `label_names` /
+            # `label_indices` instead. The two mechanisms drifted before: this exact
+            # class of bug shipped once with a passing schema-level check, because the
+            # fix that introduced `reconcile_component_name` was wired into the
+            # per-phase import loop but not into `load_fort99_componentMoles`'s own
+            # flat lookup. Exercising the real resolver directly -- instead of a parallel
+            # check that merely mirrors its logic -- is the only way to guarantee this
+            # particular drift can't recur silently.
+            from ngibbs.utils.file_utils import _resolve_fort99_component_index
+            for abbr in emitted:
+                if _resolve_fort99_component_index(self, abbr) is None:
+                    long_name = HEFESTO_ABBREVIATION_TO_SHORT_NAMES[abbr]
+                    problems.append(
+                        f'{abbr!r} -> {long_name!r} does not resolve via '
+                        f'load_fort99_componentMoles (label_names/label_indices); '
+                        f'its fort.99 values would be silently dropped at import')
+
         if problems and strict:
             raise ValueError('component registry inconsistent:\n  ' + '\n  '.join(problems))
         return problems

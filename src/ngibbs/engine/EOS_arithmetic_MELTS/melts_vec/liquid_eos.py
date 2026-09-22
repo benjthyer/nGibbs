@@ -12,33 +12,38 @@ Scope
 -----
 This module gives EXACT per-component liquid properties (V and its P,T
 derivatives; G, H, S, Cp at the component's own composition, i.e. as a
-pure liquid). Bulk multicomponent liquid mixing in `compute_liquid()`
-below is IDEAL ONLY:
+pure liquid). Bulk multicomponent liquid mixing in `compute_liquid_bulk()`
+below is:
 
-    V_bulk  = sum_i x_i * V_i(T,P)          (confirmed exact: MAGMA's own
-                                              W(i,j) volume-of-mixing table
-                                              in param_struct_data.h is all
-                                              zero for meltsSolids/MODE__MELTS)
-    H_bulk  = sum_i x_i * H_i(T,P)          (ideal -- no excess enthalpy)
-    S_bulk  = sum_i x_i * S_i(T,P) - R * sum_i x_i * log(x_i)   (ideal
-                                              configurational entropy only)
-    Cp_bulk = sum_i x_i * Cp_i(T,P)
+    V_bulk  = sum_i x_i * V_i(T,P)          (exact: MAGMA's own W(i,j)
+                                              volume-of-mixing parameters
+                                              are all zero -- confirmed
+                                              directly, see below)
+    Cp_bulk = sum_i x_i * Cp_i(T,P)         (exact -- cpmixLiq_v34 returns
+                                              0 unconditionally)
+    H_bulk  = sum_i x_i * H_i(T,P) + Hex
+    S_bulk  = sum_i x_i * S_i(T,P) - R*sum_i x_i*log(x_i) + Sex
 
-MELTS's real liquid model has a non-ideal (quasi-chemical / regular
-solution) excess Gibbs energy of mixing on top of this, parameterized by
-the W(i,j) enthalpy table in `param_struct_data.h` (confirmed nonzero for
-enthalpy, unlike volume) and, in the full model, speciation. That excess
-term is NOT implemented here -- this module gives the exact volumetric
-EOS (matching the "material properties" V/K/alpha/Cp focus of this whole
-package) plus ideal-mixing G/H/S, and is not a substitute for a full
-liquid activity/speciation model. Flagged clearly rather than silently
-approximated.
+where Hex/Sex is the NON-IDEAL (regular-solution) correction from
+`liquid_nonideal.py` -- see that module's docstring for the full
+derivation. This closes the gap this docstring used to flag as
+unimplemented: MELTS's real liquid model has a non-ideal excess Gibbs
+energy of mixing parameterized by the W(i,j) enthalpy table in
+`param_struct_data.h` (confirmed nonzero for enthalpy; entropy and volume
+interaction terms are confirmed identically zero for every one of the 171
+component pairs in this calibration, so Vex=0 and the only excess terms
+are Hex, from the regular-solution enthalpy sum, and a small additional
+Sex from H2O's own extra ideal-mixing term -- both closed-form, no Newton
+solve needed). This is still not a full liquid ACTIVITY/speciation model
+(no chemical potentials/activities are exposed here) -- flagged clearly
+rather than silently claimed.
 """
 from __future__ import annotations
 import numpy as np
 
 from .constants import Rgas, Pr, Trl
 from .thermal import berman_ref_state
+from .liquid_nonideal import load_wij_matrix, liquid_nonideal_correction
 
 
 def kress_component(T, P, v_liq, dvdt, dvdp, d2vdtp, d2vdp2,
@@ -146,8 +151,11 @@ def compute_liquid_components(T, P, params, names=None) -> dict:
     return out
 
 
-def compute_liquid_bulk(T, P, X, params, names=None) -> dict:
-    """Bulk (bulk-composition-weighted, ideal-mixing) liquid properties.
+def compute_liquid_bulk(T, P, X, params, names=None, apply_nonideal: bool = True,
+                         wij_matrix=None, h2o_index=None) -> dict:
+    """Bulk (bulk-composition-weighted) liquid properties: ideal mixing for
+    V/Cp (exact, see module docstring) plus, by default, the non-ideal
+    (regular-solution) excess G/H/S correction from `liquid_nonideal.py`.
 
     Parameters
     ----------
@@ -156,11 +164,18 @@ def compute_liquid_bulk(T, P, X, params, names=None) -> dict:
         here -- caller's responsibility, matching how compute() for solid
         solutions expects normalized composition input).
     params, names : as in compute_liquid_components.
+    apply_nonideal : if False, reproduces the OLD ideal-only behavior (no
+        Hex/Sex correction) -- kept for benchmark/regression comparisons
+        against the pre-fix baseline; always True for production use.
+    wij_matrix : optional pre-built (N, N) W(i,j) enthalpy matrix (from
+        `liquid_nonideal.load_wij_matrix`); built fresh from `params.labels`
+        if not supplied (cheap, but callers evaluating this in a tight loop
+        may want to build it once and pass it in).
+    h2o_index : optional explicit index of H2O in `params.labels`; looked
+        up via `params.label_index["H2O"]` if not supplied.
 
     Returns a dict of (B,) arrays: V, dVdT, dVdP, K, alpha, Cp, dCpdT,
-    G, H, S -- the ideal-mixing bulk liquid, NOT including the (not yet
-    implemented) non-ideal excess Gibbs energy of mixing; see module
-    docstring.
+    G, H, S.
     """
     if names is not None:
         params = params.select(names)
@@ -184,6 +199,16 @@ def compute_liquid_bulk(T, P, X, params, names=None) -> dict:
     S = np.sum(X*comp["S"], axis=1) + S_config
 
     T1 = np.asarray(T, dtype=np.float64)
+
+    if apply_nonideal:
+        if wij_matrix is None:
+            wij_matrix = load_wij_matrix(params.labels)
+        if h2o_index is None:
+            h2o_index = params.label_index["H2O"]
+        corr = liquid_nonideal_correction(X, T1, wij_matrix, h2o_index)
+        H = H + corr["dH"]
+        S = S + corr["dS"]
+
     G = H - T1*S
 
     with np.errstate(divide='ignore', invalid='ignore', over='ignore'):

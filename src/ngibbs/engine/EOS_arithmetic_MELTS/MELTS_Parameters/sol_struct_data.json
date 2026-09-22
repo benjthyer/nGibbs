@@ -2163,7 +2163,7 @@
    "natoms": "0.0",
    "h": -6694689.0,
    "s": 398.74,
-   "v": 16.4025,
+   "v": 15.8228,
    "cp_type": "CP_BERMAN",
    "cp_coeffs": [
     758.81,
@@ -2181,7 +2181,9 @@
     0.0,
     0.0,
     0.0
-   ]
+   ],
+   "v_source_original_MAGMA_snapshot": 16.4025,
+   "v_override_note": "v overridden from the connected MAGMA source's own 16.4025 J/bar (164.025 cc/mol) to 15.8228 J/bar (158.228 cc/mol), back-calculated from real alphaMELTS raw-output density data (rho=3.1746 g/cc, n=6413 rows, zero variance) -- see extract_sol_params.py's own 'Manual override: apatite's reference volume' comment and project doc \u00a718.4/\u00a719 for the full derivation. The connected source's original value is preserved, not deleted, in v_source_original_MAGMA_snapshot below."
   },
   {
    "label": "water",
@@ -4848,7 +4850,7 @@
    "natoms": "0.0",
    "h": -6694689.0,
    "s": 398.74,
-   "v": 16.4025,
+   "v": 15.8228,
    "cp_type": "CP_BERMAN",
    "cp_coeffs": [
     758.81,
@@ -4866,7 +4868,9 @@
     0.0,
     0.0,
     0.0
-   ]
+   ],
+   "v_source_original_MAGMA_snapshot": 16.4025,
+   "v_override_note": "v overridden from the connected MAGMA source's own 16.4025 J/bar (164.025 cc/mol) to 15.8228 J/bar (158.228 cc/mol), back-calculated from real alphaMELTS raw-output density data (rho=3.1746 g/cc, n=6413 rows, zero variance) -- see extract_sol_params.py's own 'Manual override: apatite's reference volume' comment and project doc \u00a718.4/\u00a719 for the full derivation. The connected source's original value is preserved, not deleted, in v_source_original_MAGMA_snapshot below."
   },
   {
    "label": "water",
@@ -7173,7 +7177,7 @@
    "natoms": "0.0",
    "h": -6694689.0,
    "s": 398.74,
-   "v": 16.4025,
+   "v": 15.8228,
    "cp_type": "CP_BERMAN",
    "cp_coeffs": [
     758.81,
@@ -7191,7 +7195,9 @@
     0.0,
     0.0,
     0.0
-   ]
+   ],
+   "v_source_original_MAGMA_snapshot": 16.4025,
+   "v_override_note": "v overridden from the connected MAGMA source's own 16.4025 J/bar (164.025 cc/mol) to 15.8228 J/bar (158.228 cc/mol), back-calculated from real alphaMELTS raw-output density data (rho=3.1746 g/cc, n=6413 rows, zero variance) -- see extract_sol_params.py's own 'Manual override: apatite's reference volume' comment and project doc \u00a718.4/\u00a719 for the full derivation. The connected source's original value is preserved, not deleted, in v_source_original_MAGMA_snapshot below."
   },
   {
    "label": "h2oduan",
@@ -9691,7 +9697,7 @@
    "natoms": "0.0",
    "h": -6694689.0,
    "s": 398.74,
-   "v": 16.4025,
+   "v": 15.8228,
    "cp_type": "CP_BERMAN",
    "cp_coeffs": [
     758.81,
@@ -9709,7 +9715,9 @@
     0.0,
     0.0,
     0.0
-   ]
+   ],
+   "v_source_original_MAGMA_snapshot": 16.4025,
+   "v_override_note": "v overridden from the connected MAGMA source's own 16.4025 J/bar (164.025 cc/mol) to 15.8228 J/bar (158.228 cc/mol), back-calculated from real alphaMELTS raw-output density data (rho=3.1746 g/cc, n=6413 rows, zero variance) -- see extract_sol_params.py's own 'Manual override: apatite's reference volume' comment and project doc \u00a718.4/\u00a719 for the full derivation. The connected source's original value is preserved, not deleted, in v_source_original_MAGMA_snapshot below."
   },
   {
    "label": "water",

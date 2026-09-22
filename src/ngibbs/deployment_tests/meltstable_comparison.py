@@ -125,16 +125,38 @@ def find_tables(table_dir, tables: List[str] = None) -> List[Path]:
 
 
 def _load_composition(sim_dir: Path) -> Dict[str, float]:
-    """Bulk element mole FRACTION (sum == 1) for this standard rock, read
-    straight off its ``control`` file and renormalized -- see module
-    docstring for why the raw control-file values (HeFESTo's own fixed
-    total-moles basis) can't be fed to the emulator or plotted against its
-    training data unrenormalized."""
+    """Bulk CATION mole fraction (sum == 1 over cations only -- 'O' is
+    dropped, not one of the returned keys) for this standard rock, read
+    straight off its ``control`` file and renormalized to match the
+    emulator's own 'elements' composition-space convention
+    (``self.Elkeys``: Si/Mg/Fe/Ca/Al/Na/Cr/Fe3, no 'O' -- see
+    ``emulator.py``'s ``reorder_input_table(composition_space='elements')``).
+
+    The control file's own bulk total INCLUDES oxygen (HeFESTo's fixed
+    total-moles basis, e.g. ~24 moles for a typical mantle composition of
+    which O is roughly 14, i.e. ~58%) -- normalizing over that total instead
+    of over cations alone used to understate every cation's fraction by
+    roughly a factor of 2, feeding the emulator (via
+    ``run_meltstable_property_comparison``'s own forward passes) and
+    overlaying the training-coverage Harker plots
+    (``training_coverage.hefesto_standard_points``) with compositions that
+    summed to well under 1 -- badly off the sum-to-1 basis the model
+    actually trains and predicts on, and off the bundle's own training-data
+    axes on the Harker plots specifically. 'Fe3' (ferric fraction) is not
+    present in the control file at all (no ferrous/ferric split there) and
+    is intentionally NOT added here at 0.0 -- ``reorder_input_table(strict=
+    False)`` already fills a missing 'Fe3' feature column with 0.0 when
+    this composition is fed to the emulator (the existing production
+    approximation for these standards, unchanged), and
+    ``hefesto_standard_points`` adds it explicitly for the same reason when
+    building its own comp dict for the Harker overlay.
+    """
     element_moles, _ = _parse_control_file(str(Path(sim_dir) / 'control'))
-    total = sum(element_moles.get(k, 0.0) for k in ELEMENT_KEYS)
+    cation_keys = [k for k in ELEMENT_KEYS if k != 'O']
+    total = sum(element_moles.get(k, 0.0) for k in cation_keys)
     if total <= 0:
-        raise ValueError(f'Non-positive total element moles in {sim_dir}/control')
-    return {k: element_moles.get(k, 0.0) / total for k in ELEMENT_KEYS}
+        raise ValueError(f'Non-positive total cation moles in {sim_dir}/control')
+    return {k: element_moles.get(k, 0.0) / total for k in cation_keys}
 
 
 def _load_component_moles(sim_dir: Path, indexer) -> np.ndarray:

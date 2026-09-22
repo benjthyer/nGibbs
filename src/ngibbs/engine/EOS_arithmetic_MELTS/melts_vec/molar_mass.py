@@ -34,11 +34,14 @@ import numpy as np
 # Standard atomic weights (g/mol), IUPAC, for every element that appears in
 # sol_struct_data.json's formula strings.
 ATOMIC_WEIGHTS: Dict[str, float] = {
-    'H': 1.00794, 'C': 12.0107, 'O': 15.9994, 'Na': 22.98977, 'Mg': 24.305,
-    'Al': 26.98154, 'Si': 28.0855, 'P': 30.973762, 'K': 39.0983,
-    'Ca': 40.078, 'Ti': 47.867, 'Cr': 51.9961, 'Mn': 54.938, 'Fe': 55.845,
-    'Co': 58.9332, 'Ni': 58.6934,
+    'H': 1.00794, 'C': 12.0107, 'O': 15.9994, 'F': 18.998403, 'Na': 22.98977,
+    'Mg': 24.305, 'Al': 26.98154, 'Si': 28.0855, 'P': 30.973762, 'S': 32.065,
+    'Cl': 35.453, 'K': 39.0983, 'Ca': 40.078, 'Ti': 47.867, 'Cr': 51.9961,
+    'Mn': 54.938, 'Fe': 55.845, 'Co': 58.9332, 'Ni': 58.6934,
 }
+# 'S', 'Cl', 'F' were added for melts_vec's 19 meltsLiquid components (SO3
+# needs S; the two halogen components below need Cl/F) -- absent before
+# because no *solid*-endmember formula in sol_struct_data.json uses them.
 
 _TOKEN_RE = re.compile(r"([A-Z][a-z]?)(\d*\.?\d*)|(\()|(\))(\d*\.?\d*)")
 
@@ -87,9 +90,31 @@ def _parse_formula(formula: str) -> Dict[str, float]:
     return result
 
 
+# Labels that aren't valid chemical formulas as literally written -- a
+# component NAME, not real chemistry. Currently only melts_vec's two liquid
+# halogen components: their trailing "-1" is a MELTS naming convention (a
+# formal negative-oxygen "charge balance" marker), not a real oxygen atom --
+# confirmed against MAGMA's own liq_struct_data.h and against
+# liquid_speciation.py's identical, independently-derived treatment of these
+# two labels (each component's whole role is "carry N mol of one halogen").
+# This is the single source of truth for that exception: liquid_speciation.py
+# imports it from here rather than keeping its own copy.
+FORMULA_OVERRIDES: Dict[str, Dict[str, float]] = {
+    'Cl2O-1': {'Cl': 2.0},
+    'F2O-1': {'F': 2.0},
+}
+
+
+def _counts_for_label(label: str) -> Dict[str, float]:
+    if label in FORMULA_OVERRIDES:
+        return dict(FORMULA_OVERRIDES[label])
+    return _parse_formula(label)
+
+
 def molar_mass_from_formula(formula: str) -> float:
-    """g/mol for one chemical formula string (e.g. "Mg2SiO4" -> 140.6931)."""
-    counts = _parse_formula(formula)
+    """g/mol for one chemical formula string (e.g. "Mg2SiO4" -> 140.6931),
+    or one of the two FORMULA_OVERRIDES labels (e.g. "Cl2O-1" -> 70.906)."""
+    counts = _counts_for_label(formula)
     unknown = set(counts) - set(ATOMIC_WEIGHTS)
     if unknown:
         raise KeyError(
@@ -112,3 +137,27 @@ def molar_masses(solid_params, names=None) -> np.ndarray:
     idx = solid_params.index(names)
     return np.array([molar_mass_from_formula(solid_params.formulas[i]) for i in idx],
                      dtype=np.float64)
+
+
+def liquid_molar_masses(liquid_params, names=None) -> np.ndarray:
+    """g/mol for each meltsLiquid component in `names` (default: all of
+    `liquid_params.labels`).
+
+    Unlike the solid endmembers (which need a separate `formulas` field --
+    see `molar_masses` above), every meltsLiquid component's own LABEL
+    already IS its chemical formula (e.g. "Mg2SiO4", "KAlSiO4",
+    "Ca3(PO4)2") -- confirmed against liq_struct_data.json's own `label`
+    field for the standard meltsLiquid table -- except the two halogen
+    components resolved via FORMULA_OVERRIDES above. So this parses labels
+    directly, with no extra field to thread through.
+
+    Parameters
+    ----------
+    liquid_params : MELTSLiquidParams (from liquid_params.load_liquid()).
+    names : optional list of component labels; defaults to liquid_params.labels.
+    """
+    if names is None:
+        names = liquid_params.labels
+    idx = liquid_params.index(names)
+    labels = [liquid_params.labels[i] for i in idx]
+    return np.array([molar_mass_from_formula(lbl) for lbl in labels], dtype=np.float64)

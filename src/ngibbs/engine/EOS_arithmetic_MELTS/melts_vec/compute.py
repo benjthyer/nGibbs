@@ -17,21 +17,55 @@ models read out of MAGMA's `gibbs.c`. It does *not* yet cover:
   branch for a handful of named phases (e.g. albite Al-Si ordering) --
   gibbs.c lines ~2540 onward; not translated here.
 
-So: this is the generic-case solid EOS, verified against the same formulas
-gibbs.c uses for every endmember that doesn't hit one of those special
-named branches -- which, per `MELTS_Parameters/README.md`'s survey, is the
-large majority of the `meltsSolids` table.
+One exception to the "generic branch only" scope above: quartz and
+tridymite are NOT ordinary Berman-EOS endmembers in real MELTS -- they
+have dedicated, hardcoded alpha<->beta polymorphic phase-transition
+branches in gibbs.c (quartz: lines 1702-1919; tridymite: lines 1920-1993)
+that swap to different reference H/S/V/EOS constants above a transition
+temperature, plus (quartz only) a pressure-dependent transition
+temperature and a Landau-type volumetric correction below it. Applying the
+generic Berman EOS uniformly to these two, as every other named phase
+correctly does, was the root cause of a previously-flagged quartz/
+tridymite volume+Cp mismatch against raw MELTS output. `compute()` below
+runs the generic dispatch for every endmember as before, then overrides
+just the quartz/tridymite columns with `quartz_tridymite.compute_quartz`/
+`compute_tridymite`, which are validated to match a standalone C harness
+built from the verbatim gibbs.c source to full printed precision (see that
+module's docstring).
+
+A second special case, of a different shape: sanidine carries an
+additional Al-Si order-disorder correction (gibbs.c lines 2780-2823,
+`feldspar_disorder.sanidine_disorder_correction`) layered ON TOP of its
+own ordinary generic Berman-EOS result (unlike quartz/tridymite, which
+*replace* the generic result for their branch). This is the root cause of
+a previously-flagged k-feldspar entropy/Cp mismatch in the feldspar
+solid-solution mixing benchmark -- see that module's docstring for the
+quantitative match. Albite's own order-disorder branch (gibbs.c lines
+2543-2561, an iterative Newton-Raphson order-parameter solve in a
+separate `albite()` function) is a structurally bigger lift and is NOT
+translated here -- left as a follow-up, lower priority since the earlier
+benchmark's plagioclase (albite/anorthite-dominated) mismatch was already
+much smaller than k-feldspar's.
+
+So: this is the generic-case solid EOS plus the two bespoke special cases
+that were validated and wired in, verified against the same formulas
+gibbs.c uses for every endmember -- covering, per `MELTS_Parameters/
+README.md`'s survey, the large majority of the `meltsSolids` table plus
+quartz/tridymite/sanidine; other named special-case branches (e.g. albite
+ordering) remain out of scope.
 """
 from __future__ import annotations
 import numpy as np
 
 from .constants import CP_BERMAN, CP_SAXENA, EOS_BERMAN, EOS_VINET, Pr, Tr
+from .feldspar_disorder import sanidine_disorder_correction
 from .params import MELTSSolidParams
+from .quartz_tridymite import compute_quartz, compute_tridymite
 from .solid_eos import eos_berman, eos_vinet
 from .thermal import berman_ref_state, saxena_ref_state
 
 
-def compute(T, P, params: MELTSSolidParams, names=None) -> dict:
+def compute(T, P, params: MELTSSolidParams, names=None, is_pmelts: bool = False) -> dict:
     """Compute standard-state solid thermodynamics for a batch of (T, P)
     against some or all endmembers in `params`.
 
@@ -41,6 +75,9 @@ def compute(T, P, params: MELTSSolidParams, names=None) -> dict:
     params : MELTSSolidParams (N endmembers).
     names : optional list of endmember labels to restrict to (else all N
         in `params`, in table order).
+    is_pmelts : passed through to quartz's QUARTZ_ADJUSTMENT term (gibbs.c
+        line 194) -- False (the default) matches standard/rhyolite-MELTS,
+        as does the rest of this package's calibration.
 
     Returns
     -------
@@ -109,6 +146,64 @@ def compute(T, P, params: MELTSSolidParams, names=None) -> dict:
         Cp = Cp0 + out["cp_add"]
         dCpdT = dCpdT0 + out["dcpdt_add"]
         V = out["V"]
+        dVdT, dVdP = out["dVdT"], out["dVdP"]
+        d2VdT2, d2VdTdP, d2VdP2 = out["d2VdT2"], out["d2VdTdP"], out["d2VdP2"]
+
+        # -- 3. quartz/tridymite alpha<->beta special case (overrides the
+        #    generic Berman-EOS result above for just those two columns;
+        #    see this module's and quartz_tridymite.py's docstrings). -----
+        labels_arr = np.asarray(params.labels)
+        is_quartz = (labels_arr == "quartz")[None, :]
+        is_tridymite = (labels_arr == "tridymite")[None, :]
+        if is_quartz.any():
+            qz = compute_quartz(
+                T, P, h, s, v0,
+                eoc[None, :, 0], eoc[None, :, 1], eoc[None, :, 2], eoc[None, :, 3],
+                cpc[None, :, 0], cpc[None, :, 1], cpc[None, :, 2], cpc[None, :, 3],
+                cpc[None, :, 4], cpc[None, :, 6], cpc[None, :, 7],
+                is_pmelts=is_pmelts,
+            )
+            G, H, S = np.where(is_quartz, qz["G"], G), np.where(is_quartz, qz["H"], H), np.where(is_quartz, qz["S"], S)
+            Cp, dCpdT = np.where(is_quartz, qz["Cp"], Cp), np.where(is_quartz, qz["dCpdT"], dCpdT)
+            V = np.where(is_quartz, qz["V"], V)
+            dVdT, dVdP = np.where(is_quartz, qz["dVdT"], dVdT), np.where(is_quartz, qz["dVdP"], dVdP)
+            d2VdT2 = np.where(is_quartz, qz["d2VdT2"], d2VdT2)
+            d2VdTdP = np.where(is_quartz, qz["d2VdTdP"], d2VdTdP)
+            d2VdP2 = np.where(is_quartz, qz["d2VdP2"], d2VdP2)
+        if is_tridymite.any():
+            tdy = compute_tridymite(
+                T, P, h, s, v0,
+                eoc[None, :, 0], eoc[None, :, 1], eoc[None, :, 2], eoc[None, :, 3],
+                cpc[None, :, 0], cpc[None, :, 1], cpc[None, :, 2], cpc[None, :, 3],
+                cpc[None, :, 4], cpc[None, :, 6], cpc[None, :, 7],
+            )
+            G, H, S = np.where(is_tridymite, tdy["G"], G), np.where(is_tridymite, tdy["H"], H), np.where(is_tridymite, tdy["S"], S)
+            Cp, dCpdT = np.where(is_tridymite, tdy["Cp"], Cp), np.where(is_tridymite, tdy["dCpdT"], dCpdT)
+            V = np.where(is_tridymite, tdy["V"], V)
+            dVdT, dVdP = np.where(is_tridymite, tdy["dVdT"], dVdT), np.where(is_tridymite, tdy["dVdP"], dVdP)
+            d2VdT2 = np.where(is_tridymite, tdy["d2VdT2"], d2VdT2)
+            d2VdTdP = np.where(is_tridymite, tdy["d2VdTdP"], d2VdTdP)
+            d2VdP2 = np.where(is_tridymite, tdy["d2VdP2"], d2VdP2)
+
+        # -- 4. sanidine Al-Si order-disorder correction (additive on top
+        #    of its own generic Berman-EOS result -- see this module's and
+        #    feldspar_disorder.py's docstrings). ---------------------------
+        is_sanidine = (labels_arr == "sanidine")[None, :]
+        if is_sanidine.any():
+            dis = sanidine_disorder_correction(T, P)
+            G = G + np.where(is_sanidine, dis["dG"], 0.0)
+            H = H + np.where(is_sanidine, dis["dH"], 0.0)
+            S = S + np.where(is_sanidine, dis["dS"], 0.0)
+            Cp = Cp + np.where(is_sanidine, dis["dCp"], 0.0)
+            dCpdT = dCpdT + np.where(is_sanidine, dis["ddCpdT"], 0.0)
+            V = V + np.where(is_sanidine, dis["dV"], 0.0)
+            dVdT = dVdT + np.where(is_sanidine, dis["ddVdT"], 0.0)
+            d2VdT2 = d2VdT2 + np.where(is_sanidine, dis["dd2VdT2"], 0.0)
+            # dVdP, d2VdTdP, d2VdP2 untouched -- gibbs.c's sanidine branch
+            # never adjusts them.
+
+        out["dVdT"], out["dVdP"] = dVdT, dVdP
+        out["d2VdT2"], out["d2VdTdP"], out["d2VdP2"] = d2VdT2, d2VdTdP, d2VdP2
 
         # Isothermal bulk modulus K_T = -V (dP/dV)_T = V / (-dV/dP); and
         # volumetric thermal expansion alpha = (1/V)(dV/dT)_P. Bars for K

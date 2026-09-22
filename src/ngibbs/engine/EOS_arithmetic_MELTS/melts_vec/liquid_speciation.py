@@ -68,9 +68,9 @@ from typing import Dict, Optional
 import numpy as np
 
 try:
-    from .molar_mass import _parse_formula
+    from .molar_mass import _parse_formula, FORMULA_OVERRIDES as _FORMULA_OVERRIDES
 except ImportError:  # pragma: no cover - allows standalone testing/import
-    from molar_mass import _parse_formula
+    from molar_mass import _parse_formula, FORMULA_OVERRIDES as _FORMULA_OVERRIDES
 
 
 # meltsLiquid component labels, melts_vec's own canonical order
@@ -87,10 +87,9 @@ LIQUID_COMPONENT_LABELS = [
 # appear anywhere else in this project's formula strings. These
 # components' whole role is "carry N mol of a halogen"; they don't draw
 # on any pool oxide, so their O count is irrelevant here and omitted.
-_FORMULA_OVERRIDES = {
-    'Cl2O-1': {'Cl': 2.0},
-    'F2O-1': {'F': 2.0},
-}
+# (Now the single shared definition in molar_mass.FORMULA_OVERRIDES --
+# imported above as _FORMULA_OVERRIDES -- so this module and
+# molar_mass.liquid_molar_masses() can't silently drift apart.)
 
 
 def _formula_counts(label: str) -> Dict[str, float]:

@@ -32,6 +32,63 @@ SRC = Path(sys.argv[1] if len(sys.argv) > 1 else
 TABLES = sys.argv[2].split(",") if len(sys.argv) > 2 else \
     ["xMeltsSolids", "meltsSolids", "meltsFluidSolids", "pMeltsSolids"]
 
+# --- Manual override: apatite's reference volume -----------------------
+#
+# The connected MAGMA source snapshot's sol_struct_data.h reports
+# v = 16.4025 J/bar (164.025 cc/mol, constant -- apatite's eos_coeffs are
+# all 0, i.e. EOS_BERMAN with zero thermal expansion/compressibility, so V
+# is T,P-independent) for apatite. This does NOT match the molar volume
+# implied by real alphaMELTS-generated standards/raw-output data: every
+# apatite-saturated row across 6413 real MELTS1.0.2 + MELTS1.2.0 raw-output
+# rows (data/MELTS102_RawOutputs, data/MELTS120_RawOutputs) reports the
+# IDENTICAL density rho = 3.1746 g/cc (zero standard deviation -- confirms
+# apatite's real volume genuinely is T,P-independent, i.e. the FUNCTIONAL
+# FORM here is right, only the reference value is off), back-calculated
+# via nGibbs's own molar_mass.py formula parser as:
+#
+#   MW(Ca5(PO4)3OH) = 502.311426 g/mol
+#   V = MW / rho = 502.311426 / 3.1746 = 158.2283 cc/mol = 15.8228 J/bar
+#
+# a ~3.7% mismatch against the source's 16.4025 J/bar -- quantitatively
+# explains the ~3.5-3.8% apatite rho/V error found in the raw-output
+# benchmark (project doc §13.3/§18.4). Given this size and consistency
+# (6413/6413 rows, every one identical to 4 decimal places) it is much
+# more likely that the CONNECTED MAGMA source snapshot's apatite
+# calibration is simply stale relative to whichever alphaMELTS build
+# produced the real standards/raw-output data, than that it is a
+# genuinely different apatite calibration -- per your own account, you
+# used the most recent alphaMELTS build to generate the standards.
+#
+# The back-calculated value is used below (`v0` in the resulting JSON
+# record); the ORIGINAL, connected-source-derived value is preserved --
+# not deleted -- in a sibling `v_source_original_MAGMA_snapshot` field
+# (`load_solids()` only reads the known keys, so this extra field is
+# inert at runtime) for whenever a newer MAGMA/alphaMELTS source snapshot
+# needs to be cross-checked against it, or in case this override turns
+# out to need revisiting.
+_APATITE_V0_BACK_CALCULATED_JBAR = 15.8228  # J/bar; see comment above
+_APATITE_V0_OVERRIDE_NOTE = (
+    "v overridden from the connected MAGMA source's own 16.4025 J/bar "
+    "(164.025 cc/mol) to 15.8228 J/bar (158.228 cc/mol), back-calculated "
+    "from real alphaMELTS raw-output density data (rho=3.1746 g/cc, "
+    "n=6413 rows, zero variance) -- see extract_sol_params.py's own "
+    "'Manual override: apatite's reference volume' comment and project "
+    "doc §18.4/§19 for the full derivation. The connected "
+    "source's original value is preserved, not deleted, in "
+    "v_source_original_MAGMA_snapshot below."
+)
+
+
+def apply_apatite_v0_override(entries: list) -> None:
+    """Mutates `entries` in place: for every record labeled 'apatite',
+    stash its as-extracted v under v_source_original_MAGMA_snapshot and
+    replace v with the back-calculated value (see module-level comment)."""
+    for e in entries:
+        if e.get("label") == "apatite":
+            e["v_source_original_MAGMA_snapshot"] = e["v"]
+            e["v_override_note"] = _APATITE_V0_OVERRIDE_NOTE
+            e["v"] = _APATITE_V0_BACK_CALCULATED_JBAR
+
 
 def strip_comments(text: str) -> str:
     """Remove /* ... */ and // ... comments (outside of quoted strings)."""
@@ -316,6 +373,7 @@ def main():
     result = {}
     for table in TABLES:
         entries = extract_table(clean, table)
+        apply_apatite_v0_override(entries)
         result[table] = entries
         print(f"{table}: {len(entries)} endmember records "
               f"(eos types: "

@@ -945,6 +945,69 @@ def reconcile_component_name(indexer, phase, component_name, abbr=None):
     return None
 
 
+def _resolve_fort99_component_index(indexer, comp_abbr_str: str) -> Optional[int]:
+    """Resolve one fort.99 column abbreviation to a position in `indexer.label_names`.
+
+    fort.99 is a flat species list with no phase blocks, so historically this was a
+    single global `label_names.index(name)` lookup. That breaks for any abbreviation
+    whose resolved name is composite (e.g. 'smag' -> 'magnetite : spinel') -- the
+    composite string is never itself a `label_names` entry (those are bare per-phase
+    names), so the lookup always misses. It is also unsound even for a bare name that
+    happens to occur in more than one phase, since `list.index()` can only ever return
+    the first matching position.
+
+    The composite name carries its own phase (`split_component_key` recovers it), so the
+    search can be scoped to that phase's columns (`indexer.label_indices[phase]`) instead
+    of the full flat list -- the same trick `reconcile_component_name` uses, but working
+    directly off `label_names`/`label_indices` rather than `MELTS_indices`, since the
+    `ml_indexer` this function actually receives (a plain `MLIndexer`, per its own
+    contract) does not carry `MELTS_indices` -- that lives on the heavier `DatasetIndexer`
+    wrapper `reconcile_component_name` was written against. Bare names are unambiguous by
+    construction and keep the simple flat lookup. Returns None if nothing matches.
+    """
+    from ngibbs.config.constants import split_component_key
+
+    comp_name = _resolve_component_name_from_abbr(comp_abbr_str)
+    species, key_phase = split_component_key(comp_name) if comp_name else (None, None)
+
+    label_names = indexer.label_names
+
+    if key_phase is None:
+        try:
+            return list(label_names).index(comp_name)
+        except ValueError:
+            return None
+
+    for idx in getattr(indexer, 'label_indices', {}).get(key_phase, []):
+        if label_names[idx] == species:
+            return idx
+    return None
+
+
+#: (abbr, resolved_name) -> (n_calls, peak_abs_value) for fort.99 columns that carried
+#: real (nonzero) data but resolved to no column via `_resolve_fort99_component_index`.
+#: Populated by `load_fort99_componentMoles` / `load_fort99_component_moles_and_labels`
+#: instead of only printing, so a caller (e.g. the deployment quality gate) can turn
+#: silently-dropped mass into a hard failure rather than a console warning someone has
+#: to notice -- see docs/FINDING_spinel_magnetite.md for what a missed one costs.
+UNMAPPED_FORT99_COMPONENTS: Dict[Tuple[str, str], Tuple[int, float]] = {}
+
+
+def reset_unmapped_fort99_components() -> None:
+    UNMAPPED_FORT99_COMPONENTS.clear()
+
+
+def get_unmapped_fort99_components() -> Dict[Tuple[str, str], Tuple[int, float]]:
+    return dict(UNMAPPED_FORT99_COMPONENTS)
+
+
+def _record_unmapped_fort99_component(comp_abbr_str: str, comp_name: str, values: np.ndarray) -> None:
+    peak = float(np.max(np.abs(values))) if values.size else 0.0
+    key = (comp_abbr_str, comp_name)
+    n_calls, prev_peak = UNMAPPED_FORT99_COMPONENTS.get(key, (0, 0.0))
+    UNMAPPED_FORT99_COMPONENTS[key] = (n_calls + 1, max(prev_peak, peak))
+
+
 def _build_reverse_component_phase_map() -> Dict[str, List[str]]:
     reverse_map: Dict[str, List[str]] = {}
     for phase_name, comp_list in COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO.items():
@@ -1081,13 +1144,14 @@ def load_fort99_component_moles_and_labels(sim_dir: str, indexer) -> Tuple[np.nd
     component_cols = list(comp_df.columns)[3:-2]
     for comp_abbr in component_cols:
         comp_abbr_str = str(comp_abbr).strip()
-        comp_name = _resolve_component_name_from_abbr(comp_abbr_str)
-        try:
-            comp_idx = list(indexer.label_names).index(comp_name)
-        except ValueError:
+        values = pd.to_numeric(comp_df[comp_abbr], errors='coerce').fillna(0.0).to_numpy(dtype=float)
+        comp_idx = _resolve_fort99_component_index(indexer, comp_abbr_str)
+        if comp_idx is None:
+            comp_name = _resolve_component_name_from_abbr(comp_abbr_str)
+            if values.any():
+                _record_unmapped_fort99_component(comp_abbr_str, comp_name, values)
             print(f"[WARNING] Component {comp_name} not found in indexer!")
             continue
-        values = pd.to_numeric(comp_df[comp_abbr], errors='coerce').fillna(0.0).to_numpy(dtype=float)
         component_moles[:, comp_idx] = values
 
     p_to_c = np.asarray(getattr(indexer, 'phaseToCompMap', None), dtype=float)
@@ -1142,12 +1206,12 @@ def load_fort99_componentMoles(sim_dir: str, indexer) -> np.ndarray:
     component_cols = list(comp_df.columns)[3:-2]
     for comp_abbr in component_cols:
         comp_abbr_str = str(comp_abbr).strip()
-        comp_name = _resolve_component_name_from_abbr(comp_abbr_str)
         values = pd.to_numeric(comp_df[comp_abbr], errors='coerce').fillna(0.0).to_numpy(dtype=float)
-        try:
-            comp_idx = list(indexer.label_names).index(comp_name)
-        except ValueError:
+        comp_idx = _resolve_fort99_component_index(indexer, comp_abbr_str)
+        if comp_idx is None:
             if values.any():
+                comp_name = _resolve_component_name_from_abbr(comp_abbr_str)
+                _record_unmapped_fort99_component(comp_abbr_str, comp_name, values)
                 print(f"[WARNING] Component {comp_name} is present in fort.99 but not found in indexer!")
             continue
         component_moles[:, comp_idx] = values
