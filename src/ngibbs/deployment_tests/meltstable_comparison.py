@@ -217,6 +217,22 @@ def _read_conditions(sim_dir: Path):
     return df, P, T, S
 
 
+def _restrict_to_training_pressure_range(api, df, P, T, S):
+    lower, upper = api.training_pressure_bounds('both')
+    keep = np.isfinite(P) & (P >= lower) & (P <= upper)
+    if not np.any(keep):
+        raise ValueError(
+            f'{len(P)} rows in the MELTStable table fall outside the model '
+            f'pressure range [{lower:g}, {upper:g}] GPa'
+        )
+    if not np.all(keep):
+        print(
+            f'[MELTStable] restricting pressure range to [{lower:g}, {upper:g}] '
+            f'GPa: keeping {int(keep.sum())}/{len(keep)} rows'
+        )
+    return df.loc[keep].reset_index(drop=True), P[keep], T[keep], S[keep]
+
+
 def _feature_block(P, second, composition):
     comp_headers = list(composition.keys())
     comp_block = np.tile(
@@ -297,10 +313,11 @@ def run_meltstable_property_comparison(
 
     results = []
     stat_rows = []
-    for sim_dir in chosen:
-        df, P, T, S = _read_conditions(sim_dir)
-        composition = _load_composition(sim_dir)
-        name = sim_dir.name
+    for csv_path in chosen:
+        df, P, T, S = _read_conditions(csv_path)
+        df, P, T, S = _restrict_to_training_pressure_range(api, df, P, T, S)
+        composition = _load_composition(df)
+        name = csv_path.stem
 
         gt_cm = _load_component_moles(sim_dir, indexer)
         gt_wpf = compute_within_phase_frac(gt_cm, list(indexer.label_indices.values()))
@@ -466,6 +483,7 @@ def run_meltstable_phase_comparison(
     stat_rows = []
     for sim_dir in chosen:
         df, P, T, S = _read_conditions(sim_dir)
+        df, P, T, S = _restrict_to_training_pressure_range(api, df, P, T, S)
         composition = _load_composition(sim_dir)
         name = sim_dir.name
         phase_totals = _load_fort99_phase_totals(sim_dir)

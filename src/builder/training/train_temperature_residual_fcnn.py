@@ -75,8 +75,11 @@ DEFAULT_EMULATOR_BATCH_SIZE = 2 ** 16
 MAX_HISTOGRAM_SAMPLE = 5_000_000
 
 TEMPERATURE_LABEL_DEFAULT = "T(K)(System_main)"
+TEMPERATURE_LABEL_ALIASES = (TEMPERATURE_LABEL_DEFAULT, "Temperature(System_main)")
 P_FEATURE_NAME = "P(GPa)(System_main)"
 S_FEATURE_NAME = "S(J/g/K)(System_main)"
+P_FEATURE_ALIASES = (P_FEATURE_NAME, "Pressure(System_main)")
+S_FEATURE_ALIASES = (S_FEATURE_NAME, "S(System_main) / mass(System_main)")
 
 
 def set_seed(seed: int) -> None:
@@ -100,6 +103,41 @@ def _parse_hidden_dims(raw_values: Sequence[str]) -> List[int]:
     if not hidden_dims:
         raise ValueError("hidden-dims must provide at least one positive integer")
     return hidden_dims
+
+
+def _resolve_temperature_label(
+    requested_label: Optional[str], available_output_names: Sequence[str]
+) -> str:
+    """Resolve the HeFESTo or MELTS temperature output name."""
+    if requested_label is not None:
+        if requested_label not in available_output_names:
+            raise ValueError(
+                f"Temperature label '{requested_label}' not found in free_outputs. "
+                f"Available: {list(available_output_names)}"
+            )
+        return requested_label
+
+    for label in TEMPERATURE_LABEL_ALIASES:
+        if label in available_output_names:
+            return label
+    raise ValueError(
+        "Could not find a supported temperature label in free_outputs. "
+        f"Expected one of {list(TEMPERATURE_LABEL_ALIASES)}; "
+        f"available: {list(available_output_names)}"
+    )
+
+
+def _resolve_feature_index(
+    feature_aliases: Sequence[str], feature_names: Sequence[str], description: str
+) -> int:
+    """Resolve a canonical HeFESTo or MELTS feature name."""
+    for name in feature_aliases:
+        if name in feature_names:
+            return feature_names.index(name)
+    raise ValueError(
+        f"Could not find a supported {description} feature in featureNames. "
+        f"Expected one of {list(feature_aliases)}; available: {list(feature_names)}"
+    )
 
 
 def _build_bundle_paths(bundle_stem: Path) -> Dict[str, Path]:
@@ -151,7 +189,10 @@ def _peek_bundle_metadata(bundle_path: Path) -> "object":
     extract_dir = Path(tempfile.mkdtemp(dir=tmp_base))
     try:
         with tarfile.open(bundle_path, "r:gz") as tar:
-            members = [m for m in tar.getmembers() if m.name.startswith("ml_indexer/")]
+            members = [
+                m for m in tar.getmembers()
+                if m.name.lstrip("./").startswith("ml_indexer/")
+            ]
             tar.extractall(path=extract_dir, members=members)
         from ngibbs.config.ml_indexer import load_ml_indexer_from_state
         return load_ml_indexer_from_state(str(extract_dir / "ml_indexer"))
@@ -474,8 +515,12 @@ def main() -> None:
     parser.add_argument("--emulator-model", required=True, type=Path)
     parser.add_argument(
         "--temperature-label",
-        default=TEMPERATURE_LABEL_DEFAULT,
-        help=f"Name of temperature output in bundle free_outputs (default: {TEMPERATURE_LABEL_DEFAULT})",
+        default=None,
+        help=(
+            "Name of temperature output in bundle free_outputs. "
+            f"If omitted, auto-detects {TEMPERATURE_LABEL_DEFAULT} or "
+            "Temperature(System_main)."
+        ),
     )
     parser.add_argument("--hidden-dims", nargs="+", default=["256", "128", "64"])
     parser.add_argument("--epochs", type=int, default=150)
@@ -619,21 +664,17 @@ def main() -> None:
     available_output_names = list(getattr(ml_indexer, "free_outputs", []) or [])
     if not available_output_names:
         raise ValueError("ml_indexer.free_outputs is missing or empty in train bundle")
-    if args.temperature_label not in available_output_names:
-        raise ValueError(
-            f"Temperature label '{args.temperature_label}' not found in free_outputs. "
-            f"Available: {available_output_names}"
-        )
+    args.temperature_label = _resolve_temperature_label(
+        args.temperature_label, available_output_names
+    )
+    print(f"Using temperature label: {args.temperature_label}")
     temp_output_idx = available_output_names.index(args.temperature_label)
 
     feature_names = list(getattr(ml_indexer, "featureNames", []) or [])
-    for name in (P_FEATURE_NAME, S_FEATURE_NAME):
-        if name not in feature_names:
-            raise ValueError(f"Feature '{name}' not found in featureNames: {feature_names}")
-    p_idx = feature_names.index(P_FEATURE_NAME)
-    s_idx = feature_names.index(S_FEATURE_NAME)
-    print(f"P feature index: {p_idx} ({P_FEATURE_NAME})")
-    print(f"S feature index: {s_idx} ({S_FEATURE_NAME})")
+    p_idx = _resolve_feature_index(P_FEATURE_ALIASES, feature_names, "pressure")
+    s_idx = _resolve_feature_index(S_FEATURE_ALIASES, feature_names, "entropy")
+    print(f"P feature index: {p_idx} ({feature_names[p_idx]})")
+    print(f"S feature index: {s_idx} ({feature_names[s_idx]})")
 
     el_keys = list(getattr(ml_indexer, "Elkeys", []) or [])
     comp_indices: Optional[Dict[str, object]] = None
