@@ -72,7 +72,8 @@ def _eval_adiabat_poly(
     features: Optional[np.ndarray] = None,
     comp_indices: Optional[Dict] = None,
 ) -> np.ndarray:
-    """Evaluate the reference adiabat polynomial (P in GPa, T in K).
+    """Evaluate the reference adiabat polynomial, in the units its coefficients were
+    fit in (the bundle's native units: GPa / K for HeFESTo, bar / Celsius for MELTS).
 
     Base: T = b0 + b_S*S + b_S2*S^2 + b_P*P + b_P2*P^2
     Compositional extension (when features and comp_indices provided): each
@@ -134,6 +135,15 @@ aliases = { #
     'pressure': 'P(GPa)(System_main)',
     'pressure(GPa)': 'P(GPa)(System_main)',
 }
+
+
+# Every name an emulator's entropy input feature goes by: HeFESTo (J/g/K),
+# and MELTS ('S(System_main) / mass(System_main)': total S per system mass).
+_ENTROPY_FEATURES = (
+    'S(J/g/K)(System_main)',
+    'S(System_main)',
+    'S(System_main) / mass(System_main)',
+)
 
 
 def _check_ngibbs_update():
@@ -1677,7 +1687,7 @@ class EmulatorAPI:
         #headers = [_canonicalize_header(header) for header in headers]
 
         has_temperature = 'T(K)(System_main)' in headers or 'Temperature(System_main)' in headers
-        has_entropy = 'S(J/g/K)(System_main)' in headers or 'S(System_main)' in headers
+        has_entropy = any(name in headers for name in _ENTROPY_FEATURES)
         has_logfO2 = 'logfO2-QFM(System_main)' in headers
 
         if has_temperature and has_entropy:
@@ -1703,7 +1713,7 @@ class EmulatorAPI:
                 raise _model_unavailable_error('isothermal', self._iso_path)
             emulator = self.isothermal_emulator
         else:
-            raise ValueError("Input headers must include either temperature or entropy features: T(K)(System_main) / 'Temperature(System_main)' or S(J/g/K)(System_main) / 'S(System_main)'.\n You have: {}".format(headers))
+            raise ValueError("Input headers must include either temperature or entropy features: T(K)(System_main) / 'Temperature(System_main)' or one of {}.\n You have: {}".format(list(_ENTROPY_FEATURES), headers))
 
         if self.parser is None:
             raise RuntimeError(
@@ -1957,7 +1967,8 @@ class EmulatorAPI:
         Returns
         -------
         torch.Tensor
-            Temperatures (B,) in Kelvin
+            Temperatures (B,) in the temperature model's native units (the bundle's
+            own: Kelvin for HeFESTo, Celsius for MELTS)
         """
         features = torch.as_tensor(features, dtype=torch.float32, device=self.device)
 
@@ -1967,18 +1978,17 @@ class EmulatorAPI:
         adiabat_coefs = self.temperature_payload.get("adiabat_coefs")
         comp_indices = self.temperature_payload.get("coef_feature_indices")
         if p_idx is not None and s_idx is not None:
+            # Rebuild T_ref exactly as training did (builder's adiabat_utils.
+            # compute_residuals): P, S and T in the bundle's own native units, no
+            # conversion (MELTS: bar / Celsius; HeFESTo: GPa / K).
             P_raw = features[:, p_idx].detach().cpu().numpy().astype(np.float64)
             S_raw = features[:, s_idx].detach().cpu().numpy().astype(np.float64)
-            if self.modelType == "MELTSAPI":
-                P_raw = P_raw / 10000.0  # bars → GPa
             if adiabat_coefs is not None:
                 features_cpu = features.detach().cpu().numpy().astype(np.float64) if comp_indices else None
-                T_ref_K = _eval_adiabat_poly(P_raw, S_raw, adiabat_coefs, features=features_cpu, comp_indices=comp_indices)
+                T_ref_native = _eval_adiabat_poly(P_raw, S_raw, adiabat_coefs, features=features_cpu, comp_indices=comp_indices)
             else:
-                T_ref_K = np.asarray(_reference_adiabat(P_raw, S_raw), dtype=np.float32)
-            if self.modelType == "MELTSAPI":
-                T_ref_K = T_ref_K - 273.15  # K → Celsius
-            T_ref = torch.tensor(T_ref_K, dtype=torch.float32, device=self.device)
+                T_ref_native = np.asarray(_reference_adiabat(P_raw, S_raw), dtype=np.float32)
+            T_ref = torch.tensor(T_ref_native, dtype=torch.float32, device=self.device)
         else:
             T_ref = None
 
@@ -2025,7 +2035,12 @@ class EmulatorAPI:
 
         if isentropic: # Isentropic models - we have entropy but not temperature as input features.
             T_C = np.full((features.size(0),), fill_value=np.nan)
-            s = features[:, indexer.featureNames.index('S(System_main)')].detach().cpu().numpy()
+            entropy_names = [name for name in indexer.featureNames if name in _ENTROPY_FEATURES]
+            if len(entropy_names) != 1:
+                raise ValueError(
+                    f"Expected exactly one entropy feature among {list(_ENTROPY_FEATURES)} in "
+                    f"the isentropic model's featureNames {list(indexer.featureNames)}")
+            s = features[:, indexer.featureNames.index(entropy_names[0])].detach().cpu().numpy()
         else: # Isothermal and open oxygen models have T as input
             T_C = features[:, indexer.featureNames.index('Temperature(System_main)')].detach().cpu().numpy()
             s = np.full((features.size(0),), fill_value=np.nan)

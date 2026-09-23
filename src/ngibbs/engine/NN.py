@@ -1181,6 +1181,67 @@ def _resolve_model_class(config):
                      f"NN._resolve_model_class or pass model_class= explicitly.")
 
 
+def read_training_bounds(stats_path):
+    """
+    Parse the training-data ranges out of a model bundle's stats.txt.
+
+    stats.txt is written by `generate_dataset_stats` (builder.processing.MLexporter) and
+    ships inside every bundle. Two of its sections are read:
+
+    - CONDITION BOUNDS        : min/max of each ml_indexer.featureNames entry, in the
+                                model's own units (e.g. bar, Celsius, J/g/K)
+    - BULK COMPOSITION BOUNDS : min/max wt% of each ml_indexer.WRkeys oxide, closed to 100
+
+    Section titles are the lines sandwiched between two long separator rules. Inside a
+    bounds section every data row is "<name> <min> <max>", where <name> may itself
+    contain spaces (e.g. 'S(System_main) / mass(System_main)').
+
+    Parameters
+    ----------
+    stats_path : str or Path
+
+    Returns
+    -------
+    dict
+        {'conditions': {name: (min, max)}, 'oxides_wtpct': {oxide: (min, max)}}
+
+    Raises
+    ------
+    ValueError
+        If a bounds section is missing or empty, or a row in it cannot be parsed.
+    """
+    stats_path = Path(stats_path)
+    lines = [line.strip() for line in stats_path.read_text().splitlines()]
+    rules = [len(line) >= 60 and set(line) <= {'-', '='} for line in lines]
+    section_keys = {'BULK COMPOSITION BOUNDS': 'oxides_wtpct', 'CONDITION BOUNDS': 'conditions'}
+    bounds = {'conditions': {}, 'oxides_wtpct': {}}
+    current = None
+    for i, line in enumerate(lines):
+        if line and 0 < i < len(lines) - 1 and rules[i - 1] and rules[i + 1]:
+            # Section title -> None for sections not read here (phase abundances, etc.)
+            current = next((key for title, key in section_keys.items() if line.startswith(title)), None)
+            continue
+        if current is None or not line or set(line) <= {'-', '='}:
+            continue
+        if line.startswith(('Oxide ', 'Condition ')):  # column-label row
+            continue
+        parts = line.rsplit(None, 2)
+        try:
+            name, lo, hi = parts[0], float(parts[1]), float(parts[2])
+        except (IndexError, ValueError) as exc:
+            raise ValueError(f"Could not parse bounds row {line!r} in {stats_path}: {exc}") from exc
+        if name in bounds[current]:
+            raise ValueError(f"Duplicate bounds row for {name!r} in {stats_path}")
+        if lo > hi:
+            raise ValueError(f"Bounds row for {name!r} in {stats_path} has min {lo} > max {hi}")
+        bounds[current][name] = (lo, hi)
+
+    empty = [key for key, found in bounds.items() if not found]
+    if empty:
+        raise ValueError(f"No {empty} bounds found in {stats_path}; is it a complete stats.txt?")
+    return bounds
+
+
 def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = None, load_prefixes=None, model_class=None):
     """
     Load MidLevelNetwork from zip package created by MidLevelNetwork.save().
@@ -1273,6 +1334,13 @@ def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = 
 
         if hasattr(model, 'molar_epsilon'):
             model.molar_epsilon.fill_(float(model.ml_indexer.molar_epsilon))
+
+        # === Training-data ranges (consumed by NN_MELTS's out-of-range input guard) ===
+        # Bundles that predate stats.txt carry None; NN_MELTS warns loudly about that.
+        stats_path = temp_path / 'stats.txt'
+        model.training_bounds = read_training_bounds(stats_path) if stats_path.exists() else None
+        if model.training_bounds is not None:
+            model.training_bounds['source'] = str(zip_path)
 
     return model
 

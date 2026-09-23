@@ -272,17 +272,12 @@ def _validate_checkpoint(
     y_min, y_range = _extract_min_range(payload, "target")
 
     # Reference adiabat (must mirror train_temperature_residual_fcnn._compute_residuals
-    # exactly, including is_melts unit handling, or the reconstructed T_pred will be
+    # exactly (native bundle units, no conversion), or the reconstructed T_pred will be
     # systematically biased by whatever the stored/default adiabat disagrees on).
     adiabat_coefs: Optional[Dict[str, float]] = payload.get("adiabat_coefs")
     comp_indices: Optional[Dict[str, int]] = payload.get("coef_feature_indices")
-    is_melts: bool = bool(payload.get("is_melts", False))
     P = features_raw[:, p_idx].astype(np.float64)
-    if is_melts:
-        P = P / 10000.0  # bars → GPa
-        S = np.full_like(P, 2.5)
-    else:
-        S = features_raw[:, s_idx].astype(np.float64)
+    S = features_raw[:, s_idx].astype(np.float64)
     if adiabat_coefs is not None:
         kind = "compositional" if comp_indices else "S+P only"
         print(f"    Using checkpoint-stored adiabat ({kind}): {list(adiabat_coefs.keys())}")
@@ -293,8 +288,6 @@ def _validate_checkpoint(
         )
     else:
         T_ref = np.asarray(reference_adiabat(P, S), dtype=np.float32)
-    if is_melts:
-        T_ref = T_ref - 273.15  # K → Celsius
     T_residual_true = (T_true - T_ref).astype(np.float32)
 
     # Build model input

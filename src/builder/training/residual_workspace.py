@@ -53,7 +53,7 @@ _FINGERPRINT_FILE = "_fingerprint.json"
 
 
 def _fingerprint_for(bundle_path: Path, emulator_model_path: Path, *, temperature_label_idx: int,
-                      is_melts: bool, adiabat_coefs, adiabat_elem_norm: float,
+                      adiabat_coefs, adiabat_elem_norm: float,
                       s_min, s_max, max_abs_residual) -> Dict:
     bstat = bundle_path.stat()
     estat = Path(emulator_model_path).stat()
@@ -65,7 +65,6 @@ def _fingerprint_for(bundle_path: Path, emulator_model_path: Path, *, temperatur
         "emulator_model_mtime": estat.st_mtime,
         "emulator_model_size": estat.st_size,
         "temperature_label_idx": temperature_label_idx,
-        "is_melts": bool(is_melts),
         "adiabat_coefs": adiabat_coefs,
         "adiabat_elem_norm": adiabat_elem_norm,
         "s_min": s_min,
@@ -128,7 +127,6 @@ def get_or_build_residual_workspace(
     p_idx: int,
     s_idx: int,
     temperature_label_idx: int,
-    is_melts: bool,
     adiabat_coefs: Optional[Dict[str, float]],
     comp_indices: Optional[Dict[str, object]],
     adiabat_elem_norm: float,
@@ -168,7 +166,7 @@ def get_or_build_residual_workspace(
     workspace_dir = Path(workspace_root) / split_label
     fingerprint = _fingerprint_for(
         bundle_path, emulator_model_path,
-        temperature_label_idx=temperature_label_idx, is_melts=is_melts,
+        temperature_label_idx=temperature_label_idx,
         adiabat_coefs=adiabat_coefs, adiabat_elem_norm=adiabat_elem_norm,
         s_min=s_min, s_max=s_max, max_abs_residual=max_abs_residual,
     )
@@ -193,7 +191,7 @@ def get_or_build_residual_workspace(
             bundle_path, workspace_dir,
             n_named_features=n_named_features,
             p_idx=p_idx, s_idx=s_idx, temperature_label_idx=temperature_label_idx,
-            is_melts=is_melts, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices,
+            adiabat_coefs=adiabat_coefs, comp_indices=comp_indices,
             s_min=s_min, s_max=s_max, max_abs_residual=max_abs_residual,
             emulator=emulator, device=device, emulator_batch_size=emulator_batch_size,
             feature_normalizer=feature_normalizer, output_normalizer=output_normalizer,
@@ -267,7 +265,7 @@ def _fit_output_normalizer_chunked(residual, chunk_size: int) -> Normalizer:
 
 def _build_residual_workspace(
     bundle_path: Path, workspace_dir: Path, *, n_named_features: int, p_idx: int, s_idx: int,
-    temperature_label_idx: int, is_melts: bool, adiabat_coefs, comp_indices,
+    temperature_label_idx: int, adiabat_coefs, comp_indices,
     s_min, s_max, max_abs_residual, emulator, device, emulator_batch_size: int,
     feature_normalizer: Optional[Normalizer], output_normalizer: Optional[Normalizer],
     fit_normalizers: bool, chunk_size: int,
@@ -303,7 +301,7 @@ def _build_residual_workspace(
             T_true_chunk = np.array(raw_free_outputs[start:end, temperature_label_idx], dtype=np.float32)
             residual_chunk, T_ref_chunk = compute_residuals(
                 T_true_chunk, feats_chunk, p_idx, s_idx,
-                is_melts=is_melts, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices,
+                adiabat_coefs=adiabat_coefs, comp_indices=comp_indices,
             )
             tmp_residual[start:end] = residual_chunk
             tmp_tref[start:end] = T_ref_chunk

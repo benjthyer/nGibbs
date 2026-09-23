@@ -190,35 +190,29 @@ def compute_residuals(
     features_raw: np.ndarray,
     p_idx: int,
     s_idx: int,
-    is_melts: bool = False,
     adiabat_coefs: Optional[Dict[str, float]] = None,
     comp_indices: Optional[Dict[str, object]] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Compute T_residual = T_true - reference_adiabat(P, S[, X...]). Returns (residuals, T_ref).
 
-    When is_melts=True, P is expected in bars and T in Celsius. P is converted to GPa
-    before the adiabat call; the returned T_ref is in Celsius (K - 273.15) so the
-    residual and all downstream targets remain in Celsius.
+    P, S and T are used in the bundle's own native units (e.g. bar / J/g/K / Celsius
+    for MELTS, GPa / J/g/K / K for HeFESTo) -- no conversion -- so the adiabat
+    coefficients must be fit in those same units. API.get_T mirrors this exactly.
 
     If adiabat_coefs is provided, the reference adiabat is the stored polynomial.
     If comp_indices is also provided, element columns are extracted from features_raw
     and fed into the compositional extension of the polynomial.
     """
     P = features_raw[:, p_idx].astype(np.float64)
-    if is_melts:
-        P = P / 10000.0  # bars → GPa
-        S = 2.5
-    else:
-        S = features_raw[:, s_idx].astype(np.float64)
+    S = features_raw[:, s_idx].astype(np.float64)
     if adiabat_coefs is not None:
-        T_ref_K = eval_adiabat_poly(
+        T_ref = eval_adiabat_poly(
             P, S, adiabat_coefs,
             features=features_raw.astype(np.float64),
             comp_indices=comp_indices,
         )
     else:
-        T_ref_K = np.asarray(reference_adiabat(P, S), dtype=np.float32)
-    T_ref = (T_ref_K - 273.15) if is_melts else T_ref_K
+        T_ref = np.asarray(reference_adiabat(P, S), dtype=np.float32)
     residuals = (T_true.reshape(-1) - T_ref).astype(np.float32)
     return residuals, T_ref
 

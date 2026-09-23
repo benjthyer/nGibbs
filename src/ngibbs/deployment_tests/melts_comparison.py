@@ -26,11 +26,10 @@ HeFESTo has no analogue of):
     "provide the evolving Fe3/FeT ratio" means in practice for a closed-model
     forward pass) run through the *same* internal EOS, via the
     ml_indexer -> melts_vec bridge in ``_ml_indexer_to_melts_vec_assemblage``.
-    The isentropic pathway has no MELTS120 temperature model to predict T
-    from S, so it borrows the row's real GT temperature to evaluate the
-    internal EOS -- properties are still "assemblage predicted by the
-    isentropic model", just evaluated at the true T rather than a modelled
-    one; this is noted wherever isentropic property results are reported.
+    The isentropic pathway evaluates the internal EOS at the temperature
+    predicted by that variant's temperature model (ForwardMB's 'temperature'
+    output, i.e. ``EmulatorAPI.get_T``) -- exactly what inference does, and
+    what HeFESTo's ``meltstable_comparison`` does -- never at the GT T.
   - ``emulation_openox``: the trained MELTS120 OPEN (fO2-buffered) emulator's
     own predicted assemblage, fed (P, T, logfO2-QFM) -- every
     MELTSIsobaricStandards run really is fO2-buffered (FMQ+0, confirmed
@@ -134,6 +133,44 @@ _EMULATOR_OXIDE_COLS_CR = _EMULATOR_OXIDE_COLS_NOCR + ['Cr2O3']
 # _bulk_total_feo). Only NoCr has an open checkpoint (no Cr openox
 # checkpoint was ever trained), so this list is never combined with Cr2O3.
 _EMULATOR_OXIDE_COLS_OPEN = [c for c in _EMULATOR_OXIDE_COLS_NOCR if c != 'Fe2O3']
+
+# The MELTS120 isentropic emulator's entropy feature, exactly as named in its
+# ml_indexer.featureNames. Condition features are named by the recipe that built
+# them from alphaMELTS's System_main table: 'X(System_main)' is column X, and
+# 'X(System_main) / Y(System_main)' is column X normalized by column Y -- here
+# total S (J/K) per system mass (g), i.e. specific entropy in J/g/K.
+_ENTROPY_FEATURE = 'S(System_main) / mass(System_main)'
+_SYSMAIN_FEATURE_RE = re.compile(
+    r'^([^()/\s]+)\(System_main\)(?:\s*/\s*([^()/\s]+)\(System_main\))?$')
+
+
+def _system_main_feature(sysmain: pd.DataFrame, feature_name: str) -> np.ndarray:
+    """Build one emulator condition column from System_main_tbl.txt by the recipe
+    its own feature name encodes (see _ENTROPY_FEATURE): read the numerator column
+    and, for an 'X(System_main) / Y(System_main)' name, divide it by the column Y
+    it is normalized by. Raises if the name does not follow that recipe, a column
+    is missing, or a normalizing value is not strictly positive."""
+    match = _SYSMAIN_FEATURE_RE.match(feature_name.strip())
+    if match is None:
+        raise ValueError(
+            f"Feature name {feature_name!r} is not of the form 'X(System_main)' or "
+            "'X(System_main) / Y(System_main)'")
+    numerator, denominator = match.groups()
+    missing = [c for c in (numerator, denominator) if c is not None and c not in sysmain.columns]
+    if missing:
+        raise KeyError(
+            f"System_main_tbl.txt has no column(s) {missing}, needed to build "
+            f"{feature_name!r}. Available columns: {list(sysmain.columns)}")
+    values = sysmain[numerator].values.astype(np.float64)
+    if denominator is None:
+        return values
+    norm = sysmain[denominator].values.astype(np.float64)
+    bad = np.flatnonzero(~(norm > 0))
+    if bad.size:
+        raise ValueError(
+            f"Column {denominator!r} is not strictly positive in {bad.size} row(s) "
+            f"(first: row {bad[0]} = {norm[bad[0]]}); cannot normalize {numerator!r} by it.")
+    return values / norm
 
 
 def _ensure_alkali_feldspar_alias(api) -> None:
@@ -705,20 +742,26 @@ def _gt_property_table(sysmain: pd.DataFrame, mass_g: np.ndarray) -> Dict[str, n
     return out
 
 
-def _emulator_forward(api, oxide_cols, P_bar, second_col, second_header, bulk):
+def _emulator_forward(api, oxide_cols, P_bar, second_col, second_header, bulk,
+                      temperature=False):
     """Run ForwardMB for one condition column (T or S) against the real
     evolving bulk oxide composition (including its real, already fO2-
     buffered FeO/Fe2O3 split -- this IS "the evolving Fe3/FeT ratio" for a
-    closed-system emulator input; see module docstring). Returns
-    (component_moles, comp_wtpct, mass_wtpct)."""
+    closed-system emulator input; see module docstring). With
+    ``temperature=True`` (isentropic pathway only) also returns the
+    temperature model's predicted T in Celsius, as inference would. Returns
+    (component_moles, comp_wtpct, mass_wtpct, T_C_pred or None)."""
     headers = ['Pressure(System_main)', second_header] + list(oxide_cols)
     table = np.column_stack(
         [P_bar, second_col] + [bulk[ox].fillna(0.0).values for ox in oxide_cols]
     ).astype(np.float32)
+    outputs = ['component_moles', 'phase_tables'] + (['temperature'] if temperature else [])
     with torch.no_grad():
-        out = api.ForwardMB(table, headers=headers, outputs=['component_moles', 'phase_tables'])
+        out = api.ForwardMB(table, headers=headers, outputs=outputs)
     comp_wtpct, mass_wtpct = out['phase_tables']
-    return out['component_moles'], comp_wtpct, mass_wtpct
+    T_C_pred = (out['temperature'].detach().cpu().numpy().reshape(-1).astype(np.float64)
+                if temperature else None)
+    return out['component_moles'], comp_wtpct, mass_wtpct, T_C_pred
 
 
 def _fO2_qfm(sysmain: pd.DataFrame) -> Optional[np.ndarray]:
@@ -846,7 +889,9 @@ def run_melts_property_comparison(
             P_bar = sysmain['Pressure'].values
             P_GPa = P_bar / _BARS_PER_GPA
             mass_g = sysmain['mass'].values
-            S_specific_gt = sysmain['S'].values / mass_g
+            # Isentropic emulator input: total S (J/K) / system mass (g), built by
+            # the recipe in its feature name (see _ENTROPY_FEATURE).
+            S_specific_gt = _system_main_feature(sysmain, _ENTROPY_FEATURE)
 
             gt_table = _gt_property_table(sysmain, mass_g)
 
@@ -860,7 +905,7 @@ def run_melts_property_comparison(
             # source 2: emulator-predicted assemblage, isothermal (P, T) pathway.
             # Feed T_C (Celsius, alphaMELTS's own native units), NOT T_K --
             # the emulator's 'Temperature(System_main)' feature is Celsius.
-            cm_iso, comp_iso, mass_iso = _emulator_forward(
+            cm_iso, comp_iso, mass_iso, _ = _emulator_forward(
                 api, oxide_cols, P_bar, T_C, 'Temperature(System_main)', bulk)
             bridged_iso = ml_indexer_to_melts_vec_assemblage(
                 api_sub, api, api_sub.isothermal_emulator, cm_iso, mass_iso, comp_iso)
@@ -871,14 +916,17 @@ def run_melts_property_comparison(
             )
 
             # source 3: emulator-predicted assemblage, isentropic (P, S) pathway.
-            # No MELTS120 temperature model exists to predict T from S, so the
-            # downstream EOS evaluation borrows the row's real GT T -- the
-            # predicted ASSEMBLAGE itself is still driven purely from real P, S.
-            cm_isen, comp_isen, mass_isen = _emulator_forward(
-                api, oxide_cols, P_bar, S_specific_gt, 'S(System_main)', bulk)
+            # As in inference, T comes from the variant's temperature model
+            # (get_T on P, S and the predicted assemblage), not from the GT.
+            if getattr(api_sub, 'temperature_model', None) is None:
+                raise RuntimeError(
+                    f"No temperature model loaded for the {variant} sub-API; the "
+                    "isentropic property comparison needs one to predict T from (P, S).")
+            cm_isen, comp_isen, mass_isen, T_C_isen = _emulator_forward(
+                api, oxide_cols, P_bar, S_specific_gt, _ENTROPY_FEATURE, bulk, temperature=True)
             bridged_isen = ml_indexer_to_melts_vec_assemblage(
                 api_sub, api, api_sub.isentropic_emulator, cm_isen, mass_isen, comp_isen)
-            PT_isen = np.column_stack([P_GPa, T_K])
+            PT_isen = np.column_stack([P_GPa, T_C_isen + 273.15])
             props_isen, cov_isen = _bulk_props_and_coverage(
                 api, bridged_isen['phase_composition'], bridged_isen['phase_moles'], PT_isen, 100.0,
                 liquid_oxides=bridged_isen['liquid_oxides'], liquid_oxide_labels=bridged_isen['liquid_oxide_labels'],
@@ -919,6 +967,10 @@ def run_melts_property_comparison(
                     s = _rel_stats(gt_table[key], props.get(key, np.full(len(P_bar), np.nan)))
                     for stat, val in s.items():
                         row[f'{key} {stat}'] = val
+                if src_name == 'emulation_isentropic':
+                    # Relative errors in Kelvin (Celsius makes them scale-dependent).
+                    for stat, val in _rel_stats(T_K, T_C_isen + 273.15).items():
+                        row[f'T(K) {stat}'] = val
                 stat_rows.append(row)
 
             results.append({
@@ -930,7 +982,7 @@ def run_melts_property_comparison(
                 'name': name, 'rock': rock, 'variant': variant,
                 'T_C': sysmain['Temperature'].values, 'P_GPa': P_GPa,
                 'gt_table': gt_table, 'gt': gt_props, 'iso': props_iso, 'isen': props_isen,
-                'openox': props_open,
+                'openox': props_open, 'T_C_isen': T_C_isen,
             })
 
     stats = pd.DataFrame(stat_rows).set_index(['rock', 'variant', 'source'])
@@ -951,14 +1003,15 @@ def run_melts_property_comparison(
 _MELTS_PATHWAY_SRC_KEY = {'isentropic': 'isen', 'isothermal': 'iso', 'openox': 'openox'}
 _MELTS_PATHWAY_LABEL = {
     'isothermal': 'Isothermal (P, T)',
-    'isentropic': 'Isentropic (P, S) -- T borrowed from GT',
+    'isentropic': 'Isentropic (P, S)',
     'openox': 'Open/fO2-buffered (P, T, logfO2-QFM)',
 }
 
 
 def _plot_melts_properties(results, mode, save_path):
     prop_keys = _MELTS_PLOT_PROPERTY_KEYS
-    n_cols = len(prop_keys)
+    show_T = mode == 'isentropic'  # extra column: temperature-model T vs GT T
+    n_cols = len(prop_keys) + (1 if show_T else 0)
     n_rows = len(results)
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.0 * n_cols, 3.2 * n_rows), squeeze=False)
     src_key = _MELTS_PATHWAY_SRC_KEY[mode]
@@ -980,10 +1033,20 @@ def _plot_melts_properties(results, mode, save_path):
             ax.grid(True, alpha=0.25)
             if r == 0:
                 ax.set_title(key, fontsize=10)
-            if r == 0 and c == n_cols - 1:
+            if r == 0 and c == len(prop_keys) - 1:
+                ax.legend(fontsize=7, loc='best')
+        if show_T:
+            ax = axes[r][-1]
+            ax.plot(T, T, 'k-', lw=1.5, label='Raw alphaMELTS (GT)')
+            ax.plot(T, res['T_C_isen'], 'r--', lw=1.4, label='Temperature model T(P, S)')
+            ax.set_xlabel('T (°C)')
+            ax.set_ylabel('T (°C)', fontsize=9)
+            ax.grid(True, alpha=0.25)
+            if r == 0:
+                ax.set_title('T (°C)', fontsize=10)
                 ax.legend(fontsize=7, loc='best')
 
-    lbl = _MELTS_PATHWAY_LABEL[mode]
+    lbl = _MELTS_PATHWAY_LABEL[mode] + (' -- T from temperature model' if show_T else '')
     fig.suptitle(f'{lbl} pathway: MELTS120 emulator vs raw alphaMELTS ground truth', fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     fig.savefig(save_path, dpi=150, facecolor='white')
@@ -1094,7 +1157,9 @@ def run_melts_phase_comparison(
             P_bar = sysmain['Pressure'].values
             P_GPa = P_bar / _BARS_PER_GPA
             mass_g = sysmain['mass'].values
-            S_specific_gt = sysmain['S'].values / mass_g
+            # Isentropic emulator input: total S (J/K) / system mass (g), built by
+            # the recipe in its feature name (see _ENTROPY_FEATURE).
+            S_specific_gt = _system_main_feature(sysmain, _ENTROPY_FEATURE)
 
             gt_mf = _gt_phase_mass_fractions(rock_dir, full_index, mass_g)
             iso_mf = _emulator_phase_mass_fractions(
@@ -1102,7 +1167,7 @@ def run_melts_phase_comparison(
                 'Temperature(System_main)', bulk)
             isen_mf = _emulator_phase_mass_fractions(
                 api, api_sub.isentropic_emulator, oxide_cols, P_bar, S_specific_gt,
-                'S(System_main)', bulk)
+                _ENTROPY_FEATURE, bulk)
 
             open_mf = None
             fO2_QFM = _fO2_qfm(sysmain)

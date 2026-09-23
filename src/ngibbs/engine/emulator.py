@@ -6,6 +6,7 @@ high-level interfaces for phase prediction, mass balancing, and fractional cryst
 """
 
 import time
+import warnings
 import numpy as np
 import torch
 import pandas as pd
@@ -19,6 +20,31 @@ from .mass_balance import MassBalanceProjector
 _MASS_BALANCE_MODES = ('iterative', 'pinv', 'none')
 
 ferric_to_ferrous_ratio =  (2*oxide_molar_masses['FeO'])/oxide_molar_masses['Fe2O3']
+
+
+class TrainingRangeWarning(UserWarning):
+    """
+    Issued by NN_MELTS when an input lies outside the range its network was trained on
+    (or when that range cannot be checked). Escalate to an exception with
+    `warnings.simplefilter('error', TrainingRangeWarning)`.
+    """
+
+
+# Out-of-range inputs must never pass quietly: 'always' disables Python's default
+# once-per-call-site de-duplication, so re-running a cell with the same bad input warns
+# again. A filter the user installs later (e.g. 'error') still takes precedence.
+warnings.simplefilter('always', TrainingRangeWarning)
+
+# stats.txt prints condition bounds to 2 decimals and oxide bounds to 4. An input sitting
+# exactly on a training extreme must not trip the guard through that rounding, nor through
+# float32 round-off in the wt% reconstruction (absolute tolerances), nor at large
+# magnitudes such as pressure in bar (relative tolerance).
+_COND_BOUND_ATOL = 5.0e-3
+_OXIDE_BOUND_ATOL = 1.0e-3
+_BOUND_RTOL = 1.0e-6
+# A condition whose stats.txt and normalizer ranges differ by more than this fraction of
+# the training span is reported at load (tolerates e.g. a normalizer fit on a split).
+_NORMALIZER_MISMATCH_FRAC = 1.0e-2
 
 class NN_MELTS:
     """
@@ -91,6 +117,10 @@ class NN_MELTS:
         # Derive compound matrices
         self.compToEl = self.compToOx @ self.oxToEl
 
+        # Training-data ranges for the out-of-range input guard (check_training_bounds).
+        # Attached to the model by load_model_from_zip from the bundle's stats.txt.
+        self._setup_training_bounds(getattr(model, 'training_bounds', None))
+
         # Mass balance (see apply_mass_balance). The projector lives on this wrapper, not
         # the model -- it needs only componentMoles, self.compToEl and the bulk target.
         self.mass_balance = mass_balance
@@ -156,6 +186,135 @@ class NN_MELTS:
             range_tensor = torch.ones(dummy_shape, dtype=torch.float32)
             self.norm_features = Normalizer(min_tensor, range_tensor, cuda=(self.dev == 'cuda'))
             print("Warning: No normalizer state found in ml_indexer. Using identity normalization.")"""
+
+    def _setup_training_bounds(self, bounds):
+        """
+        Build the per-input range tensors used by `check_training_bounds`.
+
+        `bounds` is the dict `read_training_bounds` parsed from the bundle's stats.txt
+        (plus a 'source' key naming the bundle). It covers every condition feature
+        (ml_indexer.featureNames, model units) and every bulk oxide (ml_indexer.WRkeys,
+        wt% closed to 100) -- the space `generate_dataset_stats` measured the training
+        data in.
+
+        Each condition's stats.txt range is also compared with the range stored in the
+        feature normalizer (what the network was actually scaled against). A disagreement
+        is reported at load: it means inputs are normalized against a different range than
+        the training data spanned.
+        """
+        self.training_bounds = bounds
+        if bounds is None:
+            warnings.warn(
+                "[nGibbs] This model bundle carries no stats.txt: its inputs will NOT be "
+                "checked against the training-data range.", TrainingRangeWarning, stacklevel=3)
+            return
+
+        source = bounds.get('source', '<unknown bundle>')
+        cond_names = list(self.ml_indexer.featureNames)
+        ox_names = list(self.ml_indexer.WRkeys)
+        for label, expected, found in (('CONDITION BOUNDS', cond_names, bounds['conditions']),
+                                       ('BULK COMPOSITION BOUNDS', ox_names, bounds['oxides_wtpct'])):
+            if set(expected) != set(found):
+                raise ValueError(
+                    f"stats.txt {label} in {source} do not match the model inputs: the model "
+                    f"expects {expected}, stats.txt lists {list(found)}.")
+
+        ranges = np.array([bounds['conditions'][n] for n in cond_names]
+                          + [bounds['oxides_wtpct'][n] for n in ox_names], dtype=np.float64)  # (F+O, 2)
+        n_cond = len(cond_names)
+        atol = np.r_[np.full(n_cond, _COND_BOUND_ATOL), np.full(len(ox_names), _OXIDE_BOUND_ATOL)]
+        tol = atol + _BOUND_RTOL * np.abs(ranges).max(axis=1)
+        self._bound_names = cond_names + [f"{ox} (wt%)" for ox in ox_names]
+        self._bound_ranges = ranges
+        self._bound_lo = torch.tensor(ranges[:, 0] - tol, dtype=torch.float32, device=self.dev)
+        self._bound_hi = torch.tensor(ranges[:, 1] + tol, dtype=torch.float32, device=self.dev)
+
+        if self.norm_features is not None:
+            norm_lo = self.norm_features.miner[:n_cond].detach().cpu().double().numpy()
+            norm_hi = norm_lo + self.norm_features.ranger[:n_cond].detach().cpu().double().numpy()
+            stats_lo, stats_hi = ranges[:n_cond, 0], ranges[:n_cond, 1]
+            limit = tol[:n_cond] + _NORMALIZER_MISMATCH_FRAC * (stats_hi - stats_lo)
+            off = np.flatnonzero((np.abs(norm_lo - stats_lo) > limit) | (np.abs(norm_hi - stats_hi) > limit))
+            if off.size:
+                rows = "\n".join(
+                    f"    {cond_names[i]}: stats.txt [{stats_lo[i]:.6g}, {stats_hi[i]:.6g}]"
+                    f"  vs  normalizer [{norm_lo[i]:.6g}, {norm_hi[i]:.6g}]" for i in off)
+                warnings.warn(
+                    "\n" + "=" * 80 + "\n[nGibbs] TRAINING-RANGE MISMATCH in " + source +
+                    "\n  The feature normalizer and stats.txt disagree on the training range of:\n"
+                    + rows + "\n  Inputs are normalized against the normalizer's range.\n" + "=" * 80,
+                    TrainingRangeWarning, stacklevel=3)
+
+    def check_training_bounds(self, features):
+        """
+        Warn loudly (TrainingRangeWarning) about inputs outside the training range.
+
+        Called by `forwardMB` / `forwardNN` on every batch, before normalization.
+
+        Parameters
+        ----------
+        features : torch.Tensor, shape (B, F + E)
+            Un-normalized model input: condition features in the model's own units,
+            then the closed elemental composition -- i.e. the output of
+            `convertOxToMol`, exactly what `self.norm_features.norm` receives.
+
+        Returns
+        -------
+        torch.Tensor (B,) bool or None
+            True for rows with at least one out-of-range or non-finite input.
+            None when the bundle has no stats.txt (warned about at load).
+
+        Notes
+        -----
+        The composition is checked in wt% oxide (WRkeys), rebuilt the same way stats.txt
+        measured the training set: elements -> oxide moles (ElToOx) -> mass (MM) ->
+        closed to 100. NaN/inf inputs are always reported. This guard cannot catch a
+        wrong value that happens to lie inside the range (e.g. a condition column
+        filled with 0 when the training range starts at 0).
+        """
+        if self.training_bounds is None:
+            return None
+        n_el = len(self.Elkeys)
+        if features.shape[1] != self.feature_offset + n_el:
+            raise ValueError(
+                f"check_training_bounds expects {self.feature_offset} condition + {n_el} "
+                f"element columns, got {features.shape[1]} columns.")
+
+        feats = features.detach().to(device=self.dev, dtype=torch.float32)
+        ox_mass = (feats[:, self.feature_offset:] @ self.elToOx) @ self.MM[:n_el, :n_el]
+        ox_wtpct = 100.0 * ox_mass / ox_mass.sum(dim=1, keepdim=True)
+        values = torch.cat([feats[:, :self.feature_offset], ox_wtpct], dim=1)  # (B, F+O)
+        bad = (values < self._bound_lo) | (values > self._bound_hi) | ~torch.isfinite(values)
+        bad_rows = bad.any(dim=1)
+        if not bool(bad_rows.any()):
+            return bad_rows
+
+        values_np, bad_np = values.cpu().numpy(), bad.cpu().numpy()
+        n_rows = values_np.shape[0]
+        lines = []
+        for j in np.flatnonzero(bad_np.any(axis=0)):
+            col_bad = bad_np[:, j]
+            passed = values_np[col_bad, j]
+            finite = passed[np.isfinite(passed)]
+            span = f"[{finite.min():.6g}, {finite.max():.6g}]" if finite.size else "n/a"
+            n_nonfinite = passed.size - finite.size
+            first = int(np.flatnonzero(col_bad)[0])
+            lo, hi = self._bound_ranges[j]
+            lines.append(
+                f"  {self._bound_names[j]}\n"
+                f"      training range [{lo:.8g}, {hi:.8g}]  |  {int(col_bad.sum())}/{n_rows} rows "
+                f"outside, spanning {span}" + (f" ({n_nonfinite} non-finite)" if n_nonfinite else "")
+                + f"  |  first: row {first} = {values_np[first, j]:.6g}")
+
+        warnings.warn(
+            "\n" + "=" * 80 + "\n[nGibbs] INPUT OUTSIDE TRAINING RANGE\n"
+            f"  model bundle: {self.training_bounds.get('source', '<unknown bundle>')}\n"
+            f"  {int(bad_rows.sum())} of {n_rows} rows have an input outside the network's "
+            "training range (composition checked as wt% oxide):\n" + "\n".join(lines) +
+            "\n  Predictions for these rows are extrapolations. Escalate to an error with "
+            "warnings.simplefilter('error', TrainingRangeWarning).\n" + "=" * 80,
+            TrainingRangeWarning, stacklevel=3)
+        return bad_rows
 
     def reorder_input_table(self, table, headers=None, composition_space='elements',
                             strict=False, fill_value=0.0, return_type='same'):
@@ -236,6 +395,17 @@ class NN_MELTS:
 
         header_to_idx = {name: idx for idx, name in enumerate(input_headers)}
         missing = [name for name in expected_headers if name not in header_to_idx]
+
+        # strict=False only relaxes COMPOSITION columns (an absent oxide/element is a
+        # legitimate 0). A missing CONDITION column (P, T, S, fO2, ...) would otherwise be
+        # silently replaced by fill_value -- e.g. an isentropic model run at S = 0 on every
+        # row, which is inside the training range and so invisible to the bounds guard.
+        missing_conditions = [name for name in self.ml_indexer.featureNames if name not in header_to_idx]
+        if missing_conditions:
+            raise ValueError(
+                f"Missing required condition column(s) {missing_conditions}. This model's "
+                f"condition features are {list(self.ml_indexer.featureNames)}; got headers "
+                f"{input_headers}. Condition columns are never filled with fill_value.")
 
         if missing and strict:
             missing_str = ", ".join(missing)
@@ -513,10 +683,14 @@ class NN_MELTS:
             'likelihoods', 'phase_present', 'chem_out', 'phase_tables',
             'component_moles', 'phase_moles', 'reconstruction_residual',
         }
+        mol_features = self.convertOxToMol(features, convert=WtPercent)
         if Normalize:
-            norm_features = self.norm_features.norm(self.convertOxToMol(features, convert=WtPercent))
+            self.check_training_bounds(mol_features)
+            norm_features = self.norm_features.norm(mol_features)
         else:
-            norm_features = self.convertOxToMol(features, convert=WtPercent)
+            # Caller pre-normalized: check what the network actually sees, in physical units.
+            norm_features = mol_features
+            self.check_training_bounds(self.norm_features.denorm(norm_features))
         with torch.no_grad():
             likelihoods, chem_out, logMoles, reconBulk, componentMoles, phaseProportions, phaseMoles = \
                 self.model.forward(norm_features, detailed=True)
@@ -582,10 +756,14 @@ class NN_MELTS:
             raise KeyError(f"Unknown forwardNN output selector(s) {bad}. "
                            f"Valid selectors: {', '.join(sorted(_VALID))}")
 
+        mol_features = self.convertOxToMol(features, convert=WtPercent)
         if Normalize:
-            norm_features = self.norm_features.norm(self.convertOxToMol(features, convert=WtPercent))
+            self.check_training_bounds(mol_features)
+            norm_features = self.norm_features.norm(mol_features)
         else:
-            norm_features = self.convertOxToMol(features, convert=WtPercent)
+            # Caller pre-normalized: check what the network actually sees, in physical units.
+            norm_features = mol_features
+            self.check_training_bounds(self.norm_features.denorm(norm_features))
         with torch.no_grad():
             _lik, _chem, _lm, reconBulk, componentMoles, phaseProportions, phaseMoles = \
                 self.model.forward(norm_features, detailed=True)

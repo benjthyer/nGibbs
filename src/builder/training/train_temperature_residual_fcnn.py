@@ -423,7 +423,6 @@ def _save_checkpoint(
     input_kind: str,
     metrics: Dict,
     history: Dict,
-    is_melts: bool = False,
     adiabat_coefs: Optional[Dict[str, float]] = None,
     comp_indices: Optional[Dict[str, object]] = None,
 ) -> None:
@@ -442,7 +441,6 @@ def _save_checkpoint(
             "target_range": y_range,
             "target_min_range": normalizer_pairs(y_min, y_range),
             "input_kind": input_kind,
-            "is_melts": is_melts,
             "adiabat_coefs": adiabat_coefs,
             "coef_feature_indices": comp_indices,
             "metrics": metrics,
@@ -532,7 +530,6 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"])
     parser.add_argument("--skip-1", action="store_true", help="Skip model 1 (emulator-predicted path)")
-    parser.add_argument("--isMELTS", action="store_true", help="Bundle uses MELTS units (P in bars, T in Celsius). Converts P bars→GPa before the reference adiabat call and converts the reference result K→Celsius so residuals and targets are in Celsius.")
     parser.add_argument(
         "--out-dir",
         type=Path,
@@ -691,7 +688,7 @@ def main() -> None:
 
     common_ws_kwargs = dict(
         n_named_features=len(feature_names), p_idx=p_idx, s_idx=s_idx,
-        temperature_label_idx=temp_output_idx, is_melts=args.isMELTS,
+        temperature_label_idx=temp_output_idx,
         adiabat_coefs=adiabat_coefs, comp_indices=comp_indices,
         adiabat_elem_norm=args.adiabat_elem_norm,
         s_min=args.s_min, s_max=args.s_max, max_abs_residual=args.max_abs_residual,
@@ -750,7 +747,7 @@ def main() -> None:
 
     def _make_saver(out_path, x_min_, x_range_, kind, metrics_ref):
         def saver(m, hist):
-            _save_checkpoint(out_path, m, args.temperature_label, p_idx, s_idx, x_min_, x_range_, y_min, y_range, kind, metrics_ref, hist, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices)
+            _save_checkpoint(out_path, m, args.temperature_label, p_idx, s_idx, x_min_, x_range_, y_min, y_range, kind, metrics_ref, hist, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices)
         return saver
 
     # Train model 1 (emulator-predicted path)
@@ -800,11 +797,11 @@ def main() -> None:
     model1_out_str = "Not Trained!"
     if not args.skip_1 and history_emulator is not None:
         model1_out = args.out_dir / f"temperature_residual_emulator_path_{bundle_basename}.pt"
-        _save_checkpoint(model1_out, model_emulator, args.temperature_label, p_idx, s_idx, x1_emul_min, x1_emul_range, y_min, y_range, "emulator_path", metrics["emulator_path"], history_emulator, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices)
+        _save_checkpoint(model1_out, model_emulator, args.temperature_label, p_idx, s_idx, x1_emul_min, x1_emul_range, y_min, y_range, "emulator_path", metrics["emulator_path"], history_emulator, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices)
         model1_out_str = str(model1_out)
 
     model2_out = args.out_dir / f"temperature_residual_gt_path_{bundle_basename}.pt"
-    _save_checkpoint(model2_out, model_gt, args.temperature_label, p_idx, s_idx, x2_min, x2_range, y_min, y_range, "gt_path", metrics["gt_path"], history_gt, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices)
+    _save_checkpoint(model2_out, model_gt, args.temperature_label, p_idx, s_idx, x2_min, x2_range, y_min, y_range, "gt_path", metrics["gt_path"], history_gt, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices)
 
     metrics_path = args.out_dir / f"temperature_residual_metrics_{bundle_basename}.json"
     with open(metrics_path, "w", encoding="utf-8") as f:
@@ -815,7 +812,6 @@ def main() -> None:
                 "s_feature_idx": s_idx,
                 "p_feature_name": P_FEATURE_NAME,
                 "s_feature_name": S_FEATURE_NAME,
-                "is_melts": args.isMELTS,
                 "s_min": args.s_min,
                 "s_max": args.s_max,
                 "hidden_dims": hidden_dims,
