@@ -71,7 +71,7 @@ ADAPTIVE_DROPOUT_MAX = 0.50
 ADAPTIVE_DROPOUT_UP = 0.01
 ADAPTIVE_DROPOUT_DOWN = 0.005
 OVERFIT_RATIO = 1.02
-DEFAULT_EMULATOR_BATCH_SIZE = 2 ** 16
+DEFAULT_EMULATOR_BATCH_SIZE = 2 ** 15
 MAX_HISTOGRAM_SAMPLE = 5_000_000
 
 TEMPERATURE_LABEL_DEFAULT = "T(K)(System_main)"
@@ -223,9 +223,19 @@ def _parse_adiabat_coefs(path: Path) -> Dict[str, float]:
             token = left.strip().split()[0]          # first word, original case
             key = token[:-2] + "2" if token.endswith("^2") else token
             try:
-                coefs[key] = float(right.strip())
+                value = float(right.strip())
             except ValueError:
                 continue
+            if key in coefs and coefs[key] != value:
+                raise ValueError(
+                    f"Duplicate coefficient key '{key}' in {path} with conflicting "
+                    f"values ({coefs[key]!r} vs {value!r}). This usually means two "
+                    "regression terms share the same name (e.g. pressure 'P' and a "
+                    "bulk element symbol 'P' for phosphorus) and the file cannot be "
+                    "parsed unambiguously - regenerate it with a fit script that "
+                    "excludes/renames the colliding term."
+                )
+            coefs[key] = value
     missing = {"b0", "b_S", "b_S2", "b_P", "b_P2"} - set(coefs)
     if missing:
         raise ValueError(f"Adiabat coefficients file '{path}' is missing keys: {missing}")
@@ -532,6 +542,18 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"])
     parser.add_argument("--skip-1", action="store_true", help="Skip model 1 (emulator-predicted path)")
+    parser.add_argument(
+        "--skip-2",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Skip model 2 (ground-truth path: [features, GT moles+intensive] -> "
+            "T_residual). Default: skipped, since this path consistently performs "
+            "worse at inference than the emulator-predicted path (real inference "
+            "only ever sees emulator predictions, never ground-truth labels). "
+            "Pass --no-skip-2 to train it anyway."
+        ),
+    )
     parser.add_argument("--isMELTS", action="store_true", help="Bundle uses MELTS units (P in bars, T in Celsius). Converts P bars→GPa before the reference adiabat call and converts the reference result K→Celsius so residuals and targets are in Celsius.")
     parser.add_argument(
         "--out-dir",
@@ -738,10 +760,14 @@ def main() -> None:
     x1_emul_min, x1_emul_range = build_extended_input_normalizer_arrays(x1_min, x1_range, x1_dim)
     x2_min, x2_range = build_extended_input_normalizer_arrays(x1_min, x1_range, x2_dim)
 
-    train_loader_x1 = _make_loader_for_split(train_ws, "emulator", args.batch_size, ram_threshold_bytes, args.loader_chunk_rows)
-    valid_loader_x1 = _make_loader_for_split(test_ws, "emulator", args.batch_size, ram_threshold_bytes, args.loader_chunk_rows)
-    train_loader_x2 = _make_loader_for_split(train_ws, "gt", args.batch_size, ram_threshold_bytes, args.loader_chunk_rows)
-    valid_loader_x2 = _make_loader_for_split(test_ws, "gt", args.batch_size, ram_threshold_bytes, args.loader_chunk_rows)
+    train_loader_x1 = valid_loader_x1 = None
+    if not args.skip_1:
+        train_loader_x1 = _make_loader_for_split(train_ws, "emulator", args.batch_size, ram_threshold_bytes, args.loader_chunk_rows)
+        valid_loader_x1 = _make_loader_for_split(test_ws, "emulator", args.batch_size, ram_threshold_bytes, args.loader_chunk_rows)
+    train_loader_x2 = valid_loader_x2 = None
+    if not args.skip_2:
+        train_loader_x2 = _make_loader_for_split(train_ws, "gt", args.batch_size, ram_threshold_bytes, args.loader_chunk_rows)
+        valid_loader_x2 = _make_loader_for_split(test_ws, "gt", args.batch_size, ram_threshold_bytes, args.loader_chunk_rows)
 
     metrics: Dict[str, Dict] = {"emulator_path": {}, "gt_path": {}}
     bundle_basename = args.bundle_stem.name
@@ -774,26 +800,32 @@ def main() -> None:
         input_dim=x2_dim, output_dim=1,
         hidden_dims=hidden_dims, activation_leak=args.activation_leak, dropout=0.0,
     )
-    print("\nTraining model 2/2: [features, GT moles+intensive] -> T_residual")
-    history_gt = _train_model(
-        model_gt, train_loader_x2, valid_loader_x2,
-        args.epochs, args.lr, args.weight_decay, device, args.patience,
-        best_model2_path, _make_saver(best_model2_path, x2_min, x2_range, "gt_path", metrics["gt_path"]),
-    )
+    history_gt = None
+    if not args.skip_2:
+        print("\nTraining model 2/2: [features, GT moles+intensive] -> T_residual")
+        history_gt = _train_model(
+            model_gt, train_loader_x2, valid_loader_x2,
+            args.epochs, args.lr, args.weight_decay, device, args.patience,
+            best_model2_path, _make_saver(best_model2_path, x2_min, x2_range, "gt_path", metrics["gt_path"]),
+        )
+    else:
+        print("\nSkipping model 2/2 (--skip-2, default: ground-truth path underperforms at inference)")
 
     # Reload best checkpoints for final evaluation
-    if best_model1_path.exists():
+    if not args.skip_1 and best_model1_path.exists():
         model_emulator.load_state_dict(_load_checkpoint_state_dict(best_model1_path, device))
-    if best_model2_path.exists():
+    if not args.skip_2 and best_model2_path.exists():
         model_gt.load_state_dict(_load_checkpoint_state_dict(best_model2_path, device))
 
     # Evaluate in temperature space (K)
-    metrics["emulator_path"]["train"] = _evaluate_temperature_from_workspace(model_emulator, train_ws, "emulator", y_min, y_range, device)
-    metrics["emulator_path"]["test"] = _evaluate_temperature_from_workspace(model_emulator, test_ws, "emulator", y_min, y_range, device)
-    metrics["emulator_path"]["valid"] = _evaluate_temperature_from_workspace(model_emulator, valid_ws, "emulator", y_min, y_range, device)
-    metrics["gt_path"]["train"] = _evaluate_temperature_from_workspace(model_gt, train_ws, "gt", y_min, y_range, device)
-    metrics["gt_path"]["test"] = _evaluate_temperature_from_workspace(model_gt, test_ws, "gt", y_min, y_range, device)
-    metrics["gt_path"]["valid"] = _evaluate_temperature_from_workspace(model_gt, valid_ws, "gt", y_min, y_range, device)
+    if not args.skip_1:
+        metrics["emulator_path"]["train"] = _evaluate_temperature_from_workspace(model_emulator, train_ws, "emulator", y_min, y_range, device)
+        metrics["emulator_path"]["test"] = _evaluate_temperature_from_workspace(model_emulator, test_ws, "emulator", y_min, y_range, device)
+        metrics["emulator_path"]["valid"] = _evaluate_temperature_from_workspace(model_emulator, valid_ws, "emulator", y_min, y_range, device)
+    if not args.skip_2:
+        metrics["gt_path"]["train"] = _evaluate_temperature_from_workspace(model_gt, train_ws, "gt", y_min, y_range, device)
+        metrics["gt_path"]["test"] = _evaluate_temperature_from_workspace(model_gt, test_ws, "gt", y_min, y_range, device)
+        metrics["gt_path"]["valid"] = _evaluate_temperature_from_workspace(model_gt, valid_ws, "gt", y_min, y_range, device)
 
     # Save final checkpoints
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -803,8 +835,11 @@ def main() -> None:
         _save_checkpoint(model1_out, model_emulator, args.temperature_label, p_idx, s_idx, x1_emul_min, x1_emul_range, y_min, y_range, "emulator_path", metrics["emulator_path"], history_emulator, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices)
         model1_out_str = str(model1_out)
 
-    model2_out = args.out_dir / f"temperature_residual_gt_path_{bundle_basename}.pt"
-    _save_checkpoint(model2_out, model_gt, args.temperature_label, p_idx, s_idx, x2_min, x2_range, y_min, y_range, "gt_path", metrics["gt_path"], history_gt, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices)
+    model2_out_str = "Not Trained!"
+    if not args.skip_2 and history_gt is not None:
+        model2_out = args.out_dir / f"temperature_residual_gt_path_{bundle_basename}.pt"
+        _save_checkpoint(model2_out, model_gt, args.temperature_label, p_idx, s_idx, x2_min, x2_range, y_min, y_range, "gt_path", metrics["gt_path"], history_gt, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices)
+        model2_out_str = str(model2_out)
 
     metrics_path = args.out_dir / f"temperature_residual_metrics_{bundle_basename}.json"
     with open(metrics_path, "w", encoding="utf-8") as f:
@@ -826,7 +861,7 @@ def main() -> None:
                     "residual_min_range": normalizer_pairs(y_min, y_range).tolist(),
                 },
                 "metrics": metrics,
-                "model_paths": {"emulator_path": model1_out_str, "gt_path": str(model2_out)},
+                "model_paths": {"emulator_path": model1_out_str, "gt_path": model2_out_str},
                 "emulator_model": str(args.emulator_model),
             },
             f,
@@ -835,7 +870,7 @@ def main() -> None:
 
     print("\nTraining complete.")
     print(f"Model 1 (emulator path): {model1_out_str}")
-    print(f"Model 2 (GT path):       {model2_out}")
+    print(f"Model 2 (GT path):       {model2_out_str}")
     print(f"Metrics: {metrics_path}")
     print("Evaluation (K):")
     print(json.dumps(metrics, indent=2))
