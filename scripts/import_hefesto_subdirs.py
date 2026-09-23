@@ -11,12 +11,20 @@ For each discovered workspace directory:
      - Otherwise, delete files named 'fort.29' and 'qout' when present.
 2) Run import_HeFESTo_components() on that workspace.
 3) Tally simulations whose fort.99 carried stray HeFESTo diagnostic lines.
+4) Optionally (--deep-phase-change-dataname) collect phase-change bounds from
+   a workspace that is already a phase-change resample (each simulation is a
+   P-T grid rather than a single path).
 
 HeFESTo writes diagnostic lines ("WARNING: Phase Rule", "Invalid Solut") into
 fort.99 itself. Read as data rows they shift every row below them down by one,
 so the assemblage stops lining up with fort.56's P-T grid and phase transitions
 appear one pressure step late. The reader now drops those lines, and reports
 which files it dropped them from; this script just tallies that as it goes.
+
+This is the derivative-free counterpart of import_hefesto_subdirs_derivs.py:
+same discovery, cleanup, tallying and phase-change export, but it never reads
+fort.42 or computes/reconstructs dn/dP, dn/dT. Use that script instead if you
+need composition derivatives.
 """
 
 from __future__ import annotations
@@ -36,6 +44,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from builder.HeFESTo.HeFESTo_functions import import_HeFESTo_components  # noqa: E402
+from builder.HeFESTo.HeFESTo_deep_sampling import collect_deep_phase_changes  # noqa: E402
 from builder.indexer import DatasetIndexer, generate_column_headers_hefesto  # noqa: E402
 from ngibbs.config.constants import COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO  # noqa: E402
 from ngibbs.utils.file_utils import get_dropped_rows, reset_dropped_rows  # noqa: E402
@@ -153,6 +162,28 @@ def parse_args() -> argparse.Namespace:
             'needs regenerating. The main CSV (--dataname) is unaffected.'
         ),
     )
+    parser.add_argument(
+        '--deep-phase-change-dataname',
+        type=str,
+        default=None,
+        help=(
+            'Optional output CSV of phase-change bounds collected from a '
+            'workspace that is ALREADY a phase-change resample, i.e. each '
+            'simulation is a P-T grid rather than a single path. The grid is '
+            'split into 1-D scans first and bounds are found within each; '
+            'treating it as one continuum would read every scan seam as a '
+            'transition. Same output schema as --phase-change-dataname.'
+        ),
+    )
+    parser.add_argument(
+        '--deep-axis',
+        choices=('isotherm', 'isobar', 'both'),
+        default='isotherm',
+        help=(
+            'Scan direction for --deep-phase-change-dataname. isotherm fixes '
+            'T and sweeps P; isobar fixes P and sweeps T.'
+        ),
+    )
     return parser.parse_args()
 
 
@@ -175,6 +206,8 @@ def main() -> int:
     total_deleted_dirs = 0
     total_deleted_files = 0
     total_shifted_sims = 0
+    total_deep_pairs = 0
+    total_deep_bad = 0
 
     dataname = args.dataname
     phase_change_dataname = args.phase_change_dataname
@@ -208,8 +241,23 @@ def main() -> int:
         print(f'  Fault simulation IDs count: {n_faults}')
         print(f'  Simulations with offset fort.99: {len(shifted)}')
 
+        if args.deep_phase_change_dataname is not None:
+            deep_passed, deep_bad, deep_pairs = collect_deep_phase_changes(
+                workspace_dir=str(workspace_dir),
+                indexer=indexer,
+                out_csv=args.deep_phase_change_dataname,
+                axis=args.deep_axis,
+            )
+            total_deep_pairs += deep_pairs
+            total_deep_bad += len(deep_bad)
+            print(f'  Deep phase-change pairs ({args.deep_axis}): {deep_pairs} '
+                  f'from {len(deep_passed)} sims, {len(deep_bad)} malformed')
+
     print('Summary:')
     print(f'  Workspaces processed: {len(workspace_dirs)}')
+    if args.deep_phase_change_dataname is not None:
+        print(f'  Deep phase-change pairs ({args.deep_axis}): {total_deep_pairs} '
+              f'-> {args.deep_phase_change_dataname}')
     print(f'  Deleted control-only Simulation dirs: {total_deleted_dirs}')
     print(f'  Deleted fort.29/qout files: {total_deleted_files}')
     print(f'  Total fault simulation IDs: {total_faults}')

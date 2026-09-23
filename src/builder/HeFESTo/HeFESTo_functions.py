@@ -174,10 +174,6 @@ def make_PT_path_martian(S, P, func, P_lit, cold_temp = 220, out_path=None):
     save_fixed_width_table(AdIn, out_path=out_path)
 
 
-_EARTH_ADIABAT_ELEMENT_KEYS = ('Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O')
-_EARTH_ADIABAT_P_HEADER = 'P(GPa)(System_main)'
-_EARTH_ADIABAT_S_HEADER = 'S(J/g/K)(System_main)'
-
 # Rough constant pressure gradient used to place boundary-layer transition
 # points from a depth range (~9 GPa over the top 250 km of mantle).
 KM_PER_GPA = 250.0 / 9.0
@@ -190,53 +186,15 @@ CMB_PRESSURE_GPA = 135.0
 # interior points over a window of width dP is round(dP / this) - 1.
 BOUNDARY_LAYER_P_STEP_GPA = 0.5
 
-
-def _predict_adiabat_temperature(P, S: float, element_moles: Dict[str, float]) -> np.ndarray:
-    """Predict adiabatic temperature(s) via the Earth_Adiabats NN emulator.
-
-    Wraps ``HeFESToEmulatorCPU.ForwardNN`` (isentropic model) with a fixed
-    entropy and bulk composition, sweeping over one or more pressures.
-    Headers must be the emulator's exact canonical feature names -- the
-    short aliases (e.g. ``'P(GPa)'``) are silently zero-filled instead of
-    matched, which would make every prediction collapse to the P=0 value.
-
-    Parameters
-    ----------
-    P : array-like
-        Pressure(s) in GPa.
-    S : float
-        Mantle entropy (J/g/K), held fixed across all pressures.
-    element_moles : dict
-        Bulk composition as element moles (Si, Mg, Fe, Ca, Al, Na, Cr, O).
-
-    Returns
-    -------
-    np.ndarray
-        Predicted temperatures (K), one per input pressure.
-    """
-    from ngibbs.engine.models import HeFESToEmulatorCPU
-
-    if HeFESToEmulatorCPU is None:
-        raise RuntimeError(
-            'HeFESToEmulatorCPU (Earth_Adiabats emulator) is not available; '
-            'check model files under TrainedModels/HeFESTo_Adiabats.'
-        )
-
-    P = np.atleast_1d(np.asarray(P, dtype=np.float32))
-    comp_row = np.array([[element_moles[k] for k in _EARTH_ADIABAT_ELEMENT_KEYS]], dtype=np.float32)
-    input_array = np.concatenate(
-        [P.reshape(-1, 1), np.full((len(P), 1), S, dtype=np.float32), np.tile(comp_row, (len(P), 1))],
-        axis=1,
-    )
-    headers = [_EARTH_ADIABAT_P_HEADER, _EARTH_ADIABAT_S_HEADER] + list(_EARTH_ADIABAT_ELEMENT_KEYS)
-    output = HeFESToEmulatorCPU.ForwardNN(input_array, headers=headers, outputs=['temperature'])
-    return output['temperature'].detach().cpu().numpy().reshape(-1)
+# Entropy (J/g/K) at the conductive-adiabatic transition point of the
+# boundary-layer ad.in paths built by prepare_HeFESTo_tree_surface /
+# prepare_HeFESTo_tree_cmb, sampled ~ N(mean, std) and fed into get_T.
+TRANSITION_S_MEAN = 2.55
+TRANSITION_S_STD = 0.1
 
 
 def make_PT_path_surface(
-    S: float,
     P,
-    element_moles: Dict[str, float],
     surface_temp: float = 300.0,
     out_path=None,
 ) -> None:
@@ -244,19 +202,15 @@ def make_PT_path_surface(
 
     ``P`` is assumed to already be restricted to the lid itself (surface to
     the lithosphere-asthenosphere transition). Temperature is a straight
-    line in P from ``surface_temp`` at ``min(P)`` to the ``Earth_Adiabats``
-    NN emulator's isentropic prediction at ``max(P)`` (the base of the lid,
-    where it hands off to the whole-mantle adiabat dataset).
+    line in P from ``surface_temp`` at ``min(P)`` to ``get_T`` evaluated at
+    ``max(P)`` (the base of the lid, where it hands off to the whole-mantle
+    adiabat dataset), with entropy for that ``get_T`` call sampled
+    ``~ N(TRANSITION_S_MEAN, TRANSITION_S_STD)``.
 
     Parameters
     ----------
-    S : float
-        Mantle entropy (J/g/K) used to query the adiabat temperature at the
-        base of the lid.
     P : array-like
         Pressures (GPa) along the path, from the surface to the lid base.
-    element_moles : dict
-        Bulk composition (element moles) used to query the NN emulator.
     surface_temp : float, default=300.0
         Surface temperature anchor (K) at the shallowest pressure in ``P``.
     out_path : str or Path, optional
@@ -264,7 +218,8 @@ def make_PT_path_surface(
     """
     P = np.asarray(P, dtype=np.float64)
     P_min, P_max = float(P.min()), float(P.max())
-    T_base = float(_predict_adiabat_temperature(np.array([P_max]), S, element_moles)[0])
+    S_transition = float(np.random.normal(TRANSITION_S_MEAN, TRANSITION_S_STD))
+    T_base = float(get_T(P=P_max, S=S_transition))
 
     AdIn = np.zeros((len(P), 3))  # Middle column unused
     AdIn[:, 0] = P
@@ -274,9 +229,7 @@ def make_PT_path_surface(
 
 
 def make_PT_path_cmb(
-    S: float,
     P,
-    element_moles: Dict[str, float],
     cmb_temp: float,
     out_path=None,
 ) -> None:
@@ -284,20 +237,16 @@ def make_PT_path_cmb(
 
     ``P`` is assumed to already be restricted to the boundary layer itself
     (where it hands off from the whole-mantle adiabat dataset, down to the
-    core). Temperature is a straight line in P from the ``Earth_Adiabats``
-    NN emulator's isentropic prediction at ``min(P)`` (the top of the
-    boundary layer) to ``cmb_temp`` at ``max(P)`` (the core-mantle boundary).
+    core). Temperature is a straight line in P from ``get_T`` evaluated at
+    ``min(P)`` (the top of the boundary layer) to ``cmb_temp`` at ``max(P)``
+    (the core-mantle boundary), with entropy for that ``get_T`` call sampled
+    ``~ N(TRANSITION_S_MEAN, TRANSITION_S_STD)``.
 
     Parameters
     ----------
-    S : float
-        Mantle entropy (J/g/K) used to query the adiabat temperature at the
-        top of the boundary layer.
     P : array-like
         Pressures (GPa) along the path, from the top of the boundary layer
         to the CMB.
-    element_moles : dict
-        Bulk composition (element moles) used to query the NN emulator.
     cmb_temp : float
         Mantle-side CMB temperature anchor (K) at the deepest pressure in ``P``.
     out_path : str or Path, optional
@@ -305,7 +254,8 @@ def make_PT_path_cmb(
     """
     P = np.asarray(P, dtype=np.float64)
     P_min, P_max = float(P.min()), float(P.max())
-    T_top = float(_predict_adiabat_temperature(np.array([P_min]), S, element_moles)[0])
+    S_transition = float(np.random.normal(TRANSITION_S_MEAN, TRANSITION_S_STD))
+    T_top = float(get_T(P=P_min, S=S_transition))
 
     AdIn = np.zeros((len(P), 3))  # Middle column unused
     AdIn[:, 0] = P
@@ -835,7 +785,9 @@ def _normalize_total_moles(element_moles: Dict[str, float], target_total_moles: 
 
 
 
-def prepare_HeFESTo_tree_fulladiabat(directory: Path, GEOROC_DIR: Path, control_path: Path, N: int) -> None:
+def prepare_HeFESTo_tree_fulladiabat(
+    directory: Path, GEOROC_DIR: Path, control_path: Path, N: int, real_rocks: bool = False,
+) -> None:
     """Prepare a BatchNNNN/SimulationN directory tree for HeFESTo isentrope runs.
 
     Samples N bulk compositions from the GEOROC/PetDB database as 30% pure
@@ -861,8 +813,13 @@ def prepare_HeFESTo_tree_fulladiabat(directory: Path, GEOROC_DIR: Path, control_
         Path to a HeFESTo control template file (e.g. ``shallowHeFESTo``).
     N : int
         Total number of simulations to generate.
+    real_rocks : bool, default=False
+        If True, skip the random Fe/Cr/Si/Mg/Ca/Al mole perturbation applied
+        to each sampled composition, leaving the mixed GEOROC/PetDB rock
+        chemistry unmodified (aside from Fe speciation to the sampled
+        Fe3+/Fetotal ratio, which is unrelated to this perturbation).
     """
-    
+
     directory = Path(directory)
     GEOROC_DIR = Path(GEOROC_DIR)
     control_path = Path(control_path)
@@ -985,29 +942,30 @@ def prepare_HeFESTo_tree_fulladiabat(directory: Path, GEOROC_DIR: Path, control_
 
             mg_val = element_moles.get('Mg', 0.0)
 
-            d_fe = float(np.random.uniform(0.00, 0.05))*float(np.random.uniform()>0.3) # Add Fe to some compositions, but not all
-            d_cr = float(np.random.uniform(0.0, 0.01))
-            d_si = float(np.random.uniform(-0.5/24, 2.0/24)) # Read these values off of norm 24 histograms
-            d_mg = float(np.random.uniform(1.5/24, 2.75/24)) * (mg_val < 1.5/24)
-            d_mg += float(np.random.uniform(0.25/24, 2.0/24))
-            d_ca = -(float(np.random.uniform(0.0, 0.1)) * (element_moles.get('Ca', 0.0) > 0.1))
-            d_al = -(float(np.random.uniform(0.0, 0.05)) * (element_moles.get('Al', 0.0) > 0.05))
+            if not real_rocks:
+                d_fe = float(np.random.uniform(0.00, 0.05))*float(np.random.uniform()>0.3) # Add Fe to some compositions, but not all
+                d_cr = float(np.random.uniform(0.0, 0.01))
+                d_si = float(np.random.uniform(-0.5/24, 2.0/24)) # Read these values off of norm 24 histograms
+                d_mg = float(np.random.uniform(1.5/24, 2.75/24)) * (mg_val < 1.5/24)
+                d_mg += float(np.random.uniform(0.25/24, 2.0/24))
+                d_ca = -(float(np.random.uniform(0.0, 0.1)) * (element_moles.get('Ca', 0.0) > 0.1))
+                d_al = -(float(np.random.uniform(0.0, 0.05)) * (element_moles.get('Al', 0.0) > 0.05))
 
-            element_moles['Fe'] = element_moles.get('Fe', 0.0) + d_fe
-            element_moles['Cr'] = element_moles.get('Cr', 0.0) + d_cr
-            element_moles['Ca'] = element_moles.get('Ca', 0.0) + d_ca
-            element_moles['Al'] = element_moles.get('Al', 0.0) + d_al
-            element_moles['Si'] = element_moles.get('Si', 0.0) + d_si
-            element_moles['Mg'] = element_moles.get('Mg', 0.0) + d_mg
-            element_moles['O'] = (
-                element_moles.get('O', 0.0)
-                + 1.0 * d_fe   # FeO baseline for the added Fe (ferrous by default)
-                + 1.5 * d_cr   # Cr2O3
-                + 1.0 * d_ca   # CaO
-                + 1.5 * d_al   # Al2O3
-                + 2.0 * d_si   # SiO2
-                + 1.0 * d_mg   # MgO
-            )
+                element_moles['Fe'] = element_moles.get('Fe', 0.0) + d_fe
+                element_moles['Cr'] = element_moles.get('Cr', 0.0) + d_cr
+                element_moles['Ca'] = element_moles.get('Ca', 0.0) + d_ca
+                element_moles['Al'] = element_moles.get('Al', 0.0) + d_al
+                element_moles['Si'] = element_moles.get('Si', 0.0) + d_si
+                element_moles['Mg'] = element_moles.get('Mg', 0.0) + d_mg
+                element_moles['O'] = (
+                    element_moles.get('O', 0.0)
+                    + 1.0 * d_fe   # FeO baseline for the added Fe (ferrous by default)
+                    + 1.5 * d_cr   # Cr2O3
+                    + 1.0 * d_ca   # CaO
+                    + 1.5 * d_al   # Al2O3
+                    + 2.0 * d_si   # SiO2
+                    + 1.0 * d_mg   # MgO
+                )
 
             # Apply the target Fe3+/FeT ratio now, on the final total Fe, by adding
             # the extra oxygen that a Fe2O3 (vs FeO) stoichiometry requires beyond
@@ -1060,7 +1018,9 @@ def prepare_HeFESTo_tree_fulladiabat(directory: Path, GEOROC_DIR: Path, control_
             out_path=sim_dir / 'ad.in',
         )
 
-def prepare_HeFESTo_tree_Mars(directory: Path, GEOROC_DIR: Path, control_path: Path, N: int) -> None:
+def prepare_HeFESTo_tree_Mars(
+    directory: Path, GEOROC_DIR: Path, control_path: Path, N: int, real_rocks: bool = False,
+) -> None:
     """Prepare a BatchNNNN/SimulationN directory tree for Martian HeFESTo runs.
 
     Variant of ``prepare_HeFESTo_tree_fulladiabat`` tuned for Mars mantle
@@ -1089,6 +1049,11 @@ def prepare_HeFESTo_tree_Mars(directory: Path, GEOROC_DIR: Path, control_path: P
         Path to a HeFESTo control template file.
     N : int
         Total number of simulations to generate.
+    real_rocks : bool, default=False
+        If True, skip the random Fe/Cr/Si/Mg/Ca/Al mole perturbation applied
+        to each sampled composition, leaving the mixed GEOROC/PetDB rock
+        chemistry unmodified (aside from Fe speciation to the sampled
+        Fe3+/Fetotal ratio, which is unrelated to this perturbation).
     """
 
     directory = Path(directory)
@@ -1197,29 +1162,30 @@ def prepare_HeFESTo_tree_Mars(directory: Path, GEOROC_DIR: Path, control_path: P
 
         mg_val = element_moles.get('Mg', 0.0)
 
-        d_fe = float(np.random.uniform(0.0, 0.1))
-        d_cr = float(np.random.uniform(0.0, 0.01))
-        d_si = float(np.random.uniform(-0.5/24, 2.0/24)) # Read these values off of norm 24 histograms
-        d_mg = float(np.random.uniform(1.5/24, 2.75/24)) * (mg_val < 2.5/24)
-        d_mg += float(np.random.uniform(0.25/24, 2.0/24))
-        d_ca = -(float(np.random.uniform(0.0, 0.1)) * (element_moles.get('Ca', 0.0) > 0.1))
-        d_al = -(float(np.random.uniform(0.0, 0.05)) * (element_moles.get('Al', 0.0) > 0.05))
+        if not real_rocks:
+            d_fe = float(np.random.uniform(0.0, 0.1))
+            d_cr = float(np.random.uniform(0.0, 0.01))
+            d_si = float(np.random.uniform(-0.5/24, 2.0/24)) # Read these values off of norm 24 histograms
+            d_mg = float(np.random.uniform(1.5/24, 2.75/24)) * (mg_val < 2.5/24)
+            d_mg += float(np.random.uniform(0.25/24, 2.0/24))
+            d_ca = -(float(np.random.uniform(0.0, 0.1)) * (element_moles.get('Ca', 0.0) > 0.1))
+            d_al = -(float(np.random.uniform(0.0, 0.05)) * (element_moles.get('Al', 0.0) > 0.05))
 
-        element_moles['Fe'] = element_moles.get('Fe', 0.0) + d_fe
-        element_moles['Cr'] = element_moles.get('Cr', 0.0) + d_cr
-        element_moles['Ca'] = element_moles.get('Ca', 0.0) + d_ca
-        element_moles['Al'] = element_moles.get('Al', 0.0) + d_al
-        element_moles['Si'] = element_moles.get('Si', 0.0) + d_si
-        element_moles['Mg'] = element_moles.get('Mg', 0.0) + d_mg
-        element_moles['O'] = (
-            element_moles.get('O', 0.0)
-            + 1.0 * d_fe   # FeO baseline for the added Fe (ferrous by default)
-            + 1.5 * d_cr   # Cr2O3
-            + 1.0 * d_ca   # CaO
-            + 1.5 * d_al   # Al2O3
-            + 2.0 * d_si   # SiO2
-            + 1.0 * d_mg   # MgO
-        )
+            element_moles['Fe'] = element_moles.get('Fe', 0.0) + d_fe
+            element_moles['Cr'] = element_moles.get('Cr', 0.0) + d_cr
+            element_moles['Ca'] = element_moles.get('Ca', 0.0) + d_ca
+            element_moles['Al'] = element_moles.get('Al', 0.0) + d_al
+            element_moles['Si'] = element_moles.get('Si', 0.0) + d_si
+            element_moles['Mg'] = element_moles.get('Mg', 0.0) + d_mg
+            element_moles['O'] = (
+                element_moles.get('O', 0.0)
+                + 1.0 * d_fe   # FeO baseline for the added Fe (ferrous by default)
+                + 1.5 * d_cr   # Cr2O3
+                + 1.0 * d_ca   # CaO
+                + 1.5 * d_al   # Al2O3
+                + 2.0 * d_si   # SiO2
+                + 1.0 * d_mg   # MgO
+            )
 
         # Apply the target Fe3+/FeT ratio now, on the final total Fe, by adding
         # the extra oxygen that a Fe2O3 (vs FeO) stoichiometry requires beyond
@@ -1257,17 +1223,19 @@ def prepare_HeFESTo_tree_Mars(directory: Path, GEOROC_DIR: Path, control_path: P
             out_path=sim_dir / 'ad.in',
             )
 
-def prepare_HeFESTo_tree_surface(directory: Path, GEOROC_DIR: Path, control_path: Path, N: int) -> None:
+def prepare_HeFESTo_tree_surface(
+    directory: Path, GEOROC_DIR: Path, control_path: Path, N: int, real_rocks: bool = False,
+) -> None:
     """Prepare a BatchNNNN/SimulationN directory tree for HeFESTo surface-lid runs.
 
     Variant of ``prepare_HeFESTo_tree_fulladiabat`` restricted to the
     conductive lid only: each simulation's ``ad.in`` runs from the surface
     (P ~ 0) down to a randomly sampled lithosphere-asthenosphere transition
     between 0 and 250 km depth (~0-9 GPa), sampled in ~0.5 GPa increments,
-    with temperature a straight line in P from 300 K at the surface to the
-    ``Earth_Adiabats`` NN emulator's adiabat temperature at the transition
-    (see ``make_PT_path_surface`` / ``_predict_adiabat_temperature``). This
-    intentionally does *not* continue into the adiabatic mantle below the
+    with temperature a straight line in P from 300 K at the surface to
+    ``get_T`` evaluated at the transition with entropy sampled
+    ``~ N(TRANSITION_S_MEAN, TRANSITION_S_STD)`` (see ``make_PT_path_surface``).
+    This intentionally does *not* continue into the adiabatic mantle below the
     transition -- it is meant to complement a separate whole-mantle adiabat
     dataset (e.g. from ``prepare_HeFESTo_tree_fulladiabat``), not duplicate it.
 
@@ -1286,6 +1254,11 @@ def prepare_HeFESTo_tree_surface(directory: Path, GEOROC_DIR: Path, control_path
         physics of interest sits at low pressure).
     N : int
         Total number of simulations to generate.
+    real_rocks : bool, default=False
+        If True, skip the random Fe/Cr/Si/Mg/Ca/Al mole perturbation applied
+        to each sampled composition, leaving the mixed GEOROC/PetDB rock
+        chemistry unmodified (aside from Fe speciation to the sampled
+        Fe3+/Fetotal ratio, which is unrelated to this perturbation).
     """
 
     directory = Path(directory)
@@ -1300,7 +1273,6 @@ def prepare_HeFESTo_tree_surface(directory: Path, GEOROC_DIR: Path, control_path
     simulations_in_batch = 0
     batch_number = int(batch_dir.name.removeprefix('Batch'))
 
-    Mps = 273 + 1200 + np.random.uniform(0, 1, N) * (1650 - 1200)  # mantle potential temperatures
     target_total_moles = 24.0
 
     georoc_df = pd.read_csv(GEOROC_DIR)
@@ -1394,29 +1366,30 @@ def prepare_HeFESTo_tree_surface(directory: Path, GEOROC_DIR: Path, control_path
 
             mg_val = element_moles.get('Mg', 0.0)
 
-            d_fe = float(np.random.uniform(0.00, 0.05)) * float(np.random.uniform() > 0.3)
-            d_cr = float(np.random.uniform(0.0, 0.01))
-            d_si = float(np.random.uniform(-0.5 / 24, 2.0 / 24))
-            d_mg = float(np.random.uniform(1.5 / 24, 2.75 / 24)) * (mg_val < 1.5 / 24)
-            d_mg += float(np.random.uniform(0.25 / 24, 2.0 / 24))
-            d_ca = -(float(np.random.uniform(0.0, 0.1)) * (element_moles.get('Ca', 0.0) > 0.1))
-            d_al = -(float(np.random.uniform(0.0, 0.05)) * (element_moles.get('Al', 0.0) > 0.05))
+            if not real_rocks:
+                d_fe = float(np.random.uniform(0.00, 0.05)) * float(np.random.uniform() > 0.3)
+                d_cr = float(np.random.uniform(0.0, 0.01))
+                d_si = float(np.random.uniform(-0.5 / 24, 2.0 / 24))
+                d_mg = float(np.random.uniform(1.5 / 24, 2.75 / 24)) * (mg_val < 1.5 / 24)
+                d_mg += float(np.random.uniform(0.25 / 24, 2.0 / 24))
+                d_ca = -(float(np.random.uniform(0.0, 0.1)) * (element_moles.get('Ca', 0.0) > 0.1))
+                d_al = -(float(np.random.uniform(0.0, 0.05)) * (element_moles.get('Al', 0.0) > 0.05))
 
-            element_moles['Fe'] = element_moles.get('Fe', 0.0) + d_fe
-            element_moles['Cr'] = element_moles.get('Cr', 0.0) + d_cr
-            element_moles['Ca'] = element_moles.get('Ca', 0.0) + d_ca
-            element_moles['Al'] = element_moles.get('Al', 0.0) + d_al
-            element_moles['Si'] = element_moles.get('Si', 0.0) + d_si
-            element_moles['Mg'] = element_moles.get('Mg', 0.0) + d_mg
-            element_moles['O'] = (
-                element_moles.get('O', 0.0)
-                + 1.0 * d_fe
-                + 1.5 * d_cr
-                + 1.0 * d_ca
-                + 1.5 * d_al
-                + 2.0 * d_si
-                + 1.0 * d_mg
-            )
+                element_moles['Fe'] = element_moles.get('Fe', 0.0) + d_fe
+                element_moles['Cr'] = element_moles.get('Cr', 0.0) + d_cr
+                element_moles['Ca'] = element_moles.get('Ca', 0.0) + d_ca
+                element_moles['Al'] = element_moles.get('Al', 0.0) + d_al
+                element_moles['Si'] = element_moles.get('Si', 0.0) + d_si
+                element_moles['Mg'] = element_moles.get('Mg', 0.0) + d_mg
+                element_moles['O'] = (
+                    element_moles.get('O', 0.0)
+                    + 1.0 * d_fe
+                    + 1.5 * d_cr
+                    + 1.0 * d_ca
+                    + 1.5 * d_al
+                    + 2.0 * d_si
+                    + 1.0 * d_mg
+                )
 
             fe_total = element_moles.get('Fe', 0.0)
             element_moles['O'] = element_moles.get('O', 0.0) + 0.5 * ratio * fe_total
@@ -1454,27 +1427,27 @@ def prepare_HeFESTo_tree_surface(directory: Path, GEOROC_DIR: Path, control_path
             handle.write('\n'.join(updated_control_lines) + '\n')
 
         make_PT_path_surface(
-            S=get_S(T=Mps[sim_idx], Ca=element_moles['Ca']),
             P=np.linspace(run_code[sim_idx][0], run_code[sim_idx][1], run_code[sim_idx][2] + 2),
-            element_moles=element_moles,
             surface_temp=300.0,
             out_path=sim_dir / 'ad.in',
         )
 
 
-def prepare_HeFESTo_tree_cmb(directory: Path, GEOROC_DIR: Path, control_path: Path, N: int) -> None:
+def prepare_HeFESTo_tree_cmb(
+    directory: Path, GEOROC_DIR: Path, control_path: Path, N: int, real_rocks: bool = False,
+) -> None:
     """Prepare a BatchNNNN/SimulationN directory tree for HeFESTo CMB-boundary-layer runs.
 
     Variant of ``prepare_HeFESTo_tree_fulladiabat`` restricted to the
     conductive thermal boundary layer only: each simulation's ``ad.in`` runs
     from a randomly sampled transition 100-300 km above the CMB down to the
     core at 135 GPa, sampled in ~0.5 GPa increments, with temperature a
-    straight line in P from the ``Earth_Adiabats`` NN emulator's adiabat
-    temperature at the transition down to a randomly sampled mantle-side CMB
-    temperature between 3500 K and 5000 K (see ``make_PT_path_cmb`` /
-    ``_predict_adiabat_temperature``). This intentionally does *not* extend
-    upward into the adiabatic mantle above the transition -- it is meant to
-    complement a separate whole-mantle adiabat dataset (e.g. from
+    straight line in P from ``get_T`` evaluated at the transition (entropy
+    sampled ``~ N(TRANSITION_S_MEAN, TRANSITION_S_STD)``, see
+    ``make_PT_path_cmb``) down to a randomly sampled mantle-side CMB
+    temperature between 3500 K and 5000 K. This intentionally does *not*
+    extend upward into the adiabatic mantle above the transition -- it is
+    meant to complement a separate whole-mantle adiabat dataset (e.g. from
     ``prepare_HeFESTo_tree_fulladiabat``), not duplicate it.
 
     Composition sampling and Fe speciation are otherwise identical to
@@ -1492,6 +1465,11 @@ def prepare_HeFESTo_tree_cmb(directory: Path, GEOROC_DIR: Path, control_path: Pa
         of interest sits at high pressure).
     N : int
         Total number of simulations to generate.
+    real_rocks : bool, default=False
+        If True, skip the random Fe/Cr/Si/Mg/Ca/Al mole perturbation applied
+        to each sampled composition, leaving the mixed GEOROC/PetDB rock
+        chemistry unmodified (aside from Fe speciation to the sampled
+        Fe3+/Fetotal ratio, which is unrelated to this perturbation).
     """
 
     directory = Path(directory)
@@ -1506,7 +1484,6 @@ def prepare_HeFESTo_tree_cmb(directory: Path, GEOROC_DIR: Path, control_path: Pa
     simulations_in_batch = 0
     batch_number = int(batch_dir.name.removeprefix('Batch'))
 
-    Mps = 273 + 1200 + np.random.uniform(0, 1, N) * (1650 - 1200)  # mantle potential temperatures
     target_total_moles = 24.0
 
     georoc_df = pd.read_csv(GEOROC_DIR)
@@ -1601,29 +1578,30 @@ def prepare_HeFESTo_tree_cmb(directory: Path, GEOROC_DIR: Path, control_path: Pa
 
             mg_val = element_moles.get('Mg', 0.0)
 
-            d_fe = float(np.random.uniform(0.00, 0.05)) * float(np.random.uniform() > 0.3)
-            d_cr = float(np.random.uniform(0.0, 0.01))
-            d_si = float(np.random.uniform(-0.5 / 24, 2.0 / 24))
-            d_mg = float(np.random.uniform(1.5 / 24, 2.75 / 24)) * (mg_val < 1.5 / 24)
-            d_mg += float(np.random.uniform(0.25 / 24, 2.0 / 24))
-            d_ca = -(float(np.random.uniform(0.0, 0.1)) * (element_moles.get('Ca', 0.0) > 0.1))
-            d_al = -(float(np.random.uniform(0.0, 0.05)) * (element_moles.get('Al', 0.0) > 0.05))
+            if not real_rocks:
+                d_fe = float(np.random.uniform(0.00, 0.05)) * float(np.random.uniform() > 0.3)
+                d_cr = float(np.random.uniform(0.0, 0.01))
+                d_si = float(np.random.uniform(-0.5 / 24, 2.0 / 24))
+                d_mg = float(np.random.uniform(1.5 / 24, 2.75 / 24)) * (mg_val < 1.5 / 24)
+                d_mg += float(np.random.uniform(0.25 / 24, 2.0 / 24))
+                d_ca = -(float(np.random.uniform(0.0, 0.1)) * (element_moles.get('Ca', 0.0) > 0.1))
+                d_al = -(float(np.random.uniform(0.0, 0.05)) * (element_moles.get('Al', 0.0) > 0.05))
 
-            element_moles['Fe'] = element_moles.get('Fe', 0.0) + d_fe
-            element_moles['Cr'] = element_moles.get('Cr', 0.0) + d_cr
-            element_moles['Ca'] = element_moles.get('Ca', 0.0) + d_ca
-            element_moles['Al'] = element_moles.get('Al', 0.0) + d_al
-            element_moles['Si'] = element_moles.get('Si', 0.0) + d_si
-            element_moles['Mg'] = element_moles.get('Mg', 0.0) + d_mg
-            element_moles['O'] = (
-                element_moles.get('O', 0.0)
-                + 1.0 * d_fe
-                + 1.5 * d_cr
-                + 1.0 * d_ca
-                + 1.5 * d_al
-                + 2.0 * d_si
-                + 1.0 * d_mg
-            )
+                element_moles['Fe'] = element_moles.get('Fe', 0.0) + d_fe
+                element_moles['Cr'] = element_moles.get('Cr', 0.0) + d_cr
+                element_moles['Ca'] = element_moles.get('Ca', 0.0) + d_ca
+                element_moles['Al'] = element_moles.get('Al', 0.0) + d_al
+                element_moles['Si'] = element_moles.get('Si', 0.0) + d_si
+                element_moles['Mg'] = element_moles.get('Mg', 0.0) + d_mg
+                element_moles['O'] = (
+                    element_moles.get('O', 0.0)
+                    + 1.0 * d_fe
+                    + 1.5 * d_cr
+                    + 1.0 * d_ca
+                    + 1.5 * d_al
+                    + 2.0 * d_si
+                    + 1.0 * d_mg
+                )
 
             fe_total = element_moles.get('Fe', 0.0)
             element_moles['O'] = element_moles.get('O', 0.0) + 0.5 * ratio * fe_total
@@ -1661,9 +1639,7 @@ def prepare_HeFESTo_tree_cmb(directory: Path, GEOROC_DIR: Path, control_path: Pa
             handle.write('\n'.join(updated_control_lines) + '\n')
 
         make_PT_path_cmb(
-            S=get_S(T=Mps[sim_idx], Ca=element_moles['Ca']),
             P=np.linspace(run_code[sim_idx][0], run_code[sim_idx][1], run_code[sim_idx][2] + 2),
-            element_moles=element_moles,
             cmb_temp=float(T_cmbs[sim_idx]),
             out_path=sim_dir / 'ad.in',
         )

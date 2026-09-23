@@ -1,17 +1,17 @@
 """
-Generate (print, do not run) a bash script that drives the full HeFESTo
-double-resample + merge + bundle pipeline.
+Generate a bash script that drives the full HeFESTo double-resample + merge +
+bundle pipeline, and (by default) run it.
 
 The pipeline the emitted script runs, in order:
 
-  stage 0  import the original (already-run) workspace with composition
-           derivatives, and export a phase-boundary CSV
-             import_hefesto_subdirs_derivs.py --phase-change-dataname ...
+  stage 0  import the original (already-run) workspace and export a
+           phase-boundary CSV
+             import_hefesto_subdirs.py --phase-change-dataname ...
   stage 1  build a phase-change resample tree from that CSV
              prepare_hefesto_tree_from_phase_changes.py
            -> run HeFESTo on it (local GNU parallel, or SLURM + wait barrier)
            -> re-import it, this time exporting *deep* phase-boundary bounds
-             import_hefesto_subdirs_derivs.py --deep-phase-change-dataname ...
+             import_hefesto_subdirs.py --deep-phase-change-dataname ...
   stage 2  build a fine deep-resample tree from the deep bounds
              prepare_hefesto_tree_fine.py --deep
            -> run HeFESTo on it
@@ -20,25 +20,42 @@ The pipeline the emitted script runs, in order:
            tables only -- the phase-boundary CSVs used to seed the resample
            trees are deliberately NOT merged)
              merge_bigmetatables.py
-  stage 4  tar + gzip the merged table, its derivative sidecars
-           (dn/dP, dn/dT) and the per-stage derivative manifests into one
-           <name>_merged_bundle.tar.gz
+  stage 4  tar + gzip the merged table into one <name>_merged_bundle.tar.gz
+
+By default no composition derivatives (fort.42, dn/dP, dn/dT) are read,
+reconstructed or saved anywhere in this pipeline -- every import stage runs
+the derivative-free import_hefesto_subdirs.py. Pass --derivatives to switch
+all three import stages to import_hefesto_subdirs_derivs.py instead, which
+additionally reconstructs/verifies dn/dP and dn/dT and folds their shadow
+tables and manifests into the stage-4 bundle.
 
 Derived directories follow the repo's existing convention:
   <output-root>/<name>_resample1   (phase-change tree)
   <output-root>/<name>_resample2   (fine deep tree)
+
+The emitted script is always written to disk first (default:
+<output-root>/run_<name>_pipeline.sh) and its 5 stages (stage0..stage4) are
+each a standalone shell function over a fixed CONFIG block, so a run that
+gets interrupted can be resumed -- without re-running this generator -- by
+copy-pasting the CONFIG block plus function definitions into a shell, or
+simply re-invoking the saved script with the stage to resume from:
+
+  bash /scratch/hefesto/run_earthadiabats_pipeline.sh stage2
 
 Usage:
   python scripts/gen_hefesto_resample_pipeline.py \
       --workspace /path/to/OriginalWorkspace \
       --name EarthAdiabats \
       --output-root /scratch/hefesto \
-      --control-dir src/builder/HeFESTo/batch/shallowHeFESTo \
-      > run_earthadiabats_pipeline.sh
+      --control-dir src/builder/HeFESTo/batch/shallowHeFESTo
+      # writes + runs .../run_earthadiabats_pipeline.sh
+
+  # write the script and print it, but don't run it:
+  python scripts/gen_hefesto_resample_pipeline.py ... --print-only > pipeline.sh
 
   # cluster execution instead of local GNU parallel:
   python scripts/gen_hefesto_resample_pipeline.py ... --runner cluster \
-      --sbatch-time-limit 20 --squeue-filter hefesto_ > pipeline.sh
+      --sbatch-time-limit 20 --squeue-filter hefesto_
 """
 
 from __future__ import annotations
@@ -47,6 +64,7 @@ import argparse
 import os
 import re
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -134,16 +152,39 @@ def parse_args() -> argparse.Namespace:
                    help="Python interpreter used in the emitted script.")
     g.add_argument("--repo-root", type=Path, default=REPO_ROOT,
                    help="nGibbs repo root (to locate the helper scripts).")
+    g.add_argument("--derivatives", action="store_true",
+                   help="Use import_hefesto_subdirs_derivs.py instead of the "
+                        "default derivative-free import_hefesto_subdirs.py for "
+                        "every import stage, reconstructing/verifying dn/dP and "
+                        "dn/dT from fort.42 and folding their shadow tables and "
+                        "manifests into the stage-4 bundle. Off by default.")
     g.add_argument("--verify", type=int, default=2,
-                   help="--verify N forwarded to every derivative import.")
+                   help="[--derivatives only] --verify N forwarded to every "
+                        "derivative import (chain-rule check on N sims/workspace).")
     g.add_argument("--import-args", default="",
-                   help="Extra arguments appended verbatim to every "
-                        "import_hefesto_subdirs_derivs.py call "
-                        "(e.g. \"--no-recover --param-dir /x\").")
+                   help="Extra arguments appended verbatim to every import call "
+                        "(e.g. \"--phase-change-offset-only\", or, with "
+                        "--derivatives, \"--no-recover --param-dir /x\").")
     g.add_argument("--no-clean", action="store_true",
                    help="Do not delete pre-existing table/sidecar/manifest files "
                         "before each import. Default is to clean so imports never "
                         "append onto stale rows.")
+
+    g = p.add_argument_group("script output / execution")
+    g.add_argument("--script-path", type=Path, default=None,
+                   help="Where to write the generated bash script. Default: "
+                        "<output-root>/run_<name>_pipeline.sh.")
+    g.add_argument("--print-only", action="store_true",
+                   help="Write the script to --script-path and print it to "
+                        "stdout, but do not run it (the old default behavior).")
+    g.add_argument("--start-stage", default="stage0",
+                    choices=("stage0", "stage1", "stage2", "stage3", "stage4"),
+                    help="Stage to start the run from when executing the script "
+                         "(runs that stage and every one after it). Useful for "
+                         "resuming a previously interrupted run without redoing "
+                         "earlier, possibly expensive, stages. Ignored with "
+                         "--print-only; pass it directly to the saved script "
+                         "instead, e.g. `bash run_x_pipeline.sh stage2`.")
     return p.parse_args()
 
 
@@ -174,7 +215,8 @@ def main() -> None:
                   else output_root / f"{name}_tables")
 
     scripts = repo_root / "scripts"
-    import_py = scripts / "import_hefesto_subdirs_derivs.py"
+    import_py = scripts / ("import_hefesto_subdirs_derivs.py" if a.derivatives
+                            else "import_hefesto_subdirs.py")
     prep_pc_py = scripts / "prepare_hefesto_tree_from_phase_changes.py"
     prep_fine_py = scripts / "prepare_hefesto_tree_fine.py"
     merge_py = scripts / "merge_bigmetatables.py"
@@ -196,7 +238,7 @@ def main() -> None:
     fine_axis = "isotherm" if a.deep_axis == "both" else a.deep_axis
 
     extra = f" {a.import_args}" if a.import_args.strip() else ""
-    verify = f" --verify {a.verify}"
+    verify = f" --verify {a.verify}" if a.derivatives else ""
 
     L: list[str] = []
     w = L.append
@@ -213,6 +255,15 @@ def main() -> None:
     w("# this shell (Benv activated, LD_LIBRARY_PATH / LIBRARY_PATH set, as in")
     w("# scripts/ClusterHeFESTo.sh). The prepare/import/merge steps only need the")
     w("# nGibbs Python env; the run steps need HeFESTo itself.")
+    w("#")
+    w("# USAGE:  bash $0 [STAGE]     STAGE in {stage0,stage1,stage2,stage3,stage4}")
+    w("#   Runs STAGE and everything after it (default: stage0, i.e. everything).")
+    w("#   If a run gets interrupted partway, resume it -- without rebuilding")
+    w("#   earlier, possibly expensive, stages -- by re-running with the stage")
+    w("#   name it stopped in, e.g.:")
+    w("#     bash $0 stage2")
+    w("#   Or copy-paste the CONFIG block below plus the helper/stageN functions")
+    w("#   you need directly into an interactive shell.")
     w("")
     w("set -euo pipefail")
     w("")
@@ -256,33 +307,39 @@ def main() -> None:
     w("banner() { printf '\\n========== %s ==========\\n' \"$*\"; }")
     w("")
 
-    # ---- helper: tolerant derivative import (rc 1 == chain-rule warning) -----
-    w("# import_hefesto_subdirs_derivs.py exits 1 on a chain-rule verification")
-    w("# failure and >=2 on a real error. Treat 1 as a warning so the pipeline")
-    w("# still completes; anything higher aborts.")
-    w("run_import() {")
-    w('  set +e')
-    w('  "$PYTHON" "$IMPORT_PY" "$@"')
-    w('  local rc=$?')
-    w('  set -e')
-    w('  if [ "$rc" -ge 2 ]; then')
-    w('    echo "ERROR: import failed (rc=$rc)" >&2; exit "$rc"')
-    w('  elif [ "$rc" -eq 1 ]; then')
-    w('    echo "WARNING: chain-rule verification failure during import (rc=1); continuing" >&2')
-    w('  fi')
-    w("}")
+    if a.derivatives:
+        w("# import_hefesto_subdirs_derivs.py exits 1 on a chain-rule verification")
+        w("# failure and >=2 on a real error. Treat 1 as a warning so the pipeline")
+        w("# still completes; anything higher aborts.")
+        w("run_import() {")
+        w('  set +e')
+        w('  "$PYTHON" "$IMPORT_PY" "$@"')
+        w('  local rc=$?')
+        w('  set -e')
+        w('  if [ "$rc" -ge 2 ]; then')
+        w('    echo "ERROR: import failed (rc=$rc)" >&2; exit "$rc"')
+        w('  elif [ "$rc" -eq 1 ]; then')
+        w('    echo "WARNING: chain-rule verification failure during import (rc=1); continuing" >&2')
+        w('  fi')
+        w("}")
+    else:
+        w('run_import() { "$PYTHON" "$IMPORT_PY" "$@"; }')
     w("")
 
     if not a.no_clean:
-        w("# Remove any table/sidecar/manifest from a previous run of this base so")
-        w("# the importer starts from empty rather than appending onto stale rows.")
+        w("# Remove any table (and, with --derivatives, sidecar/manifest) from a")
+        w("# previous run of this base so the importer starts from empty rather")
+        w("# than appending onto stale rows.")
         w("clean_table() {")
         w('  local base="${1%.csv}"')
-        w('  rm -f "$base".csv "$base".npy "$base".txt \\')
-        w('        "${base}_dndP".csv "${base}_dndP".npy \\')
-        w('        "${base}_dndT".csv "${base}_dndT".npy \\')
-        w('        "${base}_deriv_manifest".csv \\')
-        w('        "${base}blurredbinaries".npy')
+        if a.derivatives:
+            w('  rm -f "$base".csv "$base".npy "$base".txt \\')
+            w('        "${base}_dndP".csv "${base}_dndP".npy \\')
+            w('        "${base}_dndT".csv "${base}_dndT".npy \\')
+            w('        "${base}_deriv_manifest".csv \\')
+            w('        "${base}blurredbinaries".npy')
+        else:
+            w('  rm -f "$base".csv "$base".npy "$base".txt "${base}blurredbinaries".npy')
         w("}")
         w("")
 
@@ -336,33 +393,45 @@ def main() -> None:
     w("}")
     w("")
 
+    # Each stage below is a standalone function over the CONFIG block above,
+    # so a run can be resumed after an interruption -- without re-running
+    # this generator -- either by re-invoking this saved script with the
+    # stage to resume from (e.g. `bash $0 stage2`), or by copy-pasting the
+    # CONFIG block, the helper functions, and the one stageN function you
+    # want straight into an interactive shell.
+
     # ---- stage 0 ----------------------------------------------------------
-    w('banner "stage 0 -- import original workspace + export phase boundaries"')
+    w("stage0() {")
+    w('  banner "stage 0 -- import original workspace + export phase boundaries"')
     if not a.no_clean:
-        w('clean_table "$T0"')
-    w(f'run_import --root "$WORKSPACE" --dataname "$T0" \\')
-    w(f'    --phase-change-dataname "$PC1"{verify}{extra}')
+        w('  clean_table "$T0"')
+    w(f'  run_import --root "$WORKSPACE" --dataname "$T0" \\')
+    w(f'      --phase-change-dataname "$PC1"{verify}{extra}')
+    w("}")
     w("")
 
     # ---- stage 1 --------------------------------------------------------
-    w('banner "stage 1a -- build phase-change resample tree -> RS1"')
-    w('rm -rf "$RS1"')
-    w(f'"$PYTHON" "$PREP_PC_PY" --directory "$RS1" \\')
-    w('    --phase-path "$PC1" --control-dir "$CONTROL_DIR"'
-      + ("" if limit1 is None else f' \\\n    --limit {limit1}'))
+    w("stage1() {")
+    w('  banner "stage 1a -- build phase-change resample tree -> RS1"')
+    w('  rm -rf "$RS1"')
+    w(f'  "$PYTHON" "$PREP_PC_PY" --directory "$RS1" \\')
+    w('      --phase-path "$PC1" --control-dir "$CONTROL_DIR"'
+      + ("" if limit1 is None else f' \\\n      --limit {limit1}'))
     w("")
-    w('run_hefesto_tree "$RS1"')
+    w('  run_hefesto_tree "$RS1"')
     w("")
-    w('banner "stage 1c -- re-import RS1 + export DEEP phase boundaries"')
+    w('  banner "stage 1c -- re-import RS1 + export DEEP phase boundaries"')
     if not a.no_clean:
-        w('clean_table "$T1"')
-    w(f'run_import --root "$RS1" --dataname "$T1" \\')
-    w(f'    --deep-phase-change-dataname "$PC2" --deep-axis {q(a.deep_axis)}{verify}{extra}')
+        w('  clean_table "$T1"')
+    w(f'  run_import --root "$RS1" --dataname "$T1" \\')
+    w(f'      --deep-phase-change-dataname "$PC2" --deep-axis {q(a.deep_axis)}{verify}{extra}')
+    w("}")
     w("")
 
     # ---- stage 2 ------------------------------------------------------
-    w('banner "stage 2a -- build fine deep resample tree -> RS2"')
-    w('rm -rf "$RS2"')
+    w("stage2() {")
+    w('  banner "stage 2a -- build fine deep resample tree -> RS2"')
+    w('  rm -rf "$RS2"')
     fine = [f'"$PYTHON" "$PREP_FINE_PY" --directory "$RS2"',
             '--phase-path "$PC2"', '--control-dir "$CONTROL_DIR"',
             '--deep', f'--deep-axis {q(fine_axis)}', f'--deep-dp {a.deep_dp}']
@@ -372,52 +441,106 @@ def main() -> None:
         fine.append(f'--clapeyron {a.clapeyron}')
     if limit2 is not None:
         fine.append(f'--limit {limit2}')
-    w(" \\\n    ".join(fine))
+    w("  " + " \\\n      ".join(fine))
     w("")
-    w('run_hefesto_tree "$RS2"')
+    w('  run_hefesto_tree "$RS2"')
     w("")
-    w('banner "stage 2c -- re-import RS2 (no phase-boundary export)"')
+    w('  banner "stage 2c -- re-import RS2 (no phase-boundary export)"')
     if not a.no_clean:
-        w('clean_table "$T2"')
-    w(f'run_import --root "$RS2" --dataname "$T2"{verify}{extra}')
+        w('  clean_table "$T2"')
+    w(f'  run_import --root "$RS2" --dataname "$T2"{verify}{extra}')
+    w("}")
     w("")
 
     # ---- stage 3 ----------------------------------------------------------
-    w('banner "stage 3 -- merge the three imported tables"')
-    w("# Extensionless bases. The phase-boundary CSVs (PC1/PC2) are intentionally")
-    w("# not included -- only the three main imported tables are merged.")
-    w(f'"$PYTHON" "$MERGE_PY" \\')
-    w(f'    --tables "${{T0%.csv}}" "${{T1%.csv}}" "${{T2%.csv}}" \\')
-    w(f'    --output "$MERGED" --csv-output header')
+    w("stage3() {")
+    w('  banner "stage 3 -- merge the three imported tables"')
+    w("  # Extensionless bases. The phase-boundary CSVs (PC1/PC2) are")
+    w("  # intentionally not included -- only the three main imported tables")
+    w("  # are merged.")
+    w(f'  "$PYTHON" "$MERGE_PY" \\')
+    w(f'      --tables "${{T0%.csv}}" "${{T1%.csv}}" "${{T2%.csv}}" \\')
+    w(f'      --output "$MERGED" --csv-output header')
+    w("}")
     w("")
 
     # ---- stage 4 --------------------------------------------------------
-    w('banner "stage 4 -- tar + gzip the merged table, sidecars and manifests"')
-    w('members=()')
-    w('for f in \\')
-    w('    "$(basename "$MERGED").npy" "$(basename "$MERGED").csv" "$(basename "$MERGED").txt" \\')
-    w('    "$(basename "$MERGED")_dndP.npy" "$(basename "$MERGED")_dndP.csv" \\')
-    w('    "$(basename "$MERGED")_dndT.npy" "$(basename "$MERGED")_dndT.csv" \\')
-    w('    "$(basename "$MERGED")blurredbinaries.npy" \\')
-    w('    "$(basename "${T0%.csv}")_deriv_manifest.csv" \\')
-    w('    "$(basename "${T1%.csv}")_deriv_manifest.csv" \\')
-    w('    "$(basename "${T2%.csv}")_deriv_manifest.csv" ; do')
-    w('  [ -f "$TABLES_DIR/$f" ] && members+=("$f")')
-    w('done')
-    w('if [ "${#members[@]}" -eq 0 ]; then')
-    w('  echo "ERROR: nothing to bundle -- merge outputs not found in $TABLES_DIR" >&2')
-    w('  exit 1')
-    w('fi')
-    w('tar -czf "$BUNDLE" -C "$TABLES_DIR" "${members[@]}"')
-    w('echo "bundled ${#members[@]} file(s):"')
-    w('printf "  %s\\n" "${members[@]}"')
+    w("stage4() {")
+    if a.derivatives:
+        w('  banner "stage 4 -- tar + gzip the merged table, sidecars and manifests"')
+    else:
+        w('  banner "stage 4 -- tar + gzip the merged table"')
+    w('  members=()')
+    w('  for f in \\')
+    w('      "$(basename "$MERGED").npy" "$(basename "$MERGED").csv" "$(basename "$MERGED").txt" \\')
+    if a.derivatives:
+        w('      "$(basename "$MERGED")_dndP.npy" "$(basename "$MERGED")_dndP.csv" \\')
+        w('      "$(basename "$MERGED")_dndT.npy" "$(basename "$MERGED")_dndT.csv" \\')
+        w('      "$(basename "$MERGED")blurredbinaries.npy" \\')
+        w('      "$(basename "${T0%.csv}")_deriv_manifest.csv" \\')
+        w('      "$(basename "${T1%.csv}")_deriv_manifest.csv" \\')
+        w('      "$(basename "${T2%.csv}")_deriv_manifest.csv" ; do')
+    else:
+        w('      "$(basename "$MERGED")blurredbinaries.npy" ; do')
+    w('    [ -f "$TABLES_DIR/$f" ] && members+=("$f")')
+    w('  done')
+    w('  if [ "${#members[@]}" -eq 0 ]; then')
+    w('    echo "ERROR: nothing to bundle -- merge outputs not found in $TABLES_DIR" >&2')
+    w('    exit 1')
+    w('  fi')
+    w('  tar -czf "$BUNDLE" -C "$TABLES_DIR" "${members[@]}"')
+    w('  echo "bundled ${#members[@]} file(s):"')
+    w('  printf "  %s\\n" "${members[@]}"')
     w("")
-    w('banner "done"')
-    w('echo "merged table : $MERGED.npy"')
-    w('echo "bundle       : $BUNDLE"')
+    w('  banner "done"')
+    w('  echo "merged table : $MERGED.npy"')
+    w('  echo "bundle       : $BUNDLE"')
+    w("}")
     w("")
 
-    print("\n".join(L))
+    # ---- dispatch: run STAGE (arg 1, default stage0) through stage4 -------
+    w("# ------------------------------------------------------------- DISPATCH")
+    w('STAGES=(stage0 stage1 stage2 stage3 stage4)')
+    w('START_STAGE="${1:-stage0}"')
+    w("")
+    w('if [ "$START_STAGE" = "-h" ] || [ "$START_STAGE" = "--help" ]; then')
+    w('  echo "Usage: $0 [STAGE]" >&2')
+    w('  echo "  STAGE: one of ${STAGES[*]} (default: stage0)." >&2')
+    w('  echo "  Runs STAGE and every stage after it -- pass the stage where a" >&2')
+    w('  echo "  previous run was interrupted to resume without redoing earlier," >&2')
+    w('  echo "  possibly expensive, stages." >&2')
+    w('  exit 0')
+    w('fi')
+    w("")
+    w('found=false')
+    w('for s in "${STAGES[@]}"; do')
+    w('  [ "$s" = "$START_STAGE" ] && found=true')
+    w('  if $found; then "$s"; fi')
+    w('done')
+    w('if ! $found; then')
+    w('  echo "ERROR: unknown stage \'$START_STAGE\' (expected one of ${STAGES[*]})" >&2')
+    w('  exit 1')
+    w('fi')
+    w("")
+
+    script_text = "\n".join(L) + "\n"
+
+    script_path = (a.script_path.resolve() if a.script_path
+                   else output_root / f"run_{name}_pipeline.sh")
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text(script_text)
+    script_path.chmod(0o755)
+
+    print(f"Wrote pipeline script to {script_path}", file=sys.stderr)
+    print(f"Resume (or re-run from a given stage) with: "
+          f"bash {q(script_path)} stageN", file=sys.stderr)
+
+    if a.print_only:
+        print(script_text)
+        return
+
+    result = subprocess.run(["bash", str(script_path), a.start_stage])
+    sys.exit(result.returncode)
 
 
 if __name__ == "__main__":

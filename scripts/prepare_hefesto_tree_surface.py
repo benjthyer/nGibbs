@@ -57,6 +57,15 @@ def parse_args() -> argparse.Namespace:
 		required=True,
 		help='Number of simulations to create.',
 	)
+	parser.add_argument(
+		'--real-rocks',
+		action='store_true',
+		help=(
+			'Skip the random Fe/Cr/Si/Mg/Ca/Al mole perturbation applied to each '
+			'sampled composition, leaving the mixed GEOROC/PetDB rock chemistry '
+			'unmodified (aside from Fe speciation to the sampled Fe3+/Fetotal ratio).'
+		),
+	)
 	return parser.parse_args()
 
 
@@ -67,6 +76,7 @@ def main() -> None:
 		GEOROC_DIR=args.georoc_dir,
 		control_path=args.control_path,
 		N=args.n,
+		real_rocks=args.real_rocks,
 	)
 
 
