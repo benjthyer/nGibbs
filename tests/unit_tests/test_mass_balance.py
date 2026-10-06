@@ -3,7 +3,9 @@
 `MassBalanceProjector` (engine/mass_balance.py) is tested in isolation with a synthetic
 stoichiometry matrix -- no model checkpoint needed. An optional integration check runs
 all three `NN_MELTS(mass_balance=...)` modes against a real light bundle when one is
-present.
+present. The MELTS pyroxene/spinel polish (`polish_negative_sp`, run after every
+projector step) is tested on synthetic intensive compositions, and end to end on the
+MELTS 1.2 bundle and a standard when they are present.
 
 Run:  pytest tests/unit_tests/test_mass_balance.py
 """
@@ -16,6 +18,7 @@ import pytest
 import torch
 
 from ngibbs.engine.mass_balance import MassBalanceProjector
+from ngibbs.engine.NN import MidLevelNetwork
 
 
 def _synthetic_system(B=32, C=12, E=5, seed=0):
@@ -130,3 +133,100 @@ def test_forwardMB_modes_share_one_path(mode):
         assert resid.mean() > 1e-3          # raw heads are off the manifold
     else:
         assert resid.mean() < 5e-3          # corrected
+
+
+# --------------------------------------------------------------------------- #
+#  Pyroxene/spinel legality polish inside the iterative mass balance
+# --------------------------------------------------------------------------- #
+def test_projector_runs_polish_after_every_step():
+    n_pred, compToEl, b_dir, _ = _synthetic_system(seed=4)
+    seen = []
+
+    def polish(n):
+        seen.append(n.clone())
+        out = n.clone()
+        out[:, 0] = 0.0
+        return out
+
+    n_corr, resid = MassBalanceProjector(iters=4)(n_pred, compToEl, b_dir, polish=polish)
+    assert len(seen) == 4
+    assert (n_corr[:, 0] == 0).all()          # the last thing applied is the polish
+    assert torch.allclose(resid, _resid(n_corr, compToEl, b_dir), atol=1e-5)
+
+
+class _SpinelHost:
+    """The MidLevelNetwork spinel polish methods on a bare object (they need only
+    detail_label_indices)."""
+    detail_label_indices = {'spinel': {'hercynite': 0, 'magnetite': 1, 'spinel': 2, 'ulvospinel': 3}}
+    polish_negative_sp = MidLevelNetwork.polish_negative_sp
+    polish_negative_spFe = MidLevelNetwork.polish_negative_spFe
+
+
+def _sp_constraints(ic):
+    c2, c3, c4, c5 = ic.T
+    feo = c2 + c3 + 2.25 * c5 - 19 * c4          # FeO >= 0 (compToOx, transformed basis)
+    al = c2 + c4 - (2 / 3) * c3 - 0.25 * c5      # Al2O3 >= 0
+    return feo, al
+
+
+def test_polish_negative_sp_imposes_only_the_violated_constraint():
+    # rows: Al-only violation (an Al-poor Fe-Ti spinel), FeO-only violation (a
+    # Mg-rich spinel), both violated, and a legal row
+    ic = torch.tensor([[0.33, 0.56, 0.003, 0.107],
+                       [0.40, 0.05, 0.53, 0.02],
+                       [0.02, 0.80, 0.06, 0.12],
+                       [0.50, 0.30, 0.02, 0.18]], dtype=torch.float64)
+    feo0, al0 = _sp_constraints(ic)
+    assert al0[0] < 0 < feo0[0] and feo0[1] < 0 < al0[1]
+    assert feo0[2] < 0 and al0[2] < 0 and feo0[3] > 0 and al0[3] > 0
+    out = _SpinelHost().polish_negative_sp(ic.clone())
+    feo, al = _sp_constraints(out)
+    assert (feo > -1e-9).all() and (al > -1e-9).all()
+    assert torch.allclose(out.sum(1), ic.sum(1))                  # block total kept
+    # Al-only: spinel (MgAl2O4) untouched, FeO NOT driven to zero
+    assert out[0, 2] == ic[0, 2] and abs(al[0]) < 1e-9 and feo[0] > 0.5 * feo0[0]
+    # FeO-only: magnetite and ulvospinel untouched, Al2O3 stays positive
+    assert out[1, 1] == ic[1, 1] and out[1, 3] == ic[1, 3]
+    assert abs(feo[1]) < 1e-9 and al[1] > 0
+    # both violated: both equalities
+    assert abs(feo[2]) < 1e-9 and abs(al[2]) < 1e-9
+    assert torch.equal(out[3], ic[3])
+
+
+_MELTS_120 = Path(__file__).resolve().parents[2] / "src" / "ngibbs" / "engine" / "TrainedModels" / "120"
+_STANDARDS = (Path(__file__).resolve().parents[2] / "src" / "ngibbs" / "deployment_tests" /
+              "MELTSIsobaricStandards" / "120" / "NoCr" / "BishopTuff")
+
+
+@pytest.mark.skipif(not (_MELTS_120.exists() and _STANDARDS.exists()),
+                    reason="MELTS 1.2 bundle or BishopTuff standard not checked out")
+def test_melts_iterative_mass_balance_returns_legal_spinel_and_opx():
+    """BishopTuff: the emulator's spinel is Al-deficient; after the iterative mass
+    balance (polish after every step) no orthopyroxene or spinel oxide is negative."""
+    import warnings
+    from ngibbs.engine.API import MELTSAPI
+    import ngibbs.deployment_tests.melts_comparison as mc
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        api = MELTSAPI(_MELTS_120)
+        em = api.nocr.isothermal_emulator
+        sm = mc.read_system_main(_STANDARDS)
+        bulk = mc.read_bulk_comp(_STANDARDS)
+        ox = list(mc._emulator_input_oxides(em))
+        table = np.column_stack([sm['Pressure'].values, sm['Temperature'].values]
+                                + [mc._bulk_oxide(bulk, o) for o in ox]).astype(np.float32)
+        out = api.ForwardMB(table, headers=['Pressure(System_main)', 'Temperature(System_main)'] + ox,
+                            outputs=['component_moles', 'reconstruction_residual'])
+    cm = out['component_moles'].double()
+    compToOx = torch.as_tensor(np.asarray(em.ml_indexer.compToOx, dtype=np.float64))
+    lic = em.ml_indexer.label_indices_comp
+    for ph in ('orthopyroxene', 'spinel'):
+        blk = torch.zeros_like(cm)
+        blk[:, lic[ph]] = cm[:, lic[ph]]
+        tot = blk.sum(1)
+        present = tot > 0
+        assert present.any()
+        oxides = (blk[present] @ compToOx) / tot[present, None]
+        assert oxides.min() > -1e-6, ph
+    assert out['reconstruction_residual'].max() < 5e-3

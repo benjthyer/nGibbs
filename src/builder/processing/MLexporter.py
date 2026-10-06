@@ -162,13 +162,23 @@ def _derivative_stats(exporter, q=95.0, chunk=200_000):
 def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=False, featureNames=["Pressure(System_main)", "Temperature(System_main)"],
                             free_outputs=None, indexer=None, config_path=None, bundle_name=None, chunk_size=None,
                             deep_filter_kwargs=None, insanity_filter_kwargs=None,
-                            alias_table1='auto', isentropic_derivatives='auto'):
+                            alias_table1='auto', isentropic_derivatives='auto',
+                            export_run_ids='auto', compute_T0_scale=True):
 
     """Builds features and labels for training. Converts MELTS tables to .npy files fit for ML work.
     Self: BigMetaTable Instance.
 
     Parameters
     ----------
+    export_run_ids : {'auto', True, False}, default 'auto'
+        Also write run_ids.npy (int32, one per output row): the table's per-row simulation
+        code (`self.run_indices`). Row-aligned, so the post-export filters trim it and the
+        shuffle permutes it. Needed by builder.processing.affinity_labels, which labels
+        each simulation path before the training shuffle. 'auto' exports it when the
+        table carries row-aligned run_indices; True requires them.
+    compute_T0_scale : bool, default True
+        Compute and bundle T0.npy (ContinuousModel's boundary-annealing scale). Pipelines
+        that do not train ContinuousModel can skip this distribution-aware pass.
     isentropic_derivatives : {'auto', True, False}, default 'auto'
         Also export dn/dP|S and dn/dS|P, derived from the isothermal sidecars via the
         exact local change of coordinates alpha*V*T/cp. An ISENTROPIC emulator takes
@@ -453,6 +463,19 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             shape=(num_rows*len(resample_bounds), len(free_output_indices))
         )
     
+    _have_run_ids = hasattr(self, 'run_indices') and len(self.run_indices) == num_rows
+    if export_run_ids is True and not _have_run_ids:
+        raise ValueError('export_run_ids=True but self.run_indices is missing or not '
+                         'row-aligned with the table')
+    export_run_ids = bool(export_run_ids) and _have_run_ids
+    if export_run_ids:
+        self.run_ids_out = np.lib.format.open_memmap( # Simulation id per row
+                self.filename + 'run_ids.npy',
+                mode='w+',
+                dtype=np.int32,
+                shape=(num_rows*len(resample_bounds),)
+        )
+
     self.labels = np.lib.format.open_memmap( # Components in moles, intensive only
             self.filename + 'labels.npy',
             mode='w+',
@@ -595,6 +618,10 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
                     else:
                         self.features[out_start:out_end, k] = self.table[start:end, fidx]
 
+                # --- Simulation ids (row-aligned; same for every resample of a row)
+                if export_run_ids:
+                    self.run_ids_out[out_start:out_end] = self.run_indices[start:end]
+
                 # --- Molar labels
                 #print(f"Building molar labels for rows {start}:{end} (sample {i})")
                 self.molarlabels[out_start:out_end] = (molar_chunk / InTot_chunk) @ phaseToCompMap.T
@@ -658,6 +685,8 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             self.features.flush()
             self.molarlabels.flush()
             self.labels.flush()
+            if export_run_ids:
+                self.run_ids_out.flush()
 
             # Explicitly collect to close lingering references
             del self.molar #  Delete memmap reference!
@@ -709,6 +738,8 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             del self.binarylabels, self.masslabels, self.features, self.labels, self.table1, self.molarlabels
         if hasattr(self, 'free_outputs'):
             del self.free_outputs
+        if hasattr(self, 'run_ids_out'):
+            del self.run_ids_out
         gc.collect()
 
     indexer_dir = self.filename + 'ml_indexer'
@@ -786,6 +817,8 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
         self.filename + 'features.npy': 'features.npy',
         self.filename + 'labels.npy': 'labels.npy',
     }
+    if export_run_ids:
+        file_mappings[self.filename + 'run_ids.npy'] = 'run_ids.npy'
     if config_path:
         config_basename = Path(config_path).name
         file_mappings[str(config_path)] = config_basename
@@ -819,17 +852,20 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     # temperature T = a*T0 (see NN_continuous.py). Computed once here, post-filter, on
     # the final molar_labels.npy - see scripts/compute_T0.py to backfill an existing
     # bundle that predates this.
-    print("Computing per-phase vanishing-abundance scale (T0)...")
-    _molar_for_T0 = np.load(self.filename + 'molar_labels.npy', mmap_mode='r')
-    _T0 = compute_T0(_molar_for_T0, indexer.ml_indexer.mass_phasedict, indexer.ml_indexer.all_phases)
-    del _molar_for_T0
-    gc.collect()
-    _t0_path = Path(self.filename + 'T0.npy')
-    np.save(_t0_path, _T0)
-    file_mappings[str(_t0_path)] = 'T0.npy'
-    _zero_T0 = [p for p in indexer.ml_indexer.all_phases if _T0[indexer.ml_indexer.mass_phasedict[p]] == 0.0]
-    if _zero_T0:
-        print(f"[T0] WARNING: never-present phases (T0=0, cannot anneal): {_zero_T0}")
+    if compute_T0_scale:
+        print("Computing per-phase vanishing-abundance scale (T0)...")
+        _molar_for_T0 = np.load(self.filename + 'molar_labels.npy', mmap_mode='r')
+        _T0 = compute_T0(_molar_for_T0, indexer.ml_indexer.mass_phasedict, indexer.ml_indexer.all_phases)
+        del _molar_for_T0
+        gc.collect()
+        _t0_path = Path(self.filename + 'T0.npy')
+        np.save(_t0_path, _T0)
+        file_mappings[str(_t0_path)] = 'T0.npy'
+        _zero_T0 = [p for p in indexer.ml_indexer.all_phases if _T0[indexer.ml_indexer.mass_phasedict[p]] == 0.0]
+        if _zero_T0:
+            print(f"[T0] WARNING: never-present phases (T0=0, cannot anneal): {_zero_T0}")
+    else:
+        print("Skipping T0 (compute_T0_scale=False)")
 
     # Add stats file
     if stats_path and stats_path.exists():

@@ -14,8 +14,8 @@ models read out of MAGMA's `gibbs.c`. It does *not* yet cover:
   endmember level, matching how `gibbs.c`'s own `gibbs()` function is
   itself only one layer of the full calculation,
 - mineral-specific order-disorder corrections applied *after* the generic
-  branch for a handful of named phases (e.g. albite Al-Si ordering) --
-  gibbs.c lines ~2540 onward; not translated here.
+  branch for named phases other than those listed below (gibbs.c lines ~2540
+  onward).
 
 One exception to the "generic branch only" scope above: quartz and
 tridymite are NOT ordinary Berman-EOS endmembers in real MELTS -- they
@@ -41,28 +41,45 @@ own ordinary generic Berman-EOS result (unlike quartz/tridymite, which
 a previously-flagged k-feldspar entropy/Cp mismatch in the feldspar
 solid-solution mixing benchmark -- see that module's docstring for the
 quantitative match. Albite's own order-disorder branch (gibbs.c lines
-2543-2561, an iterative Newton-Raphson order-parameter solve in a
-separate `albite()` function) is a structurally bigger lift and is NOT
-translated here -- left as a follow-up, lower priority since the earlier
-benchmark's plagioclase (albite/anorthite-dominated) mismatch was already
-much smaller than k-feldspar's.
+2543-2561, the two-parameter Newton solve in albite.c's `albite()`) is
+translated too (2026-09-23, `feldspar_disorder.albite_disorder_correction`,
+additive), as are the vc-/ca-nepheline branches (gibbs.c 2612-2678: the
+tabulated entry averaged with a Vinet beta-nepheline reference,
+`_beta_nepheline_ref`). All exact against the MAGMA C library.
 
-So: this is the generic-case solid EOS plus the two bespoke special cases
+So: this is the generic-case solid EOS plus the bespoke special cases
 that were validated and wired in, verified against the same formulas
 gibbs.c uses for every endmember -- covering, per `MELTS_Parameters/
 README.md`'s survey, the large majority of the `meltsSolids` table plus
-quartz/tridymite/sanidine; other named special-case branches (e.g. albite
-ordering) remain out of scope.
+quartz/tridymite/sanidine/albite/vc-,ca-nepheline; other named branches
+(gehlenite, the melilite and xMELTS/pMELTS-only ones) remain out of scope.
 """
 from __future__ import annotations
 import numpy as np
 
 from .constants import CP_BERMAN, CP_SAXENA, EOS_BERMAN, EOS_VINET, Pr, Tr
-from .feldspar_disorder import sanidine_disorder_correction
+from .feldspar_disorder import sanidine_disorder_correction, albite_disorder_correction
 from .params import MELTSSolidParams
 from .quartz_tridymite import compute_quartz, compute_tridymite
 from .solid_eos import eos_berman, eos_vinet
 from .thermal import berman_ref_state, saxena_ref_state
+
+
+def _beta_nepheline_ref(v_ref):
+    """gibbs.c's local `tempRef` for the vc-/ca-nepheline branches: Na4Al4Si4O16
+    (beta-nepheline) thermochemistry with a vacancy-endmember volume on a
+    Vinet EOS. Evaluated through the generic branch (its label has no
+    special case of its own)."""
+    return MELTSSolidParams(
+        labels=["na-nepheline"], types=["COMPONENT"], formulas=["Na4Al4Si4O16"],
+        h=np.array([-2093004.0*4.0]), s=np.array([124.641*4.0]), v0=np.array([v_ref]),
+        cp_type=np.array([CP_BERMAN], dtype=np.int32),
+        cp_coeffs=np.array([[205.24*4.0, -7.599E2*4.0, -108.383E5*4.0, 208.182E7*4.0,
+                             467.0, 241.0*4.0, -50.249E-2*2.0, 165.95E-5*2.0]]),
+        eos_type=np.array([EOS_VINET], dtype=np.int32),
+        eos_coeffs=np.array([[31.802e-6, 48.7805, 1.4747, 0.0]]),
+        label_index={"na-nepheline": 0},
+    )
 
 
 def compute(T, P, params: MELTSSolidParams, names=None, is_pmelts: bool = False) -> dict:
@@ -201,6 +218,42 @@ def compute(T, P, params: MELTSSolidParams, names=None, is_pmelts: bool = False)
             d2VdT2 = d2VdT2 + np.where(is_sanidine, dis["dd2VdT2"], 0.0)
             # dVdP, d2VdTdP, d2VdP2 untouched -- gibbs.c's sanidine branch
             # never adjusts them.
+
+        # -- 5. albite displacive + Al-Si ordering (albite.c, additive; see
+        #    feldspar_disorder.albite_disorder_correction). ----------------
+        is_albite = (labels_arr == "albite")[None, :]
+        if is_albite.any():
+            ab = albite_disorder_correction(T[:, 0], P[:, 0])
+            G = G + np.where(is_albite, ab["dG"][:, None], 0.0)
+            H = H + np.where(is_albite, ab["dH"][:, None], 0.0)
+            S = S + np.where(is_albite, ab["dS"][:, None], 0.0)
+            Cp = Cp + np.where(is_albite, ab["dCp"][:, None], 0.0)
+            dCpdT = dCpdT + np.where(is_albite, ab["ddCpdT"][:, None], 0.0)
+            V = V + np.where(is_albite, ab["dV"][:, None], 0.0)
+            dVdT = dVdT + np.where(is_albite, ab["ddVdT"][:, None], 0.0)
+            dVdP = dVdP + np.where(is_albite, ab["ddVdP"][:, None], 0.0)
+            d2VdT2 = d2VdT2 + np.where(is_albite, ab["dd2VdT2"][:, None], 0.0)
+            d2VdTdP = d2VdTdP + np.where(is_albite, ab["dd2VdTdP"][:, None], 0.0)
+            d2VdP2 = d2VdP2 + np.where(is_albite, ab["dd2VdP2"][:, None], 0.0)
+
+        # -- 6. vc-/ca-nepheline (gibbs.c 2612-2678): the tabulated monalbite /
+        #    C1-anorthite entry (volume zeroed) averaged with a beta-nepheline
+        #    reference evaluated on a Vinet EOS; ca-nepheline also gets an
+        #    enthalpy and zero-point-entropy correction first.
+        for label, v_ref, dh, ds in (("vc-nepheline", 5.434181*8.0, 0.0, 0.0),
+                                     ("ca-nepheline", 5.433181*8.0, 23096.0, 15.8765)):
+            col = (labels_arr == label)[None, :]
+            if not col.any():
+                continue
+            ref = compute(T[:, 0], P[:, 0], _beta_nepheline_ref(v_ref))
+            gen = dict(G=G + dh - T*ds, H=H + dh, S=S + ds, Cp=Cp, dCpdT=dCpdT, V=V, dVdT=dVdT, dVdP=dVdP,
+                       d2VdT2=d2VdT2, d2VdTdP=d2VdTdP, d2VdP2=d2VdP2)
+            avg = {k: np.where(col, (2.0*gen[k] + ref[k][:, :1])/2.0, v) for k, v in
+                   (("G", G), ("H", H), ("S", S), ("Cp", Cp), ("dCpdT", dCpdT), ("V", V), ("dVdT", dVdT),
+                    ("dVdP", dVdP), ("d2VdT2", d2VdT2), ("d2VdTdP", d2VdTdP), ("d2VdP2", d2VdP2))}
+            G, H, S, Cp, dCpdT = avg["G"], avg["H"], avg["S"], avg["Cp"], avg["dCpdT"]
+            V, dVdT, dVdP = avg["V"], avg["dVdT"], avg["dVdP"]
+            d2VdT2, d2VdTdP, d2VdP2 = avg["d2VdT2"], avg["d2VdTdP"], avg["d2VdP2"]
 
         out["dVdT"], out["dVdP"] = dVdT, dVdP
         out["d2VdT2"], out["d2VdTdP"], out["d2VdP2"] = d2VdT2, d2VdTdP, d2VdP2

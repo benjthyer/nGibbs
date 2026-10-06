@@ -153,25 +153,28 @@ def _bundle_composition(features, indexer_meta, composition_space: str) -> Dict[
 # standard-rock (ground-truth) loaders -- MELTS
 # --------------------------------------------------------------------------- #
 def melts_standard_points(standards_dir: Path, variant: str = 'NoCr',
-                           rocks: Optional[Sequence[str]] = None):
+                           rocks: Optional[Sequence[str]] = None, *,
+                           oxide_cols: Sequence[str]):
     """(P_bar, T_C, S_specific, comp_molefrac, rock_ids) for every row of
     every standard rock's isobaric-cooling run under
     ``standards_dir/<variant>/<rock>/``, reusing ``melts_comparison``'s own
     table readers -- so these values are guaranteed consistent with what's
     actually fed to the emulator elsewhere in this codebase.
 
-    ``comp_molefrac`` is a dict {oxide: array}: ``read_bulk_comp`` returns
-    oxide wt%, converted here to mole fraction (via each oxide's molar mass)
-    to match the bundle's own oxide-mole-fraction convention. Returns None
-    if no rock directory exists for this variant at all.
+    ``oxide_cols`` is the emulator's own input oxide set
+    (``melts_comparison._emulator_input_oxides``), which differs by MELTS
+    version and Cr/NoCr variant. ``comp_molefrac`` is a dict {oxide: array}:
+    ``read_bulk_comp`` returns oxide wt%, converted here to mole fraction
+    (via each oxide's molar mass) over ``oxide_cols`` to match the bundle's
+    own oxide-mole-fraction convention. Returns None if no rock directory
+    exists for this variant at all.
     """
     from ngibbs.config.constants import get_oxide_molar_mass
     from ngibbs.deployment_tests.melts_comparison import (
         ROCKS, read_system_main, read_bulk_comp,
-        _EMULATOR_OXIDE_COLS_CR, _EMULATOR_OXIDE_COLS_NOCR,
     )
     rocks = list(rocks) if rocks is not None else list(ROCKS)
-    oxide_cols = _EMULATOR_OXIDE_COLS_CR if variant == 'Cr' else _EMULATOR_OXIDE_COLS_NOCR
+    oxide_cols = list(oxide_cols)
 
     P_all, T_all, S_all, ids_all = [], [], [], []
     wtpct_cols = {ox: [] for ox in oxide_cols}

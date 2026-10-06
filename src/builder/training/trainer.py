@@ -91,13 +91,40 @@ def _make_train_loader(trainData, batch_size, num_workers):
     return trainData
 
 
-def symmetric_rel_l1(pred, target, eps=1e-6):
-    denom = torch.clamp(torch.abs(pred) + torch.abs(target), min=eps)
-    return torch.mean(torch.abs(pred - target) / denom)
+def _reduce(loss, reduction):
+    if reduction == 'none':
+        return loss
+    if reduction == 'mean':
+        return torch.mean(loss)
+    if reduction == 'sum':
+        return torch.sum(loss)
+    raise ValueError(f"reduction must be 'none', 'mean' or 'sum', got {reduction!r}")
 
-def symmetric_rel_l2(pred, target, eps=1e-6):
+
+# Elementwise by default. `_upper_loss` applies presence masks and per-phase/component
+# weights AFTER the criterion, so the criterion must hand back one value per entry: a
+# mean-reduced scalar makes `(scalar * mask * w).sum() / (mask * w).sum()` collapse back
+# to the scalar, i.e. masks and weights silently do nothing (which is what happened
+# before this default changed). `_upper_loss` now checks the shape and raises.
+def symmetric_rel_l1(pred, target, eps=1e-6, reduction='none'):
     denom = torch.clamp(torch.abs(pred) + torch.abs(target), min=eps)
-    return torch.mean((pred - target)**2 / denom)
+    return _reduce(torch.abs(pred - target) / denom, reduction)
+
+def symmetric_rel_l2(pred, target, eps=1e-6, reduction='none'):
+    denom = torch.clamp(torch.abs(pred) + torch.abs(target), min=eps)
+    return _reduce((pred - target)**2 / denom, reduction)
+
+
+def _elementwise(criterion, pred, target, name):
+    """Call `criterion` and insist on an elementwise result. A scalar here means the
+    masks/weights in `_upper_loss` would cancel out -- fail loudly instead."""
+    raw = criterion(pred, target)
+    if raw.shape != pred.shape:
+        raise ValueError(
+            f"{name} criterion returned shape {tuple(raw.shape)} for predictions of shape "
+            f"{tuple(pred.shape)}. _upper_loss needs an elementwise (reduction='none') "
+            f"criterion so its presence masks and phase/component weights take effect.")
+    return raw
 
 
 def _iter_adaptive_dropout_modules(model: nn.Module):
@@ -291,9 +318,9 @@ def _upper_loss(model, out: UpperBatch, x_batch, b_batch, y_batch, m_batch, feat
                 else torch.zeros((), device=x_batch.device, dtype=x_batch.dtype))
 
     bulk_target = x_batch[:, feature_offset:]
-    chem_loss_raw = criterion_chem(out.chem, y_batch)
-    mole_loss_raw = criterion_mole(out.mole, _mole_targets(model, m_batch))
-    bulk_loss_raw = criterion_bulk(out.bulk, bulk_target)
+    chem_loss_raw = _elementwise(criterion_chem, out.chem, y_batch, 'chemistry')
+    mole_loss_raw = _elementwise(criterion_mole, out.mole, _mole_targets(model, m_batch), 'moles')
+    bulk_loss_raw = _elementwise(criterion_bulk, out.bulk, bulk_target, 'bulk')
 
     bulk_zero_mask = (bulk_target != 0).to(torch.float)
     mole_zero_mask = (out.mole_mask if out.mole_mask is not None
@@ -650,6 +677,7 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
 
 def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = {}, criterion = symmetric_rel_l2, criterion_sat = nn.BCEWithLogitsLoss(),
+                      criterion_mole = None, criterion_bulk = None,
                       chem_alpha = 1, mole_alpha = 1, bulk_alpha = 0, sat_alpha = 1, Epochs = 20, batch_size = 1024, lr = 1e-4,
                       binWeights = torch.ones(1), compWeights = torch.ones(1),
                       device = 'cuda', max_N = np.inf, early_stopping_patience = 5, which_heads_to_freeze = ['sat_head', 'encoder'], DictFilePath = None,
@@ -661,7 +689,11 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     `{a_start, a_end}` -- see `_anneal_a`/`_boundary_T`. Only meaningful for a model
     whose `upper_forward` accepts `T` (ContinuousModel); `_upper_forward` no-ops it for
     any other model, so passing this against e.g. MidLevelNetwork is harmless, not an
-    error."""
+    error.
+
+    `criterion` is the chemistry criterion; `criterion_mole` / `criterion_bulk` default to
+    it when None. All three must be elementwise (see `symmetric_rel_l2`). main.py builds
+    them from `loss_config.{chemistry,moles,bulk}.type`."""
     # iF which_heads_to_freeze is [], then this is a full model trainer!
     # Currently does not handle limited VC training!! Need to adjust model to make bulk output optional, then not use it in this loop
     """model = NN.MidLevelNetwork(**Model.config)#.to(Model.device) # Copy the old model, so no overwriting. 
@@ -712,8 +744,8 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     compWeights = compWeights.to(device)
 
     criterion_chem = criterion
-    criterion_mole = criterion
-    criterion_bulk = criterion
+    criterion_mole = criterion if criterion_mole is None else criterion_mole
+    criterion_bulk = criterion if criterion_bulk is None else criterion_bulk
 
     # --- Boundary-temperature annealing (see NN_continuous.py's upper_forward) ---
     if boundary_temperature:

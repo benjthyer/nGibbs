@@ -1,4 +1,10 @@
 """
+NOTE (2026-09-23): production code uses liquid_modes.compute_liquid_bulk_mode,
+which applies this same correction for MELTS102 with the W table liquid_v34.c
+really reads in MODE__MELTS (param_struct_data_v34.h meltsModelParameters,
+MELTS_Parameters/liq_mode_wij_data.json). liq_wij_data.json below
+(originalModelParameters) differs from it in the CO2 pairs.
+
 MELTS's non-ideal liquid mixing correction, translated verbatim from
 `sources/liquid_v34.c`'s `gmixLiq_v34`/`hmixLiq_v34`/`smixLiq_v34` (the
 active liquid mixing model for both `MODE__MELTS` and `MODE_pMELTS` --

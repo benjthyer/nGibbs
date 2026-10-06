@@ -33,13 +33,25 @@ from .EOS_arithmetic.hefesto_vec import (
 from .EOS_arithmetic_MELTS.melts_vec import (
     load_solids as load_melts_solids,
     load_liquid as load_melts_liquid,
-    compute_liquid_bulk as melts_compute_liquid_bulk,
+    load_liquid_mode as load_melts_liquid_mode,
+    compute_liquid_bulk_mode as melts_compute_liquid_bulk_mode,
+    compute_fluid_solution as melts_compute_fluid_solution,
+    compute_water_phase as melts_compute_water_phase,
+    molar_mass_from_formula as _melts_molar_mass_from_formula,
+    MELTS_MODES as _MELTS_MODES,
+    MELTS_SOLID_TABLE as _MELTS_SOLID_TABLE,
     compute_feldspar_solution as melts_compute_feldspar_solution,
     compute_olivine_solution as melts_compute_olivine_solution,
     compute_clinopyroxene_solution as melts_compute_clinopyroxene_solution,
     compute_orthopyroxene_solution as melts_compute_orthopyroxene_solution,
     compute_spinel_solution as melts_compute_spinel_solution,
     compute_rhm_oxide_solution as melts_compute_rhm_oxide_solution,
+    compute_solution as melts_compute_solution,
+    garnet as _melts_garnet,
+    leucite as _melts_leucite,
+    biotite as _melts_biotite,
+    hornblende as _melts_hornblende,
+    nepheline as _melts_nepheline,
     feldspar as _melts_feldspar,
     olivine as _melts_olivine,
     clinopyroxene as _melts_clinopyroxene,
@@ -725,6 +737,14 @@ def _name_tokens(name: str) -> set:
             t = t[:-1]
         out.add(t)
     return out
+
+
+def _infer_melts_version(model_dir) -> Optional[str]:
+    """'MELTS102'/'MELTS110'/'MELTS120' from a '102'/'110'/'120' token in
+    model_dir's own name (see _name_tokens), else None. Two different version
+    tokens also give None (ambiguous)."""
+    found = {'MELTS' + t for t in _name_tokens(Path(model_dir).resolve().name) if t in ('102', '110', '120')}
+    return found.pop() if len(found) == 1 else None
 
 
 def _discover_standards_dir(deployment_tests_root: Path, model_dir: Path) -> Optional[Path]:
@@ -2659,6 +2679,7 @@ class MELTSAPI:
         load_melts_eos: bool = True,
         melts_solid_params_path: Optional[Union[str, Path]] = None,
         melts_liquid_params_path: Optional[Union[str, Path]] = None,
+        melts_version: Optional[str] = None,
     ):
         """
         Initialize MELTS API by pointing at a single directory, building the
@@ -2696,6 +2717,14 @@ class MELTSAPI:
         melts_solid_params_path, melts_liquid_params_path : str or Path, optional
             Override the packaged sol_struct_data.json / liq_struct_data.json
             (see EOS_arithmetic_MELTS/melts_vec/params.py, liquid_params.py).
+        melts_version : {'MELTS102', 'MELTS110', 'MELTS120'}, optional
+            rhyolite-MELTS version the checkpoints were trained on; selects the
+            melts_vec liquid model (tables, W's, volatile standard states,
+            CaCO3 speciation), the fluid model ('water' for 1.0.2, Duan
+            H2O-CO2 'fluid' for 1.1/1.2) and the solid table (1.1/1.2 add the
+            carbon phases). Default: inferred from model_dir's name ('102',
+            '110' or '120' token, e.g. TrainedModels/120); a ValueError is
+            raised if that is not possible and load_melts_eos is True.
         """
         self._model_dir = str(Path(model_dir).resolve())
         if verbose:
@@ -2726,14 +2755,21 @@ class MELTSAPI:
         # -- auto-discovered the same way MELTSAPI.test() finds its own
         # standards_dir default, just done once here up front.
         _std_dir = _discover_standards_dir(_deployment_tests_root(), Path(model_dir))
+        # Each overlay is built over the oxides that kind's own emulator takes
+        # as input, since that set differs by MELTS version and Cr/NoCr.
         if _std_dir is not None:
             from ngibbs.deployment_tests.training_coverage import melts_standard_points
-            self.nocr._coverage_standards_fn = (
-                lambda kind, d=_std_dir: melts_standard_points(d, variant='NoCr')
-            )
-            self.cr._coverage_standards_fn = (
-                lambda kind, d=_std_dir: melts_standard_points(d, variant='Cr')
-            )
+            from ngibbs.deployment_tests.melts_comparison import _emulator_input_oxides
+
+            def _standards_fn(sub, variant, d=_std_dir):
+                emulators = {'isothermal': sub.isothermal_emulator,
+                             'isentropic': sub.isentropic_emulator,
+                             'openox': sub.open_emulator}
+                return lambda kind: melts_standard_points(
+                    d, variant=variant, oxide_cols=_emulator_input_oxides(emulators[kind]))
+
+            self.nocr._coverage_standards_fn = _standards_fn(self.nocr, 'NoCr')
+            self.cr._coverage_standards_fn = _standards_fn(self.cr, 'Cr')
 
         # Vectorised MELTS EOS (melts_vec): solid-endmember + liquid + the
         # feldspar/olivine solid-solution mixing models. See
@@ -2742,14 +2778,27 @@ class MELTSAPI:
         self._melts_solid_params_path = str(melts_solid_params_path) if melts_solid_params_path is not None else None
         self._melts_liquid_params_path = str(melts_liquid_params_path) if melts_liquid_params_path is not None else None
         self.melts_solid_params = None
-        self.melts_liquid_params = None
+        self.melts_liquid_params = None       # 19 basis components (oxide mapping, molar masses)
+        self.melts_liquid_mode_params = None  # the version's own liquid table (1.1/1.2: + CaCO3)
+        self.melts_version = melts_version if melts_version is not None else _infer_melts_version(model_dir)
+        if self.melts_version is not None and self.melts_version not in _MELTS_MODES:
+            raise ValueError(f"melts_version must be one of {_MELTS_MODES}, got {self.melts_version!r}")
         if load_melts_eos:
-            self.melts_solid_params = load_melts_solids(self._melts_solid_params_path)
+            if self.melts_version is None:
+                raise ValueError(
+                    f"Could not infer the rhyolite-MELTS version from model_dir "
+                    f"{str(model_dir)!r} (expected a '102', '110' or '120' name token). "
+                    f"Pass melts_version='MELTS102'|'MELTS110'|'MELTS120', or "
+                    f"load_melts_eos=False.")
+            self.melts_solid_params = load_melts_solids(self._melts_solid_params_path,
+                                                        table=_MELTS_SOLID_TABLE[self.melts_version])
             self.melts_liquid_params = load_melts_liquid(self._melts_liquid_params_path)
+            self.melts_liquid_mode_params = load_melts_liquid_mode(self.melts_version,
+                                                                   self._melts_liquid_params_path)
             if verbose:
-                print(f"[INFO] Loaded melts_vec EOS params: "
+                print(f"[INFO] Loaded melts_vec EOS params ({self.melts_version}): "
                       f"{self.melts_solid_params.nspec} solid endmembers, "
-                      f"{self.melts_liquid_params.nspec} liquid components")
+                      f"{self.melts_liquid_mode_params.nspec} liquid species")
 
         if verbose:
             print("[INFO] MELTSAPI initialized successfully.")
@@ -2934,6 +2983,11 @@ class MELTSAPI:
         'rhm-oxide':          (_melts_rhomsghiorso.ENDMEMBERS, melts_compute_rhm_oxide_solution),
         'rhombohedral-oxide': (_melts_rhomsghiorso.ENDMEMBERS, melts_compute_rhm_oxide_solution),
         'rhm_oxide':          (_melts_rhomsghiorso.ENDMEMBERS, melts_compute_rhm_oxide_solution),
+        'garnet':     (_melts_garnet.ENDMEMBERS, functools.partial(melts_compute_solution, 'garnet')),
+        'leucite':    (_melts_leucite.ENDMEMBERS, functools.partial(melts_compute_solution, 'leucite')),
+        'biotite':    (_melts_biotite.ENDMEMBERS, functools.partial(melts_compute_solution, 'biotite')),
+        'hornblende': (_melts_hornblende.ENDMEMBERS, functools.partial(melts_compute_solution, 'hornblende')),
+        'nepheline':  (_melts_nepheline.ENDMEMBERS, functools.partial(melts_compute_solution, 'nepheline')),
     }
     # Phases MELTS models as solid solutions that melts_vec does NOT yet
     # implement a mixing model for. Recognised purely so
@@ -2948,6 +3002,47 @@ class MELTSAPI:
         'pyroxene',
     })
     _MELTS_LIQUID_PHASE_NAMES = frozenset({'liquid', 'melts-liquid', 'melt'})
+    # Fluid: 1.1/1.2 -> Duan H2O-CO2 'fluid' (B, 2) [H2O, CO2]; 1.0.2 -> pure
+    # 'water' (alphaMELTS writes it to fluid.tbl too), (B, 1) or (B, 2) with CO2 = 0.
+    _MELTS_FLUID_PHASE_NAMES = frozenset({'fluid', 'water'})
+
+    @staticmethod
+    def _placeholder_absent_rows(phase_name, X_np, moles):
+        """Rows where a phase is absent (zero composition and zero moles) get a
+        pure first-endmember placeholder so the EOS stays finite; they carry
+        zero weight in every bulk sum. A zero composition with nonzero moles
+        is an input error and raises."""
+        X_np = np.array(X_np, dtype=np.float64, copy=True)
+        empty = ~(X_np.sum(axis=1) > 0.0)
+        bad = empty & (moles != 0.0)
+        if bad.any():
+            raise ValueError(f"phase {phase_name!r}: rows {np.nonzero(bad)[0][:10]} have nonzero "
+                             f"phase_moles but an all-zero composition.")
+        X_np[empty] = 0.0
+        X_np[empty, 0] = 1.0
+        return X_np
+
+    def _melts_fluid(self, phase_name, T, P_bar, X_np, moles):
+        """Fluid-phase branch of get_property_melts_vectorized_from_assemblage:
+        returns (normalized composition, per-mole result dict, molar-mass vector)."""
+        if X_np.ndim != 2 or X_np.shape[1] not in (1, 2):
+            raise ValueError(f"phase {phase_name!r}: fluid composition must be (B, 2) [H2O, CO2] "
+                             f"(or (B, 1) pure H2O for MELTS102), got shape {X_np.shape}")
+        if X_np.shape[1] == 1:
+            X_np = np.column_stack([X_np[:, 0], np.zeros(X_np.shape[0])])
+        X_np = self._placeholder_absent_rows(phase_name, X_np, moles)
+        X_np = X_np / X_np.sum(axis=1, keepdims=True)
+        mw_vec = np.array([_melts_molar_mass_from_formula('H2O'), _melts_molar_mass_from_formula('CO2')])
+        if self.melts_version == 'MELTS102':
+            co2 = (X_np[:, 1] > 0.0) & (moles != 0.0)
+            if co2.any():
+                raise ValueError(
+                    f"phase {phase_name!r}: MELTS102 has only a pure-water fluid, but rows "
+                    f"{np.nonzero(co2)[0][:10]} carry CO2 (X_CO2 up to {X_np[co2, 1].max():.3g}).")
+            result = melts_compute_water_phase(T, P_bar)
+        else:
+            result = melts_compute_fluid_solution(T, P_bar, X_np)
+        return X_np, result, mw_vec
 
     def get_property_melts_vectorized_from_assemblage(
         self,
@@ -2997,6 +3092,23 @@ class MELTSAPI:
                 ilmenite, pyrophanite, corundum). For a pMELTS-calibrated
                 composition (which omits corundum entirely) pass 0 in the
                 last column.
+              - 'garnet' (almandine, grossular, pyrope), 'leucite' (leucite,
+                analcime, na-leucite), 'biotite' (annite, phlogopite),
+                'hornblende' (pargasite, ferropargasite, magnesiohastingsite),
+                'nepheline' (na-, k-, vc-, ca-nepheline): mole fractions in
+                that order, via melts_vec.compute_solution. Nepheline's G is
+                infinite without vc-nepheline (MELTS's own penalty term); a
+                non-finite property on a row with nonzero phase_moles raises.
+              - 'fluid' / 'water': (B, 2) moles or mole fractions [H2O, CO2]
+                (alphaMELTS's h2oduan, co2duan). MELTS110/MELTS120: the Duan
+                & Zhang H2O-CO2 fluid (melts_vec.compute_fluid_solution).
+                MELTS102: the pure-water phase (compute_water_phase); (B, 1)
+                is accepted and any CO2 with nonzero phase moles raises.
+              - carbon solids (MELTS110/MELTS120 only): 'calcite',
+                'aragonite', 'magnesite', 'siderite', 'dolomite', 'spurrite',
+                'tilleyite', 'graphite', 'diamond' -- (B, 1) pure phases via
+                the fallback below.
+            The liquid (and fluid) model follows self.melts_version.
             Any other key is treated as a single (possibly pure) phase
             evaluated via the pure-endmember EOS only (see "ideal-only
             phases" below) -- pass its melts_vec solid-endmember label(s)
@@ -3254,8 +3366,15 @@ class MELTSAPI:
             result = None
             mw_vec = None  # this phase's own (n_endmembers,) molar-mass vector, g/mol
             if phase_key in self._MELTS_LIQUID_PHASE_NAMES:
-                result = melts_compute_liquid_bulk(T, P_bar, X_np, self.melts_liquid_params)
+                # Rows without liquid (zero composition AND zero moles) get a
+                # placeholder composition; they carry zero weight in the sums.
+                X_np = self._placeholder_absent_rows(phase_name, X_np, moles)
+                result = melts_compute_liquid_bulk_mode(T, P_bar, X_np, self.melts_version,
+                                                        params=self.melts_liquid_mode_params)
                 mw_vec = _melts_liquid_molar_masses(self.melts_liquid_params)
+                X_np = X_np / X_np.sum(axis=1, keepdims=True)
+            elif phase_key in self._MELTS_FLUID_PHASE_NAMES:
+                X_np, result, mw_vec = self._melts_fluid(phase_name, T, P_bar, X_np, moles)
             elif phase_key in self._MELTS_SOLUTION_PHASES:
                 endmembers, fn = self._MELTS_SOLUTION_PHASES[phase_key]
                 result = fn(T, P_bar, X_np, self.melts_solid_params)
@@ -3287,9 +3406,18 @@ class MELTSAPI:
 
             per_phase[phase_name] = result
             covered_moles = covered_moles + moles
+            present = moles != 0.0
             for k in acc_keys:
                 if k in result:
-                    acc[k] = acc[k] + moles * result[k]
+                    bad = present & ~np.isfinite(result[k])
+                    if bad.any():
+                        raise ValueError(
+                            f"phase {phase_name!r}: non-finite {k} in rows {np.nonzero(bad)[0][:10]} "
+                            f"with nonzero phase_moles (composition there: {X_np[bad][:3]}). "
+                            f"Some MELTS models are singular at composition limits (e.g. nepheline "
+                            f"without vc-nepheline).")
+                    # rows without this phase may hold placeholder values (possibly inf)
+                    acc[k] = acc[k] + np.where(present, moles * np.where(present, result[k], 0.0), 0.0)
 
             del X_np, moles, result, mw_vec
 

@@ -444,6 +444,12 @@ ROW_ALIGNED_BUNDLE_ARRAYS = (
     'dndt_labels.npy',
     'dndp_s_labels.npy',
     'dnds_labels.npy',
+    # Signed-abundance labels (builder/processing/affinity_labels.py). run_ids.npy is the
+    # per-row simulation id written by resampling_to_datasets(); g/s are added afterwards
+    # by finalize_bundle(). All optional: absent from older bundles.
+    'run_ids.npy',
+    'g_labels.npy',
+    's_labels.npy',
 )
 
 

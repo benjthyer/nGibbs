@@ -293,6 +293,9 @@ def _read_bundle_metadata(bundle_path: str) -> Tuple[Optional[str], Optional[str
 
 
 def _loss_fn_from_type(type_name: Optional[str]):
+    """Elementwise criterion for one `loss_config` term. Must not reduce: trainer's
+    `_upper_loss` applies presence masks and phase/component weights to the per-entry
+    values and does its own weighted mean (and raises if handed a scalar)."""
     if not type_name:
         return symmetric_rel_l2
     name = type_name.strip().lower()
@@ -301,8 +304,20 @@ def _loss_fn_from_type(type_name: Optional[str]):
     if name == "symmetric_rel_l2":
         return symmetric_rel_l2
     if name == 'huber':
-        return torch.nn.HuberLoss(reduction='mean', delta=0.3)
+        return torch.nn.HuberLoss(reduction='none', delta=0.3)
     raise ValueError(f"Unknown loss type: {type_name}")
+
+
+def _criteria_kwargs(loss_config):
+    """One criterion per value term, each from its own `loss_config.<term>.type`.
+    (Previously only `chemistry.type` was read and reused for moles and bulk.) Returned
+    as trainer kwargs so the same dict reaches train episodes directly and tune episodes
+    via `train_fn_kwargs`."""
+    return dict(
+        criterion=_loss_fn_from_type(loss_config["chemistry"].get("type")),
+        criterion_mole=_loss_fn_from_type(loss_config["moles"].get("type")),
+        criterion_bulk=_loss_fn_from_type(loss_config["bulk"].get("type")),
+    )
 
 
 def _build_phase_weights(ml_indexer, episode_cfg: Dict[str, Any]):
@@ -696,7 +711,10 @@ def main() -> None:
         mole_alpha = float(mole_cfg["weight"])
         bulk_alpha = float(bulk_cfg["weight"])
         sat_alpha = float(sat_cfg["weight"])
-        criterion = _loss_fn_from_type(chem_cfg["type"])
+        criteria = _criteria_kwargs(loss_config)
+        print("Loss criteria: " + ", ".join(
+            f"{term}={loss_config[term].get('type') or 'symmetric_rel_l2'}"
+            for term in ('chemistry', 'moles', 'bulk')))
 
         # scheduler: is mandatory on every train* episode in every existing recipe,
         # but plenty of tune* episodes omit it (this file's own tune8 included) -
@@ -788,6 +806,7 @@ def main() -> None:
                 else:
                     _train_fn, _dkw = _derivative_settings(episode_cfg, train_set)
                     _dkw.update(_boundary_temperature_settings(episode_cfg))
+                    _dkw.update(criteria)   # tune trials previously ignored loss types entirely
                     model, tune_results = tune_Upper_MELTS(
                         train_fn=_train_fn,
                         train_fn_kwargs=_dkw,
@@ -898,7 +917,7 @@ def main() -> None:
                         **_dkw,
                         scheduler=scheduler_name,
                         scheduler_kwargs=scheduler_kwargs,
-                        criterion=criterion,
+                        **criteria,
                         chem_alpha=chem_alpha,
                         mole_alpha=mole_alpha,
                         bulk_alpha=bulk_alpha,

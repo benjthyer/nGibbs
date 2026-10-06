@@ -141,6 +141,13 @@ class ContinuousModel(nn.Module):
     # this class provides.
     save = MidLevelNetwork.save
     _set_indexer = TunableModel._set_indexer
+    # MELTS pyroxene/spinel legality corrections (they need only detail_label_indices,
+    # set by _set_indexer). Not applied in forward(): NN_MELTS runs them inside the
+    # iterative mass balance, after every correction step.
+    polish_negative_px = MidLevelNetwork.polish_negative_px
+    polish_negative_spFe = MidLevelNetwork.polish_negative_spFe
+    polish_negative_spAl = MidLevelNetwork.polish_negative_spAl
+    polish_negative_sp = MidLevelNetwork.polish_negative_sp
 
     # ---- interop with builder/training/trainer.py ------------------------------------
     # The training loop asks the model what its parts are called rather than assuming.
@@ -499,10 +506,11 @@ class ContinuousModel(nn.Module):
         untouched, and the physical output `n_phi = clamp(leaky_relu(g_phi), min=0)` is
         unchanged either way.
 
-        Why `T` exists (`T=None` path): the huber loss on `mole=m` alone gives
-        essentially no gradient once an absent phase's `m` is merely close to 0 (huber
-        is minimised AT 0, so it does not prefer confidently-negative `g_phi` over
-        marginally-negative `g_phi`) -- a soft, easily noise-flipped decision boundary.
+        Why `T` exists (`T=None` path): the mole loss on `mole=m` (whichever
+        `loss_config.moles.type` -- symmetric_rel_l2 by default, which reduces to |m| for
+        an absent phase) is minimised AT m=0, so it pulls a confidently-absent phase back
+        onto the boundary rather than preferring confidently-negative `g_phi` over
+        marginally-negative `g_phi` -- a soft, easily noise-flipped decision boundary.
         Plain `logits=g_phi` (unscaled, unweighted BCE) helps, but is fighting the same
         hard kink in `clamp` at `g_phi=0` that motivated this whole architecture.
 
@@ -511,7 +519,7 @@ class ContinuousModel(nn.Module):
         rather than only in chat history, since the reasoning is load-bearing):
 
         - `mole` becomes `T*softplus(g_phi/T)` instead of raw `m`. This is the
-          quantity actually regressed by the huber mole loss (not just the downstream
+          quantity actually regressed by the mole loss (not just the downstream
           physical output), so unlike softening only `clamp`, this changes what the
           mole loss's gradient looks like: `d(T*softplus(g_phi/T))/d(g_phi) =
           sigmoid(g_phi/T)`, well-conditioned near `g_phi=0` and vanishing (not merely

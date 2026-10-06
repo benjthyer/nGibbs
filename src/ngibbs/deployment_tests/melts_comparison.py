@@ -19,7 +19,9 @@ HeFESTo has no analogue of):
     ``MELTSAPI.get_property_melts_vectorized_from_assemblage``. Liquid goes
     through the oxide->component bridge (``oxides_to_liquid_components``)
     using the GT's own real (already fO2-buffered) oxide wt%, no
-    speciation approximation needed.
+    speciation approximation needed. The fluid (fluid.tbl: h2oduan/co2duan
+    mole fractions for 1.1/1.2, pure H2O for 1.0.2) uses the version's own
+    fluid model (``api.melts_version``).
   - ``emulation_isothermal`` / ``emulation_isentropic``: the trained MELTS120
     emulator's OWN predicted assemblage (fed the row's real, evolving bulk
     oxide composition -- including the real Fe2O3/FeO split, which is what
@@ -65,6 +67,8 @@ import matplotlib.pyplot as plt
 from ngibbs.config.constants import OXIDE_MOLAR_MASSES, get_oxide_molar_mass
 from ngibbs.engine.EOS_arithmetic_MELTS.melts_vec import molar_masses as _melts_molar_masses
 from ngibbs.engine.EOS_arithmetic_MELTS.melts_vec import oxides_to_liquid_components as _oxides_to_liquid_components
+from ngibbs.engine.EOS_arithmetic_MELTS.melts_vec import molar_mass_from_formula as _melts_molar_mass_from_formula
+from ngibbs.engine.EOS_arithmetic_MELTS.melts_vec import MELTS_CARBON_PHASES as _MELTS_CARBON_PHASES
 
 from ._melts_phase_plotting import (
     MELTS_PHASE_STACK_ORDER,
@@ -97,6 +101,11 @@ _GT_SOLUTION_ENDMEMBERS: Dict[str, List[str]] = {
     'plagioclase': ['albite', 'anorthite', 'sanidine'],
     'alkali-feldspar': ['albite', 'anorthite', 'sanidine'],
     'rhm-oxide': ['geikielite', 'hematite', 'ilmenite', 'pyrophanite', 'corundum'],
+    'garnet': ['almandine', 'grossular', 'pyrope'],
+    'leucite': ['leucite', 'analcime', 'na-leucite'],
+    'biotite': ['annite', 'phlogopite'],
+    'hornblende': ['pargasite', 'ferropargasite', 'magnesiohastingsite'],
+    'nepheline': ['na-nepheline', 'k-nepheline', 'vc-nepheline', 'ca-nepheline'],
 }
 # melts_vec's own _MELTS_SOLUTION_PHASES recognises 'feldspar'/'plagioclase' but
 # has no 'alkali-feldspar' entry (alphaMELTS models plagioclase and alkali
@@ -105,34 +114,45 @@ _GT_SOLUTION_ENDMEMBERS: Dict[str, List[str]] = {
 # identical endmember columns). MELTSAPI._MELTS_SOLUTION_PHASES is extended
 # with this alias at import time in `_ensure_alkali_feldspar_alias` below
 # rather than routing alkali-feldspar through the (wrong) pure-phase fallback.
-_GT_PURE_PHASES = ('quartz', 'tridymite', 'apatite', 'whitlockite')
+_GT_PURE_PHASES = ('quartz', 'tridymite', 'apatite', 'whitlockite', 'muscovite') + tuple(_MELTS_CARBON_PHASES)
 # Phase_mass_tbl.txt names the liquid column 'liquid1' (de-suffixed: 'liquid'),
 # while its own per-row data lives in 'melts-liquid.tbl' -- two different
 # names for the same phase across these two raw-output files.
 _GT_LIQUID_NAMES = ('liquid', 'melts-liquid')
-_GT_SKIP_PHASES = ('fluid',)  # H2O/CO2 fluid: not part of melts_vec's solid+liquid EOS scope
+# fluid.tbl: 1.1/1.2 Duan H2O-CO2 fluid (h2oduan, co2duan mole fractions);
+# 1.0.2 writes its pure-water phase to fluid.tbl as well (no endmember columns).
+_GT_FLUID_NAMES = ('fluid', 'water')
+_FLUID_ENDMEMBERS = ('h2oduan', 'co2duan')
+_FLUID_MOLAR_MASSES = np.array([_melts_molar_mass_from_formula('H2O'), _melts_molar_mass_from_formula('CO2')])
 
 # wt% oxide columns present in every raw .tbl / Bulk_comp/Liquid_comp file.
 _RAW_OXIDE_COLS = ['SiO2', 'TiO2', 'Al2O3', 'Fe2O3', 'Cr2O3', 'FeO', 'MnO', 'MgO',
                     'NiO', 'CoO', 'CaO', 'Na2O', 'K2O', 'P2O5', 'H2O', 'CO2']
 
-# The oxide set the trained MELTS120 emulator actually tracks (NoCr; Cr adds
-# Cr2O3) -- confirmed against a loaded checkpoint's ml_indexer.Oxides this
-# session. MnO/NiO/CoO are not part of this emulator's tracked composition
-# space at all and are dropped when building its input feature row.
-_EMULATOR_OXIDE_COLS_NOCR = ['SiO2', 'TiO2', 'Al2O3', 'Fe2O3', 'FeO', 'MgO', 'CaO',
-                             'Na2O', 'K2O', 'P2O5', 'H2O', 'CO2']
-_EMULATOR_OXIDE_COLS_CR = _EMULATOR_OXIDE_COLS_NOCR + ['Cr2O3']
+def _emulator_input_oxides(emulator) -> List[str]:
+    """The oxide columns ``emulator`` takes as input, read from its own
+    checkpoint rather than assumed -- the tracked set differs by MELTS version
+    (1.0.2 has no CO2; 1.1/1.2 do) and by Cr/NoCr variant (Cr adds Cr2O3).
+    MnO/NiO/CoO are never tracked and so are dropped from the input row.
 
-# Open/fO2-buffered emulator composition columns: a single total-iron 'FeO'
-# column, no separate 'Fe2O3' -- confirmed directly against the real
-# 120SedIgOpen_NoCr checkpoint's own bundle metadata (its Oxides list is
-# exactly _EMULATOR_OXIDE_COLS_NOCR minus 'Fe2O3'; the open model derives
-# the real FeO/Fe2O3 split back out internally from the imposed
-# logfO2-QFM feature instead of taking it as an independent input -- see
-# _bulk_total_feo). Only NoCr has an open checkpoint (no Cr openox
-# checkpoint was ever trained), so this list is never combined with Cr2O3.
-_EMULATOR_OXIDE_COLS_OPEN = [c for c in _EMULATOR_OXIDE_COLS_NOCR if c != 'Fe2O3']
+    Same rule as NN_MELTS.reorder_input_table's 'oxides' composition space:
+    ``Oxides[:len(Elkeys)]``. For a closed model Fe3 is its own component, so
+    Fe2O3 is a real input column. An open/fO2-buffered model's Oxides lists
+    Fe2O3 last, past its Elkeys, because it derives the FeO/Fe2O3 split
+    internally from the imposed logfO2-QFM feature -- so that slice drops it,
+    leaving a single total-iron 'FeO' input (see _bulk_total_feo)."""
+    return list(emulator.Oxides[:len(emulator.Elkeys)])
+
+
+def _bulk_oxide(bulk: pd.DataFrame, ox: str) -> np.ndarray:
+    """``bulk[ox]`` wt%, NaN -> 0. An oxide the emulator tracks but this
+    standards run never wrote (e.g. a 1.2 model against 1.0.2 standards,
+    which carry no CO2) is legitimately absent, so it is zero-filled with a
+    warning rather than raising."""
+    if ox not in bulk.columns:
+        warnings.warn(f"Standards Bulk_comp table has no '{ox}' column; using 0 wt%.")
+        return np.zeros(len(bulk))
+    return bulk[ox].fillna(0.0).values
 
 # The MELTS120 isentropic emulator's entropy feature, exactly as named in its
 # ml_indexer.featureNames. Condition features are named by the recipe that built
@@ -312,6 +332,51 @@ def _dedupe_tbl_instances(tbl: pd.DataFrame, value_cols: Sequence[str],
     return grouped.drop(columns='__w__')
 
 
+def _gt_fluid(rock_dir: Path, full_index: np.ndarray, mass_phase: np.ndarray,
+              melts_version: str) -> Tuple[np.ndarray, np.ndarray]:
+    """GT fluid phase -> ((B, 2) [H2O, CO2] mole fractions, (B,) moles).
+
+    1.1/1.2 fluid.tbl rows carry h2oduan/co2duan mole fractions; co-existing
+    instances at one Index are combined by summing their endmember moles
+    (mass / mean molar mass per instance). 1.0.2 writes its pure-water phase
+    to fluid.tbl without endmember columns. A table that does not match
+    ``melts_version`` raises instead of being evaluated with the wrong model.
+    """
+    B = len(full_index)
+    tbl = read_phase_tbl(rock_dir, 'fluid')
+    if tbl is None:
+        if np.any(mass_phase > 0):
+            raise FileNotFoundError(f"{rock_dir}: Phase_mass_tbl.txt has fluid mass but no fluid.tbl.")
+        X = np.zeros((B, 2)); X[:, 0] = 1.0
+        return X, np.zeros(B)
+    has_em = all(c in tbl.columns for c in _FLUID_ENDMEMBERS)
+    if has_em == (melts_version == 'MELTS102'):
+        raise ValueError(
+            f"{rock_dir / 'fluid.tbl'}: endmember columns {_FLUID_ENDMEMBERS} "
+            f"{'present' if has_em else 'absent'}, which does not match melts_version={melts_version!r} "
+            f"(1.1/1.2 write h2oduan/co2duan; 1.0.2 writes pure water).")
+    mass_i = pd.to_numeric(tbl['mass (gm)'], errors='coerce').to_numpy(dtype=np.float64)
+    if has_em:
+        x = tbl[list(_FLUID_ENDMEMBERS)].apply(pd.to_numeric, errors='coerce').to_numpy(dtype=np.float64)
+    else:
+        co2 = pd.to_numeric(tbl.get('wt% CO2', 0.0), errors='coerce')
+        if np.any(np.asarray(co2, dtype=np.float64) != 0.0):
+            raise ValueError(f"{rock_dir / 'fluid.tbl'}: 1.0.2 pure-water fluid with nonzero wt% CO2.")
+        x = np.column_stack([np.ones(len(tbl)), np.zeros(len(tbl))])
+    n_i = x*(mass_i/(x @ _FLUID_MOLAR_MASSES))[:, None]
+    per_index = (pd.DataFrame({'Index': tbl['Index'].astype(int), 'nH2O': n_i[:, 0], 'nCO2': n_i[:, 1]})
+                 .groupby('Index', as_index=False).sum())
+    per_index = _reindex_to(full_index, per_index, index_col='Index')
+    n = per_index[['nH2O', 'nCO2']].fillna(0.0).to_numpy(dtype=np.float64)
+    tot = n.sum(1)
+    present = tot > 0
+    X = np.where(present[:, None], n/np.where(present, tot, 1.0)[:, None], 0.0)
+    X[~present, 0] = 1.0
+    # Phase_mass_tbl.txt carries the phase mass; fluid.tbl only fixes the composition.
+    moles = np.where(present & (mass_phase > 0), mass_phase/(X @ _FLUID_MOLAR_MASSES), 0.0)
+    return X, moles
+
+
 def load_gt_assemblage(rock_dir: Path, api) -> Dict[str, np.ndarray]:
     """Build the GT assemblage's melts_vec phase_composition/phase_moles/PT/
     liquid_oxides inputs for every row of one isobaric-cooling run, ready to
@@ -358,7 +423,10 @@ def load_gt_assemblage(rock_dir: Path, api) -> Dict[str, np.ndarray]:
     liquid_oxide_labels = None
 
     for phase_name, mass_phase in combined_mass.items():
-        if phase_name in _GT_SKIP_PHASES:
+        if phase_name in _GT_FLUID_NAMES:
+            X, moles = _gt_fluid(rock_dir, full_index, mass_phase, api.melts_version)
+            phase_composition['fluid'] = X
+            phase_moles['fluid'] = moles
             continue
 
         if phase_name in _GT_LIQUID_NAMES:
@@ -474,8 +542,13 @@ def ml_indexer_to_melts_vec_assemblage(
     phase_composition/phase_moles/liquid_oxides inputs for
     ``api.get_property_melts_vectorized_from_assemblage``.
 
-    Solid solution phases: ml_indexer's own components_in_phases columns are
-    embedded into melts_vec's endmember order by exact NAME match (verified
+    Solid solution phases: component_moles is first mapped to native MELTS
+    endmember moles with ``emulator.native_component_moles`` -- pyroxenes and
+    spinel are learned in the transformed PxSp_Comp_TransformV2 basis, and
+    reading those columns as endmember amounts gave badly wrong pyroxene and
+    spinel compositions (e.g. orthopyroxene FeO 0.1 wt% instead of 16), the
+    cause of the MORB emulator-pathway H/V/Cp errors. The native columns are
+    then embedded into melts_vec's endmember order by exact NAME match (verified
     against a real checkpoint this session -- clinopyroxene/orthopyroxene
     already match melts_vec's order exactly; olivine/spinel/rhm-oxide are
     checkpoint-tracked SUBSETS of melts_vec's full endmember list, missing
@@ -534,7 +607,8 @@ def ml_indexer_to_melts_vec_assemblage(
     """
     mi = emulator.ml_indexer
     B = component_moles.shape[0]
-    cm_np = component_moles.detach().cpu().numpy().astype(np.float64)
+    cm_np = np.asarray(emulator.native_component_moles(
+        component_moles.detach().cpu().numpy().astype(np.float64)))
     mass_np = mass_wtpct.detach().cpu().numpy().astype(np.float64)  # (B, n_phases) mass fraction of system
 
     phase_composition: Dict[str, np.ndarray] = {}
@@ -615,6 +689,34 @@ def ml_indexer_to_melts_vec_assemblage(
     liq_mass_frac = mass_np[:, liq_mass_idx]
     phase_composition[liq_key] = np.ones((B, 1))
     phase_moles[liq_key] = total_comp_moles_per_100g * liq_mass_frac / 100.0  # per-100g-system now
+
+    # Fluid: same route as the liquid -- its own oxide wt% (H2O, CO2 columns of
+    # comp_wtpct) gives the [H2O, CO2] mole fractions, 'phase_tables' mass the
+    # abundance. A 1.0.2 fluid carrying CO2 is rejected downstream by the API.
+    # A 1.0.2 checkpoint (no CO2 tracked) has only a fluid mass column: its
+    # pure-water fluid has a fixed composition, so none is predicted -- it is
+    # bridged as pure H2O.
+    fluid_key = next((k for k in _GT_FLUID_NAMES if k in mi.mass_phasedict), None)
+    if fluid_key is not None:
+        ox = list(mi.Oxides)
+        flu_mass = mass_np[:, mi.mass_phasedict[fluid_key]]
+        if fluid_key not in mi.comp_phasedict:
+            if 'CO2' in ox:
+                raise KeyError(f"ml_indexer has a '{fluid_key}' mass column but no composition slot for it.")
+            present = flu_mass > 0
+            X = np.tile([1.0, 0.0], (B, 1))
+        else:
+            if 'H2O' not in ox:
+                raise KeyError(f"ml_indexer Oxides {ox} lack H2O; cannot build the fluid composition.")
+            flu_wt = comp_wtpct_np[:, mi.comp_phasedict[fluid_key], :]
+            co2 = flu_wt[:, ox.index('CO2')] if 'CO2' in ox else np.zeros(B)
+            n = np.column_stack([flu_wt[:, ox.index('H2O')], co2]) / _FLUID_MOLAR_MASSES
+            tot = n.sum(1)
+            present = (tot > 0) & (flu_mass > 0)
+            X = np.where(present[:, None], n / np.where(tot > 0, tot, 1.0)[:, None], 0.0)
+            X[~present] = [1.0, 0.0]
+        phase_composition['fluid'] = X
+        phase_moles['fluid'] = np.where(present, flu_mass / (X @ _FLUID_MOLAR_MASSES), 0.0)
 
     return {
         'phase_composition': phase_composition, 'phase_moles': phase_moles,
@@ -753,9 +855,9 @@ def _emulator_forward(api, oxide_cols, P_bar, second_col, second_header, bulk,
     (component_moles, comp_wtpct, mass_wtpct, T_C_pred or None)."""
     headers = ['Pressure(System_main)', second_header] + list(oxide_cols)
     table = np.column_stack(
-        [P_bar, second_col] + [bulk[ox].fillna(0.0).values for ox in oxide_cols]
+        [P_bar, second_col] + [_bulk_oxide(bulk, ox) for ox in oxide_cols]
     ).astype(np.float32)
-    outputs = ['component_moles', 'phase_tables'] + (['temperature'] if temperature else [])
+    outputs =['component_moles', 'phase_tables'] + (['temperature'] if temperature else [])
     with torch.no_grad():
         out = api.ForwardMB(table, headers=headers, outputs=outputs)
     comp_wtpct, mass_wtpct = out['phase_tables']
@@ -810,27 +912,27 @@ def _bulk_total_feo(bulk: pd.DataFrame) -> np.ndarray:
     return feo + fe2o3 * (2.0 * mw_feo / mw_fe2o3)
 
 
-def _openox_table(P_bar, T_C, fO2_QFM, bulk):
+def _openox_table(emulator, P_bar, T_C, fO2_QFM, bulk):
     """Build the (headers, table) ForwardMB input for the open/fO2-buffered
     pathway: (P, T, logfO2-QFM) conditions plus the real bulk oxide
-    composition with iron collapsed to one total-FeO column (see
-    _bulk_total_feo). Shared by the property- and phase-comparison openox
-    forward passes below."""
+    composition over ``emulator``'s own input oxides, with iron collapsed to
+    one total-FeO column (see _emulator_input_oxides, _bulk_total_feo).
+    Shared by the property- and phase-comparison openox forward passes below."""
+    oxide_cols = _emulator_input_oxides(emulator)
     headers = ['Pressure(System_main)', 'Temperature(System_main)',
-               'logfO2-QFM(System_main)'] + list(_EMULATOR_OXIDE_COLS_OPEN)
+               'logfO2-QFM(System_main)'] + oxide_cols
     total_feo = _bulk_total_feo(bulk)
-    cols = [total_feo if ox == 'FeO' else bulk[ox].fillna(0.0).values
-            for ox in _EMULATOR_OXIDE_COLS_OPEN]
+    cols = [total_feo if ox == 'FeO' else _bulk_oxide(bulk, ox)
+            for ox in oxide_cols]
     table = np.column_stack([P_bar, T_C, fO2_QFM] + cols).astype(np.float32)
     return headers, table
 
 
-def _emulator_forward_openox(api, P_bar, T_C, fO2_QFM, bulk):
+def _emulator_forward_openox(api, emulator, P_bar, T_C, fO2_QFM, bulk):
     """Run ForwardMB for the open/fO2-buffered emulator (see _openox_table).
-    Always routes to .nocr -- no Cr openox checkpoint exists, and these
-    headers never carry 'Cr'/'Cr2O3'. Returns (component_moles, comp_wtpct,
-    mass_wtpct), matching _emulator_forward's return shape."""
-    headers, table = _openox_table(P_bar, T_C, fO2_QFM, bulk)
+    Returns (component_moles, comp_wtpct, mass_wtpct), matching
+    _emulator_forward's return shape."""
+    headers, table = _openox_table(emulator, P_bar, T_C, fO2_QFM, bulk)
     with torch.no_grad():
         out = api.ForwardMB(table, headers=headers, outputs=['component_moles', 'phase_tables'])
     comp_wtpct, mass_wtpct = out['phase_tables']
@@ -863,7 +965,6 @@ def run_melts_property_comparison(
     results = []
     stat_rows = []
     for variant in variants:
-        oxide_cols = _EMULATOR_OXIDE_COLS_CR if variant == 'Cr' else _EMULATOR_OXIDE_COLS_NOCR
         api_sub = api.cr if variant == 'Cr' else api.nocr
         for rock in rocks:
             rock_dir = standards_dir / variant / rock
@@ -906,7 +1007,8 @@ def run_melts_property_comparison(
             # Feed T_C (Celsius, alphaMELTS's own native units), NOT T_K --
             # the emulator's 'Temperature(System_main)' feature is Celsius.
             cm_iso, comp_iso, mass_iso, _ = _emulator_forward(
-                api, oxide_cols, P_bar, T_C, 'Temperature(System_main)', bulk)
+                api, _emulator_input_oxides(api_sub.isothermal_emulator),
+                P_bar, T_C, 'Temperature(System_main)', bulk)
             bridged_iso = ml_indexer_to_melts_vec_assemblage(
                 api_sub, api, api_sub.isothermal_emulator, cm_iso, mass_iso, comp_iso)
             PT_iso = np.column_stack([P_GPa, T_K])
@@ -923,7 +1025,8 @@ def run_melts_property_comparison(
                     f"No temperature model loaded for the {variant} sub-API; the "
                     "isentropic property comparison needs one to predict T from (P, S).")
             cm_isen, comp_isen, mass_isen, T_C_isen = _emulator_forward(
-                api, oxide_cols, P_bar, S_specific_gt, _ENTROPY_FEATURE, bulk, temperature=True)
+                api, _emulator_input_oxides(api_sub.isentropic_emulator),
+                P_bar, S_specific_gt, _ENTROPY_FEATURE, bulk, temperature=True)
             bridged_isen = ml_indexer_to_melts_vec_assemblage(
                 api_sub, api, api_sub.isentropic_emulator, cm_isen, mass_isen, comp_isen)
             PT_isen = np.column_stack([P_GPa, T_C_isen + 273.15])
@@ -941,7 +1044,7 @@ def run_melts_property_comparison(
             fO2_QFM = _fO2_qfm(sysmain)
             if variant == 'NoCr' and api.nocr.open_emulator is not None and fO2_QFM is not None:
                 cm_open, comp_open, mass_open = _emulator_forward_openox(
-                    api, P_bar, T_C, fO2_QFM, bulk)
+                    api, api.nocr.open_emulator, P_bar, T_C, fO2_QFM, bulk)
                 bridged_open = ml_indexer_to_melts_vec_assemblage(
                     api.nocr, api, api.nocr.open_emulator, cm_open, mass_open, comp_open)
                 PT_open = np.column_stack([P_GPa, T_K])
@@ -1073,14 +1176,15 @@ def _gt_phase_mass_fractions(rock_dir: Path, full_index: np.ndarray,
     return out
 
 
-def _emulator_phase_mass_fractions(api, emulator, oxide_cols, P_bar, second_col,
+def _emulator_phase_mass_fractions(api, emulator, P_bar, second_col,
                                     second_header, bulk) -> Dict[str, np.ndarray]:
     """{plot_phase_name: (B,) mass fraction of system}, from the SAME
     ForwardMB 'phase_tables' mass output used by ml_indexer_to_melts_vec_
     assemblage (percent-of-system, /100 -> fraction)."""
-    headers = ['Pressure(System_main)', second_header] + list(oxide_cols)
+    oxide_cols = _emulator_input_oxides(emulator)
+    headers = ['Pressure(System_main)', second_header] + oxide_cols
     table = np.column_stack(
-        [P_bar, second_col] + [bulk[ox].fillna(0.0).values for ox in oxide_cols]
+        [P_bar, second_col] + [_bulk_oxide(bulk, ox) for ox in oxide_cols]
     ).astype(np.float32)
     with torch.no_grad():
         out = api.ForwardMB(table, headers=headers, outputs=['phase_tables'])
@@ -1098,7 +1202,7 @@ def _emulator_phase_mass_fractions_openox(api, emulator, P_bar, T_C, fO2_QFM,
                                            bulk) -> Dict[str, np.ndarray]:
     """Same as _emulator_phase_mass_fractions but for the open/fO2-buffered
     pathway (see _openox_table / _emulator_forward_openox)."""
-    headers, table = _openox_table(P_bar, T_C, fO2_QFM, bulk)
+    headers, table = _openox_table(emulator, P_bar, T_C, fO2_QFM, bulk)
     with torch.no_grad():
         out = api.ForwardMB(table, headers=headers, outputs=['phase_tables'])
     _, mass_wtpct = out['phase_tables']
@@ -1138,7 +1242,6 @@ def run_melts_phase_comparison(
     results = []
     stat_rows = []
     for variant in variants:
-        oxide_cols = _EMULATOR_OXIDE_COLS_CR if variant == 'Cr' else _EMULATOR_OXIDE_COLS_NOCR
         api_sub = api.cr if variant == 'Cr' else api.nocr
         for rock in rocks:
             rock_dir = standards_dir / variant / rock
@@ -1163,10 +1266,10 @@ def run_melts_phase_comparison(
 
             gt_mf = _gt_phase_mass_fractions(rock_dir, full_index, mass_g)
             iso_mf = _emulator_phase_mass_fractions(
-                api, api_sub.isothermal_emulator, oxide_cols, P_bar, T_C,
+                api, api_sub.isothermal_emulator, P_bar, T_C,
                 'Temperature(System_main)', bulk)
             isen_mf = _emulator_phase_mass_fractions(
-                api, api_sub.isentropic_emulator, oxide_cols, P_bar, S_specific_gt,
+                api, api_sub.isentropic_emulator, P_bar, S_specific_gt,
                 _ENTROPY_FEATURE, bulk)
 
             open_mf = None

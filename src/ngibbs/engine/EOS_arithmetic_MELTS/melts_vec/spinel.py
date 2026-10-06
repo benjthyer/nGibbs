@@ -1,7 +1,8 @@
 """
 Spinel solid-solution mixing model -- vectorized translation of
-`sources/spinel.c`'s `gmixSpn`/`actSpn`/`order`, verified against the file
-directly (see `tests/verify_spinel.c`).
+`sources/spinel.c` (order, pureOrder, gmixSpn, hmixSpn, smixSpn, vmixSpn,
+cpmixSpn, actSpn), verified against the compiled MAGMA library (see
+`tests/benchmark_spinel_test.py`).
 
 Reference: Sack, R.O., Ghiorso, M.S. (1991), "An internally consistent
 model for the thermodynamic properties of Fe-Mg-titanomagnetite-aluminate
@@ -86,37 +87,40 @@ Because of this simpler structure, only the ENTHALPY macro (`H`, spinel.c
 lines 1580-1594) needs the generic-polynomial-dict treatment; entropy and
 volume are each a handful of directly-transcribed closed-form terms.
 
-Design notes carried over from `solution_model.py`/clinopyroxene.py:
-  - a batched Newton solve with a NUMERICALLY estimated Jacobian (not the
-    analytic `d2gds2` GSL-LU-solved Hessian spinel.c itself uses) finds
-    the equilibrium ordering parameters s* = (s0,s1,s2) at each (r,T,P);
-  - G, H, S and the Darken activities are read off analytically at s*
-    (envelope theorem); Cp/dV(T,P) are obtained by finite-differencing
-    with s* re-solved at each stencil point.
+Ordering solve and derived properties (translated verbatim, verified to
+~1e-15 relative against the MAGMA library itself, incl. infeasible
+emulator compositions -- see tests/benchmark_spinel_test.py):
+  - `solve_ordering` is spinel.c order(): Newton on s = (s0, s1, s2) with
+    the analytic D2GDS2, started at the random tet/oct distribution, each
+    step shortened so no (unclipped) site fraction leaves [0, 1], stopped
+    when every |ds| <= 10*DBL_EPSILON or after MAX_ITER = 200 steps, with
+    the state at the start of the last step returned. Site fractions are
+    clipped at DBL_EPSILON as in the source.
+  - G, H, S, V and the Darken activities are read off at that state; Cp
+    and dCp/dT come from the implicit ordering derivatives ds/dT =
+    -D2GDS2^-1 D2GDSDT and d2s/dT2 (cpmixSpn FIRST|SECOND); V depends on
+    r only, so dV/dT and dV/dP of mixing are 0.
+  - hmix = G + T*S as in hmixSpn, so it carries the WV1/WV2 (p-1) term.
+  - An earlier translation used a finite-difference Jacobian, a line
+    search, composition "gates" and finite-difference Cp. That solver
+    failed on emulator spinel with negative total Al (dG up to 6 kJ, Cp
+    off by 1e3x) and froze the MgAl2O4 vertex (gmix 1.7 kJ instead of
+    0); its hmix also lacked the (p-1) volume term (~9 J on BishopTuff
+    spinel at ~1.5 kbar).
 
-Pure-endmember reference (`pureOrder`/`pureSpn`, spinel.c lines 881-1161):
-THREE of the five endmembers each carry their own separate, DECOUPLED
-1-D Landau order-disorder parameter (chromite and ulvospinel have none):
-  - hercynite (HC): free s1, at vertex r=[0,0,0,0] (X_hercynite=1), s0=s2=0.
-  - magnetite (MT): free s2, at vertex r=[0,0,0,1], s0=s1=0.
-  - spinel    (SP): free s0, at vertex r=[1,0,0,0], s1=(1.0+s0)/2.0 (!),
-    s2=0 -- confirmed by direct term-by-term comparison of `SP_H`'s macro
-    text against the generic H polynomial evaluated with that
-    substitution (every occurrence of the "S2" token in `SP_H` is written
-    algebraically as `(1.0+s[0])/2.0` rather than as an independent
-    variable -- this is the SAME alias mechanism noted above, just
-    applied to make S2 dependent on S1 at this one vertex rather than
-    holding it at a constant).
-  - chromite  (CR): fixed, r=[0,1,0,0], s=[0,0,0], no ordering freedom.
-  - ulvospinel(UV): fixed, r=[0,0,1,0], s=[0,0,0], no ordering freedom.
-Rather than routing these five special cases back through the generic
-polynomial engine (which would need per-vertex substitution logic), each
-is transcribed directly from its own `_S`/`_H`/`_G`/`D..._GDS...` macro
-pair, mirroring how `orthopyroxene.py`/clinopyroxene.py handle essenite's
-own separate internal ordering.
+Pure-endmember reference (`pure_order`/`pure_endmember_props`, spinel.c
+pureOrder()/pureSpn()): three decoupled 1-D Newton solves, verbatim
+(start 0.5 / 0.9 / 0.1, clipped to (-1+eps | eps, 1-eps)):
+  - spinel    (SP): free s0 at r=[1,0,0,0], with s1 = (1.0+s0)/2.0 built
+    into the SP_* macros (the S2 token of the H polynomial written as
+    (1+s0)/2), s2 = 0;
+  - hercynite (HC): free s1 at r=[0,0,0,0], s0 = s2 = 0;
+  - magnetite (MT): free s2 at r=[0,0,0,1], s0 = s1 = 0;
+  - chromite (CR) and ulvospinel (UV): no ordering.
 """
 from __future__ import annotations
 import re
+import warnings
 import numpy as np
 
 from .constants import Rgas
@@ -296,8 +300,8 @@ _G_PARSED = _parsed(G_COEF)
 
 
 # =============================================================================
-# Site fractions (spinel.c lines 2225-2233, the converged/current-iterate
-# formulas -- both-bounds clipping at DBL_EPSILON matches the source).
+# Site fractions (spinel.c order(), the current-iterate formulas and their
+# clipping: x <= 0 -> DBL_EPSILON, x >= 1 -> 1 - DBL_EPSILON, verbatim).
 # =============================================================================
 def site_fractions(r, s):
     r = np.asarray(r, dtype=np.float64)
@@ -306,7 +310,8 @@ def site_fractions(r, s):
     s0, s1, s2 = s[..., 0], s[..., 1], s[..., 2]
 
     def clip(x):
-        return np.clip(x, _DBL_EPS, 1.0 - _DBL_EPS)
+        x = np.where(x <= 0.0, _DBL_EPS, x)
+        return np.where(x >= 1.0, 1.0 - _DBL_EPS, x)
 
     xmg2tet = clip((r0 + s0) / 2.0)
     xfe2tet = clip(r2 - 0.5 * r0 - 0.5 * s0 + s1 + r1 + s2)
@@ -437,352 +442,305 @@ def x_to_r(X):
     return np.stack([x_spinel, x_chromite, x_ulvospinel, x_magnetite], axis=-1)
 
 
+
+
 # =============================================================================
-# Bulk ordering solve (spinel.c `order()`, lines 2152-2379): coupled 3-D
-# Newton solve for s=(s0,s1,s2) at fixed (r,T,P). No degenerate-composition
-# gating is needed here (unlike clinopyroxene.py) because every site
-# fraction is clipped at DBL_EPSILON before entering a log, exactly as the
-# C source itself does, so dgds never evaluates log(0) even at the
-# composition vertices.
+# Second and third s-derivatives (D2GDS*, D2GDS*DT, D3GDS*, D3GDS*DT macros,
+# spinel.c lines ~1690-1891). Every one of them is W + R*t*(site-fraction
+# terms), so the Hessian is returned together with its T-derivative
+# (d3gds2dt = the R*(...) part). D2GDT2 = D3GDT3 = D3GDSDT2 = 0 and every
+# P-derivative of the s-gradient is 0 in this model.
 # =============================================================================
+def d2gds2(x, T):
+    """(B,3,3) D2GDS2 and (B,3,3) D3GDS2DT from the clipped site fractions."""
+    R = Rgas
+    fe2t, fe2o = x['xfe2tet'], x['xfe2oct']
+    M = np.empty(fe2t.shape + (3, 3))
+    M[..., 0, 0] = 0.25*R*(1.0/x['xmg2tet'] + 1.0/fe2t + 0.5/fe2o + 0.5/x['xmg2oct'])
+    M[..., 0, 1] = 0.5*R*(-1.0/fe2t - 0.5/fe2o)
+    M[..., 0, 2] = 0.5*R*(-1.0/fe2t - 0.5/fe2o)
+    M[..., 1, 1] = R*(1.0/fe2t + 1.0/x['xal3tet'] + 0.5/x['xal3oct'] + 0.5/fe2o)
+    M[..., 1, 2] = R*(1.0/fe2t + 0.5/fe2o)
+    M[..., 2, 2] = R*(1.0/fe2t + 1.0/x['xfe3tet'] + 0.5/x['xfe3oct'] + 0.5/fe2o)
+    M[..., 1, 0], M[..., 2, 0], M[..., 2, 1] = M[..., 0, 1], M[..., 0, 2], M[..., 1, 2]
+    W = np.array([[2.0*gs1s1, gs1s2, gs1s4], [gs1s2, 2.0*gs2s2, gs2s4], [gs1s4, gs2s4, 2.0*gs4s4]])
+    return W + np.asarray(T, dtype=np.float64)[..., None, None]*M, M
+
+
+def d2gdsdt(x):
+    """(B,3) D2GDS0DT, D2GDS1DT, D2GDS2DT."""
+    R = Rgas
+    return np.stack([
+        0.5*R*(np.log(x['xmg2tet']/x['xfe2tet']) + np.log(x['xfe2oct']/x['xmg2oct'])),
+        R*(np.log(x['xfe2tet']/x['xal3tet']) + np.log(x['xal3oct']/x['xfe2oct'])),
+        R*(np.log(x['xfe2tet']/x['xfe3tet']) + np.log(x['xfe3oct']/x['xfe2oct'])) - ss4], axis=-1)
+
+
+def d3gds3(x, T):
+    """(B,3,3,3) fully symmetric D3GDS3 tensor (fillD3GDS3)."""
+    Rt = Rgas*np.asarray(T, dtype=np.float64)
+    q = {k: 1.0/np.square(v) for k, v in x.items()}
+    fe2t, fe2o = q['xfe2tet'], q['xfe2oct']
+    e = {(0, 0, 0): -0.125*Rt*(q['xmg2tet'] - fe2t + 0.25*fe2o - 0.25*q['xmg2oct']),
+         (0, 0, 1): -0.25*Rt*(fe2t - 0.25*fe2o),
+         (0, 0, 2): -0.25*Rt*(fe2t - 0.25*fe2o),
+         (0, 1, 1): -0.5*Rt*(-fe2t + 0.25*fe2o),
+         (0, 1, 2): -0.5*Rt*(-fe2t + 0.25*fe2o),
+         (0, 2, 2): -0.5*Rt*(-fe2t + 0.25*fe2o),
+         (1, 1, 1): -Rt*(fe2t - q['xal3tet'] + 0.25*q['xal3oct'] - 0.25*fe2o),
+         (1, 1, 2): -Rt*(fe2t - 0.25*fe2o),
+         (1, 2, 2): -Rt*(fe2t - 0.25*fe2o),
+         (2, 2, 2): -Rt*(fe2t - q['xfe3tet'] + 0.25*q['xfe3oct'] - 0.25*fe2o)}
+    out = np.empty(fe2t.shape + (3, 3, 3))
+    for (i, j, k), v in e.items():
+        for a, b, c in {(i, j, k), (i, k, j), (j, i, k), (j, k, i), (k, i, j), (k, j, i)}:
+            out[..., a, b, c] = v
+    return out
+
+
+# =============================================================================
+# Bulk ordering solve: spinel.c `order()` (lines 2152-2379), verbatim.
+# Start from the random tet/oct distribution; each iteration evaluates DGDS
+# and the analytic D2GDS2 at the clipped site fractions of the current s,
+# takes the Newton step deltaS = (-D2GDS2)^-1 DGDS, and shortens it (lambda)
+# so no site fraction leaves [0, 1], testing the eight unclipped site
+# fractions in the source's order. Iteration stops when every |ds| <=
+# 10*DBL_EPSILON or after MAX_ITER = 200 steps; the returned state is sOld
+# (the start of the last step) with its clipped site fractions, and the
+# Hessian is the one factored in that last step -- exactly what order()
+# leaves behind for gmix/hmix/cpmix and the ds/dT solves.
+#
+# Nothing here assumes a physically feasible composition: emulator output
+# with, e.g., negative total Al (x_hercynite + x_spinel < 0) is handled the
+# way MAGMA handles it (clipped site fractions, truncated steps).
+# =============================================================================
+MAX_ITER = 200
+
+
 def _initial_guess(r):
-    """Physically-motivated starting point mirroring order()'s own
-    totMg/totFe2/totAl/totFe3/totCr/totTi tet/oct partition (spinel.c
-    lines 2189-2210) -- purely a Newton starting point, does not affect
-    the converged answer."""
+    """order()'s starting point: cations spread over tet/oct sites in
+    proportion to site availability (spinel.c lines 2189-2214)."""
     r = np.asarray(r, dtype=np.float64)
     r0, r1, r2, r3 = r[..., 0], r[..., 1], r[..., 2], r[..., 3]
     totAl = 2.0 * (1.0 - r1 - r2 - r3)
     totCr = 2.0 * r1
-    totFe2 = 1.0 - r0 + r2
     totFe3 = 2.0 * r3
     totMg = r0
     totTi = r2
     ratio = 2.0 - totCr - totTi
-    denom = 1.0 + ratio
-    xmg2oct = totMg * ratio / denom
-    xfe2oct = totFe2 * ratio / denom
-    xal3oct = totAl * ratio / denom
-    xfe3oct = totFe3 * ratio / denom
+    xmg2oct = totMg * ratio / (1.0 + ratio)
+    xal3oct = totAl * ratio / (1.0 + ratio)
+    xfe3oct = totFe3 * ratio / (1.0 + ratio)
     xmg2tet = totMg - xmg2oct
     xal3tet = totAl - xal3oct
     xfe3tet = totFe3 - xfe3oct
-    xmg2oct = xmg2oct / 2.0
-    xal3oct = xal3oct / 2.0
-    xfe3oct = xfe3oct / 2.0
-
-    s0 = xmg2tet - 2.0 * xmg2oct
-    s1 = xal3oct - xal3tet / 2.0
-    s2 = xfe3oct - xfe3tet / 2.0
-    return np.stack([s0, s1, s2], axis=-1)
+    return np.stack([xmg2tet - xmg2oct, xal3oct/2.0 - xal3tet/2.0, xfe3oct/2.0 - xfe3tet/2.0], axis=-1)
 
 
-def _gates(r):
-    """Which of s0,s1,s2 have a genuine root to chase, given bulk r --
-    the same "degenerate composition" concept clinopyroxene.py's own
-    `_ab_initio_guess_and_gates` uses (see its docstring), applied here
-    because spinel's coupled 3-variable ideal-mixing derivative has the
-    same failure mode: whenever the cation pair a given s_i physically
-    exchanges between sites is (partly or wholly) ABSENT from the bulk
-    composition, DGDS_i has no reachable interior zero (confirmed by
-    direct grid evaluation: at pure spinel, MgAl2O4, Fe2+ is entirely
-    absent -- `totFe2 = 1-r0+r2 = 0` -- and DGDS0/DGDS1 simply never
-    change sign smoothly across the physical (s0,s1) box, only jumping
-    at the clip boundary), and chasing it anyway corrupts convergence of
-    the OTHER, genuinely well-posed s components too (via the coupled
-    Jacobian's off-diagonal terms) -- confirmed by A/B testing: gating
-    off only the ill-posed component(s) recovers, bit-for-bit, the SAME
-    equilibrium `solve_ordering` finds for a well-posed vertex (e.g.
-    hercynite's bulk-order() s1 -> 0.8254792529, exactly matching
-    `_hc_ghsv`'s own independent 1-D `pureOrder`-equivalent solve) that
-    an UNGATED joint solve fails to reach.
+def _feasible_step(x, dS):
+    """order()'s lambda: the largest step fraction (<= 1) keeping every
+    unclipped site fraction in [0, 1], applied site by site in source
+    order (`if (f + lambda*df < 0) ... else if (f + lambda*df > 1) ...`)."""
+    d0, d1, d2 = dS[:, 0], dS[:, 1], dS[:, 2]
+    lam = np.ones(d0.shape)
+    for f, df in ((x['xmg2tet'], d0/2.0), (x['xfe2tet'], -d0/2.0 + d1 + d2), (x['xal3tet'], -d1),
+                  (x['xfe3tet'], -d2), (x['xmg2oct'], -d0/4.0), (x['xfe2oct'], d0/4.0 - d1/2.0 - d2/2.0),
+                  (x['xal3oct'], d1/2.0), (x['xfe3oct'], d2/2.0)):
+        nz = df != 0.0
+        with np.errstate(divide='ignore', invalid='ignore'):
+            lo = nz & (f + lam*df < 0.0)
+            hi = nz & ~lo & (f + lam*df > 1.0)
+            lam = np.where(lo, -f/df, np.where(hi, (1.0 - f)/df, lam))
+    return lam
 
-    Fe2+ (`totFe2`) is the shared "exchange partner" for all three
-    directions (S1: Mg-Fe2, S2: Al-Fe2, S4: Fe2-Fe3, per the site-
-    fraction formulas in `site_fractions`), so it gates all three; each
-    direction additionally needs its own other cation present."""
+
+def solve_ordering(r, T, P):
+    """spinel.c order() for (B,4) r at (B,) T: returns (s (B,3), clipped
+    site fractions at s, D2GDS2 (B,3,3) at s, converged (B,) bool).
+    `converged` is False where MAX_ITER was reached; MAGMA silently uses
+    that last state, and so does this function (the caller warns)."""
     r = np.asarray(r, dtype=np.float64)
-    r0, r1, r2, r3 = r[..., 0], r[..., 1], r[..., 2], r[..., 3]
-    totMg = r0
-    totAl = 2.0 * (1.0 - r1 - r2 - r3)
-    totFe2 = 1.0 - r0 + r2
-    totFe3 = 2.0 * r3
-    gate0 = (totMg != 0.0) & (totFe2 != 0.0)
-    gate1 = (totAl != 0.0) & (totFe2 != 0.0)
-    gate2 = (totFe3 != 0.0) & (totFe2 != 0.0)
-    return np.stack([gate0, gate1, gate2], axis=-1)
-
-
-def solve_ordering(r, T, P, n_iter=150, jac_eps=1e-4, max_halvings=30):
-    """Coupled 3-D Newton solve for s=(s0,s1,s2): a numerically estimated
-    Jacobian (as in `solution_model.newton_solve_ordering`), a
-    backtracking line search on top of it, AND composition-dependent
-    gating of components with no reachable root (see `_gates`) -- all
-    three are needed together (verified empirically, not merely assumed
-    by analogy to clinopyroxene.py): plain Newton (no line search, no
-    gating) oscillates indefinitely for compositions near a single
-    dominant endmember, because spinel's ideal-mixing entropy derivative
-    involves site-fraction log-RATIOS (`log(xmg2tet/xfe2tet)`, etc.)
-    that become extremely steep near the DBL_EPSILON floor/ceiling clip
-    -- an un-damped step can overshoot straight across a clipped
-    boundary and land at a point with an even LARGER gradient on the far
-    side. Line search alone fixes every genuinely interior/mixed
-    composition (residual ~1e-12) but is not sufficient exactly at or
-    very near a pure-endmember vertex where an entire cation type is
-    absent: there gating is also needed, both to give a well-defined
-    answer for the components with no root (frozen at
-    `_initial_guess`'s own physically-motivated value, mirroring the
-    only sensible fallback) AND to stop that ill-posed direction from
-    corrupting the coupled Jacobian's estimate for the OTHER, genuinely
-    well-posed components.
-
-    Even with all three, gmix is NOT reliably ~0 exactly at every pure-
-    endmember vertex (unlike clinopyroxene.py/spinel's own hercynite and
-    magnetite, whose bulk vertex solution empirically DOES land on
-    `_hc_ghsv`/`_mt_ghsv`'s independent `pureOrder`-equivalent value --
-    chromite and ulvospinel have no internal ordering at all by design,
-    S=0/const, so this doesn't apply to them either; only spinel itself,
-    where the Fe2+-absence degeneracy above leaves s0/s1 frozen at
-    `_initial_guess` rather than at `_sp_ghsv`'s own value). See
-    `benchmark_spinel_test.py`, which for this reason checks gmix at
-    genuinely interior/mixed compositions (following the precedent set
-    for orthopyroxene's own gmix test, melts_vec/orthopyroxene.py) plus
-    the two vertices (hercynite, magnetite) confirmed to agree.
-    """
-    r = np.asarray(r, dtype=np.float64)
-    T = np.asarray(T, dtype=np.float64)
-    P = np.asarray(P, dtype=np.float64)
-    s = np.clip(np.nan_to_num(_initial_guess(r), nan=0.0), -1.0 + 1e-6, 1.0 - 1e-6)
-    B, NS = s.shape
-    gate = _gates(r)
-
-    def _f(ss):
-        return np.where(gate, dgds(r, ss, T, P), 0.0)
-
-    for _ in range(n_iter):
-        f0 = _f(s)
-        norm0 = np.sum(f0 * f0, axis=-1)
-        J = np.empty((B, NS, NS), dtype=np.float64)
-        for j in range(NS):
-            s_plus = s.copy();  s_plus[:, j]  += jac_eps
-            s_minus = s.copy(); s_minus[:, j] -= jac_eps
-            J[:, :, j] = (_f(s_plus) - _f(s_minus)) / (2.0 * jac_eps)
-        J = J + 1e-8 * np.eye(NS)[None, :, :]
+    T = np.broadcast_to(np.asarray(T, dtype=np.float64), r.shape[:-1])
+    P = np.broadcast_to(np.asarray(P, dtype=np.float64), r.shape[:-1])
+    B = r.shape[0]
+    sNew = _initial_guess(r)
+    sOld = np.full((B, 3), 2.0)
+    active = np.ones(B, dtype=bool)
+    for _ in range(MAX_ITER):
+        active &= np.any(np.abs(sNew - sOld) > 10.0*_DBL_EPS, axis=-1)
+        if not active.any():
+            break
+        a = np.flatnonzero(active)
+        s = sNew[a]
+        ra, Ta = r[a], T[a]
+        x = site_fractions(ra, s)
+        g = dgds(ra, s, Ta, P[a], x)
+        H, _ = d2gds2(x, Ta)
+        sOld[a] = s
         try:
-            step = np.linalg.solve(J, f0[:, :, None])[:, :, 0]
-        except np.linalg.LinAlgError:
-            step = np.zeros_like(f0)
-
-        alpha = np.ones(B)
-        s_new = np.clip(s - alpha[:, None] * step, -1.0 + 1e-9, 1.0 - 1e-9)
-        norm_new = np.sum(_f(s_new) ** 2, axis=-1)
-        bad = norm_new > norm0
-        k = 0
-        while np.any(bad) and k < max_halvings:
-            alpha = np.where(bad, alpha * 0.5, alpha)
-            s_new = np.clip(s - alpha[:, None] * step, -1.0 + 1e-9, 1.0 - 1e-9)
-            norm_new = np.sum(_f(s_new) ** 2, axis=-1)
-            bad = norm_new > norm0
-            k += 1
-        s = s_new
-    return s
+            dS = np.linalg.solve(-H, g[..., None])[..., 0]
+        except np.linalg.LinAlgError as err:
+            raise np.linalg.LinAlgError(f"spinel order(): singular D2GDS2 in rows {a.tolist()}: {err}") from err
+        lam = _feasible_step(x, dS)
+        sNew[a] = s + np.minimum(lam, 1.0)[:, None]*dS
+    converged = ~np.any(np.abs(sNew - sOld) > 10.0*_DBL_EPS, axis=-1)
+    x = site_fractions(r, sOld)
+    H, _ = d2gds2(x, T)
+    return sOld, x, H, converged
 
 
 # =============================================================================
-# Pure-endmember reference (`pureOrder`/`pureSpn`, spinel.c lines 725-1161):
-# three decoupled 1-D Landau order parameters, each solved once per (T,P)
-# (independent of bulk composition r), plus two endmembers with no internal
-# ordering at all. See module docstring for the vertex (r,s) of each.
+# Pure-endmember reference: spinel.c pureOrder()/pureSpn() (lines 725-1330),
+# verbatim. Three decoupled 1-D Newton solves -- s0 of spinel (with
+# s1 = (1+s0)/2 built into the SP_* macros), s1 of hercynite, s2 of
+# magnetite -- started at (0.5, 0.9, 0.1), clipped to (-1+eps | eps,
+# 1-eps), iterated until all three steps are <= 10*DBL_EPSILON, returning
+# sOld. Chromite and ulvospinel have no ordering. Endmember order here and
+# in the returned arrays is ENDMEMBERS = [chromite, hercynite, magnetite,
+# spinel, ulvospinel] (MAGMA's ends[0..4]).
 # =============================================================================
-def _newton_1d(dgds_func, s0, T, P, n_iter=60, lo=-1.0 + 1e-9, hi=1.0 - 1e-9):
+def _pure_derivs(s, T):
+    """Per pure ordering parameter (columns: SP s0, HC s1, MT s2): dG/ds,
+    d2G/ds2, d2G/dsdT, d3G/ds3, d3G/ds2dT."""
+    R = Rgas
+    t = T
+    a, b, c = s[..., 0], s[..., 1], s[..., 2]
+    dg = np.stack([
+        gs1 + gs2/2.0 + gx2s1 + gx2s2/2.0 + 2.0*gs1s1*a + gs1s2*(0.5 + a) + gs2s2*(1.0 + a)/2.0
+        + R*t*(0.5*np.log(1.0 + a) + 0.5*np.log(3.0 + a) - np.log(1.0 - a)),
+        gs2 + 2.0*gs2s2*b + R*t*(np.log(b) + np.log(1.0 + b) - 2.0*np.log(1.0 - b)),
+        hs4 - t*ss4 + gx5s4 + 2.0*gs4s4*c + R*t*(np.log(c) - 2.0*np.log(1.0 - c) + np.log(1.0 + c))], axis=-1)
+    d2 = np.stack([
+        2.0*gs1s1 + gs1s2 + gs2s2/2.0 + R*t*(0.5/(1.0 + a) + 0.5/(3.0 + a) + 1.0/(1.0 - a)),
+        2.0*gs2s2 + R*t*(1.0/b + 1.0/(1.0 + b) + 2.0/(1.0 - b)),
+        2.0*gs4s4 + R*t*(1.0/c + 2.0/(1.0 - c) + 1.0/(1.0 + c))], axis=-1)
+    dt = np.stack([
+        R*(0.5*np.log(1.0 + a) + 0.5*np.log(3.0 + a) - np.log(1.0 - a)),
+        R*(np.log(b) + np.log(1.0 + b) - 2.0*np.log(1.0 - b)),
+        R*(np.log(c) - 2.0*np.log(1.0 - c) + np.log(1.0 + c)) - ss4], axis=-1)
+    d3 = np.stack([
+        -R*t*(0.5/np.square(1.0 + a) + 0.5/np.square(3.0 + a) - 1.0/np.square(1.0 - a)),
+        -R*t*(1.0/np.square(b) + 1.0/np.square(1.0 + b) - 2.0/np.square(1.0 - b)),
+        -R*t*(1.0/np.square(c) - 2.0/np.square(1.0 - c) + 1.0/np.square(1.0 + c))], axis=-1)
+    d3t = np.stack([
+        R*(0.5/(1.0 + a) + 0.5/(3.0 + a) + 1.0/(1.0 - a)),
+        R*(1.0/b + 1.0/(1.0 + b) + 2.0/(1.0 - b)),
+        R*(1.0/c + 2.0/(1.0 - c) + 1.0/(1.0 + c))], axis=-1)
+    return dg, d2, dt, d3, d3t
+
+
+def pure_order(T):
+    """pureOrder(): (B,3) [s0 of spinel, s1 of hercynite, s2 of magnetite]."""
     T = np.asarray(T, dtype=np.float64)
-    P = np.asarray(P, dtype=np.float64)
-    s = np.full(T.shape, s0, dtype=np.float64)
-    eps = 1e-6
-    for _ in range(n_iter):
-        f0 = dgds_func(s, T, P)
-        fp = dgds_func(np.clip(s + eps, lo, hi), T, P)
-        fm = dgds_func(np.clip(s - eps, lo, hi), T, P)
-        jac = (fp - fm) / (2.0 * eps)
-        jac = np.where(jac == 0.0, 1.0, jac)
-        s = s - f0 / jac
-        s = np.clip(s, lo, hi)
-    return s
+    sNew = np.broadcast_to(np.array([0.5, 0.9, 0.1]), T.shape + (3,)).copy()
+    sOld = np.full(T.shape + (3,), 2.0)
+    lo = np.array([-1.0 + _DBL_EPS, _DBL_EPS, _DBL_EPS])
+    for _ in range(10*MAX_ITER):
+        active = np.any(np.abs(sNew - sOld) > 10.0*_DBL_EPS, axis=-1)
+        if not active.any():
+            return sOld
+        s = sNew[active]
+        dg, d2, _, _, _ = _pure_derivs(s, T[active])
+        sOld[active] = s
+        sNew[active] = np.maximum(np.minimum(s - dg/d2, 1.0 - _DBL_EPS), lo)
+    raise RuntimeError(f"spinel pureOrder() did not converge at T = {T[active][:5].tolist()} ...")
 
 
-def _sp_dgds0(s0, T, P):
-    """DSP_GDS0, spinel.c lines 761-763, verbatim (s0 in (-1,1))."""
-    return (gs1 + gs2 / 2.0 + gx2s1 + gx2s2 / 2.0 + 2.0 * gs1s1 * s0
-            + gs1s2 * (0.5 + s0) + gs2s2 * (1.0 + s0) / 2.0
-            + Rgas * T * (0.5 * np.log(1.0 + s0) + 0.5 * np.log(3.0 + s0) - np.log(1.0 - s0)))
-
-
-def _hc_dgds1(s1, T, P):
-    """DHC_GDS1, spinel.c lines 733-734, verbatim (s1 in (0,1))."""
-    return (gs2 + 2.0 * gs2s2 * s1
-            + Rgas * T * (np.log(s1) + np.log(1.0 + s1) - 2.0 * np.log(1.0 - s1)))
-
-
-def _mt_dgds2(s2, T, P):
-    """DMT_GDS2, spinel.c lines 823-825, verbatim (s2 in (0,1))."""
-    return (hs4 - T * ss4 + gx5s4 + 2.0 * gs4s4 * s2
-            + Rgas * T * (np.log(s2) - 2.0 * np.log(1.0 - s2) + np.log(1.0 + s2)))
-
-
-def _sp_ghsv(T, P):
-    s0 = _newton_1d(_sp_dgds0, 0.5, T, P, lo=-1.0 + 1e-9, hi=1.0 - 1e-9)
-    S = -Rgas * (0.5 * (1.0 + s0) * np.log(1.0 + s0) + (1.0 - s0) * np.log(1.0 - s0)
-                 + 0.5 * (3.0 + s0) * np.log(3.0 + s0) - 5.0 * np.log(2.0))
-    H = (g0 + gx2 + gs1 * s0 + gs2 * (1.0 + s0) / 2.0 + gx2x2
-         + gx2s1 * s0 + gx2s2 * (1.0 + s0) / 2.0 + gs1s1 * s0 * s0
-         + gs1s2 * s0 * (1.0 + s0) / 2.0 + gs2s2 * (1.0 + s0) ** 2 / 4.0)
-    G = H - T * S
-    V = np.zeros_like(H)
-    return G, H, S, V
-
-
-def _hc_ghsv(T, P):
-    s1 = _newton_1d(_hc_dgds1, 0.9, T, P, lo=0.0 + 1e-9, hi=1.0 - 1e-9)
-    S = -Rgas * (s1 * np.log(s1) + 2.0 * (1.0 - s1) * np.log(1.0 - s1)
-                 + (1.0 + s1) * np.log(1.0 + s1) - 2.0 * np.log(2.0))
-    H = g0 + gs2 * s1 + gs2s2 * s1 * s1
-    G = H - T * S
-    V = np.zeros_like(H)
-    return G, H, S, V
-
-
-def _mt_ghsv(T, P):
-    s2 = _newton_1d(_mt_dgds2, 0.1, T, P, lo=0.0 + 1e-9, hi=1.0 - 1e-9)
-    S = -Rgas * (s2 * np.log(s2) + 2.0 * (1.0 - s2) * np.log(1.0 - s2)
-                 + (1.0 + s2) * np.log(1.0 + s2) - 2.0 * np.log(2.0)) + ss4 * s2
-    H = g0 + gx5 + hs4 * s2 + gx5x5 + gx5s4 * s2 + gs4s4 * s2 * s2
-    G = H - T * S
-    V = np.zeros_like(H)
-    return G, H, S, V
-
-
-def _cr_ghsv(T, P):
+def pure_endmember_props(T):
+    """pureSpn(): G, H, S, Cp, dCpdT (each (B,5), ENDMEMBERS order) of the
+    model's own endmember references (V and its derivatives are 0)."""
     T = np.asarray(T, dtype=np.float64)
-    S = np.zeros_like(T)
-    H = np.full_like(T, g0 + gx3 + gs3 + gx3x3 + gx3s3 + gs3s3)
-    G = H - T * S
-    V = np.zeros_like(T)
-    return G, H, S, V
-
-
-def _uv_ghsv(T, P):
-    T = np.asarray(T, dtype=np.float64)
-    S = np.full_like(T, Rgas * 2.0 * np.log(2.0))
-    H = np.full_like(T, g0 + gx4 + gx4x4)
-    G = H - T * S
-    V = np.zeros_like(T)
-    return G, H, S, V
-
-
-_PURE_FUNCS = {
-    'chromite': _cr_ghsv,
-    'hercynite': _hc_ghsv,
-    'magnetite': _mt_ghsv,
-    'spinel': _sp_ghsv,
-    'ulvospinel': _uv_ghsv,
-}
-
-
-def pure_endmember_ghsv(T, P):
-    """G,H,S,V (B,5) for the 5 endmembers in ENDMEMBERS order, using this
-    model's OWN internal Taylor-coefficient-based reference frame (same
-    caveat as clinopyroxene.py's `pure_endmember_ghsv`: only ever used
-    differentially, against the same reference frame, in
-    `endmember_mole_fractions`-weighted `gmix`/Darken normalization)."""
-    T = np.asarray(T, dtype=np.float64)
-    P = np.asarray(P, dtype=np.float64)
-    G = np.empty(T.shape + (5,))
-    H = np.empty(T.shape + (5,))
-    S = np.empty(T.shape + (5,))
-    V = np.empty(T.shape + (5,))
-    for i, name in enumerate(ENDMEMBERS):
-        g, h, s, v = _PURE_FUNCS[name](T, P)
-        G[..., i], H[..., i], S[..., i], V[..., i] = g, h, s, v
-    return G, H, S, V
+    s = pure_order(T)
+    a, b, c = s[..., 0], s[..., 1], s[..., 2]
+    R = Rgas
+    S = np.stack([
+        np.zeros_like(T),
+        -R*(b*np.log(b) + 2.0*(1.0 - b)*np.log(1.0 - b) + (1.0 + b)*np.log(1.0 + b) - 2.0*np.log(2.0)),
+        -R*(c*np.log(c) + 2.0*(1.0 - c)*np.log(1.0 - c) + (1.0 + c)*np.log(1.0 + c) - 2.0*np.log(2.0)) + ss4*c,
+        -R*(0.5*(1.0 + a)*np.log(1.0 + a) + (1.0 - a)*np.log(1.0 - a) + 0.5*(3.0 + a)*np.log(3.0 + a)
+            - 5.0*np.log(2.0)),
+        np.full_like(T, R*2.0*np.log(2.0))], axis=-1)
+    Hm = np.stack([
+        np.full_like(T, g0 + gx3 + gs3 + gx3x3 + gx3s3 + gs3s3),
+        g0 + gs2*b + gs2s2*b*b,
+        g0 + gx5 + hs4*c + gx5x5 + gx5s4*c + gs4s4*c*c,
+        g0 + gx2 + gs1*a + gs2*(1.0 + a)/2.0 + gx2x2 + gx2s1*a + gx2s2*(1.0 + a)/2.0 + gs1s1*a*a
+        + gs1s2*a*(1.0 + a)/2.0 + gs2s2*np.square(1.0 + a)/4.0,
+        np.full_like(T, g0 + gx4 + gx4x4)], axis=-1)
+    G = Hm - T[..., None]*S
+    # SIXTH / SEVENTH masks: ds/dT = -d2gdsdt/d2gds2, d2s/dT2 from pureOrder FOURTH
+    _, d2, dt, d3, d3t = _pure_derivs(s, T)
+    dsdt = -dt/d2
+    d2sdt2 = -(2.0*d3t*dsdt + d3*dsdt*dsdt)/d2
+    t = T[..., None]
+    temp = 2.0*dt*dsdt + d2*np.square(dsdt)
+    cp3 = -t*temp
+    dcp3 = -t*(3.0*dt*d2sdt2 + 3.0*d2*dsdt*d2sdt2 + 3.0*d3t*dsdt*dsdt + d3*dsdt*dsdt*dsdt) - temp
+    z = np.zeros_like(T)
+    # columns of the pure-order arrays are (SP, HC, MT); endmembers are (CR, HC, MT, SP, UV)
+    Cp = np.stack([z, cp3[..., 1], cp3[..., 2], cp3[..., 0], z], axis=-1)
+    dCpdT = np.stack([z, dcp3[..., 1], dcp3[..., 2], dcp3[..., 0], z], axis=-1)
+    return dict(G=G, H=G + T[..., None]*S, S=S, Cp=Cp, dCpdT=dCpdT)
 
 
 # =============================================================================
-# Darken activities (`actSpn`, spinel.c lines 2995-3070): the STANDARD
-# (non-normalized) Darken formula -- unlike clinopyroxene.py, spinel.c does
-# NOT divide by a per-component pure-endmember activity constant, it
-# directly forms mu_i = g - mu0_i + sum_j fr_ij dG/dr_j (see actSpn's
-# `mask & SECOND` block), which is exactly `solution_model.darken_activities`
-# applied to (g - g0_i).
+# Darken activities (`actSpn`, spinel.c lines 2995-3070): mu_i = G - mu0_i
+# + sum_j FR_ij dG/dr_j with G, dG/dr at order()'s state and mu0 = pureSpn G.
 # =============================================================================
 def _fr_matrix(r):
-    """(B,5,4) Darken FR matrix, spinel.c FR2(i)..FR5(i) macros (lines
-    1542-1545), component order = ENDMEMBERS = [chromite, hercynite,
-    magnetite, spinel, ulvospinel]."""
+    """(B,5,4) Darken FR matrix, spinel.c FR2(i)..FR5(i) macros, component
+    order = ENDMEMBERS = [chromite, hercynite, magnetite, spinel,
+    ulvospinel]; column j is r_j's FR: 1 - r_j for its own endmember
+    (spinel, chromite, ulvospinel, magnetite), -r_j otherwise."""
     r = np.asarray(r, dtype=np.float64)
-    B = r.shape[0]
-    r0, r1, r2, r3 = (r[:, i] for i in range(4))
-    fr = np.zeros((B, 5, 4), dtype=np.float64)
-    # FR2(i): X2 column (r0) -- component 3 (spinel) is 1-r0, else -r0
-    fr[:, 3, 0] = 1.0 - r0
-    for i in (0, 1, 2, 4):
-        fr[:, i, 0] = -r0
-    # FR3(i): X3 column (r1) -- component 0 (chromite) is 1-r1, else -r1
-    fr[:, 0, 1] = 1.0 - r1
-    for i in (1, 2, 3, 4):
-        fr[:, i, 1] = -r1
-    # FR4(i): X4 column (r2) -- component 4 (ulvospinel) is 1-r2, else -r2
-    fr[:, 4, 2] = 1.0 - r2
-    for i in (0, 1, 2, 3):
-        fr[:, i, 2] = -r2
-    # FR5(i): X5 column (r3) -- component 2 (magnetite) is 1-r3, else -r3
-    fr[:, 2, 3] = 1.0 - r3
-    for i in (0, 1, 3, 4):
-        fr[:, i, 3] = -r3
+    fr = np.broadcast_to(-r[:, None, :], (r.shape[0], 5, 4)).copy()
+    for j, i in enumerate((3, 0, 4, 2)):
+        fr[:, i, j] = 1.0 - r[:, j]
     return fr
 
 
-def solution_thermo(r, T, P, n_iter=60, dT=0.02, dP=0.02):
-    """Full spinel solid-solution mixing thermodynamics.
+def solution_thermo(r, T, P):
+    """Spinel mixing properties per mole (gmixSpn, hmixSpn, smixSpn,
+    vmixSpn, cpmixSpn FIRST|SECOND, actSpn SECOND), all at order()'s state.
 
-    Returns gmix, H_mix, S_mix, V_mix (analytic, at converged s*),
-    Cp_mix/dVdT_mix/dVdP_mix (central-differenced, s* re-solved at each
-    stencil point), mu, activities (5,) and s_eq (3,).
+    Cp_mix = -T (2 gst.dsdt + dsdt.gss.dsdt) with dsdt = -gss^-1 gst (the
+    D2GDT2 = 0 ordering contribution), dCpdT_mix from d2s/dT2 (order()
+    EIGHTH mask), each minus the ENDMEMBERS-weighted pureSpn values. V_mix
+    = DGDP depends on r only, so dVdT_mix = dVdP_mix = 0 exactly.
     """
     r = np.asarray(r, dtype=np.float64)
     T = np.asarray(T, dtype=np.float64)
     P = np.asarray(P, dtype=np.float64)
+    s, x, Hs, converged = solve_ordering(r, T, P)
+    if not converged.all():
+        bad = np.flatnonzero(~converged)
+        warnings.warn(f"spinel order() hit MAX_ITER={MAX_ITER} on {bad.size} row(s) (first: {bad[:5].tolist()}); "
+                      "using the last iterate, as MAGMA does.", RuntimeWarning)
+    Gt, Hpoly, St, Vt = gibbs_total(r, s, T, P)
+    pure = pure_endmember_props(T)
+    xe = endmember_mole_fractions(r)
+    gmix = Gt - np.sum(xe*pure['G'], axis=-1)
+    smix = St - np.sum(xe*pure['S'], axis=-1)
+    hmix = (Gt + T*St) - np.sum(xe*pure['H'], axis=-1)
+    vmix = Vt
 
-    def _g_h_s_v(rr, TT, PP, n_it=n_iter):
-        s = solve_ordering(rr, TT, PP, n_iter=n_it)
-        G, H, S, V = gibbs_total(rr, s, TT, PP)
-        Gp, Hp, Sp, Vp = pure_endmember_ghsv(TT, PP)
-        x = endmember_mole_fractions(rr)
-        gmix = G - np.sum(x * Gp, axis=-1)
-        hmix = H - np.sum(x * Hp, axis=-1)
-        smix = S - np.sum(x * Sp, axis=-1)
-        vmix = V - np.sum(x * Vp, axis=-1)
-        return gmix, hmix, smix, vmix, s, G
+    gst = d2gdsdt(x)
+    dsdt = np.linalg.solve(-Hs, gst[..., None])[..., 0]
+    _, d3t = d2gds2(x, T)
+    d3 = d3gds3(x, T)
+    temp = 2.0*np.sum(gst*dsdt, -1) + np.einsum('bi,bij,bj->b', dsdt, Hs, dsdt)
+    Cp_mix = -T*temp - np.sum(xe*pure['Cp'], axis=-1)
+    rhs = 2.0*np.einsum('bjk,bk->bj', d3t, dsdt) + np.einsum('bjkl,bk,bl->bj', d3, dsdt, dsdt)
+    d2sdt2 = np.linalg.solve(-Hs, rhs[..., None])[..., 0]
+    dt = (3.0*np.sum(gst*d2sdt2, -1) + 3.0*np.einsum('bij,bi,bj->b', Hs, dsdt, d2sdt2)
+          + 3.0*np.einsum('bij,bi,bj->b', d3t, dsdt, dsdt) + np.einsum('bijk,bi,bj,bk->b', d3, dsdt, dsdt, dsdt))
+    dCpdT_mix = -T*dt - temp - np.sum(xe*pure['dCpdT'], axis=-1)
 
-    gmix, hmix, smix, vmix, s_eq, G_total = _g_h_s_v(r, T, P)
-
-    _, h_pT, _, v_pT, _, _ = _g_h_s_v(r, T + dT, P)
-    _, h_mT, _, v_mT, _, _ = _g_h_s_v(r, T - dT, P)
-    _, _, _, v_pP, _, _ = _g_h_s_v(r, T, P + dP)
-    _, _, _, v_mP, _, _ = _g_h_s_v(r, T, P - dP)
-
-    Cp_mix = (h_pT - h_mT) / (2.0 * dT)
-    dVdT_mix = (v_pT - v_mT) / (2.0 * dT)
-    dVdP_mix = (v_pP - v_mP) / (2.0 * dP)
-
-    dgdr_val = dgdr(r, s_eq, T, P)
     fr = _fr_matrix(r)
-    mu_bulk = G_total[:, None] + np.einsum('bij,bj->bi', fr, dgdr_val)
-    Gp, _, _, _ = pure_endmember_ghsv(T, P)
-    mu = mu_bulk - Gp
-    a = np.exp(mu / (Rgas * T[:, None]))
-
-    dCpdT_mix = np.zeros_like(Cp_mix)
-
+    mu = Gt[:, None] - pure['G'] + np.einsum('bij,bj->bi', fr, dgdr(r, s, T, P, x))
+    with np.errstate(over='ignore'):
+        a = np.exp(mu / (Rgas * T[:, None]))
+    z = np.zeros_like(Cp_mix)
     return dict(gmix=gmix, H_mix=hmix, S_mix=smix, V_mix=vmix,
-                Cp_mix=Cp_mix, dCpdT_mix=dCpdT_mix, dVdT_mix=dVdT_mix, dVdP_mix=dVdP_mix,
-                mu=mu, activities=a, s_eq=s_eq, endmembers=ENDMEMBERS)
+                Cp_mix=Cp_mix, dCpdT_mix=dCpdT_mix, dVdT_mix=z, dVdP_mix=z,
+                mu=mu, activities=a, s_eq=s, endmembers=ENDMEMBERS)

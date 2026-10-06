@@ -710,8 +710,10 @@ class MidLevelNetwork(TunableModel):
         pos_idxs = [sp_hercynite, sp_magnetite, sp_ulvospinel]
         if 'chromite' in sp:
             pos_idxs = [sp_chromite] + pos_idxs
+        # FeO per component (compToOx): chromite, hercynite, magnetite 1, ulvospinel
+        # 2.25 (already counted once in pos_idxs), spinel -19.
         PosS = torch.sum(intensiveComponents[:, pos_idxs], dim=-1) + (
-            intensiveComponents[:, sp_ulvospinel] * 2.25
+            intensiveComponents[:, sp_ulvospinel] * 1.25
         )
         NegS = intensiveComponents[:, sp_spinel] * 19
 
@@ -789,15 +791,19 @@ class MidLevelNetwork(TunableModel):
         c4 = intensiveComponents[:, i4]
         c5 = intensiveComponents[:, i5]
 
+        # Violations smaller than tol are float32 round-off: a row a previous polish
+        # put exactly on a bound must not be re-flagged (and re-solved) by it.
+        tol = 1e-6
+
         # Constraint 1
         pos1 = c1 + c2 + c3 + 2.25 * c5
         neg1 = 19 * c4
-        illegal1 = neg1 > pos1
+        illegal1 = neg1 > pos1 + tol
 
         # Constraint 2
         pos2 = c2 + c4
         neg2 = (2/3) * c3 + 0.25 * c5
-        illegal2 = neg2 > pos2
+        illegal2 = neg2 > pos2 + tol
 
         # Rows that violate any constraint
         illegal = illegal1 | illegal2
@@ -906,20 +912,69 @@ class MidLevelNetwork(TunableModel):
             intensiveComponents[rr_b, cc_b] = b[:, None] * intensiveComponents[rr_b, cc_b]
             intensiveComponents[rr_c, cc_c] = c[:, None] * intensiveComponents[rr_c, cc_c]
 
-            # Remaining rows: all three pools present, so the joint 3x3
-            # system is generically well-posed. This is the only case that
-            # still needs the batched solve (and its Fe-rebalance retry as a
-            # safety net for anything unexpected).
+            # Remaining rows: all three pools present. Impose only the violated
+            # constraint, as the degenerate branches above do: an Al-only violation
+            # keeps spinel (MgAl2O4, c = 1) fixed and trades {chromite, hercynite}
+            # against {magnetite, ulvospinel}; an FeO-only violation keeps {magnetite,
+            # ulvospinel} (b = 1) fixed and trades {chromite, hercynite} against
+            # spinel. Imposing BOTH equalities whenever either fails set FeO = 0 in
+            # Al-deficient Fe-Ti spinels (BishopTuff emulator: FeO 33 -> 4 wt%, MgO
+            # 1 -> 20 wt%, against alphaMELTS FeO 34, MgO 0.8).
             generic = n_zero == 0
+            only2 = generic & illegal2[row_idx] & ~illegal1[row_idx]
+            only1 = generic & illegal1[row_idx] & ~illegal2[row_idx]
+            for sel, which in ((only2, 2), (only1, 1)):
+                if not sel.any():
+                    continue
+                n_sel = int(sel.sum())
+                M2 = torch.zeros((n_sel, 2, 2), device=intensiveComponents.device, dtype=intensiveComponents.dtype)
+                rhs2 = torch.zeros((n_sel, 2), device=intensiveComponents.device, dtype=intensiveComponents.dtype)
+                M2[:, 0, 0] = A[sel]
+                if which == 2:   # a*c2 + C = b*((2/3)c3 + c5/4), a*A + b*B = A + B
+                    M2[:, 0, 1] = B[sel]
+                    rhs2[:, 0] = A[sel] + B[sel]
+                    M2[:, 1, 0] = L2_c2[sel]
+                    M2[:, 1, 1] = -L2_c3c5[sel]
+                    rhs2[:, 1] = -C[sel]
+                else:            # a*(c1+c2) + c3 + 2.25c5 = 19cC, a*A + c*C = A + C
+                    M2[:, 0, 1] = C[sel]
+                    rhs2[:, 0] = A[sel] + C[sel]
+                    M2[:, 1, 0] = L1_c1c2[sel]
+                    M2[:, 1, 1] = -19 * C[sel]
+                    rhs2[:, 1] = -L1_c3c5[sel]
+                sol2 = torch.linalg.solve(M2, rhs2)
+                s_rows = row_idx[sel]
+                rr_a, cc_a = torch.meshgrid(s_rows, cols_a, indexing="ij")
+                intensiveComponents[rr_a, cc_a] = sol2[:, 0:1] * intensiveComponents[rr_a, cc_a]
+                if which == 2:
+                    rr_b, cc_b = torch.meshgrid(s_rows, cols_b, indexing="ij")
+                    intensiveComponents[rr_b, cc_b] = sol2[:, 1:2] * intensiveComponents[rr_b, cc_b]
+                else:
+                    rr_c, cc_c = torch.meshgrid(s_rows, cols_c, indexing="ij")
+                    intensiveComponents[rr_c, cc_c] = sol2[:, 1:2] * intensiveComponents[rr_c, cc_c]
+
+            # Joint 3x3 solve (both equalities) for rows violating both constraints,
+            # or pushed past the other bound by the single-constraint fix. Pools are
+            # re-read from the current values.
             if generic.any():
-                g_row_idx = row_idx[generic]
+                ic = intensiveComponents[row_idx]
+                c1n = ic[:, i1] if i1 is not None else torch.zeros_like(ic[:, i2])
+                viol1 = 19 * ic[:, i4] > c1n + ic[:, i2] + ic[:, i3] + 2.25 * ic[:, i5] + tol
+                viol2 = (2/3) * ic[:, i3] + 0.25 * ic[:, i5] > ic[:, i2] + ic[:, i4] + tol
+                joint = generic & ((illegal1[row_idx] & illegal2[row_idx]) | viol1 | viol2)
+            else:
+                joint = generic
+            if joint.any():
+                g_row_idx = row_idx[joint]
                 rr_a, cc_a = torch.meshgrid(g_row_idx, cols_a, indexing="ij")
                 rr_b, cc_b = torch.meshgrid(g_row_idx, cols_b, indexing="ij")
                 rr_c, cc_c = torch.meshgrid(g_row_idx, cols_c, indexing="ij")
 
-                Ag, Bg, Cg = A[generic], B[generic], C[generic]
-                L1_c1c2g, L1_c3c5g = L1_c1c2[generic], L1_c3c5[generic]
-                L2_c2g, L2_c3c5g = L2_c2[generic], L2_c3c5[generic]
+                icj = intensiveComponents[g_row_idx]
+                c1j = icj[:, i1] if i1 is not None else torch.zeros_like(icj[:, i2])
+                Ag, Bg, Cg = c1j + icj[:, i2], icj[:, i3] + icj[:, i5], icj[:, i4]
+                L1_c1c2g, L1_c3c5g = Ag, icj[:, i3] + 2.25 * icj[:, i5]
+                L2_c2g, L2_c3c5g = icj[:, i2], (2/3) * icj[:, i3] + 0.25 * icj[:, i5]
 
                 # Build coefficient matrices (batch, 3, 3)
                 # Order of unknowns: [a, b, c]

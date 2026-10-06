@@ -317,6 +317,7 @@ def _derivative_terms(model, x_batch, y_batch, m_batch, dndp_t, dndt_t, deriv_sc
 # --------------------------------------------------------------------------- #
 def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs={},
                         criterion=symmetric_rel_l2, criterion_sat=nn.BCEWithLogitsLoss(),
+                        criterion_mole=None, criterion_bulk=None,
                         chem_alpha=1, mole_alpha=1, bulk_alpha=0, sat_alpha=1,
                         dndp_alpha=1.0, dndt_alpha=1.0,
                         Epochs=20, batch_size=1024, lr=1e-4,
@@ -410,7 +411,10 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
                              num_workers=4, pin_memory=True)
     binWeights = binWeights.to(device)
     compWeights = compWeights.to(device)
-    criterion_chem = criterion_mole = criterion_bulk = criterion
+    # Same contract as train_Upper_MELTS: mole/bulk criteria default to `criterion`.
+    criterion_chem = criterion
+    criterion_mole = criterion if criterion_mole is None else criterion_mole
+    criterion_bulk = criterion if criterion_bulk is None else criterion_bulk
 
     # Scale: estimated once from the first batches rather than per batch, so the loss does
     # not drift as the epoch's composition changes.
