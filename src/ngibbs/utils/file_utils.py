@@ -694,7 +694,7 @@ def save_ml_bundle(bundle, output_path):
         ml_indexer.save(str(indexer_state_dir))
         
         # Create tar.gz archive
-        with tarfile.open(output_path, 'w:gz') as tar:
+        with tarfile.open(output_path, 'w:gz', compresslevel=1) as tar:
             tar.add(temp_dir, arcname='.')
         
         print(f"Saved bundle to {output_path}")

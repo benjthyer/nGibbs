@@ -1,0 +1,155 @@
+dataset:
+  MELTSModel: '120'
+  Date: July8AffTest
+  Mode: OpenNoCrBatchCooling
+  subset: false
+  use_external: false
+outname: 120AffTest
+featureNames:
+- Pressure(System_main)
+- Temperature(System_main)
+- logfO2-QFM(System_main)
+free_outputs: null
+preprocessing:
+  preprocessed: false
+  recover_untracked_phases: true
+  filter_full_metadata: false
+  filter_legal: false
+  separate_analcime: false
+  separate_feldspar: true
+  excluded_oxides: []
+min_phase_proportion: 0.02
+upsampling:
+  enabled: false
+  phases:
+    nepheline:
+      n_resamples: 10
+      multiplier_bounds:
+      - 0.9
+      - 1.1
+    leucite:
+      n_resamples: 1
+      multiplier_bounds:
+      - 0.9
+      - 1.1
+    analcime:
+      n_resamples: 3
+      multiplier_bounds:
+      - 0.9
+      - 1.1
+    olivine:
+      n_resamples: 1
+      multiplier_bounds:
+      - 0.9
+      - 1.1
+    muscovite:
+      n_resamples: 3
+      multiplier_bounds:
+      - 0.9
+      - 1.1
+    biotite:
+      n_resamples: 1
+      multiplier_bounds:
+      - 0.9
+      - 1.1
+    k-feldspar:
+      n_resamples: 1
+      multiplier_bounds:
+      - 0.9
+      - 1.1
+    test_set_phases:
+      nepheline:
+        n_resamples: 10
+        multiplier_bounds:
+        - 0.99
+        - 1.01
+      leucite:
+        n_resamples: 1
+        multiplier_bounds:
+        - 0.99
+        - 1.01
+      analcime:
+        n_resamples: 3
+        multiplier_bounds:
+        - 0.99
+        - 1.01
+      olivine:
+        n_resamples: 1
+        multiplier_bounds:
+        - 0.99
+        - 1.01
+      muscovite:
+        n_resamples: 3
+        multiplier_bounds:
+        - 0.99
+        - 1.01
+      biotite:
+        n_resamples: 1
+        multiplier_bounds:
+        - 0.99
+        - 1.01
+      k-feldspar:
+        n_resamples: 1
+        multiplier_bounds:
+        - 0.99
+        - 1.01
+resampling:
+  train_bounds:
+  - - 1
+    - 1
+  test_bounds:
+  - - 1
+    - 1
+plot:
+  enabled: false
+balancing:
+  function: null
+deep_filter:
+  enabled: true
+  oxide_lower_bounds:
+  - - k-feldspar
+    - K2O
+    - 6
+  - - clinopyroxene
+    - CaO
+    - 6
+  - - melts-liquid
+    - SiO2
+    - 30
+  oxide_upper_bounds:
+  - - k-feldspar
+    - CaO
+    - 4
+  - - clinopyroxene
+    - TiO2
+    - 9
+  - - clinopyroxene
+    - Al2O3
+    - 12
+  - - orthopyroxene
+    - TiO2
+    - 5
+  - - orthopyroxene
+    - Al2O3
+    - 10
+  - - orthopyroxene
+    - CaO
+    - 6
+  - - melts-liquid
+    - TiO2
+    - 13
+  - - melts-liquid
+    - P2O5
+    - 10
+  component_upper_bounds:
+  - - plagioclase
+    - sanidine
+    - 0.2
+  bulk_oxide_bounds: {}
+  batch_size: 200000
+performance:
+  chunk_size: 200000
+affinity:
+  path_feature: Temperature(System_main)
+  dT_window: 25.0
+  trim: 0.05

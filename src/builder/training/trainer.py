@@ -262,6 +262,20 @@ def _mole_targets(model, m_batch):
     return m_batch if fn is None else fn(m_batch)
 
 
+def _affinity_mask_from_batch(model, batch, device):
+    """Affinity models (see NN_continuous.AffinityModel) train against batches of
+    (features, binary_labels, labels, affinity_y, affinity_mask); everything else
+    returns None here and keeps the historical 4-tuple semantics."""
+    if getattr(model, 'affinity_mole_loss', None) is None:
+        return None
+    if len(batch) < 5:
+        raise ValueError(
+            f"{type(model).__name__} trains on affinity labels, but this dataset yields "
+            f"{len(batch)}-tuples with no trust mask. Set `affinity: {{enabled: true}}` in "
+            f"the recipe so the loaders build affinity_y / affinity_mask.")
+    return batch[4].to(device, non_blocking=True)
+
+
 def _regularization_spec(model, which='upper'):
     """Which config key holds this model's dropout/normalisation spec for this half of
     training. MidLevelNetwork says nothing and gets the historical names."""
@@ -296,7 +310,8 @@ def _resolve_heads_to_freeze(model, names):
 
 def _upper_loss(model, out: UpperBatch, x_batch, b_batch, y_batch, m_batch, feature_offset,
                 criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
-                compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha):
+                compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
+                mask_batch=None):
     """Single definition of the upper objective, shared by the training step and the
     evaluation pass. These were two copies of the same twenty lines; a change to one that
     missed the other would silently score models against a different loss than it trained
@@ -319,15 +334,23 @@ def _upper_loss(model, out: UpperBatch, x_batch, b_batch, y_batch, m_batch, feat
 
     bulk_target = x_batch[:, feature_offset:]
     chem_loss_raw = _elementwise(criterion_chem, out.chem, y_batch, 'chemistry')
-    mole_loss_raw = _elementwise(criterion_mole, out.mole, _mole_targets(model, m_batch), 'moles')
+    affinity_loss = getattr(model, 'affinity_mole_loss', None)
+    if affinity_loss is None:
+        mole_loss_raw = _elementwise(criterion_mole, out.mole, _mole_targets(model, m_batch), 'moles')
     bulk_loss_raw = _elementwise(criterion_bulk, out.bulk, bulk_target, 'bulk')
 
     bulk_zero_mask = (bulk_target != 0).to(torch.float)
-    mole_zero_mask = (out.mole_mask if out.mole_mask is not None
-                      else (b_batch > 0.5).to(torch.float)).detach()
+    if affinity_loss is None:
+        mole_zero_mask = (out.mole_mask if out.mole_mask is not None
+                          else (b_batch > 0.5).to(torch.float)).detach()
 
     chem_loss = (chem_loss_raw * out.chem_mask * compWeights).sum() / (out.chem_mask * compWeights).sum().clamp(min=1)
-    mole_loss = (mole_loss_raw * mole_zero_mask * binWeights).sum() / (mole_zero_mask * binWeights).sum().clamp(min=1)
+    if affinity_loss is None:
+        mole_loss = (mole_loss_raw * mole_zero_mask * binWeights).sum() / (mole_zero_mask * binWeights).sum().clamp(min=1)
+    else:
+        # Signed affinity labels: every cell carries a target (trusted) or a one-sided
+        # bound (untrusted), so there is no present-only mask here -- see AffinityModel.
+        mole_loss = affinity_loss(out.mole, m_batch, mask_batch, binWeights)
     bulk_loss = (bulk_loss_raw * bulk_zero_mask).sum() / bulk_zero_mask.sum().clamp(min=1)
 
     # Scale loss to be large wrt Epsilon for optimizer stability.
@@ -394,6 +417,48 @@ def _evaluate_binary_model(model, test_loader, binWeights, device, max_N=np.inf)
     return avg_test_loss, precision, recall
 
 
+def _accumulate_affinity_diagnostics(acc, model, y_hat, y, mask):
+    """Per-phase counts for the affinity sign call and scaled error. Everything is in
+    units of c, so phases with c spanning orders of magnitude read on one scale."""
+    c = model.aff_c.float()
+    u, t = y_hat.float() / c, y.float() / c
+    mask = mask.to(torch.bool)
+    gt_pres, pr_pres = t > 0, u > 0
+    new = {
+        'present': (mask & gt_pres).sum(0),
+        'missed': (mask & gt_pres & ~pr_pres).sum(0),          # present, predicted absent
+        'trusted_absent': (mask & ~gt_pres).sum(0),
+        'false_pres': (mask & ~gt_pres & pr_pres).sum(0),       # absent, predicted present
+        'untrusted': (~mask).sum(0),
+        'untrusted_pres': (~mask & pr_pres).sum(0),
+        'sq_trusted': torch.where(mask, (u - t) ** 2, torch.zeros_like(u)).sum(0),
+    }
+    new = {k: v.detach().double().cpu() for k, v in new.items()}
+    if acc is None:
+        return new
+    return {k: acc[k] + new[k] for k in acc}
+
+
+def _print_affinity_diagnostics(acc, model):
+    names = list(model.label_indices.keys())
+    tot = {k: float(v.sum()) for k, v in acc.items()}
+    n_tr = tot['present'] + tot['trusted_absent']
+    print(f"\n[affinity] trusted RMSE(y/c) = {np.sqrt(tot['sq_trusted'] / max(n_tr, 1)):.3f} | "
+          f"present->absent {100 * tot['missed'] / max(tot['present'], 1):.2f}% | "
+          f"trusted absent->present {100 * tot['false_pres'] / max(tot['trusted_absent'], 1):.2f}% | "
+          f"untrusted->present {100 * tot['untrusted_pres'] / max(tot['untrusted'], 1):.2f}%")
+    print(f"  {'phase':<14}{'RMSE y/c':>10}{'miss%':>8}{'falseP%':>9}{'untrP%':>8}{'n_pres':>10}")
+    for j, n in enumerate(names):
+        ntr = float(acc['present'][j] + acc['trusted_absent'][j])
+        if ntr == 0 and float(acc['untrusted'][j]) == 0:
+            continue
+        rm = np.sqrt(float(acc['sq_trusted'][j]) / max(ntr, 1))
+        miss = 100 * float(acc['missed'][j]) / max(float(acc['present'][j]), 1)
+        fp = 100 * float(acc['false_pres'][j]) / max(float(acc['trusted_absent'][j]), 1)
+        up = 100 * float(acc['untrusted_pres'][j]) / max(float(acc['untrusted'][j]), 1)
+        print(f"  {n:<14}{rm:>10.3f}{miss:>8.2f}{fp:>9.2f}{up:>8.2f}{int(acc['present'][j]):>10d}")
+
+
 def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, criterion_chem, criterion_mole,
                            criterion_bulk, compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
                            device, max_N=np.inf, T=None, amp_dtype=torch.float32, use_amp=False):
@@ -407,6 +472,7 @@ def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, cri
     out = None
     g_phi_chunks = []
     residual_chunks = []
+    aff_diag = None
     T0 = getattr(getattr(model, 'ml_indexer', None), 'T0', None)
     with torch.no_grad():
         for batch_idx, batch in enumerate(test_loader):
@@ -416,6 +482,7 @@ def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, cri
             # rather than assume a fixed 4-tuple.
             x_batch, b_batch, y_batch, m_batch = batch[0], batch[1], batch[2], batch[3]
             x_batch, b_batch, y_batch, m_batch = x_batch.to(device, non_blocking=True), b_batch.to(device, non_blocking=True), y_batch.to(device, non_blocking=True), m_batch.to(device, non_blocking=True)
+            mask_batch = _affinity_mask_from_batch(model, batch, device)
             with torch.autocast(device_type='cuda', dtype=amp_dtype, enabled=use_amp):
                 out = _upper_forward(model, x_batch, b_batch, T=T)
 
@@ -423,7 +490,10 @@ def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, cri
                     model, out, x_batch, b_batch, y_batch, m_batch, feature_offset,
                     criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
                     compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
+                    mask_batch=mask_batch,
                 )
+            if mask_batch is not None:
+                aff_diag = _accumulate_affinity_diagnostics(aff_diag, model, out.mole, m_batch, mask_batch)
 
             batch_size_curr = x_batch.size(0)
             running_sat_loss += loss_sat.item() * batch_size_curr
@@ -468,13 +538,17 @@ def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, cri
     # (ContinuousModel does, regardless of whether boundary_temperature annealing is
     # actually enabled this episode), since "is the network confidently separating
     # present/absent" is useful to watch either way.
-    if g_phi_chunks:
+    if aff_diag is not None:
+        _print_affinity_diagnostics(aff_diag, model)
+    if g_phi_chunks and aff_diag is not None:
+        _print_histogram(torch.cat(g_phi_chunks).flatten(), "y_hat / c (2nd-98th pct)")
+    elif g_phi_chunks:
         title = "g_phi / T0 (2nd-98th pct)" if T0 is not None else "g_phi, RAW -- no T0, not comparable across phases (2nd-98th pct)"
         _print_histogram(torch.cat(g_phi_chunks).flatten(), title)
     if residual_chunks:
         _print_histogram(torch.cat(residual_chunks).flatten(),
                          "(GT - pred) / T0, GT in (0, 2*T0] (2nd-98th pct)")
-    elif g_phi_chunks and T0 is None:
+    elif g_phi_chunks and T0 is None and aff_diag is None:
         print("\n[boundary residual] skipped: ml_indexer.T0 not available "
               "(re-export the bundle or run scripts/compute_T0.py)")
 
@@ -820,6 +894,7 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
             optimizer.zero_grad()
 
             x_batch, b_batch, y_batch, m_batch = x_batch.to(device, non_blocking=True), b_batch.to(device, non_blocking=True), y_batch.to(device, non_blocking=True), m_batch.to(device, non_blocking=True)
+            mask_batch = _affinity_mask_from_batch(model, batch, device)
 
             # NOTE: the bulk mask is now built inside _upper_loss from the *post-noise*
             # x_batch, identically to the evaluation path. Previously training built it
@@ -835,6 +910,7 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                     model, out, x_batch, b_batch, y_batch, m_batch, feature_offset,
                     criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
                     compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
+                    mask_batch=mask_batch,
                 )
 
             batch_size_curr = x_batch.size(0)

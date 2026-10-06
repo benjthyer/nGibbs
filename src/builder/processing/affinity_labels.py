@@ -331,9 +331,13 @@ def add_affinity_labels(npy_dir, ml_indexer=None, compute_cstats_flag=False, par
 # Bundle wrapper: extract once, label, optionally shuffle, repack once
 # --------------------------------------------------------------------------------------
 def finalize_bundle(bundle_path, shuffle=False, compute_cstats_flag=False, params=None,
-                    seed=None, chunk_size=1_000_000):
+                    seed=None, chunk_size=1_000_000, compresslevel=1):
     """Add g/s (and cStats) to a packaged bundle; optionally shuffle all row-aligned arrays.
-    Replaces the shuffle_bundle_rows() call for bundles produced by prepareML_affinity."""
+    Replaces the shuffle_bundle_rows() call for bundles produced by prepareML_affinity.
+
+    compresslevel: gzip level for the repack. tarfile's default (9) dominates the run time
+    (2M-row validation bundle: 144 s at level 9 vs 12 s at level 1, for a 7% larger file;
+    the NaN-heavy g/s arrays alone take ~60 s at level 9)."""
     from ngibbs.utils.file_utils import chunked_permutation_copy, ROW_ALIGNED_BUNDLE_ARRAYS
     from ngibbs.config.ml_indexer import load_ml_indexer_from_state
 
@@ -347,6 +351,10 @@ def finalize_bundle(bundle_path, shuffle=False, compute_cstats_flag=False, param
             tar.extractall(path=extract_dir)
         timings['extract'] = time.time() - t
 
+        prev = extract_dir / REPORT_JSON
+        if prev.exists() and json.loads(prev.read_text()).get('shuffled'):
+            raise RuntimeError(f'{bundle_path.name} was already labelled and shuffled; its rows are no '
+                               f'longer in simulation order, so g/s cannot be recomputed from it.')
         ml_indexer = load_ml_indexer_from_state(str(extract_dir / 'ml_indexer'))
         t = time.time()
         report = add_affinity_labels(extract_dir, ml_indexer, compute_cstats_flag, params, chunk_size)
@@ -370,11 +378,13 @@ def finalize_bundle(bundle_path, shuffle=False, compute_cstats_flag=False, param
             stats_path = generate_dataset_stats(dataset_name=str(extract_dir) + '/', ml_indexer=ml_indexer,
                                                 output_dir=extract_dir, chunk_size=chunk_size)
             timings['shuffle'] = time.time() - t
+            report['shuffled'] = True
+            (extract_dir / REPORT_JSON).write_text(json.dumps(report, indent=1))
 
         t = time.time()
         extra = [REPORT_JSON] + ([CSTATS_NAME, CSTATS_JSON] if compute_cstats_flag else [])
         handled = set(present) | set(extra)
-        with tarfile.open(bundle_path, 'w:gz') as tar:
+        with tarfile.open(bundle_path, 'w:gz', compresslevel=compresslevel) as tar:
             for nm in present + extra:
                 if (extract_dir / nm).exists():
                     tar.add(extract_dir / nm, arcname=nm)

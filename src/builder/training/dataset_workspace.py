@@ -42,6 +42,10 @@ _BASE_ARRAY_NAMES = ("features", "binary_labels", "labels", "molar_labels")
 # than silently handing back a 4-array workspace.
 _DERIV_ARRAY_NAMES = ("dndp_labels", "dndt_labels")
 _ARRAY_NAMES = _BASE_ARRAY_NAMES          # back-compat alias for external callers
+# Affinity mode (see builder.training.affinity_targets): the activated label y replaces
+# molar_labels in slot 3 of the batch tuple, and its trust mask follows in slot 4. The raw
+# molar_labels are not copied -- for present phases y IS n, and absent phases have n = 0.
+_AFFINITY_ARRAY_NAMES = ("features", "binary_labels", "labels", "affinity_y", "affinity_mask")
 
 
 def _bundle_has_derivatives(bundle_path):
@@ -68,6 +72,10 @@ class WorkspaceHandle:
         return all(n in self.arrays for n in _DERIV_ARRAY_NAMES)
 
     @property
+    def is_affinity(self):
+        return 'affinity_y' in self.arrays
+
+    @property
     def dndp_labels(self):
         return self.arrays.get('dndp_labels')
 
@@ -91,6 +99,14 @@ class WorkspaceHandle:
     def molar_labels(self):
         return self.arrays['molar_labels']
 
+    @property
+    def affinity_y(self):
+        return self.arrays.get('affinity_y')
+
+    @property
+    def affinity_mask(self):
+        return self.arrays.get('affinity_mask')
+
     def total_bytes(self):
         """Total bytes across every workspace array - free to compute (shape
         x dtype size from the memmap headers), no data read.
@@ -101,7 +117,18 @@ class WorkspaceHandle:
         return sum(arr.nbytes for arr in self.arrays.values())
 
 
-def _fingerprint_for(bundle_path, only_VP, molar_epsilon, with_derivatives=False):
+def _normalizer_digest(feature_normalizer):
+    if feature_normalizer is None:
+        return None
+    import hashlib
+    h = hashlib.sha1()
+    for t in (feature_normalizer.miner, feature_normalizer.ranger):
+        h.update(np.ascontiguousarray(np.asarray(t, dtype=np.float32)).tobytes())
+    return h.hexdigest()
+
+
+def _fingerprint_for(bundle_path, only_VP, molar_epsilon, with_derivatives=False,
+                     affinity=None, feature_normalizer=None):
     stat = bundle_path.stat()
     return {
         "bundle_path": str(bundle_path.resolve()),
@@ -113,12 +140,19 @@ def _fingerprint_for(bundle_path, only_VP, molar_epsilon, with_derivatives=False
         # they are asked for, instead of returning a 4-array handle that then fails deep
         # inside the training loop.
         "with_derivatives": bool(with_derivatives),
+        # Affinity targets depend on cStats (from the Test bundle) and the filter /
+        # activation parameters, not only on this bundle -- any change rebuilds.
+        "affinity": affinity.fingerprint() if affinity is not None else None,
+        # Set only for a workspace normalized with someone else's bounds (the Test
+        # workspace inherits Train's), so new Train bounds rebuild it.
+        "feature_normalizer": _normalizer_digest(feature_normalizer),
     }
 
 
 def get_or_build_train_workspace(bundle_path, only_VP=None, molar_epsilon=0,
                                   workspace_dir=None, chunk_size=1_000_000,
-                                  with_derivatives='auto'):
+                                  with_derivatives='auto', affinity=None,
+                                  feature_normalizer=None):
     """Return a `WorkspaceHandle` for `bundle_path`, building (or rebuilding)
     the cached workspace first if it's missing or stale for the given
     bundle/only_VP/molar_epsilon/with_derivatives combination.
@@ -128,6 +162,12 @@ def get_or_build_train_workspace(bundle_path, only_VP=None, molar_epsilon=0,
         requires them and raises by name if the bundle predates derivative export --
         which is the behaviour a recipe with `derivatives.enabled: true` wants, since a
         quiet fallback there means training the objective you were trying to replace.
+    affinity : AffinityTargets or None
+        Build the affinity arrays (affinity_y, affinity_mask) from the bundle's g_labels /
+        s_labels in place of molar_labels. Derivatives are not carried in this mode.
+    feature_normalizer : Normalizer or None
+        Normalize with these bounds instead of the bundle's own feature_bounds.json --
+        what the Test workspace needs, since it must match Train's normalization.
     """
     bundle_path = Path(bundle_path)
     if not str(bundle_path).endswith('.tar.gz'):
@@ -136,6 +176,13 @@ def get_or_build_train_workspace(bundle_path, only_VP=None, molar_epsilon=0,
         raise FileNotFoundError(f"Bundle not found: {bundle_path}")
 
     have_deriv = _bundle_has_derivatives(bundle_path)
+    if affinity is not None:
+        if with_derivatives is True:
+            raise ValueError("Affinity targets and derivative supervision cannot be combined "
+                             "yet: both claim batch slot 4.")
+        if molar_epsilon:
+            raise ValueError("Affinity targets are linear; molar_epsilon must be 0.")
+        with_derivatives = False
     if with_derivatives is True and not have_deriv:
         raise FileNotFoundError(
             f"{bundle_path.name} carries no {list(_DERIV_ARRAY_NAMES)}; re-export it from a "
@@ -144,7 +191,8 @@ def get_or_build_train_workspace(bundle_path, only_VP=None, molar_epsilon=0,
     use_deriv = have_deriv if with_derivatives == 'auto' else bool(with_derivatives)
 
     workspace_dir = Path(workspace_dir) if workspace_dir is not None else WORKSPACE_DIR_DEFAULT
-    fingerprint = _fingerprint_for(bundle_path, only_VP, molar_epsilon, use_deriv)
+    fingerprint = _fingerprint_for(bundle_path, only_VP, molar_epsilon, use_deriv,
+                                   affinity=affinity, feature_normalizer=feature_normalizer)
     fp_path = workspace_dir / _FINGERPRINT_FILE
 
     reuse = False
@@ -162,23 +210,30 @@ def get_or_build_train_workspace(bundle_path, only_VP=None, molar_epsilon=0,
             shutil.rmtree(workspace_dir)
         workspace_dir.mkdir(parents=True, exist_ok=True)
         _build_workspace(bundle_path, workspace_dir, only_VP, molar_epsilon, chunk_size,
-                         use_deriv)
+                         use_deriv, affinity=affinity, feature_normalizer=feature_normalizer)
         fp_path.write_text(json.dumps(fingerprint, indent=2))
 
     from ngibbs.config.ml_indexer import load_ml_indexer_from_state
     ml_indexer = load_ml_indexer_from_state(str(workspace_dir / 'ml_indexer'))
 
-    names = list(_BASE_ARRAY_NAMES) + (list(_DERIV_ARRAY_NAMES) if use_deriv else [])
+    if affinity is not None:
+        names = list(_AFFINITY_ARRAY_NAMES)
+    else:
+        names = list(_BASE_ARRAY_NAMES) + (list(_DERIV_ARRAY_NAMES) if use_deriv else [])
     arrays = {name: np.load(workspace_dir / f"{name}.npy", mmap_mode='r') for name in names}
     n_rows = arrays['features'].shape[0]
     if use_deriv:
         print(f"[dataset_workspace] Derivative arrays carried: "
               f"{ {n: arrays[n].shape for n in _DERIV_ARRAY_NAMES} }")
+    if affinity is not None:
+        m = arrays['affinity_mask']
+        print(f"[dataset_workspace] Affinity targets: {m.shape}, "
+              f"{100 * np.count_nonzero(m) / max(m.size, 1):.1f}% of cells trusted")
     return WorkspaceHandle(workspace_dir, arrays, ml_indexer, n_rows, array_names=names)
 
 
 def _build_workspace(bundle_path, workspace_dir, only_VP, molar_epsilon, chunk_size,
-                     with_derivatives=False):
+                     with_derivatives=False, affinity=None, feature_normalizer=None):
     from ngibbs.config.ml_indexer import load_ml_indexer_from_state
     from ngibbs.utils.file_utils import chunked_mask_copy
     from ngibbs.utils.math_utils import Normalizer
@@ -212,14 +267,13 @@ def _build_workspace(bundle_path, workspace_dir, only_VP, molar_epsilon, chunk_s
         )
 
         bounds_path = extract_dir / 'feature_bounds.json'
-        if not bounds_path.exists():
+        if feature_normalizer is None and not bounds_path.exists():
             raise FileNotFoundError(
                 f"Bundle {bundle_path} has no feature_bounds.json - rebuild it with the "
                 "current processing pipeline (generate_dataset_stats writes this file "
                 "alongside stats.txt)."
             )
-        bounds = json.loads(bounds_path.read_text())
-        n_physical = len(bounds['featureNames'])
+        bounds = json.loads(bounds_path.read_text()) if feature_normalizer is None else None
 
         raw_features = np.load(extract_dir / 'features.npy', mmap_mode='r')
         raw_binary = np.load(extract_dir / 'binary_labels.npy', mmap_mode='r')
@@ -232,11 +286,19 @@ def _build_workspace(bundle_path, workspace_dir, only_VP, molar_epsilon, chunk_s
         # Same Normalizer construction as load_ML_data (zeros/ones defaults, only the
         # physical feature columns overwritten with real bounds) - but from the
         # bundle's precomputed feature_bounds.json rather than a fresh min/max scan.
-        min_arr = np.zeros(n_feat_cols, dtype=np.float32)
-        range_arr = np.ones(n_feat_cols, dtype=np.float32)
-        min_arr[:n_physical] = np.asarray(bounds['min'], dtype=np.float32)
-        range_arr[:n_physical] = np.asarray(bounds['max'], dtype=np.float32) - min_arr[:n_physical]
-        normf = Normalizer(min_tensor=torch.tensor(min_arr), range_tensor=torch.tensor(range_arr))
+        if feature_normalizer is not None:
+            got = np.asarray(feature_normalizer.miner).shape[0]
+            if got != n_feat_cols:
+                raise ValueError(f"feature_normalizer has {got} columns but {bundle_path.name} "
+                                 f"has {n_feat_cols} feature columns.")
+            normf = feature_normalizer
+        else:
+            n_physical = len(bounds['featureNames'])
+            min_arr = np.zeros(n_feat_cols, dtype=np.float32)
+            range_arr = np.ones(n_feat_cols, dtype=np.float32)
+            min_arr[:n_physical] = np.asarray(bounds['min'], dtype=np.float32)
+            range_arr[:n_physical] = np.asarray(bounds['max'], dtype=np.float32) - min_arr[:n_physical]
+            normf = Normalizer(min_tensor=torch.tensor(min_arr), range_tensor=torch.tensor(range_arr))
         ml_indexer.feature_normalizer = normf  # round-trips via ml_indexer.save() below
 
         # --- Pass 1 (chunked): normalize features, PxSp-transform labels, and
@@ -276,7 +338,10 @@ def _build_workspace(bundle_path, workspace_dir, only_VP, molar_epsilon, chunk_s
         chunked_mask_copy(tmp_labels_ro, workspace_dir / 'labels.npy', keep_mask, chunk_size)
         chunked_mask_copy(raw_binary, workspace_dir / 'binary_labels.npy', keep_mask, chunk_size)
 
-        if molar_epsilon:
+        if affinity is not None:
+            _build_affinity_arrays(extract_dir, workspace_dir, keep_mask, affinity,
+                                   raw_molar, chunk_size)
+        elif molar_epsilon:
             tmp_molar_path = workspace_dir / '_molar_full.npy'
             tmp_molar = np.lib.format.open_memmap(tmp_molar_path, mode='w+', dtype=np.float32, shape=raw_molar.shape)
             for start in range(0, n_rows, chunk_size):
@@ -331,6 +396,66 @@ def _build_workspace(bundle_path, workspace_dir, only_VP, molar_epsilon, chunk_s
         shutil.rmtree(extract_dir, ignore_errors=True)
 
 
+def _build_affinity_arrays(extract_dir, workspace_dir, keep_mask, affinity, raw_molar,
+                           chunk_size):
+    """g_labels/s_labels -> cached affinity_y (float32) and affinity_mask (bool), compacted
+    by the same out-of-bounds keep_mask as every other array. Two chunked passes: build the
+    full-length arrays, then copy the surviving rows -- the same shape as the molar path."""
+    from ngibbs.utils.file_utils import chunked_mask_copy
+
+    g_path, s_path = extract_dir / 'g_labels.npy', extract_dir / 's_labels.npy'
+    if not (g_path.exists() and s_path.exists()):
+        raise FileNotFoundError(
+            "Affinity training needs g_labels.npy and s_labels.npy in the bundle; build it "
+            "with builder/processing/prepareML_affinity.py.")
+    raw_g = np.load(g_path, mmap_mode='r')
+    raw_s = np.load(s_path, mmap_mode='r')
+    if raw_g.shape != raw_molar.shape or raw_s.shape != raw_molar.shape:
+        raise ValueError(f"g/s labels {raw_g.shape}/{raw_s.shape} do not match molar_labels "
+                         f"{raw_molar.shape}")
+    if raw_g.shape[1] != affinity.c.shape[0]:
+        raise ValueError(f"cStats has {affinity.c.shape[0]} phases but the bundle's labels "
+                         f"have {raw_g.shape[1]}")
+
+    n_rows = raw_g.shape[0]
+    y_tmp_path, m_tmp_path = workspace_dir / '_affinity_y_full.npy', workspace_dir / '_affinity_mask_full.npy'
+    y_tmp = np.lib.format.open_memmap(y_tmp_path, mode='w+', dtype=np.float32, shape=raw_g.shape)
+    m_tmp = np.lib.format.open_memmap(m_tmp_path, mode='w+', dtype=np.bool_, shape=raw_g.shape)
+    n_present = n_trusted_absent = n_untrusted = 0
+    for start in range(0, n_rows, chunk_size):
+        end = min(start + chunk_size, n_rows)
+        g = np.array(raw_g[start:end], dtype=np.float32)
+        y, m = affinity.transform_chunk(g, raw_s[start:end])
+        y_tmp[start:end] = y
+        m_tmp[start:end] = m
+        km = keep_mask[start:end]
+        pres = (g > 0) & km[:, None]
+        n_present += int(np.count_nonzero(pres))
+        n_trusted_absent += int(np.count_nonzero(m & ~pres & km[:, None]))
+        n_untrusted += int(np.count_nonzero(~m & km[:, None]))
+    y_tmp.flush(); m_tmp.flush()
+    del y_tmp, m_tmp, raw_g, raw_s
+    gc.collect()
+
+    y_ro = np.load(y_tmp_path, mmap_mode='r')
+    m_ro = np.load(m_tmp_path, mmap_mode='r')
+    chunked_mask_copy(y_ro, workspace_dir / 'affinity_y.npy', keep_mask, chunk_size)
+    chunked_mask_copy(m_ro, workspace_dir / 'affinity_mask.npy', keep_mask, chunk_size)
+    del y_ro, m_ro
+    gc.collect()
+    y_tmp_path.unlink()
+    m_tmp_path.unlink()
+    tot = max(n_present + n_trusted_absent + n_untrusted, 1)
+    print(f"[dataset_workspace] Affinity cells: present {100*n_present/tot:.1f}%, "
+          f"trusted absent {100*n_trusted_absent/tot:.1f}%, "
+          f"untrusted (-c placeholder, one-sided loss) {100*n_untrusted/tot:.1f}%")
+    (workspace_dir / 'affinity_targets.json').write_text(json.dumps({
+        **affinity.fingerprint(), 'c': affinity.c.tolist(), 's_min': affinity.s_min.tolist(),
+        'phases': affinity.phases, 'cells': {'present': n_present,
+                                             'trusted_absent': n_trusted_absent,
+                                             'untrusted': n_untrusted}}, indent=1))
+
+
 class ChunkedMemmapTrainLoader:
     """Iterates shuffled minibatches from a `WorkspaceHandle`'s memmapped
     arrays, prefetching the next ~chunk_rows-row chunk on a background thread
@@ -356,7 +481,8 @@ class ChunkedMemmapTrainLoader:
         self.workspace = workspace
         self.batch_size = batch_size
         self.chunk_rows = min(chunk_rows, workspace.n_rows)
-        self.pin_memory = pin_memory
+        # Pinning needs a CUDA driver; without one (CPU runs, tests) it raises.
+        self.pin_memory = pin_memory and torch.cuda.is_available()
         self._rng = np.random.default_rng(seed)
 
     def __len__(self):

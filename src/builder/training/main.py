@@ -28,7 +28,8 @@ if base_path not in sys.path:
 from recipes import settings
 import ngibbs.engine.NN as NN
 
-from builder.training.loadTrainData import load_ML_data, load_ML_data_auto
+from builder.training.loadTrainData import load_ML_data, load_ML_data_auto, load_ML_test_affinity
+from builder.training.affinity_targets import AffinityTargets, check_phase_order
 from builder.training.optimizer_factory import normalize_scheduler_name
 from builder.training.trainer import train_Lower_MELTS, train_Upper_MELTS, symmetric_rel_l1, symmetric_rel_l2
 from builder.training.sobolev import train_Upper_Sobolev
@@ -158,10 +159,60 @@ def _model_args_for(model_class):
     are supplied separately.
     """
     import inspect
-    params = inspect.signature(model_class.__init__).parameters
-    return [name for name in params
-            if name not in ('self', 'ml_indexer', 'device')
-            and params[name].kind is not inspect.Parameter.VAR_KEYWORD]
+    # Walk the MRO while a constructor forwards **kwargs to its parent, so a subclass
+    # (AffinityModel) only has to declare the keywords it adds. Stops at the first
+    # constructor without **kwargs, and never descends into torch's own classes.
+    names = []
+    for cls in model_class.__mro__:
+        if cls.__module__.startswith('torch'):
+            break
+        init = cls.__dict__.get('__init__')
+        if init is None:
+            continue
+        params = inspect.signature(init).parameters
+        for name, prm in params.items():
+            if (name not in ('self', 'ml_indexer', 'device') and name not in names
+                    and prm.kind not in (inspect.Parameter.VAR_KEYWORD,
+                                         inspect.Parameter.VAR_POSITIONAL)):
+                names.append(name)
+        if not any(prm.kind is inspect.Parameter.VAR_KEYWORD for prm in params.values()):
+            break
+        if cls is not model_class and cls.__name__ in ('ContinuousModel', 'MidLevelNetwork'):
+            # These swallow legacy config via **kwargs; nothing above them is a model arg.
+            break
+    return names
+
+
+def _reconcile_affinity_model(model, targets):
+    """The targets were activated with the data's c and eps; the model must use the same
+    ones or the loss compares two different curves. A warm start from a checkpoint
+    trained on another cStats is moved onto this data's c (loudly)."""
+    if getattr(model, 'affinity_mole_loss', None) is None:
+        raise ValueError(f"Affinity labels are loaded but the model is "
+                         f"{type(model).__name__}; set model_class: AffinityModel.")
+    c_data = torch.as_tensor(targets.c, dtype=torch.float32).reshape(1, -1)
+    if not torch.allclose(model.aff_c.cpu(), c_data, rtol=1e-5):
+        print("[affinity] WARNING: model c differs from this data's cStats; "
+              "overwriting the model's c with the data's.")
+        model.aff_c.copy_(c_data.to(model.aff_c.device))
+        model.config['affinity_c'] = targets.c.tolist()
+    if abs(model.affinity_eps - targets.params['eps']) > 1e-12:
+        raise ValueError(f"Model affinity_eps={model.affinity_eps} but the targets were "
+                         f"activated with eps={targets.params['eps']}; make them agree.")
+
+
+def _affinity_settings(config):
+    """Resolve the recipe's `affinity:` block. Affinity training is on when the block
+    says `enabled: true` or the model class is AffinityModel; the two must agree, since
+    affinity targets are not moles and moles are not affinity targets."""
+    cfg = config.get('affinity') or {}
+    flag = str(cfg.get('enabled', False)).lower() in ('1', 'true', 'yes')
+    is_aff_model = str(config.get('model_class') or '') == 'AffinityModel'
+    if flag and not is_aff_model and str(config.get('warm_start', 'none')).lower() == 'none':
+        raise ValueError("affinity.enabled is true but model_class is not AffinityModel.")
+    if is_aff_model and not flag and cfg.get('enabled') is not None:
+        raise ValueError("model_class is AffinityModel but affinity.enabled is false.")
+    return (flag or is_aff_model), cfg
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -552,10 +603,23 @@ def main() -> None:
     # `True` rather than `'auto'` when wanted, so a bundle that lacks them fails here --
     # naming the bundle -- instead of at the first episode that needs them.
     _wants_derivs = _any_episode_wants_derivatives(config)
+    affinity_on, affinity_cfg = _affinity_settings(config)
+    affinity_targets = None
+    if affinity_on:
+        if _wants_derivs:
+            raise ValueError("Affinity training cannot be combined with derivative "
+                             "supervision yet (both use batch slot 4).")
+        # cStats live in the validation bundle (prepareML_affinity.py computes them
+        # while labelling it); `cstats_bundle` overrides that for a hand-built pairing.
+        cstats_src = affinity_cfg.get('cstats_bundle') or test_bundle
+        affinity_targets = AffinityTargets.from_bundle(cstats_src, params=affinity_cfg)
+        print(f"[affinity] cStats from {cstats_src}")
+        print(affinity_targets.summary())
     train_set, ml_indexer = load_ML_data_auto(
         train_bundle, only_VP=only_vp, ram_threshold_bytes=ram_threshold_bytes,
         batch_size=int(config["batch_size"]),
         with_derivatives=True if _wants_derivs else False,
+        affinity=affinity_targets,
     )
     # Test: confirmed small enough to always load fully in RAM. Inherits Train's
     # feature_normalizer (fit bounds) rather than fitting its own - the model
@@ -564,9 +628,18 @@ def main() -> None:
     # differently-scaled inputs at eval time. (Test's own feature_bounds.json,
     # if present, is just a diagnostic of Test's own P/T/fO2 range - not used
     # here.)
-    test_set, test_ml_indexer = load_ML_data(test_bundle, only_VP=only_vp,
-                               feature_normalizer=ml_indexer.feature_normalizer,
-                               with_derivatives=True if _wants_derivs else False)
+    if affinity_on:
+        check_phase_order(affinity_targets, ml_indexer)
+        test_set, test_ml_indexer = load_ML_test_affinity(
+            test_bundle, feature_normalizer=ml_indexer.feature_normalizer,
+            affinity=affinity_targets, only_VP=only_vp)
+        # What AffinityModel reads when its config carries no affinity_c (a fresh model).
+        ml_indexer.affinity_c = affinity_targets.c.tolist()
+        config.setdefault('affinity_eps', affinity_targets.params['eps'])
+    else:
+        test_set, test_ml_indexer = load_ML_data(test_bundle, only_VP=only_vp,
+                                   feature_normalizer=ml_indexer.feature_normalizer,
+                                   with_derivatives=True if _wants_derivs else False)
 
     # T0 (per-phase vanishing-abundance scale, see NN_continuous.py's upper_forward) is
     # cheap to approximate from either split -- Train and Test are generated the same way
@@ -599,6 +672,9 @@ def main() -> None:
         modelArgs = _model_args_for(model_class)
         model_config = {key: val for key, val in deepcopy(config).items() if key in modelArgs}
         best_model = model_class(**model_config, ml_indexer=ml_indexer)
+
+    if affinity_on:
+        _reconcile_affinity_model(best_model, affinity_targets)
 
     # State for sequential episodes
     best_loss = None
@@ -712,6 +788,9 @@ def main() -> None:
         bulk_alpha = float(bulk_cfg["weight"])
         sat_alpha = float(sat_cfg["weight"])
         criteria = _criteria_kwargs(loss_config)
+        if affinity_on:
+            print("[affinity] mole term = AffinityModel.affinity_mole_loss "
+                  "(loss_config.moles.type is not used; moles.weight still scales it)")
         print("Loss criteria: " + ", ".join(
             f"{term}={loss_config[term].get('type') or 'symmetric_rel_l2'}"
             for term in ('chemistry', 'moles', 'bulk')))

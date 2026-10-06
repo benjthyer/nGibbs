@@ -885,7 +885,7 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
         bundle_path = bundle_base + '.tar.gz'
 
     print("Packaging dataset bundle...")
-    with tarfile.open(bundle_path, 'w:gz') as tar:
+    with tarfile.open(bundle_path, 'w:gz', compresslevel=1) as tar:
         for fpath, arcname in file_mappings.items():
             if os.path.exists(fpath):
                 tar.add(fpath, arcname=arcname)
@@ -1391,7 +1391,7 @@ def shuffle_bundle_rows(bundle_path, seed=None, chunk_size=1_000_000):
         # canonical arcnames, plus every other member the original bundle had
         # (e.g. a copied processing.yaml, ml_indexer/) carried through unchanged.
         handled_top_names = set(present_arrays) | {"stats.txt", "feature_bounds.json"}
-        with tarfile.open(bundle_path, "w:gz") as tar:
+        with tarfile.open(bundle_path, "w:gz", compresslevel=1) as tar:
             for name in present_arrays:
                 tar.add(extract_dir / name, arcname=name)
             if stats_path and Path(stats_path).exists():
@@ -1524,7 +1524,7 @@ def subset_bundle_rows(bundle_path, output_path=None, nrows=None, *, seed=None,
         # canonical arcnames, plus every other member the original bundle had
         # (ml_indexer/, a copied processing.yaml, ...) carried through unchanged.
         handled_top_names = set(present_arrays) | {"stats.txt", "feature_bounds.json", "T0.npy"}
-        with tarfile.open(output_path, "w:gz") as tar:
+        with tarfile.open(output_path, "w:gz", compresslevel=1) as tar:
             for name in present_arrays:
                 tar.add(extract_dir / name, arcname=name)
             if stats_path and Path(stats_path).exists():

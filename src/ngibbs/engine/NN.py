@@ -574,7 +574,7 @@ class MidLevelNetwork(TunableModel):
             
             # === 6. Create zip archive ===
             # Use zipfile instead of gzip for better compatibility and faster access
-            with zipfile.ZipFile(DictFilePath, 'w', zipfile.ZIP_DEFLATED) as zf:
+            with zipfile.ZipFile(DictFilePath, 'w', zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
                 for file_path in temp_path.glob('**/*'):
                     if file_path.is_file():
                         arcname = file_path.relative_to(temp_path)
@@ -1232,6 +1232,9 @@ def _resolve_model_class(config):
     if name == 'ContinuousModel':
         from .NN_continuous import ContinuousModel   # local: NN_continuous imports NN
         return ContinuousModel
+    if name == 'AffinityModel':
+        from .NN_continuous import AffinityModel     # local: NN_continuous imports NN
+        return AffinityModel
     raise ValueError(f"Checkpoint requests unknown model_class {name!r}. Register it in "
                      f"NN._resolve_model_class or pass model_class= explicitly.")
 

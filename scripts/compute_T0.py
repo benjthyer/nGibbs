@@ -127,7 +127,7 @@ def main() -> None:
         np.save(temp_dir / 'T0.npy', T0)
 
         tmp_output = output_path.with_suffix(output_path.suffix + '.tmp')
-        with tarfile.open(tmp_output, 'w:gz') as tar:
+        with tarfile.open(tmp_output, 'w:gz', compresslevel=1) as tar:
             tar.add(temp_dir, arcname='.')
         shutil.move(str(tmp_output), str(output_path))
     finally:
