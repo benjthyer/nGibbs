@@ -51,6 +51,10 @@ for the full roadmap):
   correctly to that case at X_corundum=0.
 - DONE: a MELTSAPI.get_property_melts_vectorized_from_assemblage() wiring
   in engine/API.py, parallel to HeFESToAPI's existing method.
+- DONE (2026-09-23): rhyolite-MELTS version switch ('MELTS102'/'MELTS110'/
+  'MELTS120') for the liquid (volatile/SiO2 standard states, W tables, CaCO3
+  speciation), the fluid phase and the carbon solids -- see
+  melts_vec/liquid_modes.py.
 
 >>> from EOS_arithmetic_MELTS.melts_vec import load_solids, compute
 >>> params = load_solids()
@@ -62,6 +66,7 @@ from .melts_vec import (
     load_liquid, MELTSLiquidParams, compute_liquid_bulk, compute_liquid_components,
     compute_feldspar_solution, compute_olivine_solution, compute_clinopyroxene_solution,
     compute_orthopyroxene_solution, compute_spinel_solution, compute_rhm_oxide_solution,
+    load_liquid_mode, compute_liquid_bulk_mode, compute_fluid_solution, compute_water_phase,
 )
 
 __all__ = [
@@ -69,4 +74,5 @@ __all__ = [
     'load_liquid', 'MELTSLiquidParams', 'compute_liquid_bulk', 'compute_liquid_components',
     'compute_feldspar_solution', 'compute_olivine_solution', 'compute_clinopyroxene_solution',
     'compute_orthopyroxene_solution', 'compute_spinel_solution', 'compute_rhm_oxide_solution',
+    'load_liquid_mode', 'compute_liquid_bulk_mode', 'compute_fluid_solution', 'compute_water_phase',
 ]

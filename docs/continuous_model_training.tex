@@ -1,0 +1,304 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts,bm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\DeclareMathOperator{\softplus}{softplus}
+\DeclareMathOperator{\softmax}{softmax}
+\DeclareMathOperator{\BCE}{BCE}
+
+\title{Training the continuous-saturation emulator in nGibbs}
+\author{Ben Thyer}
+\date{\today}
+
+\begin{document}
+\sloppy
+\maketitle
+
+\begin{abstract}
+This note describes how the continuous-saturation emulator (\code{ContinuousModel}) is
+trained, with an emphasis on how each term of the loss is evaluated on a mini-batch. The
+model is defined in \code{NN_continuous.py} and trained by \code{train_Upper_MELTS} in
+\code{trainer.py}. Table~\ref{tab:key} is the key to all symbols.
+\end{abstract}
+
+%=====================================================================================
+\section{Variables}
+%=====================================================================================
+
+Dimensions use the letter codes of the ML indexer (\code{src/ngibbs/config/README_MLIndexer.md}):
+P phases, VP compositionally variable phases, C components (endmembers of all phases),
+VC components of the variable phases, E elements and O oxides. Two further sizes are
+used here: F, the number of physical input features (e.g.\ pressure and temperature),
+and B, the number of rows in a mini-batch. Every quantity in Table~\ref{tab:key} is per
+row; a batch stacks B rows. For emulator outputs, the hatted symbol is the prediction and
+the plain symbol is the ground truth from the thermodynamic model.
+
+\begin{table}[!tbp]
+\centering
+\small
+\renewcommand{\arraystretch}{1.25}
+\begin{tabular}{@{}c c c >{\raggedright\arraybackslash}p{10.2cm}@{}}
+\toprule
+Prediction & Truth & Dim. & Meaning \\
+\midrule
+\multicolumn{4}{@{}l}{\emph{Inputs}}\\
+ & $u$ & F & Physical state (pressure, temperature, \dots), min--max normalised to $[0,1]$ \\
+\midrule
+\multicolumn{4}{@{}l}{\emph{Emulator outputs}}\\
+$\hat b$ & $b$ & E & Bulk composition in element moles, normalised to sum to 1. $b$ is also a network input; $\hat b$ is the bulk reconstructed from the predicted phases \\
+$\hat n$ & $n$ & P & Phase abundance (moles); zero for an absent phase \\
+$\hat x$ & $x$ & VC & Endmember mole fractions of each variable phase (sum to 1 within a phase) \\
+$\hat m$ & $m$ & C & Component (endmember) moles, $m = (\text{phase abundance}) \times (\text{fraction})$ \\
+$\hat s$ & $s$ & P & Phase presence, 1 if present and 0 if absent; $\hat s = [\hat n > 0]$ \\
+\midrule
+\multicolumn{4}{@{}l}{\emph{Quantities used only in training}}\\
+$g$ & -- & P & Phase affinity: the raw output of each phase's mole head; $\hat n = \max(g,0)$ \\
+$\tilde n$ & -- & P & Smoothed abundance regressed by the mole loss, Eq.~\eqref{eq:smooth} \\
+-- & $\bar s$ & VC & Presence $s$ copied to each endmember of its phase (chemistry mask) \\
+\midrule
+\multicolumn{4}{@{}l}{\emph{Training constants}}\\
+\multicolumn{2}{c}{$T_0$} & P & Reference abundance scale per phase (5th percentile of present abundances) \\
+\multicolumn{2}{c}{$T$} & P & Annealed boundary temperature, $T = a\,T_0$ \\
+\multicolumn{2}{c}{$a$} & 1 & Annealing factor, decreased linearly over an episode \\
+\multicolumn{2}{c}{$w$} & P & Phase weights (recipe \code{phase_weights}; default 1) \\
+\multicolumn{2}{c}{$\omega$} & VC & Endmember weights (each endmember takes its phase's weight by default) \\
+\multicolumn{2}{c}{$\lambda_s,\lambda_x,\lambda_n,\lambda_b$} & 1 & Weights of the four loss terms (recipe \code{loss_config}) \\
+\midrule
+\multicolumn{4}{@{}l}{\emph{Fixed stoichiometric matrices (from the ML indexer)}}\\
+\multicolumn{2}{c}{$A$} & C$\times$E & Element moles per mole of each component (\code{compToEl}) \\
+\multicolumn{2}{c}{$M$} & P$\times$C & Which components belong to which phase (\code{phaseToCompMap}) \\
+\multicolumn{2}{c}{$V$} & VC$\times$C & Places the VC variable-phase fractions into the full component list (\code{variedToAllComp}) \\
+\multicolumn{2}{c}{$f$} & C & Fixed fractions of stoichiometric phases (\code{fixed_phaseToCompMap}) \\
+\bottomrule
+\end{tabular}
+\caption{Key to the symbols. ``--'' marks a quantity with no prediction or no ground-truth
+counterpart.}
+\label{tab:key}
+\end{table}
+
+%=====================================================================================
+\section{The forward model}
+%=====================================================================================
+
+The network sees $[u, b]$. An encoder produces a feature vector $h$, which is concatenated
+with the raw input. From it:
+\begin{enumerate}[nosep]
+  \item one softmax head per variable phase gives that phase's endmember fractions $\hat x$.
+        Endmembers containing an element that is absent from $b$ are given zero probability;
+  \item one small network per phase, which also sees $\hat x$, gives the affinity $g$;
+  \item the abundance is the rectified affinity,
+  \begin{equation}
+    \hat n = \max(g, 0).
+  \end{equation}
+\end{enumerate}
+Because $\max(g,0)$ is continuous at $g=0$, a phase leaving the assemblage is a kink in
+$\hat n$, not a jump. (In the code $g$ first passes through a leaky ReLU and is then
+clamped at zero; the result is identical.)
+
+Component moles and the reconstructed bulk follow from stoichiometry:
+\begin{align}
+  \hat m &= (\hat x V + f) \odot (\hat n M), \label{eq:m}\\
+  \hat b &= \frac{\hat m A}{\sum_e (\hat m A)_e}. \label{eq:bhat}
+\end{align}
+Here $\odot$ is the element-wise product, so $\hat m$ is each component's phase abundance
+times its fraction in that phase. Mass balance (adjusting $\hat m$ until $\hat b = b$
+exactly) is applied only at inference, by \code{NN_MELTS.apply_mass_balance}, and is not
+part of the trained network.
+
+%=====================================================================================
+\section{The training objective}
+%=====================================================================================
+
+For each mini-batch the trainer minimises
+\begin{equation}
+\boxed{\;
+  L = 10^4\big(\lambda_s L_s + \lambda_x L_x + \lambda_n L_n + \lambda_b L_b\big)
+\;}
+\label{eq:total}
+\end{equation}
+covering phase presence ($L_s$), chemistry ($L_x$), phase abundance ($L_n$) and bulk
+($L_b$). The factor $10^4$ keeps the loss large compared with the optimiser's $\epsilon$.
+The bulk term is added only when $\lambda_b \neq 0$. Typical recipe values are
+$\lambda_x = 500$, $\lambda_n = 50$, $\lambda_s$ between $0.002$ and $0.02$, and
+$\lambda_b = 0$ while tuning, rising to $50$ for the final joint training.
+The same function (\code{_upper_loss}) computes the training loss and the validation
+loss, so a model is always scored on the objective it was trained on.
+
+In every term below, sums ($\sum$) run over all B rows of the batch as well as over the
+index shown, and each term is a weighted mean: the weighted sum of errors divided by the
+sum of the weights.
+
+\subsection{The error function $\rho$}
+Chemistry, abundance and bulk use the symmetric relative squared error
+(\code{symmetric_rel_l2}),
+\begin{equation}
+  \rho(\hat y, y) = \frac{(\hat y - y)^2}{|\hat y| + |y|},
+  \label{eq:rho}
+\end{equation}
+with the denominator floored at $10^{-6}$. The type is chosen separately for each term by
+\code{loss_config.<term>.type} (\code{symmetric_rel_l1} and \code{huber} are also
+available). Two limits explain its behaviour:
+\begin{align}
+  y = 0:\qquad & \rho(\hat y, 0) = |\hat y|, \label{eq:rho0}\\
+  \hat y \approx y:\qquad & \rho(\hat y, y) \approx \frac{(\hat y - y)^2}{2y}. \label{eq:rhorel}
+\end{align}
+For a target of zero it acts like an absolute ($L_1$) error, a constant pull toward zero.
+Near a non-zero target it is a squared error divided by the target, so a small abundance
+counts as much as a large one in relative terms.
+
+\subsection{Chemistry loss $L_x$}
+Only phases that are present in the ground truth have a composition, so the predicted
+fractions are masked by $\bar s$ before comparison and the mean runs over present
+endmembers only:
+\begin{equation}
+  L_x = \frac{\sum_k \bar s_k\, \omega_k\, \rho(\bar s_k \hat x_k,\ x_k)}{\sum_k \bar s_k\, \omega_k},
+  \qquad k = 1,\dots,\text{VC}.
+\end{equation}
+
+\subsection{Abundance loss $L_n$}
+Every phase is supervised, including absent ones (target $n=0$): learning where an
+abundance reaches zero is the point of the continuous model. The loss is not computed on
+$\hat n$ itself but on a smoothed version of it controlled by the boundary temperature
+$T$ (Section~\ref{sec:anneal}):
+\begin{equation}
+  \tilde n = T \softplus(g/T) = T \ln\!\big(1 + e^{g/T}\big),
+  \label{eq:smooth}
+\end{equation}
+and
+\begin{equation}
+  L_n = \frac{\sum_j w_j\, \rho(\tilde n_j, n_j)}{\sum_j w_j},
+  \qquad j = 1,\dots,\text{P}.
+\end{equation}
+$\tilde n$ is a smooth stand-in for $\max(g,0)$ with two useful properties:
+\begin{equation}
+  \frac{d\tilde n}{dg} = \operatorname{sigmoid}(g/T),
+  \qquad
+  0 < \tilde n - \max(g,0) \le T \ln 2 .
+  \label{eq:smoothprops}
+\end{equation}
+The error relative to $\hat n$ is largest ($T\ln 2$) at $g = 0$, negligible once
+$|g| > 3T$, and shrinks as $T$ is annealed. For an absent phase, Eq.~\eqref{eq:rho0} gives
+$\rho(\tilde n, 0) = \tilde n$, so the gradient on its affinity is
+$\operatorname{sigmoid}(g/T)$. This pushes $g$ negative and fades to zero once the phase
+is confidently absent ($g \ll -T$), instead of holding it at the boundary $g=0$.
+
+\subsection{Presence loss $L_s$}
+There is no separate presence head. Instead the affinity is also used as the logit of a
+binary cross-entropy against $s$:
+\begin{equation}
+  L_s = \frac{\sum_j c_j\, \BCE\!\big(5g_j/T_{0,j},\ s_j\big)}{\sum_j c_j},
+  \qquad
+  c = \big(s\,w + (1-s)\big)\,\big|\tanh(g/T)\big|,
+  \label{eq:sat}
+\end{equation}
+with $\BCE(z,s) = -s\ln\operatorname{sigmoid}(z) - (1-s)\ln\big(1-\operatorname{sigmoid}(z)\big)$.
+Three choices are built into Eq.~\eqref{eq:sat}:
+\begin{enumerate}[nosep]
+  \item Phase weights apply only to the present examples ($s=1$). Those are the examples a
+        rare phase is short of; absent examples keep weight 1.
+  \item The logit is scaled by the fixed $T_0$, not the annealed $T$, so the classifier's
+        confidence means the same thing throughout training: it reaches
+        $\operatorname{sigmoid}(5) \approx 0.99$ at $g = T_0$.
+  \item The weight $|\tanh(g/T)|$ uses the annealed $T$. It is zero at the boundary and
+        close to 1 a few $T$ away. It hands off with the abundance loss, whose gradient
+        $\operatorname{sigmoid}(g/T)$ is largest near the boundary and fades far from it:
+        $L_n$ handles calibration close to $g=0$, and $L_s$ corrects samples that are
+        confidently wrong far from it.
+\end{enumerate}
+The weight $c$ depends on $g$ and is not detached, so it contributes to the gradient.
+
+\subsection{Bulk loss $L_b$}
+The reconstructed bulk (Eq.~\ref{eq:bhat}) is compared with the input bulk over the
+elements present in it:
+\begin{equation}
+  L_b = \frac{\sum_{e:\, b_e > 0} \rho(\hat b_e, b_e)}{\sum_{e:\, b_e > 0} 1},
+  \qquad e = 1,\dots,\text{E}.
+\end{equation}
+This measures how far the raw predictions are from satisfying mass balance, which reduces
+the correction that has to be applied at inference. It is meaningless until the mole heads
+have been trained, so it is switched on only for the final joint training. $\hat b$ is
+built from the unsmoothed $\hat n$.
+
+%=====================================================================================
+\section{Boundary temperature}
+\label{sec:anneal}
+%=====================================================================================
+
+\paragraph{The reference scale $T_0$.}
+$T_0$ sets, for each phase, how small an abundance is ``small''. It is the 5th percentile
+of that phase's abundance over the rows in which the phase is present:
+\begin{equation}
+  T_{0,j} = 5\text{th percentile of } \{\, n_j : n_j > 0 \,\}.
+\end{equation}
+An abundance below $T_{0,j}$ is therefore smaller than in 95\% of the rows where phase $j$
+is present. Because the training and validation sets are generated the same way, their
+$T_0$ values are essentially identical, so $T_0$ is computed on the smaller validation set,
+where it is cheaper. Across a typical dataset $T_0$ spans about three orders of magnitude
+(roughly $10^{-5}$ for trace phases to $0.06$ for dominant ones), which is why one
+temperature for all phases would not work. A phase that never occurs gets $T_0 = 0$; for
+the division in Eqs.~\eqref{eq:smooth}--\eqref{eq:sat} it is replaced by $10^{-6}$ times
+the smallest non-zero $T_0$, which makes its smoothing negligible.
+
+\paragraph{Annealing.}
+During an episode of $N$ epochs, the temperature is $T = a\,T_0$, with $a$ decreasing
+linearly from $a_{\text{start}}$ to $a_{\text{end}}$:
+\begin{equation}
+  a = a_{\text{start}} + (a_{\text{end}} - a_{\text{start}})\,\frac{\text{epoch}}{N-1},
+  \qquad \text{epoch} = 0, \dots, N-1.
+\end{equation}
+Early in training a large $T$ gives every phase a wide, smooth transition region and
+well-behaved gradients. As $T$ shrinks, $\tilde n$ approaches $\hat n = \max(g,0)$ and the
+model is trained on its actual output. The schedule restarts in every episode that enables
+it (\code{boundary_temperature} in the recipe). Recipes typically chain two episodes,
+$a: 1 \to 0.05$ and then $a: 0.05 \to 10^{-4}$. All arithmetic involving $g/T$, and the mole
+heads that produce $g$, run in 32-bit floats even under mixed precision, because late in
+the schedule $g/T$ would overflow or lose precision in 16-bit formats.
+
+%=====================================================================================
+\section{The training loop}
+%=====================================================================================
+
+\paragraph{Episodes.}
+A recipe is a sequence of episodes, each with its own number of epochs, learning-rate
+schedule, frozen modules and loss-weight overrides. The continuous recipes run:
+\begin{enumerate}[nosep]
+  \item tune the encoder and chemistry heads, with the mole heads frozen and
+        $\lambda_n = \lambda_s = 0$;
+  \item tune the mole heads, with the encoder and chemistry heads frozen and
+        $\lambda_x = 0$;
+  \item train everything jointly, with annealing on and $\lambda_b > 0$.
+\end{enumerate}
+
+\paragraph{Optimiser and input noise.}
+AdamW (with AMSGrad and $\epsilon = 10^{-4}$), with weight decay set per module: encoder
+\code{lowWD}, chemistry heads \code{highWD}, mole heads none. Training inputs can be
+perturbed with multiplicative Gaussian noise, $[u,b] \leftarrow [u,b]\,(1 + \sigma\xi)$
+with $\xi \sim \mathcal N(0,1)$; the perturbed $b$ is also the bulk target in $L_b$.
+
+\paragraph{Validation, checkpointing and early stopping.}
+Before the first epoch, the incoming model is scored on the validation set; that score is
+the one to beat. After each epoch the validation loss (Eq.~\ref{eq:total}, at that epoch's
+$T$) is computed, and the model is saved whenever it improves on the best so far. Training
+stops after \code{early_stopping_patience} epochs without improvement, and the best saved
+model is restored.
+
+\paragraph{Adaptive regularisation.}
+After each epoch, if the validation loss exceeds 1.02 times the training loss, the
+dropout rate (outside the mole heads) is raised one step up to its ceiling; once at the
+ceiling, the input noise $\sigma$ is raised instead. If the validation loss is below the
+training loss, dropout (or, once dropout is zero, $\sigma$) is lowered one step.
+
+\paragraph{Remark on checkpoint selection under annealing.}
+The validation loss is evaluated at a different $T$ each epoch. Both the smoothing error
+($\le T\ln 2$) and $\tilde n$ for absent phases shrink with $T$, so the validation loss
+tends to fall as the schedule progresses regardless of model quality. Checkpoint
+selection and early stopping therefore favour later epochs, and the starting score
+(computed at the first epoch's $T$) is not directly comparable with later ones.
+
+\end{document}

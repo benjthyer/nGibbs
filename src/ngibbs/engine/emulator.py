@@ -130,6 +130,25 @@ class NN_MELTS:
             weight_floor=massbalance_weight_floor,
         ).to(self.dev)
 
+        # Pyroxene/spinel legality polish inside the iterative mass balance (MELTS models
+        # only, as in MidLevelNetwork.forward; see polish_component_moles).
+        self._polish_px = 'orthopyroxene' in self.detail_label_indices
+        self._polish_sp = 'spinel' in self.detail_label_indices
+        if 'melts-liquid' not in self.label_indices:
+            self._polish_px = self._polish_sp = False
+        for flag, meth in ((self._polish_px, 'polish_negative_px'), (self._polish_sp, 'polish_negative_sp')):
+            if flag and not hasattr(self.model, meth):
+                raise TypeError(f"{type(self.model).__name__} has no {meth}; the iterative mass "
+                                f"balance needs it for this MELTS model")
+        self._variable_comps = torch.as_tensor(
+            np.asarray(self.compositionally_variable_subset, dtype=np.int64), device=self.dev)
+        polish_cols = []
+        if self._polish_px:
+            polish_cols += list(self.detail_label_indices['orthopyroxene'].values())
+        if self._polish_sp:
+            polish_cols += list(self.detail_label_indices['spinel'].values())
+        self._polish_cols = torch.as_tensor(polish_cols, dtype=torch.int64, device=self.dev)
+
 
     
     def _setup_indexer_tensors(self):
@@ -514,6 +533,35 @@ class NN_MELTS:
 
         return componentMoles
 
+    def polish_component_moles(self, componentMoles):
+        """Re-impose the MELTS orthopyroxene (CaO >= 0) and spinel (FeO, Al2O3 >= 0)
+        legality corrections on extensive component moles.
+
+        `polish_negative_px` / `polish_negative_sp` act on per-phase intensive
+        proportions in the network's (PxSp-transformed) component basis. Each phase's
+        block is divided by its total moles, polished, and rescaled by the same total
+        (both polishes keep a block's sum at 1, so phase moles are unchanged). Only the
+        opx and spinel columns are written back; absent phases (total 0) are untouched.
+        Returns a new tensor; a model without these phases returns the input as is.
+        """
+        if not (self._polish_px or self._polish_sp):
+            return componentMoles
+        cm = componentMoles
+        P2C = self.phaseToCompMap.to(cm.device, cm.dtype)
+        vc = self._variable_comps.to(cm.device)
+        cols = self._polish_cols.to(cm.device)
+        tot = ((cm @ P2C.T) @ P2C)[:, vc]                   # (B, V) moles of each column's phase
+        present = tot > 0
+        chem = torch.where(present, cm[:, vc] / torch.where(present, tot, torch.ones_like(tot)),
+                           torch.zeros_like(tot))
+        if self._polish_px:
+            chem = self.model.polish_negative_px(chem)
+        if self._polish_sp:
+            chem = self.model.polish_negative_sp(chem)
+        out = cm.clone()
+        out[:, vc[cols]] = chem[:, cols] * tot[:, cols]
+        return out
+
     def _recon_residual(self, componentMoles, norm_features):
         """L2 norm, per row, of `normalize(componentMoles @ compToEl) - bulk_target` --
         how far the (already scale-normalised) reconstructed bulk is from the requested
@@ -573,6 +621,8 @@ class NN_MELTS:
         - 'none'      : no correction; assemble outputs from the raw moles.
         - 'iterative' : `self._projector` (MassBalanceProjector) -- support-restricted,
           non-negativity clamped, weighted least-norm, runs on `self.dev` (GPU-safe).
+          After every step `polish_component_moles` re-imposes the opx/spinel legality
+          corrections (MELTS models), so the returned moles are legal.
         - 'pinv'      : `self.polish_masses` -- one-shot pseudo-inverse, CPU-only,
           honours `optimize_masses` / `protect_opx`.
 
@@ -615,7 +665,8 @@ class NN_MELTS:
         if mode == 'iterative':
             cm = componentMoles.to(self.dev)
             bulk_dir = norm_features[:, self.feature_offset:].to(self.dev)
-            cm, resid = self._projector(cm, self.compToEl.to(self.dev), bulk_dir)
+            cm, resid = self._projector(cm, self.compToEl.to(self.dev), bulk_dir,
+                                        polish=self.polish_component_moles)
         else:  # 'none'
             cm = componentMoles
             resid = self._recon_residual(cm, norm_features)
@@ -849,6 +900,30 @@ class NN_MELTS:
 
         unNormed_out = torch.cat([unNormed, ferric], dim=1)
         return unNormed_out
+
+    def native_component_moles(self, componentMoles):
+        """
+        ForwardMB/forwardNN 'component_moles' expressed as each phase's native
+        MELTS endmember moles (the names in ml_indexer.components_in_phases).
+
+        MELTS pyroxenes and spinel are learned in a transformed component
+        basis (config/projections/PxSp_Comp_TransformV2.csv, e.g. gC, g0..g5
+        for clinopyroxene): component_moles = x_native @ PxSpTransform, which
+        is why ml_indexer.compToOx is inv(PxSpTransform) @ compToOxLoad. The
+        labels of those columns are the native endmember names, but the
+        values are not native amounts. This returns
+        componentMoles @ inv(PxSpTransform); PxSpTransform is the identity for
+        every other phase and for non-MELTS models, so those columns are
+        unchanged. Rows sum the same (each PxSpTransform row sums to 1).
+
+        componentMoles : torch.Tensor or np.ndarray, shape (B, C), in
+            ml_indexer.label_names order. Returns the same type.
+        """
+        T = np.asarray(self.ml_indexer.PxSpTransform, dtype=np.float64)
+        Tinv = np.linalg.inv(T)
+        if torch.is_tensor(componentMoles):
+            return componentMoles @ torch.as_tensor(Tinv, dtype=componentMoles.dtype, device=componentMoles.device)
+        return np.asarray(componentMoles, dtype=np.float64) @ Tinv
 
     def get_liquid_oxides(self, componentMoles, features, compToOx=None, Normalize=True):
         """

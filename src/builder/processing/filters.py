@@ -910,7 +910,7 @@ def bundle_insanity_filter(tarball_path, tolerance=1e-3, bulk_tol_frac=1e-3, bat
             gc.collect()
 
         print(f"[INSANITY FILTER] Repacking filtered data into {tarball_path}...")
-        with tarfile.open(tarball_path, 'w:gz') as tar:
+        with tarfile.open(tarball_path, 'w:gz', compresslevel=1) as tar:
             for file in temp_path.glob('*'):
                 if file.is_file():
                     tar.add(file, arcname=file.name)
@@ -999,7 +999,7 @@ def deep_filter(tarball_path, Component_Lower_Bounds=None, Component_Upper_Bound
 
         # Repack tarball
         print(f"Repacking filtered data into {tarball_path}...")
-        with tarfile.open(tarball_path, 'w:gz') as tar:
+        with tarfile.open(tarball_path, 'w:gz', compresslevel=1) as tar:
             for file in temp_path.glob('*'):
                 if file.is_file():
                     tar.add(file, arcname=file.name)

@@ -448,3 +448,32 @@ active_oxide_lists = {
     'melts-liquid': default_Oxides
         }
 
+
+# Volatile priors for cumulate inversion (engine/cumulate_inversion.py).
+# Bulk H2O / CO2 in the MELTS training data, wt% oxide (closed to 100), computed once
+# on 2026-09-29. 'mean' / 'std' are over rows that CONTAIN the volatile (the Gaussian
+# the inverter draws from, clamped >= 0, with a random third of nodes then zeroed);
+# 'mean_all' / 'std_all' / 'frac_zero' are over every row, for reference.
+#   MELTS102       data/MLready/102/102Isothermal_NoCr_Train.tar.gz  (3,227,152 rows)
+#   MELTS120       data/MLready/120/120OpenOx_NoCr_Train.tar.gz      (3,726,019 rows; igneous
+#                  GEOROC bulks -- the closed SedIg training bundle is not on this machine)
+#   MELTS120_SedIg 120SedIgClosed_NoCr_NPT_Test_subset15000.tar.gz (15,000 rows; stand-in for
+#                  the sediment + igneous training set: carbonate-rich bulks dominate CO2)
+CUMULATE_VOLATILE_PRIORS = MappingProxyType({
+    'MELTS102': MappingProxyType({
+        'H2O': MappingProxyType({'mean': 0.4060, 'std': 0.3053, 'mean_all': 0.2284,
+                                 'std_all': 0.3049, 'frac_zero': 0.4376}),
+    }),
+    'MELTS120': MappingProxyType({
+        'H2O': MappingProxyType({'mean': 1.2001, 'std': 1.3611, 'mean_all': 1.0309,
+                                 'std_all': 1.3289, 'frac_zero': 0.1410}),
+        'CO2': MappingProxyType({'mean': 0.3141, 'std': 0.2159, 'mean_all': 0.1239,
+                                 'std_all': 0.2048, 'frac_zero': 0.6057}),
+    }),
+    'MELTS120_SedIg': MappingProxyType({
+        'H2O': MappingProxyType({'mean': 1.234, 'std': 1.353, 'mean_all': 1.080,
+                                 'std_all': 1.330, 'frac_zero': 0.12}),
+        'CO2': MappingProxyType({'mean': 5.875, 'std': 7.216, 'mean_all': 3.107,
+                                 'std_all': 6.012, 'frac_zero': 0.47}),
+    }),
+})

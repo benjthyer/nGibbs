@@ -18,7 +18,7 @@ if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
 
-from builder.training.torchDataClass import TensorDatasetFour, TensorDatasetFive
+from builder.training.torchDataClass import TensorDatasetFour, TensorDatasetFive, TensorDatasetAffinity
 from ngibbs.config.ml_indexer import MLIndexer
 from recipes.settings import external_base
 from ngibbs.utils.file_utils import load_ml_bundle, MLDataBundle
@@ -379,7 +379,7 @@ def load_ML_data(Trainpath, only_VP=None, feature_normalizer=None, with_derivati
 def load_ML_data_auto(Trainpath, only_VP=None, molar_epsilon=0,
                        ram_threshold_bytes=8 * 1024 ** 3, workspace_dir=None,
                        chunk_size=1_000_000, batch_size=1024, chunk_rows=1_000_000,
-                       with_derivatives='auto'):
+                       with_derivatives='auto', affinity=None):
     """
     Load Train data via the cached, pre-transformed working directory
     (see builder.training.dataset_workspace), then decide - based on the
@@ -407,6 +407,10 @@ def load_ML_data_auto(Trainpath, only_VP=None, molar_epsilon=0,
         Carry dndp_labels/dndt_labels through the workspace when the bundle has them.
         True requires them and raises by name. Part of the workspace fingerprint, so
         changing it rebuilds rather than silently returning the wrong array set.
+    affinity : AffinityTargets, optional
+        Affinity-label mode (builder.training.affinity_targets): the workspace caches
+        affinity_y and affinity_mask in place of molar_labels, and batches are
+        (features, binary_labels, labels, affinity_y, affinity_mask).
     ram_threshold_bytes : int, default 8 GiB
         If the workspace's arrays total at or below this many bytes,
         return a full in-RAM TensorDatasetFour (as load_ML_data does). Above
@@ -438,12 +442,16 @@ def load_ML_data_auto(Trainpath, only_VP=None, molar_epsilon=0,
     workspace = get_or_build_train_workspace(
         Trainpath, only_VP=only_VP, molar_epsilon=molar_epsilon,
         workspace_dir=workspace_dir, chunk_size=chunk_size,
-        with_derivatives=with_derivatives,
+        with_derivatives=with_derivatives, affinity=affinity,
     )
 
     total_bytes = workspace.total_bytes()
     print(f"[load_ML_data_auto] Workspace size: {total_bytes / 1024**3:.2f} GiB "
           f"({workspace.n_rows:,} rows), threshold: {ram_threshold_bytes / 1024**3:.2f} GiB")
+
+    if total_bytes <= ram_threshold_bytes and workspace.is_affinity:
+        print("[load_ML_data_auto] Within RAM threshold - materializing full in-RAM TensorDatasetAffinity")
+        return _affinity_dataset_from_workspace(workspace), workspace.ml_indexer
 
     if total_bytes <= ram_threshold_bytes:
         print("[load_ML_data_auto] Within RAM threshold - materializing full in-RAM TensorDatasetFour")
@@ -463,7 +471,39 @@ def load_ML_data_auto(Trainpath, only_VP=None, molar_epsilon=0,
     loader = build_chunked_train_loader(workspace, batch_size=batch_size, chunk_rows=chunk_rows)
     # main.py's derivative gate prefers this attribute over probing a row.
     loader.has_derivatives = workspace.has_derivatives
+    loader.is_affinity = workspace.is_affinity
     return loader, workspace.ml_indexer
+
+
+def _affinity_dataset_from_workspace(workspace):
+    return TensorDatasetAffinity(
+        features=torch.from_numpy(np.array(workspace.features, dtype=np.float32)),
+        binarylabels=torch.from_numpy(np.array(workspace.binary_labels, dtype=np.float32)),
+        labels=torch.from_numpy(np.array(workspace.labels, dtype=np.float32)),
+        affinity_y=torch.from_numpy(np.array(workspace.affinity_y, dtype=np.float32)),
+        affinity_mask=torch.from_numpy(np.array(workspace.affinity_mask, dtype=np.bool_)),
+    )
+
+
+def load_ML_test_affinity(Testpath, feature_normalizer, affinity, only_VP=None,
+                          workspace_dir=None, chunk_size=1_000_000):
+    """Test-set counterpart of load_ML_data_auto for affinity training.
+
+    Uses the same cached-workspace machinery as Train -- so the activated labels and
+    mask are computed once and reused -- in its own directory, normalized with Train's
+    bounds (part of the fingerprint). Always materialized in RAM, like load_ML_data:
+    the trainer wraps it in a plain DataLoader."""
+    from builder.training.dataset_workspace import (get_or_build_train_workspace,
+                                                    WORKSPACE_DIR_DEFAULT)
+    if workspace_dir is None:
+        workspace_dir = WORKSPACE_DIR_DEFAULT.parent / (WORKSPACE_DIR_DEFAULT.name + '_test')
+    workspace = get_or_build_train_workspace(
+        Testpath, only_VP=only_VP, molar_epsilon=0, workspace_dir=workspace_dir,
+        chunk_size=chunk_size, with_derivatives=False, affinity=affinity,
+        feature_normalizer=feature_normalizer)
+    ml_indexer = workspace.ml_indexer
+    ml_indexer.feature_normalizer = feature_normalizer
+    return _affinity_dataset_from_workspace(workspace), ml_indexer
 
 
 def build_chunked_train_loader(workspace_handle, batch_size, chunk_rows=1_000_000,

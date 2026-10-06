@@ -45,6 +45,13 @@ class MassBalanceProjector(nn.Module):
     Only the composition *direction* is constrained. The target is rebuilt on the current
     scale every iteration; holding a scale fixed across iterations makes the residual
     non-monotone, because each clamp changes the element total.
+
+    `polish` (optional callable n -> n) runs after every clamp. `NN_MELTS` passes its
+    `polish_component_moles`, which re-applies the MELTS pyroxene/spinel legality
+    corrections (`polish_negative_px` / `polish_negative_sp`): the correction and clamp
+    perturb component abundances inside a phase and can re-create negative CaO (opx) or
+    FeO/Al2O3 (spinel) in those phases' transformed component basis. Polishing last means
+    the returned moles are always legal; the residual reported is the one after it.
     """
 
     def __init__(self, iters: int = 3, tikhonov: float = 1.0e-6, damping: float = 1.0,
@@ -56,7 +63,7 @@ class MassBalanceProjector(nn.Module):
         self.relative = bool(relative)
         self.weight_floor = float(weight_floor)
 
-    def forward(self, n, compToEl, b_dir):
+    def forward(self, n, compToEl, b_dir, polish=None):
         E = compToEl.shape[1]
         eye64 = torch.eye(E, dtype=torch.float64, device=n.device).unsqueeze(0)
         At = compToEl.T.unsqueeze(0)
@@ -84,6 +91,8 @@ class MassBalanceProjector(nn.Module):
             lam = torch.linalg.solve(M, r.unsqueeze(-1).double()).to(n.dtype)
             delta = w * (A_w.transpose(1, 2) @ lam).squeeze(-1)
             n = torch.clamp(n + self.damping * delta, min=0.0)
+            if polish is not None:
+                n = polish(n)
 
         bl = n @ compToEl
         resid = (bl / bl.sum(dim=1, keepdim=True).clamp(min=1e-6) - b_dir).norm(dim=1)

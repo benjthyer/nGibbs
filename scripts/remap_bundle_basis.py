@@ -209,7 +209,7 @@ def remap_bundle(input_path: Path, demote: str, promote: str, output_path: Path,
 
         # Repack everything into the output bundle
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        with tarfile.open(output_path, 'w:gz') as tar:
+        with tarfile.open(output_path, 'w:gz', compresslevel=1) as tar:
             for item in sorted(tmp.iterdir()):
                 tar.add(item, arcname=item.name)
 

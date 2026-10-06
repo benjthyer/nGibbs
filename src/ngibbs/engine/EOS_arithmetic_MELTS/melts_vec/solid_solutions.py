@@ -42,6 +42,7 @@ from . import clinopyroxene as _clinopyroxene
 from . import orthopyroxene as _orthopyroxene
 from . import spinel as _spinel
 from . import rhomsghiorso as _rhomsghiorso
+from . import garnet, leucite, biotite, hornblende, nepheline
 
 
 def _weighted_pure_sum(T, P, params, names, X):
@@ -255,22 +256,14 @@ def compute_orthopyroxene_solution(T, P, X, solid_params, n_iter=60) -> dict:
                 endmembers=_orthopyroxene.ENDMEMBERS)
 
 
-def compute_spinel_solution(T, P, X, solid_params, n_iter=60) -> dict:
+def compute_spinel_solution(T, P, X, solid_params) -> dict:
     """Bulk (chromite, hercynite, magnetite, spinel, ulvospinel) spinel
-    solid-solution properties.
-
-    See spinel.py's module docstring for the scope of this translation:
-    unlike clinopyroxene.py/orthopyroxene.py, spinel.c has NO separate
-    PURE-vs-MIX Taylor-coefficient reference frame (pureOrder() and the
-    bulk order() share the exact same coefficients), and the internal
-    ordering solve (3 site-occupancy parameters s0/s1/s2) needed a
-    combined backtracking-line-search + physical-gating Newton solver
-    (`spinel.solve_ordering`) beyond the plain numerically-Jacobian'd
-    solve every other phase uses, to correctly handle both interior
-    compositions AND the genuine physical degeneracies at 3 of the 5
-    pure-endmember vertices (an entire cation type absent) -- both
-    verified bit-for-bit against a standalone C harness
-    (`tests/verify_spinel.c`) this session.
+    solid-solution properties: the endmember sum plus spinel.py's verbatim
+    translation of spinel.c (order() Newton solve with its feasibility
+    step truncation, pureOrder()/pureSpn() references, analytic Cp and
+    dCp/dT along the ordering equilibrium). Compositions need not be
+    physically feasible (e.g. emulator output with negative total Al):
+    they are treated as MAGMA treats them.
 
     Parameters
     ----------
@@ -291,7 +284,7 @@ def compute_spinel_solution(T, P, X, solid_params, n_iter=60) -> dict:
     r = _spinel.x_to_r(X)   # (B,4)
 
     pure_sum = _weighted_pure_sum(T, P, solid_params, _spinel.ENDMEMBERS, X)
-    mix = _spinel.solution_thermo(r, T, P, n_iter=n_iter)
+    mix = _spinel.solution_thermo(r, T, P)
 
     V = pure_sum["V"] + mix["V_mix"]
     dVdT = pure_sum["dVdT"] + mix["dVdT_mix"]
@@ -370,3 +363,42 @@ def compute_rhm_oxide_solution(T, P, X, solid_params, n_iter=100) -> dict:
                 Cp=Cp, dCpdT=dCpdT, G=G, H=H, S=S,
                 activities=mix["activities"], mu=mix["mu"], s_eq=mix["s_eq"],
                 endmembers=_rhomsghiorso.ENDMEMBERS)
+
+
+# Solution models added 2026-09-23: each module exposes ENDMEMBERS and
+# solution_thermo(X, T, P) -> G_mix, H_mix, S_mix, V_mix, Cp_mix, dCpdT_mix,
+# dVdT_mix, dVdP_mix, mu, activities (and s_eq when it has ordering).
+SOLUTION_MODULES = {'garnet': garnet, 'leucite': leucite, 'biotite': biotite, 'hornblende': hornblende,
+                    'nepheline': nepheline}
+
+
+def compute_solution(phase, T, P, X, solid_params) -> dict:
+    """Bulk properties per mole of solution for the phases in SOLUTION_MODULES
+    ('garnet', 'leucite', 'biotite', 'hornblende', 'nepheline'):
+    sum_i x_i * endmember_i(T, P) + mixing, exactly MELTS's read_write.c recipe.
+
+    X : (B, n) mole fractions in that module's ENDMEMBERS order (rows are
+        used as given; normalize beforehand).
+    Returns dict of (B,): V, dVdT, dVdP, K, alpha, Cp, dCpdT, G, H, S, plus
+    activities/mu (B, n), s_eq when the model has an ordering parameter, and
+    endmembers.
+    """
+    if phase not in SOLUTION_MODULES:
+        raise KeyError(f"no solution model {phase!r}; available: {sorted(SOLUTION_MODULES)}")
+    mod = SOLUTION_MODULES[phase]
+    T = np.asarray(T, dtype=np.float64)
+    P = np.asarray(P, dtype=np.float64)
+    X = np.asarray(X, dtype=np.float64)
+    if X.ndim != 2 or X.shape[1] != len(mod.ENDMEMBERS):
+        raise ValueError(f"{phase}: X must be (B, {len(mod.ENDMEMBERS)}) in order {mod.ENDMEMBERS}, got {X.shape}")
+    pure = _weighted_pure_sum(T, P, solid_params, mod.ENDMEMBERS, X)
+    mix = mod.solution_thermo(X, T, P)
+    out = {k: pure[k] + mix[f'{k}_mix'] for k in ('V', 'dVdT', 'dVdP', 'H', 'S', 'Cp', 'dCpdT')}
+    out['G'] = out['H'] - T*out['S']
+    with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
+        out['K'] = np.where(out['dVdP'] != 0.0, -out['V']/out['dVdP'], np.inf)
+        out['alpha'] = out['dVdT']/out['V']
+    out.update(activities=mix['activities'], mu=mix['mu'], endmembers=list(mod.ENDMEMBERS))
+    if 's_eq' in mix:
+        out['s_eq'] = mix['s_eq']
+    return out

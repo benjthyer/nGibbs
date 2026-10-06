@@ -141,6 +141,13 @@ class ContinuousModel(nn.Module):
     # this class provides.
     save = MidLevelNetwork.save
     _set_indexer = TunableModel._set_indexer
+    # MELTS pyroxene/spinel legality corrections (they need only detail_label_indices,
+    # set by _set_indexer). Not applied in forward(): NN_MELTS runs them inside the
+    # iterative mass balance, after every correction step.
+    polish_negative_px = MidLevelNetwork.polish_negative_px
+    polish_negative_spFe = MidLevelNetwork.polish_negative_spFe
+    polish_negative_spAl = MidLevelNetwork.polish_negative_spAl
+    polish_negative_sp = MidLevelNetwork.polish_negative_sp
 
     # ---- interop with builder/training/trainer.py ------------------------------------
     # The training loop asks the model what its parts are called rather than assuming.
@@ -319,6 +326,12 @@ class ContinuousModel(nn.Module):
         self.register_buffer('compToEl', torch.tensor(self.compToOx_raw @ self.oxToEl_raw, dtype=torch.float))
 
     # ---------------------------------------------------------------- forward
+    def _mole_activation(self, g):
+        """g_phi -> m_phi. A subclass with a different signed label (AffinityModel)
+        overrides only this; `phaseMoles = clamp(m, min=0)` stays valid for any h with
+        h(g) = g on g >= 0 and h(g) < 0 below."""
+        return F.leaky_relu(g, self.mole_activation_leak)
+
     def network_component_moles(self, x):
         """The network body: heads -> raw (NON mass-balanced) component moles.
 
@@ -361,7 +374,7 @@ class ContinuousModel(nn.Module):
         with torch.autocast(device_type=mole_in.device.type, enabled=False):
             g = torch.cat([h(mole_in.float()) for h in self.mole_head], dim=1)   # g_phi (module docstring)
 
-        m = F.leaky_relu(g, self.mole_activation_leak)     # m_phi; signed, keeps gradient below 0
+        m = self._mole_activation(g)                       # m_phi; signed, keeps gradient below 0
         phaseMoles = torch.clamp(m, min=0.0)               # n_phi; exact zeros, exact sparsity
 
         compMultipliers = phaseMoles @ self.phaseToCompMap
@@ -499,10 +512,11 @@ class ContinuousModel(nn.Module):
         untouched, and the physical output `n_phi = clamp(leaky_relu(g_phi), min=0)` is
         unchanged either way.
 
-        Why `T` exists (`T=None` path): the huber loss on `mole=m` alone gives
-        essentially no gradient once an absent phase's `m` is merely close to 0 (huber
-        is minimised AT 0, so it does not prefer confidently-negative `g_phi` over
-        marginally-negative `g_phi`) -- a soft, easily noise-flipped decision boundary.
+        Why `T` exists (`T=None` path): the mole loss on `mole=m` (whichever
+        `loss_config.moles.type` -- symmetric_rel_l2 by default, which reduces to |m| for
+        an absent phase) is minimised AT m=0, so it pulls a confidently-absent phase back
+        onto the boundary rather than preferring confidently-negative `g_phi` over
+        marginally-negative `g_phi` -- a soft, easily noise-flipped decision boundary.
         Plain `logits=g_phi` (unscaled, unweighted BCE) helps, but is fighting the same
         hard kink in `clamp` at `g_phi=0` that motivated this whole architecture.
 
@@ -511,7 +525,7 @@ class ContinuousModel(nn.Module):
         rather than only in chat history, since the reasoning is load-bearing):
 
         - `mole` becomes `T*softplus(g_phi/T)` instead of raw `m`. This is the
-          quantity actually regressed by the huber mole loss (not just the downstream
+          quantity actually regressed by the mole loss (not just the downstream
           physical output), so unlike softening only `clamp`, this changes what the
           mole loss's gradient looks like: `d(T*softplus(g_phi/T))/d(g_phi) =
           sigmoid(g_phi/T)`, well-conditioned near `g_phi=0` and vanishing (not merely
@@ -589,6 +603,116 @@ class ContinuousModel(nn.Module):
                 # consumers (trainer.py's per-epoch boundary histograms) want this
                 # exact quantity, not whichever of the two `logits` happens to be.
                 'g_phi': g_phi}
+
+
+def _coerce_float_list(v):
+    """Config values round-trip through MidLevelNetwork.save as strings (a list becomes a
+    list of strings, or occasionally one string); accept any of those."""
+    if v is None:
+        return None
+    if isinstance(v, str):
+        import ast
+        v = ast.literal_eval(v)
+    if torch.is_tensor(v):
+        v = v.detach().cpu().tolist()
+    return [float(x) for x in np.asarray(v, dtype=np.float64).ravel()]
+
+
+class AffinityModel(ContinuousModel):
+    """ContinuousModel trained on signed affinity labels instead of moles.
+
+    The mole head's raw output g is mapped through the same activation the labels were:
+
+        y_hat = g                            g >= 0     (present: y_hat IS n)
+              = c*tanh(g/c) + eps*g          g <  0     (absent: saturates near -c)
+
+    with one scale c per phase (c = dT_window * median slope, from the Test bundle's
+    cStats). n = clamp(y_hat, 0) = clamp(g, 0), so every downstream consumer of
+    `phaseMoles` (mass balance, NN_MELTS) is unchanged. There is no saturation head, no
+    T0 and no annealed softplus: the sign of y_hat is the presence call, and the label
+    already carries how far a phase is from saturating.
+
+    The loss lives here (`affinity_mole_loss`), not in the trainer, so the trainer only
+    has to know that a model declares one. Per cell, in units of c (u = y_hat/c,
+    t = y/c):
+
+        trusted   : (u - t)^2
+        untrusted : hinge_weight * relu(u + margin)^2 + pull_weight * (u - t)^2
+
+    where an untrusted cell is a NaN sentinel or a low-slope-filtered one, and its
+    target is the -c placeholder (t = -1): the phase is known absent, only its distance
+    from saturation is not.
+    """
+
+    def __init__(self, affinity_c=None, affinity_eps: float = 0.02,
+                 affinity_margin: float = 0.5, affinity_hinge_weight: float = 1.0,
+                 affinity_pull_weight: float = 0.05, **kwargs):
+        super().__init__(**kwargs)
+        ml_indexer = kwargs.get('ml_indexer')
+        c = _coerce_float_list(affinity_c)
+        if c is None:
+            c = _coerce_float_list(getattr(ml_indexer, 'affinity_c', None))
+        if c is None:
+            raise ValueError(
+                "AffinityModel needs per-phase c: pass affinity_c, or set "
+                "ml_indexer.affinity_c (main.py does this from the Test bundle's cStats).")
+        if len(c) != self.n_phases:
+            raise ValueError(f"affinity_c has {len(c)} entries; the model has "
+                             f"{self.n_phases} mole heads")
+        if not all(np.isfinite(c)) or min(c) <= 0:
+            raise ValueError(f"affinity_c must be finite and positive, got {c}")
+        self.affinity_eps = float(affinity_eps)
+        self.affinity_margin = float(affinity_margin)
+        self.affinity_hinge_weight = float(affinity_hinge_weight)
+        self.affinity_pull_weight = float(affinity_pull_weight)
+        self.register_buffer('aff_c', torch.tensor(c, dtype=torch.float32).reshape(1, -1))
+        self.config.update(model_class='AffinityModel', affinity_c=c,
+                           affinity_eps=self.affinity_eps,
+                           affinity_margin=self.affinity_margin,
+                           affinity_hinge_weight=self.affinity_hinge_weight,
+                           affinity_pull_weight=self.affinity_pull_weight)
+
+    # ------------------------------------------------------------------ activation
+    def _mole_activation(self, g):
+        c = self.aff_c.to(g.dtype)
+        return torch.where(g >= 0, g, c * torch.tanh(g / c) + self.affinity_eps * g)
+
+    def transform_mole_targets(self, m_batch):
+        # Affinity targets are already in output space; nothing to un-log.
+        return m_batch
+
+    # ------------------------------------------------------- training-loop interface
+    def upper_forward(self, x, binaries=None):
+        componentMoles_raw, chem, y_hat, _, _ = self.network_component_moles(x)
+        raw_bl = componentMoles_raw @ self.compToEl
+        bulk = raw_bl / raw_bl.sum(dim=1, keepdim=True).clamp(min=1e-6)
+        chem_mask = (torch.ones_like(chem) if binaries is None
+                     else binaries[:, self.comp_binaries] @ self.comp_mappings)
+        return {'logits': None,
+                'chem': chem * chem_mask,
+                'chem_mask': chem_mask,
+                'mole': y_hat,
+                'bulk': bulk,
+                'mole_mask': None,
+                'sat_weight': None,
+                # In units of c: comparable across phases, which is all the trainer's
+                # diagnostic histogram needs.
+                'g_phi': y_hat / self.aff_c.to(y_hat.dtype)}
+
+    def affinity_mole_loss(self, y_hat, y, mask, phase_weights=None):
+        """Scalar mole loss over every cell (see class docstring). Always float32."""
+        with torch.autocast(device_type=y_hat.device.type, enabled=False):
+            c = self.aff_c.float()
+            u = y_hat.float() / c
+            t = y.float() / c
+            mask = mask.to(torch.bool)
+            sq = (u - t) ** 2
+            hinge = torch.relu(u + self.affinity_margin) ** 2
+            per = torch.where(mask, sq,
+                              self.affinity_hinge_weight * hinge + self.affinity_pull_weight * sq)
+            w = (torch.ones_like(per) if phase_weights is None
+                 else phase_weights.float().expand_as(per))
+            return (per * w).sum() / w.sum().clamp(min=1e-12)
 
 
 def load_continuous_from_zip(zip_path, substitutions=None, epsilon=None,

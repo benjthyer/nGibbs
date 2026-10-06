@@ -11,7 +11,7 @@ Quick start
 
 >>> from melts_vec import load_liquid, compute_liquid_bulk
 >>> lparams = load_liquid()
->>> liquid = compute_liquid_bulk(T, P, X, lparams)   # ideal-mixing bulk liquid
+>>> liquid = compute_liquid_bulk_mode(T, P, X, 'MELTS120')   # rhyolite-MELTS 1.2 liquid
 
 >>> from melts_vec import load_solids, compute_feldspar_solution, compute_olivine_solution
 >>> sparams = load_solids()
@@ -30,7 +30,7 @@ Quick start
 
 >>> from melts_vec import oxides_to_liquid_components
 >>> X_liq = oxides_to_liquid_components({'SiO2': ..., 'MgO': ..., ...})   # (B, 19) component moles
->>> liquid = compute_liquid_bulk(T, P, X_liq, lparams)
+>>> liquid = compute_liquid_bulk_mode(T, P, X_liq, 'MELTS120')   # rows normalized inside
 
 Scope
 -----
@@ -58,17 +58,12 @@ Scope
 
   spinel.py has a different structure from either pyroxene phase: there
   is no separate PURE-vs-MIX Taylor-coefficient reference frame at all
-  (pureOrder() and the bulk order() share the exact same coefficients),
-  and its internal-ordering Newton solve (3 site-occupancy parameters)
-  needed a combined backtracking-line-search + physical-gating fix,
-  beyond the plain solver every other phase uses, both to converge
-  reliably for interior/mixed compositions and to correctly handle the
-  genuine physical degeneracy at 3 of its 5 pure-endmember vertices (an
-  entire cation type absent, e.g. Fe2+ at pure spinel MgAl2O4) -- see
-  spinel.py's module docstring and the benchmark test file for the full
-  derivation. gmixSpn() is ~0 at 4 of the 5 vertices (chromite,
-  hercynite, magnetite, ulvospinel) but genuinely nonzero at the spinel
-  vertex itself, by the same physical-degeneracy mechanism.
+  (pureOrder() and the bulk order() share the exact same coefficients).
+  Its order() (3 site-occupancy parameters, analytic Hessian, step
+  truncation that keeps site fractions in [0, 1]) and pureOrder() are
+  translated verbatim, with analytic Cp/dCpdT along the ordering
+  equilibrium; gmixSpn() is ~0 at all five vertices. It matches MAGMA
+  also for infeasible emulator compositions (negative total Al).
 
   rhomsghiorso.py (rhombohedral-oxide) has a large, bespoke (non-generic-
   polynomial) parameter surface and its own short-range-order cubic-
@@ -88,10 +83,25 @@ Scope
   only 4 rhm-oxide rows, no Al2O3) -- this general 5-endmember model
   reduces correctly to that case at X_corundum=0, no separate code path
   needed.
-- NOT IMPLEMENTED: MELTS liquid's non-ideal (quasi-chemical / regular
-  solution) excess Gibbs energy of mixing -- see liquid_eos.py's
-  docstring. Liquid mixing here is ideal only (confirmed exact for
-  volume; an approximation for G/H/S/activities).
+- MELTS-version-aware liquid (liquid_modes.py, 2026-09-23): 'MELTS102' /
+  'MELTS110' / 'MELTS120' select the liquid table, the W table and gibbs.c's
+  SiO2/H2O/CO2/CaCO3 special cases; 1.1/1.2 include the CaCO3 speciation.
+  compute_liquid_bulk_mode() is exact against the MAGMA C library for all
+  three versions. compute_liquid_bulk() (liquid_eos.py) is the older
+  version-agnostic path WITHOUT those special cases (dissolved H2O/CO2 get
+  zero standard-state properties) and is kept only for regression tests.
+- Fluids: compute_fluid_solution() (1.1/1.2 Duan H2O-CO2 "fluid",
+  fluid_duan.py) and compute_water_phase() (1.0.2 pure "water", water.py).
+- Garnet, leucite, biotite, hornblende, nepheline (2026-09-23; garnet.c,
+  leucite.c, biotite.c, hornblende.c, nepheline.c incl. its K-Na ordering
+  parameter): compute_solution(phase, T, P, X, solid_params). Also the
+  endmember special cases they need (vc-/ca-nepheline, compute.py) and
+  albite's displacive + Al-Si ordering (feldspar_disorder.py). Exact against
+  the MAGMA C library. biotiteTaj.c is not used by any MELTS table; kalsilite
+  and melilite are out of nGibbs's scope.
+- Carbon solids (1.1/1.2): load_solids(table='meltsFluidSolids') adds
+  calcite, aragonite, magnesite, siderite, dolomite, spurrite, tilleyite,
+  graphite and diamond; they go through compute() like any pure phase.
 """
 
 from .params    import load_solids, MELTSSolidParams, DEFAULT_TABLE
@@ -112,16 +122,24 @@ from . import clinopyroxene
 from . import orthopyroxene
 from . import spinel
 from . import rhomsghiorso
+from . import garnet, leucite, biotite, hornblende, nepheline
 from . import molar_mass
 from .molar_mass import molar_mass_from_formula, molar_masses, liquid_molar_masses
 from .solid_solutions import (
     compute_feldspar_solution, compute_olivine_solution, compute_clinopyroxene_solution,
     compute_orthopyroxene_solution, compute_spinel_solution, compute_rhm_oxide_solution,
+    compute_solution, SOLUTION_MODULES,
 )
 from .liquid_speciation import (
     oxides_to_liquid_components, liquid_components_to_oxides,
     liquid_component_si_al_coeffs, LIQUID_COMPONENT_LABELS,
 )
+from .liquid_modes import (
+    MODES as MELTS_MODES, SOLID_TABLE as MELTS_SOLID_TABLE, CARBON_PHASES as MELTS_CARBON_PHASES,
+    load_liquid_mode, liquid_species_properties, compute_liquid_bulk_mode,
+)
+from .fluid_duan import compute_fluid_solution
+from .water import compute_water_phase
 
 __all__ = [
     'load_solids', 'MELTSSolidParams', 'DEFAULT_TABLE',
@@ -135,9 +153,13 @@ __all__ = [
     'kress_component', 'compute_liquid_components', 'compute_liquid_bulk',
     'newton_solve_ordering', 'darken_activities',
     'feldspar', 'olivine', 'clinopyroxene', 'orthopyroxene', 'spinel', 'rhomsghiorso',
+    'garnet', 'leucite', 'biotite', 'hornblende', 'nepheline', 'compute_solution', 'SOLUTION_MODULES',
     'molar_mass', 'molar_mass_from_formula', 'molar_masses', 'liquid_molar_masses',
     'compute_feldspar_solution', 'compute_olivine_solution', 'compute_clinopyroxene_solution',
     'compute_orthopyroxene_solution', 'compute_spinel_solution', 'compute_rhm_oxide_solution',
     'oxides_to_liquid_components', 'liquid_components_to_oxides',
     'liquid_component_si_al_coeffs', 'LIQUID_COMPONENT_LABELS',
+    'MELTS_MODES', 'MELTS_SOLID_TABLE', 'MELTS_CARBON_PHASES',
+    'load_liquid_mode', 'liquid_species_properties', 'compute_liquid_bulk_mode',
+    'compute_fluid_solution', 'compute_water_phase',
 ]

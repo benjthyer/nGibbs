@@ -157,6 +157,11 @@ def compute_liquid_bulk(T, P, X, params, names=None, apply_nonideal: bool = True
     V/Cp (exact, see module docstring) plus, by default, the non-ideal
     (regular-solution) excess G/H/S correction from `liquid_nonideal.py`.
 
+    Version-agnostic legacy path, kept for regression tests: it runs every
+    component through the generic Kress branch, so dissolved H2O/CO2 get
+    zero standard-state properties and SiO2 lacks its glass transition. Use
+    liquid_modes.compute_liquid_bulk_mode(T, P, X, mode) instead.
+
     Parameters
     ----------
     T, P : (B,) arrays.

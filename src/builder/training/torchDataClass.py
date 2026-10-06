@@ -108,3 +108,17 @@ class TensorDatasetFive(TrainingTensorDataset):
     def __init__(self, features, binarylabels, labels, molelabels, freeoutputs):
         super().__init__(features=features, binarylabels=binarylabels, labels=labels,
                          molelabels=molelabels, freeoutputs=freeoutputs)
+
+
+class TensorDatasetAffinity(TrainingTensorDataset):
+    """Affinity-label training tuple: (features, binary_labels, labels, affinity_y,
+    affinity_mask). Slot 3 holds the activated signed label y in place of the moles, and
+    slot 4 the per-cell trust mask the affinity loss splits on (see
+    builder.training.affinity_targets). Never carries derivatives -- slot 4 is taken."""
+
+    def __init__(self, features, binarylabels, labels, affinity_y, affinity_mask):
+        super().__init__(features=features, binarylabels=binarylabels, labels=labels,
+                         affinity_y=affinity_y, affinity_mask=affinity_mask)
+
+    has_derivatives = False
+    is_affinity = True

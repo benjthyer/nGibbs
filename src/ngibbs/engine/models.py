@@ -35,6 +35,10 @@ _MODEL_SPECS = {
         MELTSAPI,
         dict(model_dir=str(_this_file_dir / "TrainedModels" / "120")),
     ),
+    "MELTS102Emulator": (
+            MELTSAPI,
+            dict(model_dir=str(_this_file_dir / "TrainedModels" / "102")),
+        ),
     "HeFESToMarsEmulator": (
         HeFESToAPI,
         dict(model_dir=str(_this_file_dir / "TrainedModels" / "HeFESToMars")),

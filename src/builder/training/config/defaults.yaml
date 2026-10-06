@@ -43,7 +43,7 @@ loss_config:
     type: symmetric_rel_l2
     weight: 100
   moles:
-    type: huber
+    type: symmetric_rel_l2
     weight: 1
   bulk:
     type: symmetric_rel_l2
