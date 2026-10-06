@@ -22,6 +22,7 @@ src/ngibbs/config/projections/PxSp_Comp_TransformV2_old.csv/
 
 #alphamelts installations
 src/builder/alphamelts/engine/alphamelts-app-2.3.1-linux/
+src/builder/alphamelts/engine/alphamelts-app-2.3.2-linux/
 src/builder/alphamelts/engine/linux_alphamelts_1_9/
 /linux_alphamelts_1_9/
 src/builder/alphameltsMAC/engine/alphamelts-app/

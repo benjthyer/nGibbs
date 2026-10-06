@@ -179,6 +179,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override tarname from config (base filename used to locate Train/Test bundles and name checkpoints)",
     )
+    parser.add_argument(
+        "--warm_start",
+        default=None,
+        help="Override warm_start from config (checkpoint name in checkpoints.load_dir, without .tar; 'none' to start fresh)",
+    )
     return parser
 
 """import time
@@ -507,6 +512,8 @@ def main() -> None:
     config = _deep_update(deepcopy(defaults), overrides)
     if args.tarname:
         config["tarname"] = args.tarname
+    if args.warm_start:
+        config["warm_start"] = args.warm_start
     #print(config)
     config_yaml_text = yaml.safe_dump(config, sort_keys=False)
     training_yaml_text = _read_text_file(Path(args.config))

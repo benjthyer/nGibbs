@@ -6,11 +6,11 @@ loads the .npy directly when present (falling back to building one from .csv
 otherwise), so no conversion step is needed here regardless of which
 representation any input uses.
 
-The merged output always inherits the first table's columns (name, count, and
-order). Every other table is reindexed to match: its columns are reordered to
-line up with the first table's, any column the first table has that a later one
-lacks is filled with 0, and any column a later table has that the first lacks is
-an error (no table after the first may introduce columns unknown to it).
+The merged output keeps the columns common to every table, in the first table's
+order; every table is reindexed to match. A column present in only some of the
+tables is checked in every table that has it: if it is entirely zero there it is
+treated as empty and dropped from the output, otherwise the merge is an error
+(it can't be zero-filled for the tables that lack it without inventing data).
 
 Derivative sidecars (`<base>_dndP.npy`/`.csv`, `<base>_dndT.npy`/`.csv`) are
 picked up automatically by BigMetaTable for any input that has them, and are
@@ -71,9 +71,9 @@ def parse_args() -> argparse.Namespace:
         type=str,
         help=(
             "BigMetaTable base filenames (no extension), in the order they should be "
-            "concatenated. At least 2 required. The first table's columns (name, "
-            "count, and order) become the merged output's columns; every other "
-            "table is reindexed to match."
+            "concatenated. At least 2 required. The merged output keeps the columns "
+            "common to every table, in the first table's order; columns missing from "
+            "some tables are dropped if all-zero wherever present, otherwise an error."
         ),
     )
     parser.add_argument(
@@ -109,26 +109,55 @@ def _require_table_files(name: str, label: str) -> None:
         print(f"[WARNING] {label} text metadata not found for base {name}")
 
 
-def _column_discrepancies(reference: BigMetaTable, other: BigMetaTable, other_label: str):
+def _nonzero_column_sums(table: BigMetaTable, cols: list[str], label: str,
+                         chunk_size: int = 100_000) -> dict[str, float]:
     """
-    Compare `other`'s header against the reference table's.
-
-    Returns missing_in_other (columns of the reference absent from `other` -
-    filled with 0 later). Raises ValueError if `other` has any column the
-    reference does not have.
+    Scan `cols` of `table` in row chunks and return {column: sum} for every one
+    holding any non-zero value. Non-zero-ness is tested per value (not on the sum
+    alone) so a column whose entries happen to cancel out isn't mistaken for empty.
     """
-    ref_header = reference.header
-    other_set = set(other.header)
+    idx = [table.header.index(c) for c in cols]
+    n = table.table.shape[0]
+    any_nonzero = np.zeros(len(idx), dtype=bool)
+    sums = np.zeros(len(idx), dtype=np.float64)
+    for start in tqdm(range(0, n, chunk_size), desc=f"Checking partial columns of {label}"):
+        chunk = table.table[start:min(start + chunk_size, n)][:, idx]
+        any_nonzero |= (chunk != 0).any(axis=0)
+        sums += chunk.sum(axis=0, dtype=np.float64)
+    return {c: float(s) for c, s, nz in zip(cols, sums, any_nonzero) if nz}
 
-    extra_in_other = [c for c in other.header if c not in set(ref_header)]
-    if extra_in_other:
+
+def _resolve_columns(tables: list[BigMetaTable], labels: list[str]):
+    """
+    Work out the merged output's columns.
+
+    Columns present in every table are kept, in the reference (first) table's
+    order. Every other column is checked in each table that has it: if it is
+    all-zero everywhere it is dropped, otherwise ValueError is raised.
+
+    Returns (output_header, dropped_by_label), where dropped_by_label maps each
+    table's label to the columns of that table left out of the output.
+    """
+    common = set(tables[0].header).intersection(*(t.header for t in tables[1:]))
+    output_header = [c for c in tables[0].header if c in common]
+
+    dropped_by_label: dict[str, list[str]] = {}
+    errors = []
+    for table, label in zip(tables, labels):
+        partial = [c for c in table.header if c not in common]
+        dropped_by_label[label] = partial
+        if not partial:
+            continue
+        nonzero = _nonzero_column_sums(table, partial, label)
+        if nonzero:
+            errors.append(f"{label}: {nonzero}")
+
+    if errors:
         raise ValueError(
-            f"{other_label} has columns not present in the reference table: {extra_in_other}. "
-            f"{other_label} cannot introduce columns unknown to the reference table."
+            "Column(s) missing from some tables contain non-zero values where present "
+            "(column: sum) - cannot drop them:\n  " + "\n  ".join(errors)
         )
-
-    missing_in_other = [c for c in ref_header if c not in other_set]
-    return missing_in_other
+    return output_header, dropped_by_label
 
 
 def _check_sidecar_row_parity(table: BigMetaTable, label: str) -> None:
@@ -153,36 +182,35 @@ def _check_sidecar_row_parity(table: BigMetaTable, label: str) -> None:
         print(f"[INFO] {label}: sidecar '{attr}' row count matches main table ({arr.shape[0]} rows).")
 
 
-def _warn_missing(missing_in_other, other_label: str, when: str) -> None:
-    if missing_in_other:
+def _warn_dropped(dropped, label: str, when: str) -> None:
+    if dropped:
         print(
-            f"[WARNING] ({when}) Reference table has {len(missing_in_other)} column(s) not present "
-            f"in {other_label} (filled with 0 in the merged output): {missing_in_other}"
+            f"[WARNING] ({when}) {label} has {len(dropped)} all-zero column(s) not present in "
+            f"every table (dropped from the merged output): {dropped}"
         )
     else:
-        print(f"[INFO] ({when}) {other_label} contains every column of the reference table.")
+        print(f"[INFO] ({when}) {label} has no columns dropped from the merged output.")
 
 
 def _build_merged_table(tables: list[BigMetaTable], labels: list[str], output_name: str,
-                         chunk_size: int = 100_000) -> BigMetaTable:
+                         output_header: list[str], chunk_size: int = 100_000) -> BigMetaTable:
     """
     Build the merged table directly at `output_name`, in one pass per input table:
     each table's rows are copied, in the given order, into consecutive row-blocks
-    of a new memmap sized for the full concatenation. The first (reference) table
-    is already in its own column order, so its copy is a plain contiguous slice;
-    every other table is reordered/zero-filled to the reference's column layout as
-    it's written, on a small in-RAM chunk at a time rather than as a strided
-    column-at-a-time pass over the whole (row-major) memmap.
+    of a new memmap sized for the full concatenation. A table whose columns already
+    match `output_header` is copied as a plain contiguous slice; every other table
+    is reordered (and has dropped columns removed) as it's written, on a small
+    in-RAM chunk at a time rather than as a strided column-at-a-time pass over the
+    whole (row-major) memmap.
 
     This builds the output array once, directly, rather than reindexing every
     non-reference table into a full standalone copy first and merging as a
     second pass - that would touch every row of those tables twice.
     """
     reference = tables[0]
-    ref_header = reference.header
     rows = [t.table.shape[0] for t in tables]
     total_rows = sum(rows)
-    n_cols = reference.table.shape[1]
+    n_cols = len(output_header)
     dtype = reference.table.dtype
     for table, label in zip(tables[1:], labels[1:]):
         if table.table.dtype != dtype:
@@ -194,24 +222,19 @@ def _build_merged_table(tables: list[BigMetaTable], labels: list[str], output_na
     offset = 0
     for table, label in zip(tables, labels):
         n = table.table.shape[0]
-        if table is reference:
+        if list(table.header) == output_header:
             print(f"Copying {label} ({n} rows)...")
             for start in tqdm(range(0, n, chunk_size), desc=f"Copying {label}"):
                 end = min(start + chunk_size, n)
                 merged[offset + start:offset + end] = table.table[start:end]
                 merged.flush()
         else:
-            other_index = {name: idx for idx, name in enumerate(table.header)}
-            col_for_ref = [other_index.get(name) for name in ref_header]  # None -> missing, filled with 0
-            zero_mask = np.array([c is None for c in col_for_ref])
-            safe_cols = np.array([c if c is not None else 0 for c in col_for_ref])
-            print(f"Writing {label} ({n} rows), reordered to the reference table's columns...")
+            table_index = {name: idx for idx, name in enumerate(table.header)}
+            cols = np.array([table_index[name] for name in output_header])
+            print(f"Writing {label} ({n} rows), reordered to the merged output's columns...")
             for start in tqdm(range(0, n, chunk_size), desc=f"Aligning {label} columns"):
                 end = min(start + chunk_size, n)
-                chunk = table.table[start:end][:, safe_cols]
-                if zero_mask.any():
-                    chunk[:, zero_mask] = 0
-                merged[offset + start:offset + end] = chunk
+                merged[offset + start:offset + end] = table.table[start:end][:, cols]
                 merged.flush()
         offset += n
 
@@ -292,7 +315,7 @@ def _build_merged_table(tables: list[BigMetaTable], labels: list[str], output_na
     for table in tables:
         table._clear_metadata_rows()
 
-    return BigMetaTable(output_name, header=list(ref_header))
+    return BigMetaTable(output_name, header=list(output_header))
 
 
 def main() -> None:
@@ -321,15 +344,16 @@ def main() -> None:
         _check_sidecar_row_parity(table, label)
         tables.append(table)
 
-    reference = tables[0]
-    missing_by_label: dict[str, list[str]] = {}
-    for table, label in zip(tables[1:], labels[1:]):
-        missing = _column_discrepancies(reference, table, label)
-        missing_by_label[label] = missing
-        _warn_missing(missing, label, when="before merge")
+    try:
+        output_header, dropped_by_label = _resolve_columns(tables, labels)
+    except ValueError as exc:
+        print(f"ERROR: {exc}")
+        sys.exit(1)
+    for label, dropped in dropped_by_label.items():
+        _warn_dropped(dropped, label, when="before merge")
 
     print("Merging tables...")
-    merged_table = _build_merged_table(tables, labels, output_name)
+    merged_table = _build_merged_table(tables, labels, output_name, output_header)
     _check_sidecar_row_parity(merged_table, "Merged output")
 
     if args.csv_output == "full":
@@ -349,8 +373,8 @@ def main() -> None:
     if sidecar_paths:
         print(f"Saved sidecars: {', '.join(sidecar_paths)}")
 
-    for label, missing in missing_by_label.items():
-        _warn_missing(missing, label, when="after merge")
+    for label, dropped in dropped_by_label.items():
+        _warn_dropped(dropped, label, when="after merge")
 
     del merged_table
     gc.collect()

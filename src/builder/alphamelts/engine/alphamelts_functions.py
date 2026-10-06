@@ -35,7 +35,7 @@ from ngibbs.config.constants import OXIDE_MOLAR_MASSES
 
 #default file locations. These will need to be changed to use other alphamelts versions! 
 EnsembleLocation = None # let this error if not set
-alphaMELTSdir = os.path.join(Path(__file__).parent.absolute(), 'alphamelts-app-2.3.1-linux')
+alphaMELTSdir = os.path.join(Path(__file__).parent.absolute(), 'alphamelts-app-2.3.2-linux')
 alphameltsLocation = os.path.join(alphaMELTSdir, 'run_alphamelts.command')
 settingsLocation = os.path.join(Path(__file__).parent.parent.absolute(), 'batch', 'settings.txt')
 
