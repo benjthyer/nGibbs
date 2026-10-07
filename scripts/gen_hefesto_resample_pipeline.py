@@ -29,6 +29,12 @@ all three import stages to import_hefesto_subdirs_derivs.py instead, which
 additionally reconstructs/verifies dn/dP and dn/dT and folds their shadow
 tables and manifests into the stage-4 bundle.
 
+With --runner cluster, every import stage is also run on a compute node: it
+is submitted as a single-node SLURM job via submit_import_hefesto_subdirs.py
+--wait, which blocks until the import finishes (logs in <tables-dir>/logs).
+The --derivatives importer has no submitter yet, so with --derivatives the
+imports still run in the calling shell.
+
 Derived directories follow the repo's existing convention:
   <output-root>/<name>_resample1   (phase-change tree)
   <output-root>/<name>_resample2   (fine deep tree)
@@ -55,7 +61,7 @@ Usage:
 
   # cluster execution instead of local GNU parallel:
   python scripts/gen_hefesto_resample_pipeline.py ... --runner cluster \
-      --sbatch-time-limit 20 --squeue-filter hefesto_
+      --sbatch-time-limit 20 --squeue-filter hefesto_ --import-hours 8
 """
 
 from __future__ import annotations
@@ -132,7 +138,8 @@ def parse_args() -> argparse.Namespace:
     g.add_argument("--runner", choices=("local", "cluster"), default="local",
                    help="local: run_hefesto_parallel.py (GNU parallel, blocks). "
                         "cluster: run_many_sbatches_grouped.py + a squeue wait "
-                        "barrier that blocks until every job is DONE.")
+                        "barrier that blocks until every job is DONE; imports are "
+                        "submitted via submit_import_hefesto_subdirs.py --wait.")
     g.add_argument("--jobs", type=int, default=None,
                    help="[local] concurrent GNU parallel workers.")
     g.add_argument("--hefesto-cmd", default="$HOME/HeFESTo/HeFESToRepository/main",
@@ -146,6 +153,10 @@ def parse_args() -> argparse.Namespace:
     g.add_argument("--squeue-filter", default="hefesto_",
                    help="[cluster] substring matched against `squeue -o %%j` job "
                         "names; the barrier proceeds once no matching job remains.")
+    g.add_argument("--import-hours", type=int, default=6,
+                   help="[cluster] time limit (hours) for each import SLURM job.")
+    g.add_argument("--import-mem", default="16G",
+                   help="[cluster] memory for each import SLURM job.")
 
     g = p.add_argument_group("misc")
     g.add_argument("--python", default="python",
@@ -217,6 +228,7 @@ def main() -> None:
     scripts = repo_root / "scripts"
     import_py = scripts / ("import_hefesto_subdirs_derivs.py" if a.derivatives
                             else "import_hefesto_subdirs.py")
+    submit_import_py = scripts / "submit_import_hefesto_subdirs.py"
     prep_pc_py = scripts / "prepare_hefesto_tree_from_phase_changes.py"
     prep_fine_py = scripts / "prepare_hefesto_tree_fine.py"
     merge_py = scripts / "merge_bigmetatables.py"
@@ -293,8 +305,14 @@ def main() -> None:
     w(f"SBATCH_MAX_QUEUED={a.sbatch_max_queued}")
     w(f"POLL_INTERVAL={a.poll_interval}")
     w(f"SQUEUE_FILTER={q(a.squeue_filter)}")
+    if not a.derivatives:
+        w(f"IMPORT_JOB_NAME={q(f'imp_{name}')}")
+        w(f"IMPORT_HOURS={a.import_hours}")
+        w(f"IMPORT_MEM={q(a.import_mem)}")
     w("")
     w(f"IMPORT_PY={q(import_py)}")
+    if not a.derivatives:
+        w(f"SUBMIT_IMPORT_PY={q(submit_import_py)}")
     w(f"PREP_PC_PY={q(prep_pc_py)}")
     w(f"PREP_FINE_PY={q(prep_fine_py)}")
     w(f"MERGE_PY={q(merge_py)}")
@@ -323,7 +341,17 @@ def main() -> None:
         w('  fi')
         w("}")
     else:
-        w('run_import() { "$PYTHON" "$IMPORT_PY" "$@"; }')
+        w("# cluster: submit the import as a single-node SLURM job and block until")
+        w("# it finishes (exit code is the job's); logs land in $TABLES_DIR/logs.")
+        w("run_import() {")
+        w('  if [ "$RUNNER" = "cluster" ]; then')
+        w('    ( cd "$TABLES_DIR" && "$PYTHON" "$SUBMIT_IMPORT_PY" --wait \\')
+        w('        --job-name "$IMPORT_JOB_NAME" --hours "$IMPORT_HOURS" \\')
+        w('        --mem "$IMPORT_MEM" "$@" )')
+        w('  else')
+        w('    "$PYTHON" "$IMPORT_PY" "$@"')
+        w('  fi')
+        w("}")
     w("")
 
     if not a.no_clean:

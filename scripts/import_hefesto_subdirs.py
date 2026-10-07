@@ -43,17 +43,19 @@ if str(REPO_ROOT) not in sys.path:
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from builder.HeFESTo.HeFESTo_functions import import_HeFESTo_components  # noqa: E402
-from builder.HeFESTo.HeFESTo_deep_sampling import collect_deep_phase_changes  # noqa: E402
-from builder.indexer import DatasetIndexer, generate_column_headers_hefesto  # noqa: E402
-from ngibbs.config.constants import COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO  # noqa: E402
-from ngibbs.utils.file_utils import get_dropped_rows, reset_dropped_rows  # noqa: E402
-
 
 _SIM_DIR_PATTERN = re.compile(r'^simulation\d+$', flags=re.IGNORECASE)
 
 
-def _build_hefesto_indexer() -> DatasetIndexer:
+# Package imports are deferred to the functions that use them so that
+# build_parser() can be imported cheaply (e.g. by submit_import_hefesto_subdirs.py
+# on an HPC login node, to validate the switches it forwards).
+
+
+def _build_hefesto_indexer():
+    from builder.indexer import DatasetIndexer, generate_column_headers_hefesto
+    from ngibbs.config.constants import COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO
+
     excluded = {'System_main', 'Bulk_comp', 'Bulk_comp_elements'}
     phases = [
         phase_name
@@ -119,7 +121,7 @@ def _find_workspace_dirs(root: Path) -> list[Path]:
     return workspace_dirs
 
 
-def parse_args() -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             'Recursively find HeFESTo workspaces under a root directory and '
@@ -184,10 +186,18 @@ def parse_args() -> argparse.Namespace:
             'T and sweeps P; isobar fixes P and sweeps T.'
         ),
     )
-    return parser.parse_args()
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return build_parser().parse_args(argv)
 
 
 def main() -> int:
+    from builder.HeFESTo.HeFESTo_functions import import_HeFESTo_components
+    from builder.HeFESTo.HeFESTo_deep_sampling import collect_deep_phase_changes
+    from ngibbs.utils.file_utils import get_dropped_rows, reset_dropped_rows
+
     args = parse_args()
     root = args.root.resolve()
 
