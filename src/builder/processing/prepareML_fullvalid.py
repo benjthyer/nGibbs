@@ -627,7 +627,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, outn
         if 'archive_config_dir' in locals():
             shutil.rmtree(archive_config_dir, ignore_errors=True)
 
-        return train_bundle_path, test_bundle_path
+    return train_bundle_path, test_bundle_path
 
 
 if __name__ == '__main__':
