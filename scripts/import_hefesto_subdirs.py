@@ -8,7 +8,7 @@ For each discovered workspace directory:
 1) Cleanup simulation subdirectories:
      - If a simulation directory contains only 'control' or 'control' + 'ad.in',
          delete that simulation directory.
-     - Otherwise, delete files named 'fort.29' and 'qout' when present.
+     - Otherwise, delete files named 'fort.29' when present.
 2) Run import_HeFESTo_components() on that workspace.
 3) Tally simulations whose fort.99 carried stray HeFESTo diagnostic lines.
 4) Optionally (--deep-phase-change-dataname) collect phase-change bounds from
@@ -89,7 +89,7 @@ def _cleanup_simulation_dirs(workspace_dir: Path) -> tuple[int, int]:
             deleted_dirs += 1
             continue
 
-        for file_name in ('fort.29', 'qout'):
+        for file_name in ('fort.29'): #, 'qout'):
             target = entry / file_name
             if target.exists() and target.is_file():
                 target.unlink()
@@ -247,7 +247,7 @@ def main() -> int:
 
         print(f'Workspace: {workspace_dir}')
         print(f'  Deleted control-only Simulation dirs: {deleted_dirs}')
-        print(f'  Deleted fort.29/qout files: {deleted_files}')
+        print(f'  Deleted fort.29 files: {deleted_files}')
         print(f'  Fault simulation IDs count: {n_faults}')
         print(f'  Simulations with offset fort.99: {len(shifted)}')
 
@@ -269,7 +269,7 @@ def main() -> int:
         print(f'  Deep phase-change pairs ({args.deep_axis}): {total_deep_pairs} '
               f'-> {args.deep_phase_change_dataname}')
     print(f'  Deleted control-only Simulation dirs: {total_deleted_dirs}')
-    print(f'  Deleted fort.29/qout files: {total_deleted_files}')
+    print(f'  Deleted fort.29 files: {total_deleted_files}')
     print(f'  Total fault simulation IDs: {total_faults}')
     print(f'  Total simulations with offset fort.99: {total_shifted_sims}')
 
