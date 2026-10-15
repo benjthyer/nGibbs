@@ -35,6 +35,7 @@ from builder.training.trainer import train_Lower_MELTS, train_Upper_MELTS, symme
 from builder.training.sobolev import train_Upper_Sobolev
 from builder.training.tuners import tune_Lower_MELTS, tune_Upper_MELTS
 from builder.training.logger import setup_training_logger, redirect_output, restore_output
+from builder.training.training_lock import training_lock
 from ngibbs.utils.string_utils import apply_type_conversions
 from ngibbs.config.constants import TYPE_CONVERSION_MAP
 
@@ -235,7 +236,35 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override warm_start from config (checkpoint name in checkpoints.load_dir, without .tar; 'none' to start fresh)",
     )
+    parser.add_argument(
+        "--set",
+        dest="overrides",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Override any config value, applied after the YAML; repeatable. Dotted keys reach "
+             "nested blocks and VALUE is parsed as YAML, e.g. --set head_order=parallel "
+             "--set train1.epochs=50 --set 'tune1.tune_params.noise=[0, 0.01]'",
+    )
     return parser
+
+
+def _parse_cli_overrides(pairs: Iterable[str]) -> Dict[str, Any]:
+    """Turn `--set a.b=1` pairs into a nested dict suitable for `_deep_update`. Values go
+    through yaml.safe_load, so they are typed exactly as the same text in a recipe would be."""
+    updates: Dict[str, Any] = {}
+    for pair in pairs:
+        key, sep, raw = pair.partition("=")
+        if not sep or not key.strip():
+            raise ValueError(f"--set expects KEY=VALUE, got {pair!r}")
+        *parents, leaf = key.strip().split(".")
+        node = updates
+        for part in parents:
+            node = node.setdefault(part, {})
+            if not isinstance(node, dict):
+                raise ValueError(f"--set {pair!r} conflicts with an earlier --set for {part!r}")
+        node[leaf] = yaml.safe_load(raw)
+    return updates
 
 """import time
 print('Sleeping for 3 hours..')
@@ -580,6 +609,13 @@ def main() -> None:
         config["tarname"] = args.tarname
     if args.warm_start:
         config["warm_start"] = args.warm_start
+    cli_overrides = _parse_cli_overrides(args.overrides)
+    for key in cli_overrides:
+        if key not in config:
+            print(f"[--set] WARNING: '{key}' is not in defaults or {args.config}; check for a typo.")
+    config = _deep_update(config, cli_overrides)
+    if cli_overrides:
+        print(f"[--set] CLI overrides: {cli_overrides}")
     #print(config)
     config_yaml_text = yaml.safe_dump(config, sort_keys=False)
     training_yaml_text = _read_text_file(Path(args.config))
@@ -768,6 +804,19 @@ def main() -> None:
         dropout_step_down = float(episode_cfg.get("dropout_step_down", 0.0025))
         noise_step_up = float(episode_cfg.get("noise_step_up", 0.001))
         noise_step_down = float(episode_cfg.get("noise_step_down", 0.001))
+        # Fit checks (trainer._adapt_regularization): validation + adaptive dropout
+        # `val_checks_per_epoch` times per epoch on Test/Train. `fit_train_mode`: 'train'
+        # (running train-mode loss, the original behavior) or 'eval' (a random training
+        # sample of `fit_ref_rows` rows in eval mode; null = size of the test set).
+        # Defaults reproduce the original once-per-epoch scheme exactly.
+        _fit_ref_rows = episode_cfg.get("fit_ref_rows", None)
+        fit_check_kw = dict(
+            val_checks_per_epoch=int(episode_cfg.get("val_checks_per_epoch", 1)),
+            fit_train_mode=str(episode_cfg.get("fit_train_mode", "train")),
+            fit_ref_rows=None if _fit_ref_rows in (None, 'null', 'None') else int(float(_fit_ref_rows)),
+            overfit_ratio=float(episode_cfg.get("overfit_ratio", 1.02)),
+            underfit_ratio=float(episode_cfg.get("underfit_ratio", 1.0)),
+        )
 
         binWeights, compWeights = _build_phase_weights(ml_indexer, episode_cfg)
         which_heads_to_freeze = episode_cfg.get('which_heads_to_freeze', None)
@@ -892,6 +941,7 @@ def main() -> None:
                 else:
                     _train_fn, _dkw = _derivative_settings(episode_cfg, train_set)
                     _dkw.update(_boundary_temperature_settings(episode_cfg))
+                    _dkw.update(fit_check_kw)
                     _dkw.update(criteria)   # tune trials previously ignored loss types entirely
                     model, tune_results = tune_Upper_MELTS(
                         train_fn=_train_fn,
@@ -996,6 +1046,7 @@ def main() -> None:
                     #with torch.autograd.set_detect_anomaly(True):
                     _train_fn, _dkw = _derivative_settings(episode_cfg, train_set)
                     _dkw.update(_boundary_temperature_settings(episode_cfg))
+                    _dkw.update(fit_check_kw)
                     _train_fn(
                         best_model,
                         train_set,
@@ -1057,4 +1108,5 @@ if __name__ == "__main__":
     #print('Waiting')
     #import time
     #time.sleep(2700)
-    main()
+    with training_lock():
+        main()

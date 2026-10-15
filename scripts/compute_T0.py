@@ -127,8 +127,12 @@ def main() -> None:
         np.save(temp_dir / 'T0.npy', T0)
 
         tmp_output = output_path.with_suffix(output_path.suffix + '.tmp')
+        # Top-level entries added by bare name, like every exporter does. `arcname='.'`
+        # stored them as './cStats.npy' etc., which the loaders' exact-name lookups
+        # (affinity_targets, loadTrainData, dataset_workspace) then fail to find.
         with tarfile.open(tmp_output, 'w:gz', compresslevel=1) as tar:
-            tar.add(temp_dir, arcname='.')
+            for entry in sorted(temp_dir.iterdir()):
+                tar.add(entry, arcname=entry.name)
         shutil.move(str(tmp_output), str(output_path))
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)

@@ -6,12 +6,12 @@
 # ============================================================================
 dataset: #EXPECTED FILENAME: "nMELTS/data/MELTStables/{MELTSModel}/{'MELTS' if MELTSModel in ['102', '110', '120', 'p'] else ''}{MELTSModel}_<Train/Valid>set{Date}{Mode}"
   MELTSModel: '120' #'p'          # MELTS model version: '102', '110', '120', 'p'. Affects which directory dataproducts are read from and written to
-  Date: 'July4ClosedSedIgNoCr'             # Date identifier for dataset naming
+  Date: 'July8OpenSedIgNoCr'             # Date identifier for dataset naming
   Mode: 'BatchCooling'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
-outname: 120SedIgClosed_NoCr_NPT  Base name for output folder (without extension). Auto-Generated if blank
+outname: 120SedIgOpen_NoCr # Base name for output folder (without extension). Auto-Generated if blank
 
 performance:
   chunk_size: 400000          # Number of rows to process at once. Larger = faster, but more memory intensive. Adjust based on available RAM.
@@ -22,12 +22,13 @@ performance:
 featureNames: # Non-chemical features to include in the dataset
   - 'Pressure(System_main)'
   - 'Temperature(System_main)' 
+  - 'logfO2-QFM(System_main)'
 
   #- 'S(System_main)' # Isentropic 
   
 
 free_outputs: # Non-chemical labels to predict. These are used for training the saturation predictor and as auxiliary outputs for the encoder.
-  - 'S(System_main) / mass(System_main)' # Specific entropy (J/g-K)
+  #- 'S(System_main) / mass(System_main)' # Specific entropy (J/g-K)
   #- 'Temperature(System_main)' 
   #- 'S(System_main) / mass(System_main)' # Specific entropy (J/g-K)
   #- 'T(K)(System_main)'
@@ -65,73 +66,37 @@ min_phase_proportion: 0.002    # Minimum phase proportion (0-1) for a sample to 
 # and 'multiplier_bounds' ([lower, upper] bounds for perturbation).
 # Examples of additional phases: alloy-solid, apatite, cristobalite, etc.
 
-# DO NOT DO / BE CAREFUL WITH ISENTROPIC SIMS AND RESAMPLING
+# Non-identity multiplier_bounds perturb phase proportions (and therefore bulk
+# composition) but leave Pressure/Temperature untouched. That's safe UNLESS an
+# entropy column ('S(System_main)', 'S(System_main) / mass(System_main)',
+# 'S(J/g/K)(System_main)') is in featureNames/free_outputs above, in which case
+# process_for_ML errors out before any data is read (the stored S would no longer
+# match the resampled assemblage). Otherwise it just prints a loud warning and proceeds
+# - see guardrails.check_resampling_config().
 upsampling:
-  enabled: False              # Enable rare phase upsampling
+  enabled: True            # Enable rare phase upsampling
   phases:
-    #nepheline:
-    #  n_resamples: 5
-    #  multiplier_bounds: [0.9, 1.1]
-    leucite:
+    nepheline:
       n_resamples: 2
-      multiplier_bounds: [0.9, 1.1]
-    analcime:
-      n_resamples: 3
-      multiplier_bounds: [0.9, 1.1]
-    #olivine:
-    #  n_resamples: 1
-    #  multiplier_bounds: [0.9, 1.1]
-    muscovite:
-      n_resamples: 3
-      multiplier_bounds: [0.9, 1.1]
-    biotite:
-      n_resamples: 1
-      multiplier_bounds: [0.9, 1.1]
-    #k-feldspar:
-    #  n_resamples: 1
-    #  multiplier_bounds: [0.9, 1.1]
-    hornblende:
-      n_resamples: 1
-      multiplier_bounds: [0.9, 1.1]
-    graphite:
-      n_resamples: 1
-      multiplier_bounds: [0.9, 1.1]
+      multiplier_bounds: [0.9,1.1]
+    alloy-solid:
+      n_resamples: 2
+      multiplier_bounds: [0.9,1.1]
     calcite:
       n_resamples: 10
-      multiplier_bounds: [0.9, 1.1]
+      multiplier_bounds: [0.9,1.1]
     # For test set - tighter bounds (no/ weak resampling suggested, just augmentation)
     # Use same phase names as above with tighter multiplier_bounds
-    test_set_phases:
-      #nepheline:
-      #  n_resamples: 5
-      #  multiplier_bounds: [0.99, 1.01]
-      leucite:
-        n_resamples: 2
-        multiplier_bounds: [0.99, 1.01]
-      analcime:
-        n_resamples: 3
-        multiplier_bounds: [0.99, 1.01]
-      #olivine:
-      #  n_resamples: 1
-      #  multiplier_bounds: [0.99, 1.01]
-      muscovite:
-        n_resamples: 3
-        multiplier_bounds: [0.99, 1.01]
-      biotite:
-        n_resamples: 1
-        multiplier_bounds: [0.99, 1.01]
-      #k-feldspar:
-      #  n_resamples: 1
-      #  multiplier_bounds: [0.99, 1.01]
-      hornblende:
-        n_resamples: 1
-        multiplier_bounds: [0.99, 1.01]
-      graphite:
-        n_resamples: 1
-        multiplier_bounds: [0.99, 1.01]
-      calcite:
-        n_resamples: 10
-        multiplier_bounds: [0.99, 1.01]
+  test_set_phases:
+    alloy-solid:
+      n_resamples: 2
+      multiplier_bounds: [0.99,1.01]
+    calcite:
+      n_resamples: 10
+      multiplier_bounds: [0.99,1.01]
+    nepheline:
+      n_resamples: 2
+      multiplier_bounds: [0.99,1.01]
 # ============================================================================
 # RESAMPLING TO DATASETS - Feature/Label Generation
 # ============================================================================
@@ -195,7 +160,8 @@ deep_filter:
   # bulk_oxide_bounds:
   #   SiO2: [35, 80]
   #   MgO: [0, 50]
-  bulk_oxide_bounds: {}
+  bulk_oxide_bounds: 
+    # Fe2O3: [0,10] # For fO2 controlled datasets, especially those with graphite, the FeO Fe2O3 contents can be squirrely. This is removed by treating the two as elemental Fe!
   
   # Processing batch size for "deep" filtering, which targets .npy data products. 
   batch_size: 400000

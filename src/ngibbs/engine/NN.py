@@ -1365,6 +1365,13 @@ def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = 
         # print(f"ml_indexer.molar_epsilon = {ml_indexer.molar_epsilon}")
         # === Create model with loaded config ===
         cls = model_class if model_class is not None else _resolve_model_class(config)
+        # A caller asking for a base class (load_continuous_from_zip -> ContinuousModel)
+        # still gets the subclass the checkpoint recorded (AffinityModel), whose
+        # activation and buffers the base class would silently drop.
+        if model_class is not None and config.get('model_class'):
+            recorded = _resolve_model_class(config)
+            if recorded is not model_class and issubclass(recorded, model_class):
+                cls = recorded
         # `model_class` is recorded in config by classes that support it; drop it before
         # construction so it never has to appear in a constructor signature.
         config.pop('model_class', None)

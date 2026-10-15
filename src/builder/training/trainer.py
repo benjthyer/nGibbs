@@ -91,6 +91,105 @@ def _make_train_loader(trainData, batch_size, num_workers):
     return trainData
 
 
+# --------------------------------------------------------------------------- #
+#  Fit checks (validation + adaptive dropout, several times per epoch)
+# --------------------------------------------------------------------------- #
+# The over/underfitting ratio used to compare the epoch's running train loss (train mode,
+# so dropout and noise active, averaged over a model that improved all epoch) against an
+# eval-mode test loss from the end-of-epoch model. Dropout alone inflated the train side
+# enough to flip the verdict every epoch. A fit check instead evaluates BOTH sides now, in
+# eval mode, on the same model snapshot: the validation set and a fixed random sample of
+# the training set of similar size.
+
+def _n_train_rows(trainData):
+    if isinstance(trainData, torch.utils.data.Dataset):
+        return len(trainData)
+    return trainData.workspace.n_rows
+
+
+def _fit_check_rows(trainData, max_N, checks_per_epoch):
+    """Rows-seen thresholds at which the in-epoch fit checks fire. The final check of an
+    epoch runs after the batch loop, so only the `checks_per_epoch - 1` inner ones are
+    listed here."""
+    rows = min(_n_train_rows(trainData), max_N)
+    return [rows * k / checks_per_epoch for k in range(1, checks_per_epoch)]
+
+
+def _train_reference_loader(trainData, n_rows, batch_size, seed=0):
+    """A fixed sample of ~n_rows training rows drawn uniformly from the WHOLE training set,
+    for the train side of the fit check.
+
+    Drawn once per episode, not per check: the same rows every check means successive
+    ratios differ because the model changed, not because the sample did. Uniform over
+    the full set (not the most recently trained chunk) so it isn't biased toward rows the
+    optimizer just saw. These rows are still trained on -- this measures fit to the
+    training distribution, it is not a holdout."""
+    n_total = _n_train_rows(trainData)
+    rng = np.random.default_rng(seed)
+    # Sampling with replacement + unique: ~n_rows distinct rows without allocating an
+    # n_total-long permutation (80M rows -> 640 MB) the way choice(replace=False) would.
+    idx = np.unique(rng.integers(0, n_total, size=min(int(n_rows), n_total)))
+    t0 = time.time()
+    if isinstance(trainData, torch.utils.data.Dataset):
+        subset = torch.utils.data.Subset(trainData, idx.tolist())
+    else:
+        from builder.training.torchDataClass import TrainingTensorDataset
+        ws = trainData.workspace
+        subset = TrainingTensorDataset(**{
+            name: torch.from_numpy(np.asarray(ws.arrays[name][idx])) for name in ws.array_names})
+    print(f"[fit check] train reference: {len(idx):,} random rows of {n_total:,} "
+          f"(built in {time.time()-t0:.1f}s)")
+    return DataLoader(subset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
+
+
+FIT_TRAIN_MODES = ('train', 'eval')
+
+
+def _check_fit_train_mode(mode):
+    """'train' (default, the original behavior): the train side of Test/Train is the running
+    train-mode loss (dropout/noise active) over the batches since the previous check -- with
+    one check per epoch, exactly the epoch's running train loss. 'eval': a fixed random
+    training sample evaluated in eval mode on the current weights."""
+    mode = str(mode).lower()
+    if mode not in FIT_TRAIN_MODES:
+        raise ValueError(f"fit_train_mode must be one of {FIT_TRAIN_MODES}, got {mode!r}")
+    return mode
+
+
+def _adapt_regularization(model, val_loss, ref_loss, dropout_rate, max_drop, noise,
+                          dropout_step_up, dropout_step_down, noise_step_up, noise_step_down,
+                          overfit_ratio, underfit_ratio):
+    """One step of the adaptive dropout / noise controller. Noise reacts only when dropout
+    is already at its ceiling (overfitting) or floor (underfitting). Ratios inside
+    [underfit_ratio, overfit_ratio] are a dead band: no change. Returns (dropout_rate, noise)."""
+    ratio = val_loss / max(ref_loss, 1e-30)
+    if ratio > overfit_ratio:
+        if min(dropout_rate + dropout_step_up, max_drop) > dropout_rate:
+            old = dropout_rate
+            dropout_rate = min(dropout_rate + dropout_step_up, max_drop)
+            _set_adaptive_dropout_rate(model, dropout_rate)
+            print(f"Overfitting (val/train {ratio:.3f} > {overfit_ratio}). Increasing Dropout: {old} -> {dropout_rate}")
+        else:
+            old = noise
+            noise = noise + noise_step_up
+            print(f"Overfitting (val/train {ratio:.3f}), but dropout_rate is at the maximum: {dropout_rate}. "
+                  f"Increasing noise instead: {old} -> {noise}")
+    elif ratio < underfit_ratio:
+        if max(dropout_rate - dropout_step_down, 0) < dropout_rate:
+            old = dropout_rate
+            dropout_rate = max(dropout_rate - dropout_step_down, 0)
+            _set_adaptive_dropout_rate(model, dropout_rate)
+            print(f"Underfitting (val/train {ratio:.3f} < {underfit_ratio}). Decreasing Dropout: {old} -> {dropout_rate}")
+        else:
+            old = noise
+            noise = max(noise - noise_step_down, 0)
+            print(f"Underfitting (val/train {ratio:.3f}), but dropout_rate is at the minimum: {dropout_rate}. "
+                  f"Decreasing noise instead: {old} -> {noise}")
+    else:
+        print(f"val/train {ratio:.3f} within [{underfit_ratio}, {overfit_ratio}]: dropout stays {dropout_rate}")
+    return dropout_rate, noise
+
+
 def _reduce(loss, reduction):
     if reduction == 'none':
         return loss
@@ -447,7 +546,9 @@ def _print_affinity_diagnostics(acc, model):
           f"present->absent {100 * tot['missed'] / max(tot['present'], 1):.2f}% | "
           f"trusted absent->present {100 * tot['false_pres'] / max(tot['trusted_absent'], 1):.2f}% | "
           f"untrusted->present {100 * tot['untrusted_pres'] / max(tot['untrusted'], 1):.2f}%")
-    print(f"  {'phase':<14}{'RMSE y/c':>10}{'miss%':>8}{'falseP%':>9}{'untrP%':>8}{'n_pres':>10}")
+    # Precision/recall of the sign call over ALL cells, comparable to the binary model's
+    # phasewise printout. Untrusted cells are always GT-absent, so they count toward fp.
+    print(f"  {'phase':<20}{'prec':>7}{'recall':>8}{'RMSE y/c':>10}{'miss%':>8}{'falseP%':>9}{'untrP%':>8}{'n_pres':>10}")
     for j, n in enumerate(names):
         ntr = float(acc['present'][j] + acc['trusted_absent'][j])
         if ntr == 0 and float(acc['untrusted'][j]) == 0:
@@ -456,12 +557,42 @@ def _print_affinity_diagnostics(acc, model):
         miss = 100 * float(acc['missed'][j]) / max(float(acc['present'][j]), 1)
         fp = 100 * float(acc['false_pres'][j]) / max(float(acc['trusted_absent'][j]), 1)
         up = 100 * float(acc['untrusted_pres'][j]) / max(float(acc['untrusted'][j]), 1)
-        print(f"  {n:<14}{rm:>10.3f}{miss:>8.2f}{fp:>9.2f}{up:>8.2f}{int(acc['present'][j]):>10d}")
+        tp = float(acc['present'][j] - acc['missed'][j])
+        prec = tp / max(tp + float(acc['false_pres'][j] + acc['untrusted_pres'][j]), 1)
+        rec = tp / max(float(acc['present'][j]), 1)
+        print(f"  {n:<20}{prec:>7.3f}{rec:>8.3f}{rm:>10.3f}{miss:>8.2f}{fp:>9.2f}{up:>8.2f}{int(acc['present'][j]):>10d}")
+
+
+def _accumulate_presence_counts(acc, g_phi, b_batch):
+    """Per-phase (tp, fp, fn) of the presence call `g_phi > 0` -- the same call
+    ContinuousModel makes at inference (`n_phi = clamp(leaky_relu(g_phi), 0) > 0`; leaky_relu
+    preserves sign) -- against the ground-truth binaries. Returns a (3, P) float64 tensor."""
+    pred, truth = g_phi > 0, b_batch > 0.5
+    new = torch.stack([(pred & truth).sum(0), (pred & ~truth).sum(0),
+                       (~pred & truth).sum(0)]).double().cpu()
+    return new if acc is None else acc + new
+
+
+def _print_presence_precision_recall(acc, model):
+    tp, fp, fn = acc
+    names = list(model.label_indices.keys())
+    T, F_p, F_n = float(tp.sum()), float(fp.sum()), float(fn.sum())
+    print(f"\n[presence g_phi > 0] overall precision {T / max(T + F_p, 1):.4f} | "
+          f"recall {T / max(T + F_n, 1):.4f}")
+    print(f"  {'phase':<20}{'prec':>8}{'recall':>8}{'n_pres':>12}")
+    for j, n in enumerate(names):
+        prec = float(tp[j]) / max(float(tp[j] + fp[j]), 1)
+        rec = float(tp[j]) / max(float(tp[j] + fn[j]), 1)
+        print(f"  {n:<20}{prec:>8.3f}{rec:>8.3f}{int(tp[j] + fn[j]):>12d}")
 
 
 def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, criterion_chem, criterion_mole,
                            criterion_bulk, compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
-                           device, max_N=np.inf, T=None, amp_dtype=torch.float32, use_amp=False):
+                           device, max_N=np.inf, T=None, amp_dtype=torch.float32, use_amp=False,
+                           verbose=True):
+    """`verbose=False` skips the per-term prints and the affinity/boundary diagnostics
+    (and the work of collecting them) -- used for in-epoch fit checks and the train
+    reference, where only the scalar loss is needed."""
     model.eval()
     running_test_loss = 0.0
     running_sat_loss = 0
@@ -473,6 +604,7 @@ def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, cri
     g_phi_chunks = []
     residual_chunks = []
     aff_diag = None
+    presence = None
     T0 = getattr(getattr(model, 'ml_indexer', None), 'T0', None)
     with torch.no_grad():
         for batch_idx, batch in enumerate(test_loader):
@@ -492,8 +624,10 @@ def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, cri
                     compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
                     mask_batch=mask_batch,
                 )
-            if mask_batch is not None:
+            if verbose and mask_batch is not None:
                 aff_diag = _accumulate_affinity_diagnostics(aff_diag, model, out.mole, m_batch, mask_batch)
+            elif verbose and out.g_phi is not None:
+                presence = _accumulate_presence_counts(presence, out.g_phi, b_batch)
 
             batch_size_curr = x_batch.size(0)
             running_sat_loss += loss_sat.item() * batch_size_curr
@@ -504,7 +638,7 @@ def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, cri
             running_test_loss += loss.item() * batch_size_curr
             N += batch_size_curr
 
-            if out.g_phi is not None:
+            if verbose and out.g_phi is not None:
                 # Normalize by T0 (per phase) before pooling across phases -- T0 spans
                 # ~3 orders of magnitude across phases in a typical dataset (e.g. iron
                 # polymorphs ~1e-5 vs. a dominant phase ~0.06), so a raw, un-normalized
@@ -518,7 +652,7 @@ def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, cri
                     g_phi_chunks.append((out.g_phi / T0_norm).detach().to('cpu', torch.float32))
                 else:
                     g_phi_chunks.append(out.g_phi.detach().to('cpu', torch.float32))
-            if out.g_phi is not None and T0 is not None:
+            if verbose and out.g_phi is not None and T0 is not None:
                 gt = _mole_targets(model, m_batch)
                 T0_t = torch.as_tensor(T0, dtype=gt.dtype, device=gt.device).reshape(1, -1)
                 near_boundary = (gt > 0) & (gt <= 2.0 * T0_t)
@@ -530,6 +664,8 @@ def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, cri
                 break
 
     avg_test_loss = running_test_loss / N
+    if not verbose:
+        return avg_test_loss
     sat_str = 'n/a (no saturation head)' if (out is None or out.logits is None) else f'{running_sat_loss/N:.3e}'
     print(f"[TEST] Running Saturation Loss: {sat_str}\tRunning Chem Loss: {running_chem_loss/N:.3e}")
     print(f"[TEST] Running Molar Loss: {running_mole_loss/N:.3e}\tRunning Bulk Loss: {running_bulk_loss/N:.3e}")
@@ -540,6 +676,8 @@ def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, cri
     # present/absent" is useful to watch either way.
     if aff_diag is not None:
         _print_affinity_diagnostics(aff_diag, model)
+    if presence is not None:
+        _print_presence_precision_recall(presence, model)
     if g_phi_chunks and aff_diag is not None:
         _print_histogram(torch.cat(g_phi_chunks).flatten(), "y_hat / c (2nd-98th pct)")
     elif g_phi_chunks:
@@ -758,8 +896,18 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                       dropout_step_up = 0.05, dropout_step_down = 0.02,
                       noise_step_up = 0.002, noise_step_down = 0.001,
                       boundary_temperature = None,
+                      val_checks_per_epoch = 1, fit_train_mode = 'train', fit_ref_rows = None,
+                      overfit_ratio = 1.02, underfit_ratio = 1.0,
                       config_yaml = None, training_yaml = None, processing_yaml = None, stats = None, log_path = None, amsgrad=True, eps = 1E-4):
-    """`boundary_temperature`: None (default, current behavior) or a dict
+    """`val_checks_per_epoch`: how many fit checks per epoch, evenly spaced, the last at the
+    end of the epoch. Each check evaluates the validation set, saves a new best checkpoint,
+    and steps adaptive dropout on Test/Train against the dead band [underfit_ratio,
+    overfit_ratio]. `fit_train_mode` picks the Train side (see _check_fit_train_mode); in
+    'eval' mode it is a fixed random sample of `fit_ref_rows` training rows (default: as
+    many as the validation set). The defaults (1 check, 'train', [1.0, 1.02]) reproduce the
+    original once-per-epoch behavior exactly. `early_stopping_patience` stays in epochs.
+
+    `boundary_temperature`: None (default, current behavior) or a dict
     `{a_start, a_end}` -- see `_anneal_a`/`_boundary_T`. Only meaningful for a model
     whose `upper_forward` accepts `T` (ContinuousModel); `_upper_forward` no-ops it for
     any other model, so passing this against e.g. MidLevelNetwork is harmless, not an
@@ -864,6 +1012,63 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     early_stopping_counter = 0
     bench = ThroughputBenchmark()  # one training-speed/inference-speed record, after epoch 5
 
+    # --- Fit checks (see _train_reference_loader / _adapt_regularization) ---
+    checks_per_epoch = max(1, int(val_checks_per_epoch))
+    check_rows = _fit_check_rows(trainData, max_N, checks_per_epoch)
+    fit_train_mode = _check_fit_train_mode(fit_train_mode)
+    ref_loader = (_train_reference_loader(trainData, fit_ref_rows or len(testData), batch_size)
+                  if fit_train_mode == 'eval' else None)
+    patience_checks = early_stopping_patience * checks_per_epoch  # patience is configured in epochs
+
+    def _eval(loader, T, verbose):
+        return _evaluate_upper_model(
+            model, loader, feature_offset, criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
+            compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha, device, max_N,
+            T=T, amp_dtype=amp_dtype, use_amp=use_amp, verbose=verbose,
+        )
+
+    def _fit_check(label, T, verbose, running_train_loss):
+        """Validate, checkpoint, and step adaptive dropout. `running_train_loss` is the
+        train-mode loss since the previous check, used when fit_train_mode == 'train'.
+        Returns (test_loss, stop)."""
+        nonlocal best_test_loss, best_epoch, early_stopping_counter, dropout_rate, noise
+        avg_test_loss = _eval(test_loader, T, verbose)
+        if fit_train_mode == 'eval':
+            ref_loss, ref_desc = _eval(ref_loader, T, False), 'eval mode'
+        else:
+            ref_loss, ref_desc = running_train_loss, 'running, train mode'
+        test_losses.append(avg_test_loss)
+        print(f"Check {label}: Test {avg_test_loss:.5f} | Train ({ref_desc}) {ref_loss:.5f} | "
+              f"Test/Train {avg_test_loss/max(ref_loss, 1e-30):.3f}")
+
+        if avg_test_loss < best_test_loss:
+            print(f"New best test loss: {avg_test_loss:.5f} (improvement of {(best_test_loss-avg_test_loss)/best_test_loss*100:.2f}%) Saving model.")
+            best_test_loss = avg_test_loss
+            best_epoch = label
+            torch.save(model.state_dict(), str(TEMP_MODELS_DIR / 'temp_upper_train.pt'))
+            if DictFilePath is not None:
+                log_text = _read_text_file(log_path)
+                model.save(
+                    DictFilePath,
+                    config_yaml=config_yaml,
+                    processing_yaml=processing_yaml,
+                    training_yaml=training_yaml,
+                    stats=stats,
+                    log_text=log_text,
+                )
+            early_stopping_counter = 0
+        else:
+            early_stopping_counter += 1
+            print(f"No improvement. Counter: {early_stopping_counter}/{patience_checks} checks")
+            if early_stopping_counter >= patience_checks:
+                return avg_test_loss, True
+
+        dropout_rate, noise = _adapt_regularization(
+            model, avg_test_loss, ref_loss, dropout_rate, max_drop, noise,
+            dropout_step_up, dropout_step_down, noise_step_up, noise_step_down,
+            overfit_ratio, underfit_ratio)
+        return avg_test_loss, False
+
     # --- Train for specified epochs ---
     for epoch in range(Epochs):
         start = time.time()
@@ -876,6 +1081,9 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         N=0
         out = None
         epoch_T = _epoch_T(epoch)
+        next_check = 0
+        stop = False
+        win_loss0, win_N0 = 0.0, 0  # running totals at the previous check
         for batch_idx, batch in enumerate(tqdm(train_loader, desc="Training", leave=False)):
             # See _evaluate_upper_model: trainData can likewise carry trailing derivative
             # arrays this non-derivative episode doesn't use.
@@ -923,7 +1131,7 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                 print("Non-finite loss detected!")
                 print(f"Sat loss: {loss_sat.item()}, Chem loss: {chem_loss_masked.item()}, Mole loss: {mole_loss_masked}, Bulk loss: {bulk_loss_masked}")
                 print('ENDING EARLY')
-                early_stopping_counter = early_stopping_patience+1 # trigger early stopping
+                early_stopping_counter = patience_checks+1 # trigger early stopping
                 break
                 #raise ValueError("Non-finite loss, stopping training.")
                 continue
@@ -982,6 +1190,18 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
             wrappedScheduler.step_batch() # Step scheduler if it's batch-based (Does nothing if it's epoch-based)
 
+            if next_check < len(check_rows) and N >= check_rows[next_check]:
+                next_check += 1
+                window_loss = (running_train_loss - win_loss0) / max(N - win_N0, 1)
+                win_loss0, win_N0 = running_train_loss, N
+                _, stop = _fit_check(f"{epoch+1}.{next_check}", epoch_T, verbose=False,
+                                     running_train_loss=window_loss)
+                if stop:
+                    break
+                model.train()
+
+        if stop:
+            break
         avg_train_loss = running_train_loss / N
 
         sat_str = 'n/a (no saturation head)' if (out is None or out.logits is None) else f'{running_sat_loss/(N):.3e}'
@@ -999,70 +1219,14 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         # ---- Evaluation ----
         # Same T as this epoch's training step - baseline/test loss should reflect the
         # temperature the model was actually just trained at, not a fresh a(0).
-        avg_test_loss = _evaluate_upper_model(
-            model, test_loader, feature_offset, criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
-            compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha, device, max_N,
-            T=epoch_T, amp_dtype=amp_dtype, use_amp=use_amp,
-        )
-        test_losses.append(avg_test_loss)
-        print(f"Epoch {epoch+1:02d}: Train {avg_train_loss:.5f} | Test {avg_test_loss:.5f} | time = {time.time()-start:.1f}s")
+        label = f"{epoch+1}.{checks_per_epoch}" if checks_per_epoch > 1 else f"{epoch+1}"
+        avg_test_loss, stop = _fit_check(label, epoch_T, verbose=True,
+                                         running_train_loss=(running_train_loss - win_loss0) / max(N - win_N0, 1))
+        print(f"Epoch {epoch+1:02d}: Train {avg_train_loss:.5f} (running, train mode) | Test {avg_test_loss:.5f} | time = {time.time()-start:.1f}s")
+        if stop:
+            break
 
-        if avg_test_loss < best_test_loss:
-            print(f"New best test loss: {avg_test_loss:.5f} (improvement of {(best_test_loss-avg_test_loss)/best_test_loss*100:.2f}%) Saving model.")
-            best_test_loss = avg_test_loss
-            best_epoch = epoch + 1
-            torch.save(model.state_dict(), str(TEMP_MODELS_DIR / 'temp_upper_train.pt'))
-            if DictFilePath is not None:
-                log_text = _read_text_file(log_path)
-                model.save(
-                    DictFilePath,
-                    config_yaml=config_yaml,
-                    processing_yaml=processing_yaml,
-                    training_yaml=training_yaml,
-                    stats=stats,
-                    log_text=log_text,
-                )
-            early_stopping_counter = 0
-        else:
-            early_stopping_counter += 1
-            print(f"No improvement. Counter: {early_stopping_counter}/{early_stopping_patience}")
-            if early_stopping_counter >= early_stopping_patience:
-                break
-            
         wrappedScheduler.step_epoch(avg_test_loss) # Step scheduler if it's epoch-based (Does nothing if it's batch-based)
-
-        #ADAPTIVE DROPOUT / NOISE (noise reacts only when dropout is maxed/floored out and can't respond)
-        if avg_test_loss > avg_train_loss * 1.02:
-            anyDropout = False
-            if min(dropout_rate + dropout_step_up, max_drop) > dropout_rate:
-                old_drop = dropout_rate
-                dropout_rate = min(dropout_rate + dropout_step_up, max_drop)
-                for module in _iter_adaptive_dropout_modules(model):
-                    module.p = dropout_rate
-                    anyDropout  = True
-                if anyDropout:
-                    print(f"Overfitting. Increasing Dropout: {old_drop} -> {dropout_rate}")
-            else:
-                old_noise = noise
-                noise = noise + noise_step_up
-                print(f"Overfitting, but dropout_rate is at the maximum: {dropout_rate}. Increasing noise instead: {old_noise} -> {noise}")
-
-
-        elif avg_test_loss < avg_train_loss:
-            anyDropout = False
-            if max(dropout_rate - dropout_step_down, 0) < dropout_rate:
-                old_drop = dropout_rate
-                dropout_rate = max(dropout_rate - dropout_step_down, 0)
-                for module in _iter_adaptive_dropout_modules(model):
-                    module.p = dropout_rate
-                    anyDropout  = True
-                if anyDropout:
-                    print(f"Underfitting. Decreasing Dropout: {old_drop}->{dropout_rate}")
-
-            else:
-                old_noise = noise
-                noise = max(noise - noise_step_down, 0)
-                print(f"Underfitting, but dropout_rate is at the minimum: {dropout_rate}. Decreasing noise instead: {old_noise} -> {noise}")
 
         gc.collect()
 
@@ -1072,5 +1236,5 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     if best_epoch == 0:
         print(f"Best Test Loss: {best_test_loss:.5f} was the pre-training baseline; no epoch improved on it.")
     else:
-        print(f"Best Test Loss: {best_test_loss:.5f} at epoch {best_epoch}")
+        print(f"Best Test Loss: {best_test_loss:.5f} at {'check (epoch.check)' if checks_per_epoch > 1 else 'epoch'} {best_epoch}")
     return best_test_loss

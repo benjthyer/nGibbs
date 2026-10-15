@@ -636,17 +636,29 @@ class AffinityModel(ContinuousModel):
     has to know that a model declares one. Per cell, in units of c (u = y_hat/c,
     t = y/c):
 
-        trusted   : (u - t)^2
+        trusted   : (u - t)^2  [+ present_weight * relu(min(t, present_margin) - u)^2  if t > 0]
         untrusted : hinge_weight * relu(u + margin)^2 + pull_weight * (u - t)^2
 
     where an untrusted cell is a NaN sentinel or a low-slope-filtered one, and its
     target is the -c placeholder (t = -1): the phase is known absent, only its distance
     from saturation is not.
+
+    The present-side hinge mirrors the untrusted one. Where presence is ambiguous, MSE
+    returns the conditional mean, and with absent labels reaching down to -c against
+    present ones of a few hundredths of c that mean sits below zero: a systematic
+    present->absent miss (precision/recall cross near u = -0.05 for most phases; see
+    scripts/affinity_threshold_sweep.py). The hinge makes undershooting a present cell
+    cost more than overshooting it, which lifts that mean. Its threshold is
+    min(t, present_margin) rather than present_margin alone so it never pulls against
+    the regression term: an isolated present cell is still minimised exactly at u = t,
+    so trace masses are not inflated toward the margin. Off (weight 0) by default, so
+    checkpoints trained before it existed load and score unchanged.
     """
 
     def __init__(self, affinity_c=None, affinity_eps: float = 0.02,
                  affinity_margin: float = 0.5, affinity_hinge_weight: float = 1.0,
-                 affinity_pull_weight: float = 0.05, **kwargs):
+                 affinity_pull_weight: float = 0.05, affinity_present_margin: float = 0.03,
+                 affinity_present_weight: float = 0.0, **kwargs):
         super().__init__(**kwargs)
         ml_indexer = kwargs.get('ml_indexer')
         c = _coerce_float_list(affinity_c)
@@ -665,12 +677,16 @@ class AffinityModel(ContinuousModel):
         self.affinity_margin = float(affinity_margin)
         self.affinity_hinge_weight = float(affinity_hinge_weight)
         self.affinity_pull_weight = float(affinity_pull_weight)
+        self.affinity_present_margin = float(affinity_present_margin)
+        self.affinity_present_weight = float(affinity_present_weight)
         self.register_buffer('aff_c', torch.tensor(c, dtype=torch.float32).reshape(1, -1))
         self.config.update(model_class='AffinityModel', affinity_c=c,
                            affinity_eps=self.affinity_eps,
                            affinity_margin=self.affinity_margin,
                            affinity_hinge_weight=self.affinity_hinge_weight,
-                           affinity_pull_weight=self.affinity_pull_weight)
+                           affinity_pull_weight=self.affinity_pull_weight,
+                           affinity_present_margin=self.affinity_present_margin,
+                           affinity_present_weight=self.affinity_present_weight)
 
     # ------------------------------------------------------------------ activation
     def _mole_activation(self, g):
@@ -708,7 +724,14 @@ class AffinityModel(ContinuousModel):
             mask = mask.to(torch.bool)
             sq = (u - t) ** 2
             hinge = torch.relu(u + self.affinity_margin) ** 2
-            per = torch.where(mask, sq,
+            trusted = sq
+            if self.affinity_present_weight:
+                present = mask & (t > 0)
+                floor = torch.clamp(t, max=self.affinity_present_margin)
+                p_hinge = torch.relu(floor - u) ** 2
+                trusted = sq + self.affinity_present_weight * torch.where(
+                    present, p_hinge, torch.zeros_like(p_hinge))
+            per = torch.where(mask, trusted,
                               self.affinity_hinge_weight * hinge + self.affinity_pull_weight * sq)
             w = (torch.ones_like(per) if phase_weights is None
                  else phase_weights.float().expand_as(per))

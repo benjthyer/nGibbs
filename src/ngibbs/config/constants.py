@@ -38,6 +38,9 @@ TYPE_CONVERSION_MAP = {
     'dropout_step_down': float,
     'noise_step_up': float,
     'noise_step_down': float,
+    'val_checks_per_epoch': int,
+    'overfit_ratio': float,
+    'underfit_ratio': float,
 }
 
 # Training numeric precision -- flip this to compare training/inference cost against

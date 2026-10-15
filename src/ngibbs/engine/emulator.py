@@ -69,7 +69,7 @@ class NN_MELTS:
 
         Parameters
         ----------
-        model : MidLevelNetwork or ContinuousModel
+        model : MidLevelNetwork, ContinuousModel or AffinityModel
             The neural network model with attached ml_indexer. Both architectures emit
             raw, NON mass-balanced component moles through an identical
             `forward(detailed=True)` 7-tuple -- this wrapper is the sole owner of the
@@ -90,8 +90,8 @@ class NN_MELTS:
             uses, so a low-abundance phase is not corrected by an absolute amount that is
             relatively enormous.
         """
-        if type(model).__name__ not in ('MidLevelNetwork', 'ContinuousModel'):
-            raise TypeError(f"Model must be MidLevelNetwork or ContinuousModel, got {type(model)}")
+        if type(model).__name__ not in ('MidLevelNetwork', 'ContinuousModel', 'AffinityModel'):
+            raise TypeError(f"Model must be MidLevelNetwork, ContinuousModel or AffinityModel, got {type(model)}")
         if not hasattr(model, 'ml_indexer') or model.ml_indexer is None:
             raise ValueError("Model must have an attached ml_indexer")
         if mass_balance not in _MASS_BALANCE_MODES:
