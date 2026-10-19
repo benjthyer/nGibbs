@@ -249,8 +249,6 @@ class _Geometry:
         self.ox_lo = torch.tensor([b[0] for b in ox], dtype=f32, device=dev)
         self.ox_hi = torch.tensor([b[1] for b in ox], dtype=f32, device=dev)
 
-        leak = float(getattr(self.model, 'mole_activation_leak', 0.05) or 1e-6)
-        self.leak = leak
         self.model.eval()
 
     # ---- conversions ---------------------------------------------------------
@@ -290,8 +288,11 @@ class _Geometry:
 
     def network(self, P, T, x):
         """Run the network body. Returns (componentMoles_raw, chem_out, g)."""
-        cm, chem, m, _pm, _pp = self.model.network_component_moles(self.norm_inputs(P, T, x))
-        g = m if self.is_affinity else torch.where(m >= 0, m, m / self.leak)
+        cm, chem, g, _pm, _pp = self.model.network_component_moles(self.norm_inputs(P, T, x))
+        if self.is_affinity:
+            # The activated affinity at the default eps: same sign as g and, unlike the
+            # eps = 0 reporting form, keeps a gradient for a deeply-absent phase.
+            g = self.model._mole_activation(g)
         return cm, chem, g
 
     def phase_fractions(self, cm):

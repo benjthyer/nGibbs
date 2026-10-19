@@ -1,10 +1,10 @@
 dataset:
   MELTSModel: '120' 
   Date: October14
-  Mode: closedCrSedIgFxBatch
+  Mode: closedNoCrSedIgFxBatch
   subset: false
   use_external: false
-outname: 120ClosedFxBatch_Cr_NPT
+outname: 120ClosedFxBatch_NoCr_NPT
 featureNames:
   - 'Pressure(System_main)'
   #- 'S(System_main) / mass(System_main)'
@@ -22,7 +22,7 @@ preprocessing:
   separate_analcime: false
   separate_feldspar: true
   excluded_oxides: []
-min_phase_proportion: 0.002
+min_phase_proportion: 0.001
 upsampling:
   enabled: false
   phases:

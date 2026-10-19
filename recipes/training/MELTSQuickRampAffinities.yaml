@@ -31,7 +31,7 @@
 #       --config recipes/training/HeFESTotuneyContinuousLight.yaml
 ####################################################################################
 
-tarname: 120ClosedFxBatch_Cr_NPT  # loads <tarname>_Train.tar.gz / _Test.tar.gz
+tarname: 120ClosedFxBatch_NoCr_NPT  # loads <tarname>_Train.tar.gz / _Test.tar.gz
 warm_start: None # 120SedIgClosed_Cr_NPT_train1e
 
 encoderLayerUp: 3
@@ -43,8 +43,10 @@ moleBranchBase: 32
 chemBranchBase: 64
 
 
-encoder_regularization: 0.0layernormdropout0.3
-mole_regularization: 0.0dropout0.3
+
+dropout: 0.0dropout0.3            # shared: initial rate, max. Encoder + mole heads.
+encoder_regularization: layernorm # normalization only: none | layernorm | batchnorm
+mole_regularization: none
 lowWD: 0.001
 highWD: 0.001
 dropout_step_up: 0.005
@@ -123,6 +125,8 @@ phase_weights:                 # one weight per phase, applied to binary + mole 
   muscovite: 4
   nepheline: 4
   spinel: 2
+  graphite: 2
+  calcite: 5
 
 
 train1: #encoder geometry, base width, norm choice. dropout stays off.

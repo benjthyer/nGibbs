@@ -31,8 +31,8 @@
 #       --config recipes/training/HeFESTotuneyContinuousLight.yaml
 ####################################################################################
 
-tarname: 102OpenFxBatch_Cr_NPT   # loads <tarname>_Train.tar.gz / _Test.tar.gz
-warm_start: 102OpenFxBatch_Cr_NPT_train3 # 120SedIgClosed_Cr_NPT_train1e
+tarname: 120ClosedFxBatch_NoCr_NPT   # loads <tarname>_Train.tar.gz / _Test.tar.gz
+warm_start: 120ClosedFxBatch_NoCr_NPT_train2 # 120SedIgClosed_Cr_NPT_train1e
 
 encoderLayerUp: 3
 encoderLayerDown: 2
@@ -43,8 +43,9 @@ moleBranchBase: 32
 chemBranchBase: 64
 
 
-encoder_regularization: 0.0layernormdropout0.3
-mole_regularization: 0.0dropout0.3
+dropout: 0.0dropout0.3            # shared: initial rate, max. Encoder + mole heads.
+encoder_regularization: layernorm # normalization only: none | layernorm | batchnorm
+mole_regularization: none
 lowWD: 0.001
 highWD: 0.001
 dropout_step_up: 0.005
@@ -75,7 +76,7 @@ affinity_margin: 0.5         # hinge: penalize y_hat/c > -margin
 affinity_hinge_weight: 0.25
 affinity_pull_weight: 0.05   # weak pull toward the -c placeholder
 affinity_present_margin: 0.03  # present-side hinge: penalize y_hat/c < min(y/c, margin)
-affinity_present_weight: 2.0   # 0 = off; counters the present->absent offset near u = 0
+affinity_present_weight: 3.0   # 0 = off; counters the present->absent offset near u = 0
 
                             # chem head); tune1 below searches whether a hidden layer helps
 head_order: parallel    # mole heads see the endmember fractions; 'parallel' to decouple
@@ -123,9 +124,40 @@ phase_weights:                 # one weight per phase, applied to binary + mole 
   muscovite: 4
   nepheline: 4
   spinel: 2
+  alloy-solid: 5
+  graphite: 2
+  calcite: 5
+
+
+train3:
+  strategy: full
+  which_heads_to_freeze: []
+  epochs: 120
+  # Fit checks: validate + step adaptive dropout 4x per epoch (3 in-epoch, 1 at the end),
+  # on Test / eval-mode-Train. Dead band [0.97, 1.05] is the code default. Steps are per
+  # check; recovering (down) is 5x slower than the overfitting penalty (up).
+  val_checks_per_epoch: 4
+  dropout_step_up: 0.001
+  dropout_step_down: 0.0002
+  learning_rate: 1e-4
+  early_stopping_patience: 15
+  max_N: null
+  boundary_temperature:
+    enabled: False
+    # a_start: 1.0
+    # a_end: 5.0e-2
+  scheduler:
+    type: CosineAnnealingLR
+    args:
+      T_max: 5
+
+
 
 train4:
   strategy: full
+  dropout: 0.001dropout0.3            # shared: initial rate, max. Encoder + mole heads.
+  encoder_regularization: layernorm # normalization only: none | layernorm | batchnorm
+  mole_regularization: none
   which_heads_to_freeze: []
   # batch_size: 16384
   epochs: 120

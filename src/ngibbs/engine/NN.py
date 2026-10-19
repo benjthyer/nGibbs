@@ -1411,6 +1411,11 @@ def load_model_from_zip(zip_path, substitutions=None, low_only=False, epsilon = 
 
 
 def _load_matching_state_dict(model, saved_state_dict, load_prefixes=None):
+    # A model whose layer layout has changed since older checkpoints were written
+    # remaps them first (ContinuousModel: always-present Dropout layers).
+    upgrade = getattr(model, 'upgrade_state_dict', None)
+    if upgrade is not None:
+        saved_state_dict = upgrade(saved_state_dict)
     model_dict = model.state_dict()
     filtered_dict = {}
     for key, value in saved_state_dict.items():

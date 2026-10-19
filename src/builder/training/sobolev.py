@@ -84,6 +84,8 @@ from builder.training.benchmark import ThroughputBenchmark
 from builder.training.trainer import (
     TEMP_MODELS_DIR, _make_train_loader, _read_text_file, _regularization_spec,
     _resolve_heads_to_freeze, _set_adaptive_dropout_rate, _iter_adaptive_dropout_modules,
+    _record_dropout_state, _describe_adaptive_dropout, _resolve_train_params,
+    _activation_params, _required_boundary_temperature, BOUNDARY_TEMPERATURE_DEFAULTS,
     _upper_forward, _upper_loss, symmetric_rel_l2, _mole_targets,
     _anneal_a, _boundary_T, _print_histogram,
     _accumulate_presence_counts, _print_presence_precision_recall,
@@ -207,7 +209,7 @@ def _evaluate_sobolev(model, test_loader, feature_offset, criterion_sat, criteri
                       sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
                       dndp_alpha, dndt_alpha, deriv_scale, feat_idx, ranges,
                       device, max_N=np.inf, project_tangent=True, huber_delta=3.0, T=None,
-                      verbose=True):
+                      verbose=True, act_params=None):
     """`verbose=False`: scalar loss only -- see trainer._evaluate_upper_model."""
     model.eval()
     tot = {k: 0.0 for k in ('loss', 'sat', 'chem', 'mole', 'bulk', 'dndp', 'dndt')}
@@ -225,7 +227,7 @@ def _evaluate_sobolev(model, test_loader, feature_offset, criterion_sat, criteri
         dndp_t, dndt_t = batch[_N_BASE], batch[_N_BASE + 1]
 
         with torch.no_grad():
-            out = _upper_forward(model, x_batch, b_batch, T=T)
+            out = _upper_forward(model, x_batch, b_batch, T=T, act_params=act_params)
             loss, l_sat, l_chem, l_mole, l_bulk = _upper_loss(
                 model, out, x_batch, b_batch, y_batch, m_batch, feature_offset,
                 criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
@@ -341,7 +343,8 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
                         project_tangent=True, deriv_subsample=1.0, huber_delta=3.0,
                         deriv_scale=None, row_weights=None, boundary_temperature=None,
                         val_checks_per_epoch=1, fit_train_mode='train', fit_ref_rows=None,
-                        overfit_ratio=1.02, underfit_ratio=1.0):
+                        overfit_ratio=1.02, underfit_ratio=1.0, train_params=None,
+                        carry_state=None):
     """Upper-model training with `dn/dP` and `dn/dT` supervision.
 
     Extra arguments beyond `train_Upper_MELTS`:
@@ -401,8 +404,12 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
     print(f"Derivative directions: feature[{p_idx}] (dn/dP, range {ranges[p_idx]:.4g}), "
           f"feature[{t_idx}] (dn/dT, range {ranges[t_idx]:.4g})")
 
-    upper_reg = _regularization_spec(model, 'upper')
-    if 'batchnorm' in upper_reg.lower():
+    train_params = _resolve_train_params(model, train_params)
+    act_params = _activation_params(train_params)
+    upper_reg = _regularization_spec(model, 'upper', train_params)
+    norms = ' '.join(str(model.config.get(k, '')) for k in
+                     ('encoder_regularization', 'mole_regularization'))
+    if 'batchnorm' in (upper_reg + ' ' + norms).lower():
         print("WARNING: batchnorm under forward-mode AD makes each row's tangent depend on "
               "the rest of the batch, which is not a property the physics has. Prefer "
               "layernorm for derivative episodes.")
@@ -411,12 +418,13 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
         print(f"dropout in {upper_reg}: {dropout_rate} -> {max_drop}. Note each derivative "
               f"direction is a separate forward and so draws its own mask; consider 0.")
         _set_adaptive_dropout_rate(model, dropout_rate)
+        print(f"Adaptive dropout: {_describe_adaptive_dropout(model)}")
     else:
         dropout_rate = max_drop = 0
 
-    noise = model.config['noise']
-    optimizer = create_optimizer(model, lr=lr, highWD=model.config['highWD'],
-                                 lowWD=model.config['lowWD'], amsgrad=amsgrad, eps=eps)
+    noise = train_params['noise']
+    optimizer = create_optimizer(model, lr=lr, highWD=train_params['highWD'],
+                                 lowWD=train_params['lowWD'], amsgrad=amsgrad, eps=eps)
     wrappedScheduler = create_scheduler(optimizer, scheduler, **scheduler_kwargs) \
         if scheduler else SchedulerWrapper()
 
@@ -447,9 +455,10 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
         deriv_scale = torch.as_tensor(np.asarray(deriv_scale, dtype=np.float32))
 
     # --- Boundary-temperature annealing (see NN_continuous.py's upper_forward) ---
+    boundary_temperature = _required_boundary_temperature(model, boundary_temperature)
     if boundary_temperature:
-        a_start = float(boundary_temperature.get('a_start', 1.0))
-        a_end = float(boundary_temperature.get('a_end', 1e-4))
+        a_start = float(boundary_temperature.get('a_start', BOUNDARY_TEMPERATURE_DEFAULTS['a_start']))
+        a_end = float(boundary_temperature.get('a_end', BOUNDARY_TEMPERATURE_DEFAULTS['a_end']))
         print(f"[boundary_temperature] enabled: a {a_start:.3e} -> {a_end:.3e} over {Epochs} epochs")
     else:
         a_start = a_end = None
@@ -464,7 +473,7 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
         model, loader, feature_offset, criterion_sat, criterion_chem, criterion_mole,
         criterion_bulk, compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha,
         bulk_alpha, dndp_alpha, dndt_alpha, deriv_scale, feat_idx, ranges, device, max_N,
-        project_tangent, huber_delta, T=T, verbose=verbose)
+        project_tangent, huber_delta, T=T, verbose=verbose, act_params=act_params)
 
     print("Evaluating baseline (pre-training) model on validation set...")
     best_test_loss = ev(_epoch_T(0))
@@ -498,6 +507,7 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
                   f"(improvement of {(best_test_loss-avg_test_loss)/best_test_loss*100:.2f}%) Saving model.")
             best_test_loss = avg_test_loss
             best_epoch = label
+            _record_dropout_state(model, 'upper', dropout_rate, noise, train_params, carry_state)
             torch.save(model.state_dict(), str(TEMP_MODELS_DIR / 'temp_upper_sobolev.pt'))
             if DictFilePath is not None:
                 model.save(DictFilePath, config_yaml=config_yaml,
@@ -554,7 +564,7 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
             else:
                 x_noisy = x_batch
 
-            out = _upper_forward(model, x_noisy, b_batch, T=epoch_T)
+            out = _upper_forward(model, x_noisy, b_batch, T=epoch_T, act_params=act_params)
             loss, l_sat, l_chem, l_mole, l_bulk = _upper_loss(
                 model, out, x_noisy, b_batch, y_batch, m_batch, feature_offset,
                 criterion_sat, criterion_chem, criterion_mole, criterion_bulk,

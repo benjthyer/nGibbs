@@ -7,8 +7,8 @@ offset at the boundary (a curve crossing that would sit at tau != 0) rather than
 capacity or label-noise problem (curves that never meet). Diagnostic only: tau is not a
 knob a deployed model can use, since m is a real molar abundance above zero.
 
-`m` is the signed mole-head output from `network_component_moles` -- y_hat for an
-AffinityModel, leaky_relu(g) for a ContinuousModel -- and c is the per-phase affinity
+`m` is the signed mole-head output -- y_hat (the activated affinity) for an
+AffinityModel, the raw mole-head output g for a ContinuousModel -- and c is the per-phase affinity
 scale: the model's own `aff_c` for an AffinityModel, otherwise the Test bundle's cStats
 (falling back to ml_indexer.T0 when the bundle has none) so a ContinuousModel scored on
 the same bundle reads on the same axis. Ground truth is the bundle's binary labels.
@@ -98,7 +98,9 @@ def sweep(model, X, B, c, taus, device, batch_size):
     for i in range(0, X.shape[0], batch_size):
         x = X[i:i + batch_size].to(device, non_blocking=True)
         truth = (B[i:i + batch_size].to(device) > 0.5).unsqueeze(-1)
-        _, _, m, _, _ = model.network_component_moles(x)
+        _, _, m, _, _ = model.network_component_moles(x)   # raw g
+        if hasattr(model, '_mole_activation'):                 # AffinityModel: y_hat
+            m = model._mole_activation(m)
         u = m.float().unsqueeze(-1) / c_t
         pred = u > tau_t
         tp += (pred & truth).sum(0)

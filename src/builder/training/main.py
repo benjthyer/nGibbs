@@ -31,7 +31,9 @@ import ngibbs.engine.NN as NN
 from builder.training.loadTrainData import load_ML_data, load_ML_data_auto, load_ML_test_affinity
 from builder.training.affinity_targets import AffinityTargets, check_phase_order
 from builder.training.optimizer_factory import normalize_scheduler_name
-from builder.training.trainer import train_Lower_MELTS, train_Upper_MELTS, symmetric_rel_l1, symmetric_rel_l2
+from builder.training.trainer import (train_Lower_MELTS, train_Upper_MELTS, symmetric_rel_l1,
+                                      symmetric_rel_l2, TRAIN_PARAM_DEFAULTS,
+                                      BOUNDARY_TEMPERATURE_DEFAULTS)
 from builder.training.sobolev import train_Upper_Sobolev
 from builder.training.tuners import tune_Lower_MELTS, tune_Upper_MELTS
 from builder.training.logger import setup_training_logger, redirect_output, restore_output
@@ -64,6 +66,35 @@ def _sync_canonical_indexer(model, ml_indexer):
     if hasattr(model, 'molar_epsilon'):
         model.molar_epsilon.fill_(float(ml_indexer.molar_epsilon))
     return model
+
+
+def _carry_regularization_specs(config, model):
+    """Copy the model's regularization specs into the global config, so old-style combined
+    specs ('0.0layernormdropout0.3') are replaced by the model's normalisation-only form
+    once their dropout has been taken into the `dropout` training setting
+    (_block_dropout). For MidLevelNetwork this also carries its combined spec, which the
+    trainer rewrites to the adaptive rate. An episode block that sets a spec still wins."""
+    for which, default in (('upper', 'high_regularization'), ('lower', 'low_regularization')):
+        key = getattr(model, f'{which}_regularization_config_key', None) or default
+        if key in model.config:
+            config[key] = model.config[key]
+    return config
+
+
+def _block_dropout(block):
+    """The dropout training setting a config block asks for, or None if it says nothing
+    about dropout: its `dropout:` key, or the dropout numbers of an old-style combined
+    `encoder_regularization`/`mole_regularization` spec (which win, see
+    split_regularization)."""
+    from ngibbs.engine.NN_continuous import split_regularization
+    from ngibbs.utils.string_utils import pull_letter
+    legacy = any('dropout' in pull_letter(str(block.get(k, ''))).lower()
+                 for k in ('encoder_regularization', 'mole_regularization'))
+    if block.get('dropout') is None and not legacy:
+        return None
+    return split_regularization(block.get('encoder_regularization', 'none'),
+                                block.get('mole_regularization', 'none'),
+                                block.get('dropout'))[2]
 
 
 def _any_episode_wants_derivatives(config):
@@ -140,8 +171,8 @@ def _boundary_temperature_settings(episode_cfg):
     if not enabled:
         return {}
     return {'boundary_temperature': {
-        'a_start': float(cfg.get('a_start', 1.0)),
-        'a_end': float(cfg.get('a_end', 1e-4)),
+        'a_start': float(cfg.get('a_start', BOUNDARY_TEMPERATURE_DEFAULTS['a_start'])),
+        'a_end': float(cfg.get('a_end', BOUNDARY_TEMPERATURE_DEFAULTS['a_end'])),
     }}
 
 
@@ -197,9 +228,6 @@ def _reconcile_affinity_model(model, targets):
               "overwriting the model's c with the data's.")
         model.aff_c.copy_(c_data.to(model.aff_c.device))
         model.config['affinity_c'] = targets.c.tolist()
-    if abs(model.affinity_eps - targets.params['eps']) > 1e-12:
-        raise ValueError(f"Model affinity_eps={model.affinity_eps} but the targets were "
-                         f"activated with eps={targets.params['eps']}; make them agree.")
 
 
 def _affinity_settings(config):
@@ -678,11 +706,11 @@ def main() -> None:
             affinity=affinity_targets, only_VP=only_vp)
         # What AffinityModel reads when its config carries no affinity_c (a fresh model).
         ml_indexer.affinity_c = affinity_targets.c.tolist()
-        config.setdefault('affinity_eps', affinity_targets.params['eps'])
     else:
         test_set, test_ml_indexer = load_ML_data(test_bundle, only_VP=only_vp,
                                    feature_normalizer=ml_indexer.feature_normalizer,
-                                   with_derivatives=True if _wants_derivs else False)
+                                   with_derivatives=True if _wants_derivs else False,
+                                   compute_missing_T0=True)
 
     # T0 (per-phase vanishing-abundance scale, see NN_continuous.py's upper_forward) is
     # cheap to approximate from either split -- Train and Test are generated the same way
@@ -691,7 +719,8 @@ def main() -> None:
     # whenever it has one; Test is only a fallback, never an override, so a real Train T0
     # is never silently replaced by a differently-distributed Test one.
     if getattr(ml_indexer, 'T0', None) is None and getattr(test_ml_indexer, 'T0', None) is not None:
-        print("Train bundle has no T0; falling back to Test bundle's T0.")
+        print("Train bundle has no T0; using the validation set's (saved with every checkpoint "
+              "via ml_indexer).")
         ml_indexer.T0 = test_ml_indexer.T0
 
     print(f"MOLAR EPSILON FROM LOADED DATA: {ml_indexer.molar_epsilon}")
@@ -701,12 +730,21 @@ def main() -> None:
     # Apply type conversions to config using centralized mapping
     config = apply_type_conversions(config, TYPE_CONVERSION_MAP)
 
+    # Training settings (weight decay, noise, affinity loss weights) belong to the recipe,
+    # never to a checkpoint: keep the recipe's values through the warm-start merge below.
+    # (ContinuousModel/AffinityModel no longer record them; MidLevelNetwork still does.)
+    recipe_dropout = _block_dropout(config)
+    if recipe_dropout is not None:
+        config['dropout'] = recipe_dropout
+    recipe_train_params = {k: config[k] for k in TRAIN_PARAM_DEFAULTS if k in config}
+
     if warm_start.lower() != 'none':
         best_model = NN.rebuild_MELTS_model(Path(__file__).parent / config['checkpoints']['load_dir'] / (warm_start + '.tar'),
                                             epsilon=ml_indexer.molar_epsilon) # Override default epsilon with training data value so model initializes appropriately
         _sync_canonical_indexer(best_model, ml_indexer)
         # Warm-start config becomes the global baseline for subsequent episodes.
         config = _deep_update(config, deepcopy(best_model.config))
+        config.update(recipe_train_params)
         config = apply_type_conversions(config, TYPE_CONVERSION_MAP)
         print(f"Loaded warm-start config baseline from: {warm_start}")
     else:
@@ -715,9 +753,15 @@ def main() -> None:
         modelArgs = _model_args_for(model_class)
         model_config = {key: val for key, val in deepcopy(config).items() if key in modelArgs}
         best_model = model_class(**model_config, ml_indexer=ml_indexer)
+        config = _carry_regularization_specs(config, best_model)
 
     if affinity_on:
         _reconcile_affinity_model(best_model, affinity_targets)
+    if getattr(best_model, 'requires_boundary_temperature', False):
+        if getattr(ml_indexer, 'T0', None) is None:
+            raise ValueError(f"{type(best_model).__name__} trains with boundary temperature T = a*T0, "
+                             f"but neither {train_bundle} nor {test_bundle} yields a T0.")
+        if (np.asarray(ml_indexer.T0) == 0).any(): raise ValueError("The training dataset contains an empty column!")
 
     # State for sequential episodes
     best_loss = None
@@ -739,6 +783,16 @@ def main() -> None:
         # Apply type conversions to episode config
         episode_cfg = apply_type_conversions(episode_cfg, TYPE_CONVERSION_MAP)
     
+        # Train episodes start from the latest episode-best checkpoint (including when the
+        # previous episode was tuning). This must happen BEFORE the episode's model config
+        # is applied below; reloading afterwards silently discarded every model setting
+        # in a train block (e.g. `dropout:`) whenever a previous checkpoint existed.
+        if (episode_type == 'train' and _stage_allowed(args.stage, episode_type)
+                and last_best_model_path is not None and last_best_model_path.exists()):
+            print(f"Loading latest episode-best checkpoint: {last_best_model_path}")
+            best_model = NN.rebuild_MELTS_model(str(last_best_model_path), epsilon=ml_indexer.molar_epsilon)
+            _sync_canonical_indexer(best_model, ml_indexer)
+
         # === Apply episode-specific model configuration ===
         # Whatever class the running model actually is -- a warm start reloads its own
         # type via the config's `model_class`, so this follows the checkpoint.
@@ -769,12 +823,15 @@ def main() -> None:
             full_model_config.update(new_model_config)
             full_model_config = {k: v for k, v in full_model_config.items() if k in modelArgs}
             new_model = model_class(**full_model_config, ml_indexer=ml_indexer)
-            # Try to load weights from previous model (strict=False allows for architecture changes)
-            try:
-                new_model.load_state_dict(best_model.state_dict(), strict=False)
-                print(f"Loaded compatible weights from previous episode")
-            except Exception as e:
-                print(f"Could not load weights from previous episode: {e}")
+            # Carry over every weight whose name and shape still match. (A bare
+            # load_state_dict(strict=False) raises on any shape mismatch -- e.g. a resized
+            # mole head -- and the old except-branch then trained a fully fresh model.)
+            old_sd, new_sd = best_model.state_dict(), new_model.state_dict()
+            NN._load_matching_state_dict(new_model, old_sd)
+            kept = [k for k in new_sd if k in old_sd and old_sd[k].shape == new_sd[k].shape]
+            fresh = sorted({k.split('.')[0] for k in new_sd if k not in kept})
+            print(f"Carried over {len(kept)}/{len(new_sd)} tensors from the previous model; "
+                  f"freshly initialised parts: {fresh or 'none'}")
             best_model = new_model
 
         if not _stage_allowed(args.stage, episode_type):
@@ -817,6 +874,21 @@ def main() -> None:
             overfit_ratio=float(episode_cfg.get("overfit_ratio", 1.02)),
             underfit_ratio=float(episode_cfg.get("underfit_ratio", 1.0)),
         )
+
+        # How this episode trains (not what the model is) -- see trainer.TRAIN_PARAM_DEFAULTS.
+        train_params = {k: episode_cfg[k] for k in TRAIN_PARAM_DEFAULTS
+                        if episode_cfg.get(k) is not None}
+        episode_dropout = _block_dropout(episode_cfgI)
+        if episode_dropout is not None:
+            train_params['dropout'] = episode_dropout
+        if affinity_on:
+            # The labels were activated with this eps; the training activation must match.
+            label_eps = affinity_targets.params['eps']
+            if float(train_params.get('affinity_eps', label_eps)) != float(label_eps):
+                print(f"[affinity] affinity_eps={train_params['affinity_eps']} ignored: using the "
+                      f"affinity block's eps={label_eps}, which built the labels.")
+            train_params['affinity_eps'] = label_eps
+        carry_state = {}  # dropout/noise at this episode's best checkpoint (trainer fills it)
 
         binWeights, compWeights = _build_phase_weights(ml_indexer, episode_cfg)
         which_heads_to_freeze = episode_cfg.get('which_heads_to_freeze', None)
@@ -916,7 +988,7 @@ def main() -> None:
             #Strategy determines which heads are frozen, which part of model is trained
             try:
                 if strategy == 'lower': # No phase weighting implemented for lower model training...
-                    model, tune_results = tune_Lower_MELTS(
+                    model, tune_results, tuned_tp = tune_Lower_MELTS(
                         Model=best_model,
                         trainData=train_set,
                         testData=test_set,
@@ -934,6 +1006,7 @@ def main() -> None:
                         dropout_step_down=dropout_step_down,
                         noise_step_up=noise_step_up,
                         noise_step_down=noise_step_down,
+                        train_params=train_params,
                     )
                     tuned_best_loss = _best_loss_from_tune_results(tune_results)
                     if tuned_best_loss is not None:
@@ -943,7 +1016,7 @@ def main() -> None:
                     _dkw.update(_boundary_temperature_settings(episode_cfg))
                     _dkw.update(fit_check_kw)
                     _dkw.update(criteria)   # tune trials previously ignored loss types entirely
-                    model, tune_results = tune_Upper_MELTS(
+                    model, tune_results, tuned_tp = tune_Upper_MELTS(
                         train_fn=_train_fn,
                         train_fn_kwargs=_dkw,
                         Model=best_model,
@@ -972,6 +1045,7 @@ def main() -> None:
                         dropout_step_down=dropout_step_down,
                         noise_step_up=noise_step_up,
                         noise_step_down=noise_step_down,
+                        train_params=train_params,
                     )
                     tuned_best_loss = _best_loss_from_tune_results(tune_results)
                     if tuned_best_loss is not None:
@@ -983,6 +1057,10 @@ def main() -> None:
 
                 #Save tuned configs to global!
                 config = _deep_update(config, best_model.config) # Update global config with episode-specific config (including tuned params) for next episode to inherit
+                # Tuned training settings carry forward too (only the ones this episode tuned,
+                # so an episode block's one-off setting does not leak into later episodes).
+                config.update({k: v for k, v in tuned_tp.items()
+                               if k in episode_cfg['tune_params'] or k in ('dropout', 'noise')})
 
                 # Save model to DictFilePath
                 log_text = _read_text_file(Path(log_path)) if log_path else None
@@ -1002,12 +1080,7 @@ def main() -> None:
 
         else:
             # ===== TRAINING EPISODE =====
-            # Always initialize training from latest episode-best checkpoint,
-            # including when the previous episode was tuning.
-            if last_best_model_path is not None and last_best_model_path.exists():
-                print(f"Loading latest episode-best checkpoint: {last_best_model_path}")
-                best_model = NN.rebuild_MELTS_model(str(last_best_model_path), epsilon=ml_indexer.molar_epsilon)
-                _sync_canonical_indexer(best_model, ml_indexer)
+            # (Latest episode-best checkpoint was loaded at the top of the episode.)
 
             # Set up logging
             logger = setup_training_logger(str(log_dir), episode_key, args.command)
@@ -1040,6 +1113,8 @@ def main() -> None:
                         processing_yaml=processing_yaml_text,
                         stats=stats_text,
                         log_path=log_path,
+                        train_params=train_params,
+                        carry_state=carry_state,
                     )
                 else:
                     #raise ValueError('This temporary config works on lower model only')
@@ -1079,7 +1154,9 @@ def main() -> None:
                         stats=stats_text,
                         log_path=log_path,
                         eps=eps,
-                        amsgrad=amsgrad
+                        amsgrad=amsgrad,
+                        train_params=train_params,
+                        carry_state=carry_state,
                     )
                 
                 # train_Lower_MELTS/train_Upper_MELTS only call model.save() when an
@@ -1092,6 +1169,9 @@ def main() -> None:
                     _sync_canonical_indexer(best_model, ml_indexer)
                     print(f"Saved trained model to {dict_filepath}")
                     last_best_model_path = dict_filepath
+                    config = _carry_regularization_specs(config, best_model)
+                    # Dropout/noise state carries through the recipe config, not the model.
+                    config.update(carry_state)
                 else:
                     print(f"No improvement in episode {episode_key}; carrying forward previous best model without a new checkpoint.")
                 

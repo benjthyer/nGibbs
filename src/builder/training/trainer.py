@@ -23,11 +23,13 @@ src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
-from ngibbs.utils.string_utils import pull_number_range
+from ngibbs.utils.string_utils import pull_number_range, _number_pattern as _DROPOUT_NUMBER
 from builder.training.optimizer_factory import create_optimizer, create_scheduler, SchedulerWrapper
 from builder.training.benchmark import ThroughputBenchmark
 from ngibbs.config import constants
 import ngibbs.engine.NN as NN
+from ngibbs.engine.NN_continuous import (AFFINITY_LOSS_DEFAULTS, ACTIVATION_TRAIN_DEFAULTS,
+                                         split_regularization)
 
 # Mixed precision: constants.TRAIN_PRECISION selects the autocast dtype. See that
 # constant's docstring in constants.py for the float32/bfloat16/float16 tradeoffs.
@@ -227,8 +229,10 @@ def _elementwise(criterion, pred, target, name):
 
 
 def _iter_adaptive_dropout_modules(model: nn.Module):
+    # MidLevelNetwork keeps its mole head out of adaptive dropout; a model that shares
+    # one rate across every part (ContinuousModel) declares an empty exclusion list.
     excluded_ids = set()
-    for attr_name in (("mole_head",)):
+    for attr_name in getattr(model, 'adaptive_dropout_exclude', ('mole_head',)):
         if hasattr(model, attr_name):
             head_module = getattr(model, attr_name)
             excluded_ids.update(id(module) for module in head_module.modules())
@@ -241,6 +245,52 @@ def _iter_adaptive_dropout_modules(model: nn.Module):
 def _set_adaptive_dropout_rate(model: nn.Module, dropout_rate: float) -> None:
     for module in _iter_adaptive_dropout_modules(model):
         module.p = dropout_rate
+
+
+def _describe_adaptive_dropout(model: nn.Module) -> str:
+    """'138 layers at p=0.01 (encoder 6, mole_head 132)': where the adapted Dropout
+    modules sit, by top-level submodule, and their current rate(s)."""
+    counts, rates = {}, set()
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Dropout) and any(module is m for m in _iter_adaptive_dropout_modules(model)):
+            top = name.split('.')[0]
+            counts[top] = counts.get(top, 0) + 1
+            rates.add(round(float(module.p), 6))
+    if not counts:
+        return "no adaptive dropout layers"
+    where = ", ".join(f"{k} {v}" for k, v in counts.items())
+    return f"{sum(counts.values())} layers at p={sorted(rates)} ({where})"
+
+
+def _with_initial_rate(spec, dropout_rate):
+    """'0.0dropout0.3' at rate 0.004 -> '0.004dropout0.3' (3 d.p.; maximum kept as
+    written). A spec without dropout is returned unchanged."""
+    if not isinstance(spec, str) or 'dropout' not in spec.lower():
+        return spec
+    rate = f"{float(dropout_rate):.3f}"
+    if len(_DROPOUT_NUMBER.findall(spec)) >= 2:
+        return _DROPOUT_NUMBER.sub(rate, spec, count=1)  # replace the leading initial value
+    return rate + spec  # 'dropout0.3' (initial implicitly 0) -> '0.004dropout0.3'
+
+
+def _record_dropout_state(model, which, dropout_rate, noise, train_params, carry_state):
+    """At a new best checkpoint, remember the live adaptive dropout rate and noise so the
+    next episode resumes from them. They go into `carry_state`, which main.py folds into
+    the recipe config -- never into the model, so a warm start cannot load them. (A
+    MidLevelNetwork, whose dropout spec is still part of its config, also has that spec
+    rewritten, as before.)"""
+    if getattr(model, 'dropout_is_training_setting', False):
+        spec = _with_initial_rate(train_params['dropout'], dropout_rate)
+    else:
+        key = _dropout_config_key(model, which)
+        spec = _with_initial_rate(model.config.get(key), dropout_rate)
+        if spec is not None:
+            model.config[key] = spec
+    if carry_state is not None:
+        if getattr(model, 'dropout_is_training_setting', False):
+            carry_state['dropout'] = spec
+        carry_state['noise'] = float(noise)
+
 
 
 # --------------------------------------------------------------------------- #
@@ -267,7 +317,7 @@ class UpperBatch(NamedTuple):
     g_phi: Optional[torch.Tensor] = None  # None for a model with no such concept (e.g. MidLevelNetwork)
 
 
-def _upper_forward(model, x_batch, b_batch, T=None) -> UpperBatch:
+def _upper_forward(model, x_batch, b_batch, T=None, act_params=None) -> UpperBatch:
     fn = getattr(model, 'upper_forward', None)
     if fn is None:
         logits, chem, chem_mask, mole, bulk = model(x_batch, binaries=b_batch, NN_only=True)
@@ -278,8 +328,11 @@ def _upper_forward(model, x_batch, b_batch, T=None) -> UpperBatch:
     # MidLevelNetwork's upper_forward (if one is ever added) isn't forced to accept an
     # argument it has no use for.
     kwargs = {'binaries': b_batch}
-    if T is not None and 'T' in inspect.signature(fn).parameters:
+    params = inspect.signature(fn).parameters
+    if T is not None and 'T' in params:
         kwargs['T'] = T
+    if act_params is not None and 'act_params' in params:
+        kwargs['act_params'] = act_params
     out = fn(x_batch, **kwargs)
     missing = {'chem', 'chem_mask', 'mole', 'bulk'} - set(out)
     if missing:
@@ -330,26 +383,33 @@ def _anneal_a(epoch, epochs, a_start=1.0, a_end=1e-4):
     return float(a_start + (a_end - a_start) * frac)
 
 
-def _boundary_T(ml_indexer, a, device, dtype=torch.float32, floor_frac=1e-6):
-    """Build this epoch's `(1, P)` annealed temperature tensor `T = a*T0`.
+BOUNDARY_TEMPERATURE_DEFAULTS = {'a_start': 1.0, 'a_end': 1e-4}
 
-    Floors `T0` itself (not just the product) at a tiny fraction of its own nonzero
-    median, so a phase this dataset never saw present (`T0=0`, see `compute_T0`)
-    doesn't produce `T=0` -> division by zero in `upper_forward`. It just gets an
-    extremely sharp, near-hard-clamp `T`, which plays no meaningful smoothing role for
-    a phase that's absent everywhere in the data anyway.
-    """
+
+def _required_boundary_temperature(model, boundary_temperature):
+    """A model that declares `requires_boundary_temperature` (ContinuousModel) has no
+    un-annealed training path: when the recipe gives no schedule (block absent or
+    `enabled: false`), use the default one rather than fail or silently train another
+    way."""
+    if boundary_temperature or not getattr(model, 'requires_boundary_temperature', False):
+        return boundary_temperature
+    print(f"[boundary_temperature] {type(model).__name__} always trains with annealed boundary "
+          f"temperature; the recipe gives no schedule, so using the default "
+          f"{BOUNDARY_TEMPERATURE_DEFAULTS}.")
+    return dict(BOUNDARY_TEMPERATURE_DEFAULTS)
+
+
+def _boundary_T(ml_indexer, a, device, dtype=torch.float32):
+    """Build this epoch's `(1, P)` annealed temperature tensor `T = a*T0`."""
     T0 = getattr(ml_indexer, 'T0', None)
     if T0 is None:
         raise ValueError(
-            "boundary_temperature is enabled but ml_indexer.T0 is missing -- re-export "
-            "this bundle (MLexporter.py computes T0 automatically) or backfill it with "
-            "scripts/compute_T0.py.")
+            "boundary temperature needs ml_indexer.T0, which is missing. main.py "
+            "computes it from the validation set when the bundles lack it; otherwise "
+            "backfill with scripts/compute_T0.py.")
     T0 = np.asarray(T0, dtype=np.float64)
-    nonzero = T0[T0 > 0]
-    floor = float(nonzero.min()) * floor_frac if nonzero.size else 1e-8
-    T0_safe = np.maximum(T0, floor)
-    T = a * T0_safe
+    if (T0 == 0).any(): raise ValueError("The training dataset contains an empty column!")
+    T = a * T0
     return torch.as_tensor(T, dtype=dtype, device=device).reshape(1, -1)
 
 
@@ -375,13 +435,21 @@ def _affinity_mask_from_batch(model, batch, device):
     return batch[4].to(device, non_blocking=True)
 
 
-def _regularization_spec(model, which='upper'):
-    """Which config key holds this model's dropout/normalisation spec for this half of
-    training. MidLevelNetwork says nothing and gets the historical names."""
+def _dropout_config_key(model, which='upper'):
+    """MidLevelNetwork only: the config key whose combined spec holds its dropout."""
     key = getattr(model, f'{which}_regularization_config_key', None)
     if key is None:
         key = 'high_regularization' if which == 'upper' else 'low_regularization'
-    return str(model.config.get(key, 'none'))
+    return key
+
+
+def _regularization_spec(model, which='upper', train_params=None):
+    """The dropout spec for this half of training: the episode's `dropout` training
+    setting for a model that declares `dropout_is_training_setting`, else
+    MidLevelNetwork's combined config spec."""
+    if getattr(model, 'dropout_is_training_setting', False):
+        return str((train_params or {}).get('dropout', 'none'))
+    return str(model.config.get(_dropout_config_key(model, which), 'none'))
 
 
 def _resolve_heads_to_freeze(model, names):
@@ -407,10 +475,50 @@ def _resolve_heads_to_freeze(model, names):
     return resolved
 
 
+# --------------------------------------------------------------------------- #
+#  Training settings
+# --------------------------------------------------------------------------- #
+# How a model is trained, as opposed to what it is: these come from the episode config
+# (main.py passes them as `train_params`) and are never saved with the model, so a
+# warm-start checkpoint cannot override the recipe's values. The affinity loss weights
+# (AFFINITY_LOSS_DEFAULTS) and training-only output activations
+# (ACTIVATION_TRAIN_DEFAULTS) are included; a model ignores the ones it has no use for.
+# `dropout` is the shared '<initial>dropout<max>' spec ('none' = no adaptive dropout).
+TRAIN_PARAM_DEFAULTS = {'lowWD': 0.0, 'highWD': 0.0, 'noise': 0.0, 'dropout': 'none',
+                        **ACTIVATION_TRAIN_DEFAULTS, **AFFINITY_LOSS_DEFAULTS}
+
+
+def _resolve_train_params(model, train_params=None):
+    """Each setting from `train_params` if given there, else from the model's config (a
+    legacy MidLevelNetwork still records lowWD/highWD/noise), else the default."""
+    train_params = train_params or {}
+    unknown = set(train_params) - set(TRAIN_PARAM_DEFAULTS)
+    if unknown:
+        raise KeyError(f"Unknown training settings {sorted(unknown)}; "
+                       f"known: {sorted(TRAIN_PARAM_DEFAULTS)}")
+    resolved = {}
+    for key, default in TRAIN_PARAM_DEFAULTS.items():
+        value = train_params.get(key)
+        if value is None:
+            value = model.config.get(key, default)
+        resolved[key] = (split_regularization(dropout=value)[2] if key == 'dropout'
+                         else float(value))
+    print(f"Training settings: {resolved}")
+    return resolved
+
+
+def _affinity_params(train_params):
+    return {k: train_params[k] for k in AFFINITY_LOSS_DEFAULTS}
+
+
+def _activation_params(train_params):
+    return {k: train_params[k] for k in ACTIVATION_TRAIN_DEFAULTS}
+
+
 def _upper_loss(model, out: UpperBatch, x_batch, b_batch, y_batch, m_batch, feature_offset,
                 criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
                 compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
-                mask_batch=None):
+                mask_batch=None, affinity_params=None):
     """Single definition of the upper objective, shared by the training step and the
     evaluation pass. These were two copies of the same twenty lines; a change to one that
     missed the other would silently score models against a different loss than it trained
@@ -449,7 +557,8 @@ def _upper_loss(model, out: UpperBatch, x_batch, b_batch, y_batch, m_batch, feat
     else:
         # Signed affinity labels: every cell carries a target (trusted) or a one-sided
         # bound (untrusted), so there is no present-only mask here -- see AffinityModel.
-        mole_loss = affinity_loss(out.mole, m_batch, mask_batch, binWeights)
+        mole_loss = affinity_loss(out.mole, m_batch, mask_batch, binWeights,
+                                  params=affinity_params)
     bulk_loss = (bulk_loss_raw * bulk_zero_mask).sum() / bulk_zero_mask.sum().clamp(min=1)
 
     # Scale loss to be large wrt Epsilon for optimizer stability.
@@ -589,7 +698,7 @@ def _print_presence_precision_recall(acc, model):
 def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, criterion_chem, criterion_mole,
                            criterion_bulk, compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
                            device, max_N=np.inf, T=None, amp_dtype=torch.float32, use_amp=False,
-                           verbose=True):
+                           verbose=True, affinity_params=None, act_params=None):
     """`verbose=False` skips the per-term prints and the affinity/boundary diagnostics
     (and the work of collecting them) -- used for in-epoch fit checks and the train
     reference, where only the scalar loss is needed."""
@@ -616,13 +725,13 @@ def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, cri
             x_batch, b_batch, y_batch, m_batch = x_batch.to(device, non_blocking=True), b_batch.to(device, non_blocking=True), y_batch.to(device, non_blocking=True), m_batch.to(device, non_blocking=True)
             mask_batch = _affinity_mask_from_batch(model, batch, device)
             with torch.autocast(device_type='cuda', dtype=amp_dtype, enabled=use_amp):
-                out = _upper_forward(model, x_batch, b_batch, T=T)
+                out = _upper_forward(model, x_batch, b_batch, T=T, act_params=act_params)
 
                 loss, loss_sat, chem_loss_masked, mole_loss_masked, bulk_loss_masked = _upper_loss(
                     model, out, x_batch, b_batch, y_batch, m_batch, feature_offset,
                     criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
                     compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
-                    mask_batch=mask_batch,
+                    mask_batch=mask_batch, affinity_params=affinity_params,
                 )
             if verbose and mask_batch is not None:
                 aff_diag = _accumulate_affinity_diagnostics(aff_diag, model, out.mole, m_batch, mask_batch)
@@ -703,7 +812,8 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                       max_N = np.inf, early_stopping_patience = 5, DictFilePath = None,
                       dropout_step_up = 0.05, dropout_step_down = 0.02,
                       noise_step_up = 0.002, noise_step_down = 0.001,
-                      config_yaml = None, training_yaml = None, processing_yaml = None, stats = None, log_path = None):
+                      config_yaml = None, training_yaml = None, processing_yaml = None, stats = None, log_path = None,
+                      train_params = None, carry_state = None):
     
     """    # --- Build (copy) model ---
     scheduler is text: one of ['steplr', 'cosine', 'cosinewarm', 'plateau'] or None for no scheduler. 
@@ -738,15 +848,17 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     for p in model.encoder.parameters():
         p.requires_grad = True
 
-    noise = model.config['noise']
-    optimizer = create_optimizer(model, lr=lr, lowWD=model.config['lowWD'])
+    train_params = _resolve_train_params(model, train_params)
+    noise = train_params['noise']
+    optimizer = create_optimizer(model, lr=lr, lowWD=train_params['lowWD'])
     wrappedScheduler = create_scheduler(optimizer, scheduler, **scheduler_kwargs) if scheduler else SchedulerWrapper()
 
-    lower_reg = _regularization_spec(model, 'lower')
+    lower_reg = _regularization_spec(model, 'lower', train_params)
     if 'dropout' in lower_reg.lower(): # Only use adaptive dropout if we're not using bulk loss.
         dropout_rate, max_drop = pull_number_range(lower_reg.lower())
         print(f"dropout in {lower_reg}: {dropout_rate} -> {max_drop}")
         _set_adaptive_dropout_rate(model, dropout_rate)
+        print(f"Adaptive dropout: {_describe_adaptive_dropout(model)}")
     else:
         dropout_rate = 0
         max_drop = 0 # Max dropout rate for adaptive dropout
@@ -823,6 +935,7 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
             best_test_loss = avg_test_loss
             best_epoch = epoch + 1
             print(f"New best test loss: {best_test_loss:.5f}. Saving model.")
+            _record_dropout_state(model, 'lower', dropout_rate, noise, train_params, carry_state)
             torch.save(model.state_dict(), str(TEMP_MODELS_DIR / 'temp_binary_train.pt'))
             if DictFilePath is not None:
                 log_text = _read_text_file(log_path)
@@ -898,7 +1011,8 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                       boundary_temperature = None,
                       val_checks_per_epoch = 1, fit_train_mode = 'train', fit_ref_rows = None,
                       overfit_ratio = 1.02, underfit_ratio = 1.0,
-                      config_yaml = None, training_yaml = None, processing_yaml = None, stats = None, log_path = None, amsgrad=True, eps = 1E-4):
+                      config_yaml = None, training_yaml = None, processing_yaml = None, stats = None, log_path = None, amsgrad=True, eps = 1E-4,
+                      train_params = None, carry_state = None):
     """`val_checks_per_epoch`: how many fit checks per epoch, evenly spaced, the last at the
     end of the epoch. Each check evaluates the validation set, saves a new best checkpoint,
     and steps adaptive dropout on Test/Train against the dead band [underfit_ratio,
@@ -936,12 +1050,15 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         for p in getattr(model, frozen_head).parameters():
             p.requires_grad = False
 
-    noise = model.config['noise']
-    optimizer = create_optimizer(model, lr=lr, highWD=model.config['highWD'], lowWD=model.config['lowWD'], amsgrad=amsgrad, eps=eps)
+    train_params = _resolve_train_params(model, train_params)
+    affinity_params = _affinity_params(train_params)
+    act_params = _activation_params(train_params)
+    noise = train_params['noise']
+    optimizer = create_optimizer(model, lr=lr, highWD=train_params['highWD'], lowWD=train_params['lowWD'], amsgrad=amsgrad, eps=eps)
     wrappedScheduler = create_scheduler(optimizer, scheduler, **scheduler_kwargs) if scheduler else SchedulerWrapper()
             
 
-    upper_reg = _regularization_spec(model, 'upper')
+    upper_reg = _regularization_spec(model, 'upper', train_params)
     if 'dropout' in upper_reg.lower():
         dropout_rate, configured_max = pull_number_range(upper_reg.lower())
         print(f"dropout in {upper_reg}: {dropout_rate} -> {configured_max}")
@@ -953,6 +1070,7 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         max_drop = configured_max
         
         _set_adaptive_dropout_rate(model, dropout_rate)
+        print(f"Adaptive dropout: {_describe_adaptive_dropout(model)}")
     else:
         dropout_rate = 0
         max_drop = 0 # Max dropout rate for adaptive dropout
@@ -970,9 +1088,10 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     criterion_bulk = criterion if criterion_bulk is None else criterion_bulk
 
     # --- Boundary-temperature annealing (see NN_continuous.py's upper_forward) ---
+    boundary_temperature = _required_boundary_temperature(model, boundary_temperature)
     if boundary_temperature:
-        a_start = float(boundary_temperature.get('a_start', 1.0))
-        a_end = float(boundary_temperature.get('a_end', 1e-4))
+        a_start = float(boundary_temperature.get('a_start', BOUNDARY_TEMPERATURE_DEFAULTS['a_start']))
+        a_end = float(boundary_temperature.get('a_end', BOUNDARY_TEMPERATURE_DEFAULTS['a_end']))
         print(f"[boundary_temperature] enabled: a {a_start:.3e} -> {a_end:.3e} over {Epochs} epochs")
     else:
         a_start = a_end = None
@@ -1000,7 +1119,8 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     baseline_test_loss = _evaluate_upper_model(
         model, test_loader, feature_offset, criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
         compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha, device, max_N,
-        T=_epoch_T(0), amp_dtype=amp_dtype, use_amp=use_amp,
+        T=_epoch_T(0), amp_dtype=amp_dtype, use_amp=use_amp, affinity_params=affinity_params,
+        act_params=act_params,
     )
     print(f"Baseline Test Loss: {baseline_test_loss:.5f}")
 
@@ -1025,6 +1145,7 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
             model, loader, feature_offset, criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
             compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha, device, max_N,
             T=T, amp_dtype=amp_dtype, use_amp=use_amp, verbose=verbose,
+            affinity_params=affinity_params, act_params=act_params,
         )
 
     def _fit_check(label, T, verbose, running_train_loss):
@@ -1045,6 +1166,7 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
             print(f"New best test loss: {avg_test_loss:.5f} (improvement of {(best_test_loss-avg_test_loss)/best_test_loss*100:.2f}%) Saving model.")
             best_test_loss = avg_test_loss
             best_epoch = label
+            _record_dropout_state(model, 'upper', dropout_rate, noise, train_params, carry_state)
             torch.save(model.state_dict(), str(TEMP_MODELS_DIR / 'temp_upper_train.pt'))
             if DictFilePath is not None:
                 log_text = _read_text_file(log_path)
@@ -1112,13 +1234,13 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
             if noise != 0:
                 x_batch = x_batch + (x_batch * torch.randn_like(x_batch) * noise)
             with torch.autocast(device_type='cuda', dtype=amp_dtype, enabled=use_amp):
-                out = _upper_forward(model, x_batch, b_batch, T=epoch_T)
+                out = _upper_forward(model, x_batch, b_batch, T=epoch_T, act_params=act_params)
 
                 loss, loss_sat, chem_loss_masked, mole_loss_masked, bulk_loss_masked = _upper_loss(
                     model, out, x_batch, b_batch, y_batch, m_batch, feature_offset,
                     criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
                     compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
-                    mask_batch=mask_batch,
+                    mask_batch=mask_batch, affinity_params=affinity_params,
                 )
 
             batch_size_curr = x_batch.size(0)
