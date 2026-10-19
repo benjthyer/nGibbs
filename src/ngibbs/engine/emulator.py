@@ -61,7 +61,7 @@ class NN_MELTS:
     """
     
     def __init__(self, model, cuda=False, mass_balance='iterative', *,
-                 massbalance_iters=3, massbalance_tikhonov=1.0e-6,
+                 massbalance_iters=3, massbalance_tikhonov=1.0e-12,
                  massbalance_damping=1.0, massbalance_relative=True,
                  massbalance_weight_floor=1.0e-9):
         """
@@ -90,8 +90,10 @@ class NN_MELTS:
             uses, so a low-abundance phase is not corrected by an absolute amount that is
             relatively enormous.
         """
-        if type(model).__name__ not in ('MidLevelNetwork', 'ContinuousModel'):
-            raise TypeError(f"Model must be MidLevelNetwork or ContinuousModel, got {type(model)}")
+        # By MRO name, so subclasses (AffinityModel is a ContinuousModel) are accepted.
+        if not {c.__name__ for c in type(model).__mro__} & {'MidLevelNetwork', 'ContinuousModel'}:
+            raise TypeError(f"Model must be MidLevelNetwork or ContinuousModel (or a subclass), "
+                            f"got {type(model)}")
         if not hasattr(model, 'ml_indexer') or model.ml_indexer is None:
             raise ValueError("Model must have an attached ml_indexer")
         if mass_balance not in _MASS_BALANCE_MODES:
@@ -133,10 +135,13 @@ class NN_MELTS:
         # Pyroxene/spinel legality polish inside the iterative mass balance (MELTS models
         # only, as in MidLevelNetwork.forward; see polish_component_moles).
         self._polish_px = 'orthopyroxene' in self.detail_label_indices
+        self._polish_cpx = 'clinopyroxene' in self.detail_label_indices
         self._polish_sp = 'spinel' in self.detail_label_indices
         if 'melts-liquid' not in self.label_indices:
-            self._polish_px = self._polish_sp = False
-        for flag, meth in ((self._polish_px, 'polish_negative_px'), (self._polish_sp, 'polish_negative_sp')):
+            self._polish_px = self._polish_cpx = self._polish_sp = False
+        for flag, meth in ((self._polish_px, 'polish_negative_px'),
+                           (self._polish_cpx, 'polish_negative_cpx'),
+                           (self._polish_sp, 'polish_negative_sp')):
             if flag and not hasattr(self.model, meth):
                 raise TypeError(f"{type(self.model).__name__} has no {meth}; the iterative mass "
                                 f"balance needs it for this MELTS model")
@@ -145,9 +150,16 @@ class NN_MELTS:
         polish_cols = []
         if self._polish_px:
             polish_cols += list(self.detail_label_indices['orthopyroxene'].values())
+        if self._polish_cpx:
+            polish_cols += list(self.detail_label_indices['clinopyroxene'].values())
         if self._polish_sp:
             polish_cols += list(self.detail_label_indices['spinel'].values())
         self._polish_cols = torch.as_tensor(polish_cols, dtype=torch.int64, device=self.dev)
+
+        # Phase seeding before mass balance (see seed_unexplained_phases). The gated model
+        # does its own forcing inside MidLevelNetwork.forward, so only the continuous family
+        # (ContinuousModel and subclasses, e.g. AffinityModel) is seeded here.
+        self._seed_phases = 'ContinuousModel' in {c.__name__ for c in type(self.model).__mro__}
 
 
     
@@ -534,17 +546,17 @@ class NN_MELTS:
         return componentMoles
 
     def polish_component_moles(self, componentMoles):
-        """Re-impose the MELTS orthopyroxene (CaO >= 0) and spinel (FeO, Al2O3 >= 0)
-        legality corrections on extensive component moles.
+        """Re-impose the MELTS orthopyroxene (CaO >= 0), clinopyroxene (MgO >= 0) and
+        spinel (FeO, Al2O3 >= 0) legality corrections on extensive component moles.
 
-        `polish_negative_px` / `polish_negative_sp` act on per-phase intensive
+        `polish_negative_px` / `polish_negative_cpx` / `polish_negative_sp` act on per-phase intensive
         proportions in the network's (PxSp-transformed) component basis. Each phase's
         block is divided by its total moles, polished, and rescaled by the same total
-        (both polishes keep a block's sum at 1, so phase moles are unchanged). Only the
-        opx and spinel columns are written back; absent phases (total 0) are untouched.
+        (every polish keeps a block's sum at 1, so phase moles are unchanged). Only the
+        opx, cpx and spinel columns are written back; absent phases (total 0) are untouched.
         Returns a new tensor; a model without these phases returns the input as is.
         """
-        if not (self._polish_px or self._polish_sp):
+        if not (self._polish_px or self._polish_cpx or self._polish_sp):
             return componentMoles
         cm = componentMoles
         P2C = self.phaseToCompMap.to(cm.device, cm.dtype)
@@ -556,6 +568,8 @@ class NN_MELTS:
                            torch.zeros_like(tot))
         if self._polish_px:
             chem = self.model.polish_negative_px(chem)
+        if self._polish_cpx:
+            chem = self.model.polish_negative_cpx(chem)
         if self._polish_sp:
             chem = self.model.polish_negative_sp(chem)
         out = cm.clone()
@@ -612,9 +626,85 @@ class NN_MELTS:
                 out['chem_out'] = (phaseComponentMoles / (phaseMoles[:, :, None] + 1e-12)).sum(dim=1)[:, vc]
         return out
 
+    def seed_unexplained_phases(self, componentMoles, phaseMoles, phaseProportions,
+                                phase_affinity, norm_features, max_rounds=None,
+                                reconBulk=None):
+        """Add absent phases so every element in the bulk has a carrier before mass balance.
+
+        An element in the bulk that no present component contains cannot be moved by the
+        mass-balance correction (its row of the weighted stoichiometry matrix is empty), so
+        its residual would remain. Each round, for every row with such an element:
+
+        1. unexplained elements: b_e > 0 and no component with m_c > 0 contains e;
+        2. candidates: absent phases (phaseMoles == 0) whose *predicted* composition
+           (phaseProportions, available for every phase) contains an unexplained element;
+        3. pick the candidate with the largest signed saturation (`phase_affinity`, the
+           model's m = act(g); monotonic in g, so this is the least negative g);
+        4. seed it with the abundance n that best supplies the unexplained elements it
+           carries: n = sum_e a_e t b_e / sum_e a_e^2 over those elements, where a_e is
+           the element content of one mole of the phase and t the current total element
+           moles (exact when it covers a single unexplained element).
+
+        Rounds repeat until nothing is unexplained or no candidate is left (at most P).
+        Afterwards the component moles are renormalised so their elements sum to one
+        again (as the network outputs are), and reconBulk is recomputed (seeded rows only;
+        other rows are returned untouched). phaseMoles stays
+        on the model's own scale (componentMoles = proportions * phaseMoles / totals).
+
+        Returns (componentMoles, phaseMoles, reconBulk, seeded) with `seeded` a (B, P)
+        bool mask of the phases added.
+        """
+        cm = componentMoles.clone()
+        pm = phaseMoles.clone()
+        dev, dt = cm.device, cm.dtype
+        A = self.compToEl.to(dev, dt)                                   # (C, E)
+        P2C = self.phaseToCompMap.to(dev, dt)                           # (P, C)
+        b = norm_features[:, self.feature_offset:].to(dev, dt)          # (B, E)
+        pp = phaseProportions.to(dev, dt)                               # (B, C)
+        aff = phase_affinity.to(dev, dt)                                # (B, P)
+        A_pos = (A > 0).to(dt)
+        phase_el = torch.einsum('pc,bc,ce->bpe', P2C, pp, A)            # (B, P, E)
+        # phaseMoles / componentMoles scale factor per row (the model's `totals`)
+        scale = pm.sum(dim=1) / cm.sum(dim=1).clamp(min=1e-30)          # (B,)
+        seeded = torch.zeros_like(pm, dtype=torch.bool)
+        rounds = int(max_rounds or pm.shape[1])
+        neg_inf = torch.tensor(float('-inf'), device=dev, dtype=dt)
+        for _ in range(rounds):
+            carried = ((cm > 0).to(dt) @ A_pos) > 0                     # (B, E)
+            unexpl = (b > 0) & ~carried
+            need = unexpl.any(dim=1)
+            if not need.any():
+                break
+            cover = (phase_el > 0) & unexpl[:, None, :]                 # (B, P, E)
+            cand = cover.any(dim=-1) & (pm <= 0) & ~seeded & need[:, None]
+            rows = cand.any(dim=1)
+            if not rows.any():
+                break
+            r = torch.nonzero(rows).squeeze(-1)
+            p = torch.where(cand, aff, neg_inf).argmax(dim=1)[r]       # (k,)
+            a = phase_el[r, p]                                          # (k, E)
+            cov = cover[r, p].to(dt)                                    # (k, E)
+            tot = (cm[r] @ A).sum(dim=1, keepdim=True).clamp(min=1e-30)
+            target = tot * b[r]
+            n_seed = (a * target * cov).sum(dim=1) / (a * a * cov).sum(dim=1).clamp(min=1e-30)
+            cm[r] = cm[r] + n_seed[:, None] * pp[r] * P2C[p]
+            pm[r, p] = n_seed * scale[r]
+            seeded[r, p] = True
+        rows = seeded.any(dim=1)
+        if rows.any():
+            tot = (cm[rows] @ A).sum(dim=1, keepdim=True).clamp(min=1e-30)
+            cm[rows] = cm[rows] / tot
+        recon = reconBulk.clone() if reconBulk is not None else None
+        if rows.any() or recon is None:
+            bl = cm @ A
+            full = bl / bl.sum(dim=1, keepdim=True).clamp(min=1e-30)
+            recon = full if recon is None else torch.where(rows[:, None], full, recon.to(dev, dt))
+        return cm, pm, recon, seeded
+
     def apply_mass_balance(self, phaseMoles, reconBulk, componentMoles, phaseProportions,
                            norm_features, *, mode=None, optimize_masses=False,
-                           protect_opx=False, comp_table_out='oxides', outputs=None):
+                           protect_opx=False, comp_table_out='oxides', outputs=None,
+                           phase_affinity=None):
         """Correct raw model component moles onto the requested bulk, by the named method.
 
         `mode` (default `self.mass_balance`, set at construction):
@@ -629,10 +719,20 @@ class NN_MELTS:
         Returns the same shape as `polish_masses`: a `(compTable, massTable)` tuple when
         `outputs is None`, else a `{selector: value}` dict. A `'reconstruction_residual'`
         selector (per-row post-correction L2 residual) is available in every mode.
+
+        `phase_affinity` (B, P): the model's signed saturation (the `logMoles` slot of
+        `forward(detailed=True)`). When given, and for the continuous model family, phases
+        are seeded before the 'iterative' / 'pinv' correction so that every bulk element
+        has a carrier (`seed_unexplained_phases`). 'none' never seeds.
         """
         mode = mode or self.mass_balance
         if mode not in _MASS_BALANCE_MODES:
             raise ValueError(f"mode must be one of {_MASS_BALANCE_MODES}, got {mode!r}")
+
+        if mode != 'none' and phase_affinity is not None and self._seed_phases:
+            componentMoles, phaseMoles, reconBulk, _seeded = self.seed_unexplained_phases(
+                componentMoles, phaseMoles, phaseProportions, phase_affinity, norm_features,
+                reconBulk=reconBulk)
 
         want_resid = outputs is not None and 'reconstruction_residual' in outputs
 
@@ -747,7 +847,8 @@ class NN_MELTS:
                 self.model.forward(norm_features, detailed=True)
 
             mb_kwargs = dict(mode=mass_balance, optimize_masses=optimize_masses,
-                             protect_opx=protect_opx, comp_table_out=comp_table_out)
+                             protect_opx=protect_opx, comp_table_out=comp_table_out,
+                             phase_affinity=logMoles)
 
             if outputs is None:
                 return self.apply_mass_balance(

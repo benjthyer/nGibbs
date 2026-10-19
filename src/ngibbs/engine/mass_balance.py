@@ -19,7 +19,11 @@ class MassBalanceProjector(nn.Module):
     A zeroed phase must not participate in reactions, so the correction is restricted to
     the active support `Omega = (n > 0)`:
 
-        delta = W A_Om^T (A_Om W^2 A_Om^T + lam I)^-1 r,   A_Om = compToEl^T masked to Omega
+        delta = W^2 A_Om^T (A_Om W^2 A_Om^T + lam I)^-1 r,   A_Om = compToEl^T masked to Omega
+
+    (W = diag(w), so delta_c = w_c^2 * (A nu)_c: the weighted minimum-norm solution of
+    Asimow & Ghiorso 1998. `lam` (tikhonov) acts on the E x E element system only; it
+    never adds abundance to a component outside the support, since w_c = 0 there.)
 
     Entries can only leave the support and never re-enter, so `Omega` is monotonically
     non-increasing and the iteration terminates rather than merely converging -- unlike
@@ -48,13 +52,13 @@ class MassBalanceProjector(nn.Module):
 
     `polish` (optional callable n -> n) runs after every clamp. `NN_MELTS` passes its
     `polish_component_moles`, which re-applies the MELTS pyroxene/spinel legality
-    corrections (`polish_negative_px` / `polish_negative_sp`): the correction and clamp
+    corrections (`polish_negative_px` / `polish_negative_cpx` / `polish_negative_sp`): the correction and clamp
     perturb component abundances inside a phase and can re-create negative CaO (opx) or
     FeO/Al2O3 (spinel) in those phases' transformed component basis. Polishing last means
     the returned moles are always legal; the residual reported is the one after it.
     """
 
-    def __init__(self, iters: int = 3, tikhonov: float = 1.0e-6, damping: float = 1.0,
+    def __init__(self, iters: int = 3, tikhonov: float = 1.0e-12, damping: float = 1.0,
                  relative: bool = True, weight_floor: float = 1.0e-9):
         super().__init__()
         self.iters = int(iters)
@@ -84,12 +88,22 @@ class MassBalanceProjector(nn.Module):
             # Two supported elements can be exactly degenerate given the current active
             # phases (two columns of A_w coincide), which + tikhonov*I is meant to
             # rescue -- but a diagonal entry here commonly runs into the tens, where
-            # float32's ULP (~35 * 2^-23 ~= 4e-6) exceeds tikhonov=1e-6: adding the
-            # regularizer in float32 rounds it away to nothing on exactly the rows that
-            # need it, and torch.linalg.solve's LU path then reads M as truly singular.
+            # float32's ULP (~35 * 2^-23 ~= 4e-6) is far above tikhonov (1e-12 by default;
+            # it was 1e-6): adding the regularizer in float32 rounds it away to nothing on
+            # exactly the rows that need it, and torch.linalg.solve's LU path then reads M
+            # as truly singular. In float64 (ULP ~1e-15 at 10) 1e-12 survives.
+            #
+            # tikhonov is kept tiny on purpose. It is a filter on the SVD of A_w:
+            # 1/sigma -> sigma/(sigma^2 + tikhonov). Elements absent from the bulk AND from
+            # every supported component (sigma = 0, r_e = 0) need only some value > 0;
+            # elements carried only by trace components have sigma^2 ~ 1e-7, so 1e-6
+            # visibly under-corrected them (median final residual 3.7e-5 vs 3e-8 at 1e-12,
+            # 102 Closed Cr test subset).
             M = (A_w @ A_w.transpose(1, 2)).double() + self.tikhonov * eye64
-            lam = torch.linalg.solve(M, r.unsqueeze(-1).double()).to(n.dtype)
-            delta = w * (A_w.transpose(1, 2) @ lam).squeeze(-1)
+            lam = torch.linalg.solve(M, r.unsqueeze(-1).double())
+            # nu can be large for weakly carried elements with a tiny tikhonov; form the
+            # update in float64 as well before casting back.
+            delta = (w.double() * (A_w.double().transpose(1, 2) @ lam).squeeze(-1)).to(n.dtype)
             n = torch.clamp(n + self.damping * delta, min=0.0)
             if polish is not None:
                 n = polish(n)

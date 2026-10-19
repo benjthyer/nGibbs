@@ -145,6 +145,7 @@ class ContinuousModel(nn.Module):
     # set by _set_indexer). Not applied in forward(): NN_MELTS runs them inside the
     # iterative mass balance, after every correction step.
     polish_negative_px = MidLevelNetwork.polish_negative_px
+    polish_negative_cpx = MidLevelNetwork.polish_negative_cpx
     polish_negative_spFe = MidLevelNetwork.polish_negative_spFe
     polish_negative_spAl = MidLevelNetwork.polish_negative_spAl
     polish_negative_sp = MidLevelNetwork.polish_negative_sp

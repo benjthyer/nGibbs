@@ -699,6 +699,54 @@ class MidLevelNetwork(TunableModel):
 
         return intensiveComponents
     
+    def polish_negative_cpx(self, intensiveComponents, tol=1e-6):
+        """Clinopyroxene MgO >= 0 in the PxSp-transformed component basis.
+
+        MgO per transformed component (rows of compToOx; identical for opx and cpx since
+        both share the transform): diopside +1, clinoenstatite -2, hedenbergite +1,
+        alumino-buffonite -1, buffonite -1, essenite -4, jadeite +3. So
+        MgO ~ S_pos - S_neg with S_pos = Di + Hd + 3 Jd, S_neg = 2 En + Abf + Bf + 4 Ess.
+
+        Where S_neg > S_pos + tol, the positive group {Di, Hd, Jd} is scaled by a and the
+        negative group {En, Abf, Bf, Ess} by b, with a*S_pos = b*S_neg (MgO = 0) and
+        a*P + b*N = 1 (closure; P, N the plain group sums):
+
+            a = S_neg / (S_neg*P + S_pos*N),   b = S_pos / (S_neg*P + S_pos*N)
+
+        (polish_negative_px's CaO solution is this formula with the CaO coefficients.)
+        Ratios within each group are kept. Rows with no mass in the positive group
+        (denominator ~0) cannot be fixed by rescaling and are left unchanged. Without the
+        mass balance the network does not produce negative cpx MgO; the iterative mass
+        balance occasionally does, by loading excess Al/Na into cpx.
+        """
+        if 'clinopyroxene' not in self.detail_label_indices:
+            return intensiveComponents
+        cpx = self.detail_label_indices['clinopyroxene']
+        dev, dt = intensiveComponents.device, intensiveComponents.dtype
+        pos_idxs = [cpx['diopside'], cpx['hedenbergite'], cpx['jadeite']]
+        neg_idxs = [cpx['clinoenstatite'], cpx['alumino-buffonite'], cpx['buffonite'],
+                    cpx['essenite']]
+        pos_w = torch.tensor([1.0, 1.0, 3.0], device=dev, dtype=dt)
+        neg_w = torch.tensor([2.0, 1.0, 1.0, 4.0], device=dev, dtype=dt)
+
+        S_pos = (intensiveComponents[:, pos_idxs] * pos_w).sum(dim=-1)
+        S_neg = (intensiveComponents[:, neg_idxs] * neg_w).sum(dim=-1)
+        P = intensiveComponents[:, pos_idxs].sum(dim=-1)
+        N = intensiveComponents[:, neg_idxs].sum(dim=-1)
+        denom = S_neg * P + S_pos * N
+        illegal = (S_neg > S_pos + tol) & (denom > 1e-12)
+        if illegal.any():
+            row_idx = torch.nonzero(illegal, as_tuple=False).squeeze(-1)
+            a = S_neg[illegal] / denom[illegal]
+            b = S_pos[illegal] / denom[illegal]
+            cols_pos = torch.tensor(pos_idxs, device=dev, dtype=torch.long)
+            cols_neg = torch.tensor(neg_idxs, device=dev, dtype=torch.long)
+            rr_pos, cc_pos = torch.meshgrid(row_idx, cols_pos, indexing="ij")
+            rr_neg, cc_neg = torch.meshgrid(row_idx, cols_neg, indexing="ij")
+            intensiveComponents[rr_pos, cc_pos] = a[:, None] * intensiveComponents[rr_pos, cc_pos]
+            intensiveComponents[rr_neg, cc_neg] = b[:, None] * intensiveComponents[rr_neg, cc_neg]
+        return intensiveComponents
+
     def polish_negative_spFe(self, intensiveComponents):
         sp = self.detail_label_indices['spinel']
         sp_chromite = sp['chromite'] if 'chromite' in sp else None
@@ -1162,6 +1210,7 @@ class MidLevelNetwork(TunableModel):
 
                 if not NN_only and non_super.any() and 'melts-liquid' in self.label_indices: # Only do this for MELTS: Not HeFESTo, which lacks negative components. 
                     chem_out[non_super] = self.polish_negative_px(chem_out[non_super])
+                    chem_out[non_super] = self.polish_negative_cpx(chem_out[non_super])
                     chem_out[non_super] = self.polish_negative_sp(chem_out[non_super])
 
         else:  # Training

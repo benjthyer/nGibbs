@@ -1017,6 +1017,7 @@ class EmulatorAPI:
         verbose: bool = True,
         allow_missing_models: bool = False,
         plot_coverage: bool = True,
+        plot_reconstruction: bool = True,
     ) -> Dict[str, object]:
         """Run the deployable emulator quality test against the bundled ground truth.
 
@@ -1060,6 +1061,17 @@ class EmulatorAPI:
         entirely when ``write_outputs`` is False. A plotting failure for one
         emulator only warns -- it never fails the test.
 
+        ``plot_reconstruction`` (default True): for each evaluated emulator, also
+        reconstruct the bulk of every bundle row from the predicted component
+        moles, b_hat = normalize(componentMoles @ compToEl), both from the raw
+        network output (``mass_balance='none'``) and after the emulator's own
+        mass-balance correction, and compare it with the requested bulk b (see
+        ``ngibbs.deployment_tests.bulk_reconstruction``). Writes
+        ``<output_dir>/bulk_reconstruction_<name>.csv`` and two figures per
+        emulator to ``<output_dir>/plots/`` (b_hat vs b and (b - b_hat)/b vs b,
+        raw network in orange with the mass-balanced result in blue on top).
+        Skipped when ``write_outputs`` is False; a failure only warns.
+
         Returns
         -------
         dict with:
@@ -1068,6 +1080,9 @@ class EmulatorAPI:
             'skipped_bundles' : list of emulator names whose bundle was absent
             'coverage_plots'  : {emulator_name: {plot_key: Path}} (only present
                 when ``plot_coverage`` and ``write_outputs`` are both True)
+            'bulk_reconstruction' : {emulator_name: DataFrame} per-element
+                b vs b_hat statistics, raw and mass-balanced (only present when
+                ``plot_reconstruction`` and ``write_outputs`` are both True)
         Each table is written to ``<output_dir>/emulator_quality_<name>.csv``
         (NaN as ``--``) when ``write_outputs``, alongside
         ``emulator_quality_legend.txt``.
@@ -1140,6 +1155,32 @@ class EmulatorAPI:
                 except Exception as e:
                     _warnings.warn(f"Training-coverage plots failed for '{name}' bundle: {e}")
             result['coverage_plots'] = coverage_plots
+
+        if plot_reconstruction and write_outputs:
+            from ngibbs.deployment_tests.bulk_reconstruction import (
+                evaluate_bulk_reconstruction, plot_bulk_reconstruction, write_summary,
+            )
+            plots_dir = out_dir / 'plots'
+            recon = {}
+            for name, bundle in self._test_bundles.items():
+                if name in skipped or not Path(bundle).exists():
+                    continue
+                emu = getattr(self, {'openox': 'open_emulator'}.get(name, f'{name}_emulator'))
+                try:
+                    r = evaluate_bulk_reconstruction(emu, bundle, max_samples=max_samples, seed=seed)
+                    write_summary(r, out_dir / f'bulk_reconstruction_{name}.csv')
+                    plot_bulk_reconstruction(r, plots_dir, f'{self.modelType}_{name}')
+                    recon[name] = r['summary']
+                    if verbose:
+                        s = r['summary']
+                        msg = '  '.join(f"{k}: med|rel| {s.at[f'{k}_relerr_median_pct', 'all']:.3g}%"
+                                        for k in r['b_hat'])
+                        print(f"[test]   bulk reconstruction [{name}] {msg} "
+                              f"-> bulk_reconstruction_{name}.csv, "
+                              f"{plots_dir.name}/{self.modelType}_{name}_bulk_*.png")
+                except Exception as e:
+                    _warnings.warn(f"Bulk-reconstruction diagnostics failed for '{name}' bundle: {e}")
+            result['bulk_reconstruction'] = recon
 
         return result
 
