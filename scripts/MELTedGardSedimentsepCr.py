@@ -62,10 +62,10 @@ input_date = 'July8SedimentsOpen'
 
 input_ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
 MELTSmodels = ['120']#, '120']#, '102'] # MELTS models to run. To add: MAGEmin
-FXes = ['Batch']#, 'FxCryst']
+FXes = ['FxCryst']#, 'FxCryst']
 Prange = None # Auto if None, for lithosphere/aesthenospere (p)
 
-Oxygen = 'Open' # 'Closed' or 'Open' system with respect to oxygen. Buffered or constant oxygen?
+Oxygen = 'Closed' # 'Closed' or 'Open' system with respect to oxygen. Buffered or constant oxygen?
 
 total_to_run = int(300) # How many total simulations to run
 
@@ -76,9 +76,9 @@ simcycle = 50 # How many simulations to run per iteration
 
 # Tunable: final table row count for each memmap (~30x scale-up target).
 #target_rows_train = 35_000_000
-target_rows_train = 50 # Change pipeline later to keep all this as test, no 3rd valid split. Existing set is fine
-#target_rows_valid = 1_500_000 # Change pipeline later to keep all this as test, no 3rd valid split. Existing set is fine
-target_rows_valid = 0 # Change pipeline later to keep all this as test, no 3rd valid split. Existing set is fine
+target_rows_train = 30_000_000 # Change pipeline later to keep all this as test, no 3rd valid split. Existing set is fine
+target_rows_valid = 1_500_000 # Change pipeline later to keep all this as test, no 3rd valid split. Existing set is fine
+#target_rows_valid = 0 # Change pipeline later to keep all this as test, no 3rd valid split. Existing set is fine
 #batch_file = MELTSModel + 'batch'
 
 for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']): 

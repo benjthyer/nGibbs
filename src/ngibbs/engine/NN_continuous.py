@@ -60,7 +60,78 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .NN import TunableModel, MidLevelNetwork, load_model_from_zip
-from ..utils.string_utils import pull_letter, pull_number_range
+from ..utils.string_utils import pull_letter, pull_number_range, _number_pattern
+
+
+# --------------------------------------------------------------------------- #
+#  Regularization specs
+# --------------------------------------------------------------------------- #
+# `encoder_regularization` / `mole_regularization` are normalisation only ('none' |
+# 'layernorm' | 'batchnorm'), per part -- model properties. Dropout is a TRAINING
+# setting, one shared spec `dropout: <initial>dropout<max>` (e.g. '0.0dropout0.3') from
+# the recipe: every hidden layer of the encoder and mole heads carries an nn.Dropout
+# (p=0 unless the trainer sets it), so its rate is never part of the model.
+#
+# Older specs folded dropout into the per-part key ('0.0layernormdropout0.3'). Those
+# are still accepted: the model keeps only the normalisation, and main.py/tuners take
+# the dropout numbers as the training spec. Numbers in a per-part spec only ever come
+# from something written by hand (a recipe block, a tune grid), so they override the
+# shared spec rather than being ignored.
+
+_NORMS = ('none', 'layernorm', 'batchnorm')
+
+
+def _dropout_from_numbers(spec):
+    """'0.0layernormdropout0.3' -> '0.0dropout0.3', keeping the numbers' own text so a
+    round trip does not reformat them. One number means max only (initial 0)."""
+    tokens = _number_pattern.findall(str(spec))
+    if not tokens:
+        raise ValueError(f"dropout spec {spec!r} has no rate; write e.g. '0.0dropout0.3'.")
+    initial = tokens[0] if len(tokens) >= 2 else '0.0'
+    spec = f"{initial}dropout{tokens[-1]}"
+    lo, hi = pull_number_range(spec)
+    if not (0.0 <= lo < 1.0 and 0.0 <= hi < 1.0):
+        raise ValueError(f"dropout rates must be in [0, 1), got {spec!r}")
+    return spec
+
+
+def split_regularization(encoder_regularization='none', mole_regularization='none',
+                         dropout=None):
+    """Resolve (encoder_norm, mole_norm, dropout_spec) from new- or old-style config.
+
+    Returns dropout_spec 'none' when no part asks for dropout (no dropout layers built).
+    """
+    def _norm(spec):
+        name = pull_letter(str(spec)).lower().replace('dropout', '') or 'none'
+        if name not in _NORMS:
+            raise ValueError(f"regularization {spec!r}: normalisation must be one of {_NORMS}"
+                             f" (dropout goes in the shared `dropout` key).")
+        return name
+
+    def _legacy_dropout(spec):
+        return 'dropout' in pull_letter(str(spec)).lower()
+
+    enc_norm, mole_norm = _norm(encoder_regularization), _norm(mole_regularization)
+    if dropout is None or str(dropout).strip().lower() in ('', 'none', 'null'):
+        shared = 'none'
+    elif isinstance(dropout, (int, float)):
+        shared = _dropout_from_numbers(f"0.0dropout{dropout}")
+    else:
+        shared = _dropout_from_numbers(dropout)
+
+    enc_legacy, mole_legacy = _legacy_dropout(encoder_regularization), _legacy_dropout(mole_regularization)
+    if enc_legacy or mole_legacy:
+        # The mole spec drove the adaptive rate under the old scheme, so it wins a tie.
+        source = mole_regularization if mole_legacy else encoder_regularization
+        legacy = _dropout_from_numbers(source)
+        if enc_legacy and mole_legacy and _dropout_from_numbers(encoder_regularization) != legacy:
+            print(f"[regularization] encoder ({encoder_regularization}) and mole "
+                  f"({mole_regularization}) dropout differ; dropout is now one shared rate, "
+                  f"using the mole spec's: {legacy}")
+        if shared != 'none' and shared != legacy:
+            print(f"[regularization] per-part dropout {legacy} overrides dropout={shared}")
+        shared = legacy
+    return enc_norm, mole_norm, shared
 
 
 # --------------------------------------------------------------------------- #
@@ -164,6 +235,13 @@ class ContinuousModel(nn.Module):
     }
     upper_regularization_config_key = 'mole_regularization'
     lower_regularization_config_key = 'encoder_regularization'
+    # Dropout rate is a training setting (see split_regularization); the trainer adapts
+    # every nn.Dropout in the model, mole heads included, from `train_params['dropout']`.
+    dropout_is_training_setting = True
+    adaptive_dropout_exclude = ()
+    # Always trained with annealed boundary temperature T = a*T0 (needs ml_indexer.T0);
+    # the trainer supplies a default schedule when the recipe gives none.
+    requires_boundary_temperature = True
 
     def __init__(self,
                  encoderLayerUp: int = 2,
@@ -177,8 +255,6 @@ class ContinuousModel(nn.Module):
                  encoder_regularization: str = 'none',
                  mole_regularization: str = 'none',
                  activation_leak: float = 0.05,
-                 mole_activation_leak: float = 0.05,
-                 lowWD: float = 0, highWD: float = 0, noise: float = 0,
                  description: str = '',
                  ml_indexer=None,
                  device=torch.device('cpu'),
@@ -189,7 +265,10 @@ class ContinuousModel(nn.Module):
         # (engine/mass_balance.py + NN_MELTS.apply_mass_balance). `**_legacy_config`
         # swallows `massbalance_iters` / `massbalance_tikhonov` / `massbalance_damping`
         # (and anything else) from bundles exported before that move, since
-        # `load_model_from_zip` forwards the whole config dict by name.
+        # `load_model_from_zip` forwards the whole config dict by name. It likewise drops
+        # the training settings older checkpoints recorded here (lowWD, highWD, noise and
+        # AffinityModel's loss weights): those describe how a model is trained, not what
+        # it is, and now come from the episode config (see trainer.TRAIN_PARAM_DEFAULTS).
 
         # `MidLevelNetwork.save` runs the config through `apply_type_conversions(...,
         # default_dtype=str)`, so any key absent from TYPE_CONVERSION_MAP round-trips as
@@ -200,9 +279,19 @@ class ContinuousModel(nn.Module):
         encoderBase = int(encoderBase)
         moleLayerUp, moleLayerDown = int(moleLayerUp), int(moleLayerDown)
         moleBranchBase, chemBranchBase = int(moleBranchBase), int(chemBranchBase)
-        activation_leak, mole_activation_leak = float(activation_leak), float(mole_activation_leak)
-        lowWD, highWD, noise = float(lowWD), float(highWD), float(noise)
+        activation_leak = float(activation_leak)
+        # `mole_activation_leak` used to set the mole heads' hidden-layer slope separately;
+        # every hidden layer now uses `activation_leak`. Every checkpoint written had the two
+        # equal, so this loads them unchanged -- and refuses one that did not.
+        legacy_mole_leak = _legacy_config.get('mole_activation_leak')
+        if legacy_mole_leak is not None and float(legacy_mole_leak) != activation_leak:
+            raise ValueError(
+                f"Checkpoint has mole_activation_leak={legacy_mole_leak} != activation_leak="
+                f"{activation_leak}; mole heads now share activation_leak, so this model "
+                f"would not load as trained.")
         head_order = str(head_order)
+        encoder_regularization, mole_regularization, _ = split_regularization(
+            encoder_regularization, mole_regularization)
 
         assert encoderLayerUp >= encoderLayerDown, "encoderLayerUp must be >= encoderLayerDown"
         assert moleLayerUp >= moleLayerDown, "moleLayerUp must be >= moleLayerDown"
@@ -221,8 +310,7 @@ class ContinuousModel(nn.Module):
         self.encoder_regularization = encoder_regularization
         self.mole_regularization = mole_regularization
         self.activation_leak = activation_leak
-        self.mole_activation_leak = mole_activation_leak
-        self.lowWD, self.highWD, self.noise, self.description = lowWD, highWD, noise, description
+        self.description = description
 
         self.config = dict(
             encoderLayerUp=encoderLayerUp, encoderLayerDown=encoderLayerDown,
@@ -233,8 +321,7 @@ class ContinuousModel(nn.Module):
             encoder_regularization=encoder_regularization,
             mole_regularization=mole_regularization,
             activation_leak=activation_leak,
-            mole_activation_leak=mole_activation_leak,
-            lowWD=lowWD, highWD=highWD, noise=noise, description=description,
+            description=description,
             model_class='ContinuousModel',
         )
 
@@ -276,33 +363,63 @@ class ContinuousModel(nn.Module):
         self._register_buffers(device)
 
     # ------------------------------------------------------------------ build
-    def _reg(self, spec, neurons, leak):
-        name = pull_letter(spec).lower()
+    def _reg(self, norm, neurons, leak):
+        """[norm] -> LeakyReLU -> Dropout. The Dropout is always built, at p=0: its rate
+        is a training setting the trainer sets each episode. Same module order as the old
+        combined specs with dropout, so those checkpoints load index-for-index; ones
+        built without dropout are remapped by `upgrade_state_dict`."""
         mods = []
-        if 'batchnorm' in name:
+        if norm == 'batchnorm':
             mods.append(nn.BatchNorm1d(int(neurons)))
-        if 'layernorm' in name:
+        elif norm == 'layernorm':
             mods.append(nn.LayerNorm(int(neurons)))
         mods.append(nn.LeakyReLU(leak))
-        if 'dropout' in name:
-            frac, _ = pull_number_range(spec)
-            assert frac is not None and 0.0 <= frac < 1.0
-            mods.append(nn.Dropout(frac))
+        mods.append(nn.Dropout(0.0))
         return mods
+
+    def upgrade_state_dict(self, state_dict):
+        """Remap a checkpoint built without Dropout layers onto this layout.
+
+        A Dropout has no parameters but still takes a slot in its nn.Sequential, so a
+        model built before dropout layers were always present numbers its Linear/norm
+        layers differently. Per Sequential: if the saved keys put a parameter on a slot
+        that is a Dropout or LeakyReLU here, the checkpoint is the old layout, and its
+        k-th module maps to this layout's k-th non-Dropout module. Called by
+        NN._load_matching_state_dict before keys are matched."""
+        out = dict(state_dict)
+        for name, seq in self.named_modules():
+            if not isinstance(seq, nn.Sequential) or not any(
+                    isinstance(m, nn.Dropout) for m in seq):
+                continue
+            prefix = f"{name}."
+            keys = [k for k in out if k.startswith(prefix) and k[len(prefix):].split('.')[0].isdigit()]
+            slots = {int(k[len(prefix):].split('.')[0]) for k in keys}
+            has_params = lambda i: not isinstance(seq[i], (nn.Dropout, nn.LeakyReLU))
+            if all(i < len(seq) and has_params(i) for i in slots):
+                continue  # already this layout
+            new_idx = [i for i, m in enumerate(seq) if not isinstance(m, nn.Dropout)]
+            if not all(i < len(new_idx) and has_params(new_idx[i]) for i in slots):
+                continue  # a different geometry, not the old layout: leave to shape matching
+            moved = {}
+            for k in keys:
+                slot, rest = k[len(prefix):].split('.', 1)
+                moved[f"{prefix}{new_idx[int(slot)]}.{rest}"] = out.pop(k)
+            out.update(moved)
+        return out
 
     def _mole_branch(self, in_dim):
         w = int(self.moleBranchBase)
         layers = [nn.Linear(in_dim, w)] + self._reg(self.mole_regularization, w,
-                                                    self.mole_activation_leak)
+                                                    self.activation_leak)
         for _ in range(self.moleLayerUp):
             w2 = w * 2
             layers += [nn.Linear(w, w2)] + self._reg(self.mole_regularization, w2,
-                                                     self.mole_activation_leak)
+                                                     self.activation_leak)
             w = w2
         for _ in range(self.moleLayerDown):
             w2 = max(1, w // 2)
             layers += [nn.Linear(w, w2)] + self._reg(self.mole_regularization, w2,
-                                                     self.mole_activation_leak)
+                                                     self.activation_leak)
             w = w2
         layers.append(nn.Linear(w, 1))        # signed saturation, NO activation
         return nn.Sequential(*layers)
@@ -327,11 +444,10 @@ class ContinuousModel(nn.Module):
         self.register_buffer('compToEl', torch.tensor(self.compToOx_raw @ self.oxToEl_raw, dtype=torch.float))
 
     # ---------------------------------------------------------------- forward
-    def _mole_activation(self, g):
-        """g_phi -> m_phi. A subclass with a different signed label (AffinityModel)
-        overrides only this; `phaseMoles = clamp(m, min=0)` stays valid for any h with
-        h(g) = g on g >= 0 and h(g) < 0 below."""
-        return F.leaky_relu(g, self.mole_activation_leak)
+    def signed_output(self, g):
+        """The signed per-phase quantity `forward` reports in its third slot (unused by
+        the emulator, which reads phaseMoles). Here: g itself."""
+        return g
 
     def network_component_moles(self, x):
         """The network body: heads -> raw (NON mass-balanced) component moles.
@@ -343,7 +459,8 @@ class ContinuousModel(nn.Module):
         `upper_forward` (training) and the commented-out `derivative_outputs` block
         below consume the pre-anything quantities directly.
 
-        Returns `(componentMoles_raw, chem_out, m, phaseMoles, phaseProportions)`.
+        Returns `(componentMoles_raw, chem_out, g, phaseMoles, phaseProportions)`; g is
+        the raw mole-head output, and phaseMoles = relu(g) needs no activation setting.
         """
         n_feat = len(self.ml_indexer.featureNames)
         b_target = x[:, n_feat:]
@@ -375,12 +492,11 @@ class ContinuousModel(nn.Module):
         with torch.autocast(device_type=mole_in.device.type, enabled=False):
             g = torch.cat([h(mole_in.float()) for h in self.mole_head], dim=1)   # g_phi (module docstring)
 
-        m = self._mole_activation(g)                       # m_phi; signed, keeps gradient below 0
-        phaseMoles = torch.clamp(m, min=0.0)               # n_phi; exact zeros, exact sparsity
+        phaseMoles = torch.clamp(g, min=0.0)               # n_phi = relu(g); exact zeros
 
         compMultipliers = phaseMoles @ self.phaseToCompMap
         phaseProportions = chem_out @ self.variedToAllComp + self.fixed_phaseToCompMap
-        return (phaseProportions * compMultipliers, chem_out, m, phaseMoles,
+        return (phaseProportions * compMultipliers, chem_out, g, phaseMoles,
                 phaseProportions)
     """
     def tangent_project(self, dn, n, tikhonov: Optional[float] = None):
@@ -443,8 +559,9 @@ class ContinuousModel(nn.Module):
     """
     
     def forward(self, x, detailed: bool = False, **_ignored):
-        componentMoles, chem_out, m, phaseMoles, phaseProportions = \
+        componentMoles, chem_out, g, phaseMoles, phaseProportions = \
             self.network_component_moles(x)
+        m = self.signed_output(g)
 
         reconBulkUnNormed = componentMoles @ self.compToEl
         totals = reconBulkUnNormed.sum(dim=1).clamp(min=1e-6)
@@ -480,7 +597,7 @@ class ContinuousModel(nn.Module):
     def upper_forward(self, x, binaries=None, T=None):
         """Adapter consumed by `builder.training.trainer._upper_forward`.
 
-        `T`, when given, is the current annealed complementarity-smoothing temperature
+        `T` is REQUIRED: the current annealed complementarity-smoothing temperature
         (`T = a*T0`, per-phase, shape broadcastable to `(1, n_phases)`; see
         `trainer.py`'s per-epoch schedule and `ngibbs.utils.file_utils.compute_T0` for
         where `T0` comes from). It replaces the hard `m -> clamp(m, min=0)` mole output
@@ -504,16 +621,13 @@ class ContinuousModel(nn.Module):
         `logits` is NOT None, despite this architecture having no separate saturation
         head. (`g_phi`/`m_phi`/`n_phi` here are `g`/`m`/`phaseMoles` in
         `network_component_moles` -- see the module docstring's "Notation vs. code".)
-        `m = leaky_relu(g_phi, leak)` already IS the module's own docstring calling
-        `g_phi` "an affinity" whose sign the complementarity condition depends on -- it is
-        a logit in every sense but name. `g_phi` is recovered exactly from `m` via
-        leaky_relu's inverse (`g=m` where `m>=0`, `g=m/leak` where `m<0` -- leaky_relu is
-        a monotonic bijection for `leak != 0`) rather than threading a second value out of
-        `network_component_moles`, so this changes no other call site: `forward` is
-        untouched, and the physical output `n_phi = clamp(leaky_relu(g_phi), min=0)` is
-        unchanged either way.
+        `g_phi` is what the module's own docstring calls "an affinity" whose sign the
+        complementarity condition depends on -- a logit in every sense but name. It is the
+        raw, un-activated mole-head output (`network_component_moles` returns it directly),
+        so the logits, the softplus below and `|tanh(g_phi/T)|` all see `g_phi` itself, never
+        an activated value. The physical output is `n_phi = relu(g_phi)`.
 
-        Why `T` exists (`T=None` path): the mole loss on `mole=m` (whichever
+        Why `T` exists (the hard, un-annealed loss this replaced -- no longer available): the mole loss on `mole=m` (whichever
         `loss_config.moles.type` -- symmetric_rel_l2 by default, which reduces to |m| for
         an absent phase) is minimised AT m=0, so it pulls a confidently-absent phase back
         onto the boundary rather than preferring confidently-negative `g_phi` over
@@ -552,57 +666,50 @@ class ContinuousModel(nn.Module):
           back samples that are confidently wrong far from it, where the mole loss's
           own gradient has vanished.
         """
-        componentMoles_raw, chem, m, _, _ = self.network_component_moles(x)
+        componentMoles_raw, chem, g_phi, _, _ = self.network_component_moles(x)
         raw_bl = componentMoles_raw @ self.compToEl
         bulk = raw_bl / raw_bl.sum(dim=1, keepdim=True).clamp(min=1e-6)
         chem_mask = (torch.ones_like(chem) if binaries is None
                      else binaries[:, self.comp_binaries] @ self.comp_mappings)
-        # `or` rather than `min=`: guards leak=0 (plain ReLU, non-invertible) without
-        # perturbing the normal nonzero case at all.
-        leak = self.mole_activation_leak or 1e-6
-        g_phi = torch.where(m >= 0, m, m / leak)
 
-        sat_weight = None
         if T is None:
-            mole_out = m
-            sat_logits = g_phi
-        else:
-            T0 = getattr(self.ml_indexer, 'T0', None)
-            if T0 is None:
-                raise ValueError(
-                    "upper_forward(T=...) needs ml_indexer.T0 (per-phase vanishing-"
-                    "abundance scale) to build the fixed BCE reference scale, but this "
-                    "bundle has none. Re-export it (MLexporter.py computes T0 "
-                    "automatically) or backfill it with scripts/compute_T0.py, or "
-                    "disable boundary_temperature for this episode.")
-            # Forced to float32 regardless of an ambient torch.autocast context (see
-            # constants.TRAIN_PRECISION): T anneals down to a small fraction of an
-            # already-small per-phase T0, and this divides by both. autocast's built-in
-            # "always run in fp32" op list covers known-sensitive ops like softmax and
-            # reductions, but an arbitrary tensor division like this isn't on it -- left
-            # unguarded it would run in whatever the ambient dtype is, and float16's
-            # ~65504 max is well within reach of g_phi/T late in the anneal. This is
-            # exactly the regime the whole smoothing scheme exists to get right, so it
-            # must not silently lose range/precision to autocast.
-            with torch.autocast(device_type=g_phi.device.type, enabled=False):
-                g_phi32 = g_phi.float()
-                T32 = T.float() if torch.is_tensor(T) else torch.as_tensor(T, dtype=torch.float32, device=g_phi.device)
-                T0_t = torch.as_tensor(T0, dtype=torch.float32, device=g_phi.device).reshape(1, -1)
-                mole_out = T32 * torch.nn.functional.softplus(g_phi32 / T32)
-                sat_logits = 5.0 * g_phi32 / T0_t
-                sat_weight = torch.tanh(g_phi32 / T32).abs()
+            raise ValueError(
+                "ContinuousModel always trains with annealed boundary temperature: "
+                "upper_forward needs T (trainer.train_Upper_MELTS supplies it, with a "
+                "default schedule if the recipe gives none).")
+        T0 = getattr(self.ml_indexer, 'T0', None)
+        if T0 is None:
+            raise ValueError(
+                "upper_forward needs ml_indexer.T0 (per-phase vanishing-abundance scale). "
+                "main.py computes it from the validation set when the bundles lack it; "
+                "otherwise backfill with scripts/compute_T0.py.")
+        # Forced to float32 regardless of an ambient torch.autocast context (see
+        # constants.TRAIN_PRECISION): T anneals down to a small fraction of an
+        # already-small per-phase T0, and this divides by both. autocast's built-in
+        # "always run in fp32" op list covers known-sensitive ops like softmax and
+        # reductions, but an arbitrary tensor division like this isn't on it -- left
+        # unguarded it would run in whatever the ambient dtype is, and float16's
+        # ~65504 max is well within reach of g_phi/T late in the anneal. This is
+        # exactly the regime the whole smoothing scheme exists to get right, so it
+        # must not silently lose range/precision to autocast.
+        with torch.autocast(device_type=g_phi.device.type, enabled=False):
+            g_phi32 = g_phi.float()
+            T32 = T.float() if torch.is_tensor(T) else torch.as_tensor(T, dtype=torch.float32, device=g_phi.device)
+            T0_t = torch.as_tensor(T0, dtype=torch.float32, device=g_phi.device).reshape(1, -1)
+            mole_out = T32 * torch.nn.functional.softplus(g_phi32 / T32)
+            sat_logits = 5.0 * g_phi32 / T0_t
+            sat_weight = torch.tanh(g_phi32 / T32).abs()
 
         return {'logits': sat_logits,
                 'chem': chem * chem_mask,
                 'chem_mask': chem_mask,
                 'mole': mole_out,
                 'bulk': bulk,
-                'mole_mask': torch.ones_like(m),
+                'mole_mask': torch.ones_like(g_phi),
                 'sat_weight': sat_weight,
-                # Raw g_phi, always populated regardless of T/annealing (unlike
-                # `logits`, which is scaled by T0 only when T is given) -- diagnostic
+                # Raw g_phi (unlike `logits`, which is scaled by T0) -- diagnostic
                 # consumers (trainer.py's per-epoch boundary histograms) want this
-                # exact quantity, not whichever of the two `logits` happens to be.
+                # exact quantity.
                 'g_phi': g_phi}
 
 
@@ -617,6 +724,24 @@ def _coerce_float_list(v):
     if torch.is_tensor(v):
         v = v.detach().cpu().tolist()
     return [float(x) for x in np.asarray(v, dtype=np.float64).ravel()]
+
+
+# Training-only output activation settings. Inference uses relu(g) for both models;
+# ContinuousModel trains through T*softplus(g/T) (upper_forward) and needs none.
+#   affinity_eps     : AffinityModel's slope below the tanh plateau. Also used to build
+#                      the affinity LABELS (AffinityTargets), so main.py takes it from the
+#                      recipe's `affinity: eps:` block -- model and labels cannot disagree.
+ACTIVATION_TRAIN_DEFAULTS = {'affinity_eps': 0.02}
+
+# Loss weights for AffinityModel.affinity_mole_loss. Training settings, not model
+# properties: the trainer passes them per episode and they are not saved with the model.
+AFFINITY_LOSS_DEFAULTS = {
+    'affinity_margin': 0.5,
+    'affinity_hinge_weight': 1.0,
+    'affinity_pull_weight': 0.05,
+    'affinity_present_margin': 0.03,
+    'affinity_present_weight': 0.0,
+}
 
 
 class AffinityModel(ContinuousModel):
@@ -637,17 +762,29 @@ class AffinityModel(ContinuousModel):
     has to know that a model declares one. Per cell, in units of c (u = y_hat/c,
     t = y/c):
 
-        trusted   : (u - t)^2
+        trusted   : (u - t)^2  [+ present_weight * relu(min(t, present_margin) - u)^2  if t > 0]
         untrusted : hinge_weight * relu(u + margin)^2 + pull_weight * (u - t)^2
 
     where an untrusted cell is a NaN sentinel or a low-slope-filtered one, and its
     target is the -c placeholder (t = -1): the phase is known absent, only its distance
     from saturation is not.
+
+    The present-side hinge mirrors the untrusted one. Where presence is ambiguous, MSE
+    returns the conditional mean, and with absent labels reaching down to -c against
+    present ones of a few hundredths of c that mean sits below zero: a systematic
+    present->absent miss (precision/recall cross near u = -0.05 for most phases; see
+    scripts/affinity_threshold_sweep.py). The hinge makes undershooting a present cell
+    cost more than overshooting it, which lifts that mean. Its threshold is
+    min(t, present_margin) rather than present_margin alone so it never pulls against
+    the regression term: an isolated present cell is still minimised exactly at u = t,
+    so trace masses are not inflated toward the margin. Off (weight 0) by default, so
+    checkpoints trained before it existed load and score unchanged.
     """
 
-    def __init__(self, affinity_c=None, affinity_eps: float = 0.02,
-                 affinity_margin: float = 0.5, affinity_hinge_weight: float = 1.0,
-                 affinity_pull_weight: float = 0.05, **kwargs):
+    # Trained through its own tanh activation, not the annealed softplus; no T, no T0.
+    requires_boundary_temperature = False
+
+    def __init__(self, affinity_c=None, **kwargs):
         super().__init__(**kwargs)
         ml_indexer = kwargs.get('ml_indexer')
         c = _coerce_float_list(affinity_c)
@@ -662,29 +799,32 @@ class AffinityModel(ContinuousModel):
                              f"{self.n_phases} mole heads")
         if not all(np.isfinite(c)) or min(c) <= 0:
             raise ValueError(f"affinity_c must be finite and positive, got {c}")
-        self.affinity_eps = float(affinity_eps)
-        self.affinity_margin = float(affinity_margin)
-        self.affinity_hinge_weight = float(affinity_hinge_weight)
-        self.affinity_pull_weight = float(affinity_pull_weight)
         self.register_buffer('aff_c', torch.tensor(c, dtype=torch.float32).reshape(1, -1))
-        self.config.update(model_class='AffinityModel', affinity_c=c,
-                           affinity_eps=self.affinity_eps,
-                           affinity_margin=self.affinity_margin,
-                           affinity_hinge_weight=self.affinity_hinge_weight,
-                           affinity_pull_weight=self.affinity_pull_weight)
+        self.config.update(model_class='AffinityModel', affinity_c=c)
 
     # ------------------------------------------------------------------ activation
-    def _mole_activation(self, g):
+    def _mole_activation(self, g, params=None):
+        """Training activation, matching how the labels were built (AffinityTargets):
+        h(g) = g above 0, c*tanh(g/c) + eps*g below. eps only keeps gradient alive for a
+        confidently-absent phase; it is a training setting (`affinity_eps`)."""
+        eps = {**ACTIVATION_TRAIN_DEFAULTS, **(params or {})}['affinity_eps']
         c = self.aff_c.to(g.dtype)
-        return torch.where(g >= 0, g, c * torch.tanh(g / c) + self.affinity_eps * g)
+        return torch.where(g >= 0, g, c * torch.tanh(g / c) + eps * g)
+
+    def signed_output(self, g):
+        """Affinity at eps = 0 for reporting: y/c bottoms out at -1 ("confidently
+        absent", full stop). Positive values are the phase moles, as in relu(g)."""
+        c = self.aff_c.to(g.dtype)
+        return torch.where(g >= 0, g, c * torch.tanh(g / c))
 
     def transform_mole_targets(self, m_batch):
         # Affinity targets are already in output space; nothing to un-log.
         return m_batch
 
     # ------------------------------------------------------- training-loop interface
-    def upper_forward(self, x, binaries=None):
-        componentMoles_raw, chem, y_hat, _, _ = self.network_component_moles(x)
+    def upper_forward(self, x, binaries=None, act_params=None):
+        componentMoles_raw, chem, g, _, _ = self.network_component_moles(x)
+        y_hat = self._mole_activation(g, act_params)
         raw_bl = componentMoles_raw @ self.compToEl
         bulk = raw_bl / raw_bl.sum(dim=1, keepdim=True).clamp(min=1e-6)
         chem_mask = (torch.ones_like(chem) if binaries is None
@@ -700,17 +840,27 @@ class AffinityModel(ContinuousModel):
                 # diagnostic histogram needs.
                 'g_phi': y_hat / self.aff_c.to(y_hat.dtype)}
 
-    def affinity_mole_loss(self, y_hat, y, mask, phase_weights=None):
-        """Scalar mole loss over every cell (see class docstring). Always float32."""
+    def affinity_mole_loss(self, y_hat, y, mask, phase_weights=None, params=None):
+        """Scalar mole loss over every cell (see class docstring). Always float32.
+        `params` holds the loss weights (keys of AFFINITY_LOSS_DEFAULTS; missing keys
+        take the defaults) -- supplied by the trainer from the episode config."""
+        p = {**AFFINITY_LOSS_DEFAULTS, **(params or {})}
         with torch.autocast(device_type=y_hat.device.type, enabled=False):
             c = self.aff_c.float()
             u = y_hat.float() / c
             t = y.float() / c
             mask = mask.to(torch.bool)
             sq = (u - t) ** 2
-            hinge = torch.relu(u + self.affinity_margin) ** 2
-            per = torch.where(mask, sq,
-                              self.affinity_hinge_weight * hinge + self.affinity_pull_weight * sq)
+            hinge = torch.relu(u + p['affinity_margin']) ** 2
+            trusted = sq
+            if p['affinity_present_weight']:
+                present = mask & (t > 0)
+                floor = torch.clamp(t, max=p['affinity_present_margin'])
+                p_hinge = torch.relu(floor - u) ** 2
+                trusted = sq + p['affinity_present_weight'] * torch.where(
+                    present, p_hinge, torch.zeros_like(p_hinge))
+            per = torch.where(mask, trusted,
+                              p['affinity_hinge_weight'] * hinge + p['affinity_pull_weight'] * sq)
             w = (torch.ones_like(per) if phase_weights is None
                  else phase_weights.float().expand_as(per))
             return (per * w).sum() / w.sum().clamp(min=1e-12)

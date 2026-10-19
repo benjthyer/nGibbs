@@ -31,7 +31,7 @@
 #       --config recipes/training/HeFESTotuneyContinuousLight.yaml
 ####################################################################################
 
-tarname: 120SedIgClosed_Cr_NPS  # loads <tarname>_Train.tar.gz / _Test.tar.gz
+tarname: 120SedIgOpen_NoCr  # loads <tarname>_Train.tar.gz / _Test.tar.gz
 warm_start: None # 120SedIgClosed_Cr_NPT_train1e
 
 model_class: ContinuousModel
@@ -67,7 +67,7 @@ noise: 0.0                 # goes into the value path only; derivative targets s
 description: "SedIg 120 Continuous (light, ~50MB cap)"
 
 ######### data ####################################################################
-batch_size: 16384
+batch_size: 32768
 ram_threshold_gb: 26
 device: cuda
 
@@ -88,12 +88,12 @@ loss_config:
 phase_weights:                 # one weight per phase, applied to binary + mole + chemistry
                                 # loss alike (never bulk, which has no per-phase concept) --
                                 # carried over from HeFESToTuney.yaml's binweights
-  calicite: 10
-  graphite: 4
+  calcite: 10
   hornblende: 4
   leucite: 4
   biotite: 2 
   muscovite: 4
+  nepheline: 4
 
 ####################################################################################
 # PHASE A: encoder + chem_heads.
@@ -243,6 +243,7 @@ train1:
 train2:
   strategy: full
   which_heads_to_freeze: []
+  batch_size: 16384
   epochs: 120
   learning_rate: 1e-4
   early_stopping_patience: 25

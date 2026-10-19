@@ -66,6 +66,7 @@ from builder.training.residual_workspace import (
     WORKSPACE_DIR_DEFAULT,
     get_or_build_residual_workspace,
 )
+from builder.training.training_lock import training_lock
 
 ADAPTIVE_DROPOUT_MAX = 0.50
 ADAPTIVE_DROPOUT_UP = 0.01
@@ -874,4 +875,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    with training_lock():
+        main()

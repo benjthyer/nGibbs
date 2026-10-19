@@ -80,7 +80,11 @@ def _assert_derivative_basis(ml_indexer):
             "Apply the same transform to the derivative arrays before enabling this.")
 
 
-def load_ML_data(Trainpath, only_VP=None, feature_normalizer=None, with_derivatives='auto'):
+def load_ML_data(Trainpath, only_VP=None, feature_normalizer=None, with_derivatives='auto',
+                 compute_missing_T0=False):
+    """`compute_missing_T0`: if the bundle carries no T0, compute it from this bundle's
+    own molar labels (main.py asks for this on the validation set, which is cheap to scan
+    and distributed like Train)."""
 
     #sanity_check_bundle(Path(f'{Trainpath}.tar.gz')) # Good check. Cost time, so we skip for now, 
 
@@ -128,6 +132,11 @@ def load_ML_data(Trainpath, only_VP=None, feature_normalizer=None, with_derivati
     ml_indexer.molar_epsilon = molar_epsilon # Save
     ml_indexer.T0 = train_data.T0 # Per-phase vanishing-abundance scale; None if the
                                   # bundle predates it (see scripts/compute_T0.py)
+    if ml_indexer.T0 is None and compute_missing_T0:
+        from ngibbs.utils.file_utils import compute_T0
+        ml_indexer.T0 = compute_T0(moleMap, ml_indexer.mass_phasedict, ml_indexer.all_phases)
+        print(f"T0 computed from {Path(bundle_path).name}'s molar labels "
+              f"({moleMap.shape[0]:,} rows).")
 
     # Extract indexer components for easier access
     label_indices = ml_indexer.label_indices

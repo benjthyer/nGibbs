@@ -14,7 +14,10 @@ src_path = str(Path(__file__).parent.parent.parent)
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
-from builder.training.trainer import train_Lower_MELTS, train_Upper_MELTS
+from builder.training.trainer import (train_Lower_MELTS, train_Upper_MELTS,
+                                      TRAIN_PARAM_DEFAULTS, _resolve_train_params)
+from ngibbs.engine.NN_continuous import split_regularization
+from ngibbs.utils.string_utils import pull_letter
 from builder.training.optimizer_factory import create_optimizer, create_scheduler, SchedulerWrapper
 from copy import deepcopy
 
@@ -107,6 +110,8 @@ def _validate_param_dict(Param_Dict, config, label):
     rejected any key a new architecture introduced.
     """
     for key in Param_Dict:
+        if key in TRAIN_PARAM_DEFAULTS:
+            continue  # a training setting (weight decay, noise, loss weights), not model config
         if _is_architectural(key):
             missing = [k for k in _arch_keys(key) if k not in config]
             if missing:
@@ -117,6 +122,21 @@ def _validate_param_dict(Param_Dict, config, label):
         elif key not in config:
             raise KeyError(f"{label}: '{key}' is not a config key of this model. "
                            f"Model config keys: {sorted(config)}")
+
+
+def _split_trial(substitutions, base_train_params):
+    """Split one trial's substitutions into model-config overrides (applied by rebuilding
+    the model) and training settings (passed to the trainer)."""
+    model_subs = {k: v for k, v in substitutions.items() if k not in TRAIN_PARAM_DEFAULTS}
+    trial_tp = {**base_train_params,
+                **{k: v for k, v in substitutions.items() if k in TRAIN_PARAM_DEFAULTS}}
+    # An old-style combined spec in a tune grid ('0.01layernormdropout0.3'): the model
+    # keeps the normalisation, the trial's training settings take the dropout.
+    for key in ('encoder_regularization', 'mole_regularization'):
+        spec = model_subs.get(key)
+        if isinstance(spec, str) and 'dropout' in pull_letter(spec).lower():
+            trial_tp['dropout'] = split_regularization(**{key: spec})[2]
+    return model_subs, trial_tp
 
 
 def _order_arch_trials(trials, current_pair):
@@ -140,7 +160,7 @@ def _fmt(value):
 def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=None, scheduler_kwargs = {},
                      Param_Dict=None, Epochs=10, batch_size=1024, early_stopping_patience=5, max_N=np.inf, best_loss=None,
                      sweep=False, dropout_step_up=0.05, dropout_step_down=0.02, noise_step_up=0.002, noise_step_down=0.001,
-                     load_prefixes=('encoder.', 'sat_head.'), device='cuda'):
+                     load_prefixes=('encoder.', 'sat_head.'), device='cuda', train_params=None):
     """
     Tune lower binary saturation model.
     Model argument is now required.
@@ -166,12 +186,12 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
         reg_key = getattr(Model, 'lower_regularization_config_key', 'low_regularization')
         if reg_key in Model.config:
             Param_Dict[reg_key] = ['layernormdropout0', 'batchnormdropout0', 'dropout0']
-        for key, grid in (('lowWD', [0, 1E-5, 1E-4, 1E-3, 1E-2, 1E-1]),
-                          ('noise', [0, 0.01, 0.05, 0.1, 0.2])):
-            if key in Model.config:
-                Param_Dict[key] = grid
+        Param_Dict['lowWD'] = [0, 1E-5, 1E-4, 1E-3, 1E-2, 1E-1]
+        Param_Dict['noise'] = [0, 0.01, 0.05, 0.1, 0.2]
 
     _validate_param_dict(Param_Dict, Model.config, 'tune_Lower_MELTS')
+    best_tp = _resolve_train_params(Model, train_params)  # concrete values: the search origin
+    baseline_carry = {}  # dropout/noise state at the baseline's best checkpoint
 
     # === Baseline training ===
     print("\n" + "=" * 80)
@@ -184,8 +204,10 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
         best_loss = train_Lower_MELTS(best_model, trainData, testData, scheduler=scheduler, scheduler_kwargs=scheduler_kwargs,
                                     Epochs=Epochs, lr=lr, batch_size=batch_size, early_stopping_patience=early_stopping_patience, max_N=max_N, device=device,
                                                dropout_step_up=dropout_step_up, dropout_step_down=dropout_step_down,
-                                               noise_step_up=noise_step_up, noise_step_down=noise_step_down)
-    results = [{'model': deepcopy(best_model.config), 'loss': best_loss}]
+                                               noise_step_up=noise_step_up, noise_step_down=noise_step_down,
+                                               train_params=best_tp, carry_state=baseline_carry)
+        best_tp.update(baseline_carry)
+    results = [{'model': deepcopy(best_model.config), 'train_params': dict(best_tp), 'loss': best_loss}]
 
     # === Begin tuning loop ===
     for parameter, trials in Param_Dict.items():
@@ -195,8 +217,10 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
 
         anchor_bundle = TEMP_MODELS_DIR / 'Temp_Lower_Anchor.pt'
         _save_anchor_bundle(best_model, anchor_bundle)
-        anchor_config = deepcopy(best_model.config)
+        anchor_config = {**deepcopy(best_model.config), **best_tp}
         parameter_best_config = deepcopy(best_model.config)
+        parameter_best_tp = dict(best_tp)
+        last_trial_tp = last_trial_carry = None
         parameter_best_model = best_model
         parameter_best_loss = best_loss
 
@@ -204,6 +228,9 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
 
         # ---- shared trial runner (see the dispatch notes at the top of this file) ---
         def _run_trial(substitutions, label=''):
+            nonlocal last_trial_tp, last_trial_carry
+            substitutions, last_trial_tp = _split_trial(substitutions, best_tp)
+            last_trial_carry = {}
             trial_model = _load_trial_model(
                 anchor_bundle,
                 ml_indexer,
@@ -218,17 +245,20 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
                 Epochs=Epochs, lr=lr, batch_size=batch_size,
                 early_stopping_patience=early_stopping_patience, max_N=max_N, device=device,
                 dropout_step_up=dropout_step_up, dropout_step_down=dropout_step_down,
-                noise_step_up=noise_step_up, noise_step_down=noise_step_down)
-            results.append({'model': deepcopy(trial_model.config), 'loss': trial_loss})
+                noise_step_up=noise_step_up, noise_step_down=noise_step_down,
+                train_params=last_trial_tp, carry_state=last_trial_carry)
+            results.append({'model': deepcopy(trial_model.config),
+                            'train_params': dict(last_trial_tp), 'loss': trial_loss})
             return trial_model, trial_loss
 
         def _accept(trial_model, trial_loss):
-            nonlocal parameter_best_loss, parameter_best_config, parameter_best_model
+            nonlocal parameter_best_loss, parameter_best_config, parameter_best_model, parameter_best_tp
             if trial_loss >= parameter_best_loss:
                 return False
             print(f"Improved! Loss {trial_loss:.4e} < {parameter_best_loss:.4e}")
             parameter_best_loss = trial_loss
             parameter_best_config = deepcopy(trial_model.config)
+            parameter_best_tp = {**last_trial_tp, **last_trial_carry}
             parameter_best_model = trial_model
             if sweep:
                 _save_anchor_bundle(parameter_best_model, anchor_bundle)
@@ -308,13 +338,13 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
                         print(f"No improvement ({trial_loss:.4e})")
 
         best_model = parameter_best_model
-
+        best_tp = parameter_best_tp
         best_loss = parameter_best_loss
 
         # === Summary for this parameter ===
         print("\n" + "-" * 80)
         print(f"Best {parameter} configuration so far:")
-        for k, v in parameter_best_config.items():
+        for k, v in {**parameter_best_config, **parameter_best_tp}.items():
             print(f"  {k}: {v}")
         print(f"-> Current best loss: {best_loss:.4e}")
         print("-" * 80)
@@ -322,9 +352,10 @@ def tune_Lower_MELTS(Model, trainData=None, testData=None, lr = 1E-4, scheduler=
     print("\n" + "=" * 80)
     print("TUNING COMPLETE")
     print(f"Best overall loss: {best_loss:.4e}")
+    print(f"Best training settings: {best_tp}")
     print("=" * 80)
 
-    return best_model, results
+    return best_model, results, best_tp
 
 
 
@@ -334,7 +365,7 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
                     chem_alpha=1, mole_alpha=1, bulk_alpha=0, sat_alpha=0, amsgrad=False, eps = 1E-8, sweep=False,
                     dropout_step_up=0.05, dropout_step_down=0.02, noise_step_up=0.002, noise_step_down=0.001,
                     arch_load_prefixes=('encoder.', 'sat_head.'), device='cuda',
-                    train_fn=None, train_fn_kwargs=None):
+                    train_fn=None, train_fn_kwargs=None, train_params=None):
     """
     Tune the upper model. Initializes new model if none given.
     Best to generate one and give it a description.
@@ -393,10 +424,8 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
         reg_key = getattr(Model, 'upper_regularization_config_key', 'high_regularization')
         if reg_key in Model.config:
             Param_Dict[reg_key] = ['batchnormdropout0', 'layernormdropout0', 'dropout0']
-        for key, grid in (('highWD', [0, 1E-6, 1E-5, 1E-4, 1E-3]),
-                          ('noise', [0, 0.01, 0.05, 0.1, 0.2])):
-            if key in Model.config:
-                Param_Dict[key] = grid
+        Param_Dict['highWD'] = [0, 1E-6, 1E-5, 1E-4, 1E-3]
+        Param_Dict['noise'] = [0, 0.01, 0.05, 0.1, 0.2]
 
         """#Test excluding encoder from adaptive dropout
         if 'dropout' in Model.config['low_regularization'].lower():
@@ -409,6 +438,8 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
                 Param_Dict['low_regularization'].append('none')"""
 
     _validate_param_dict(Param_Dict, Model.config, 'tune_Upper_MELTS')
+    best_tp = _resolve_train_params(Model, train_params)  # concrete values: the search origin
+    baseline_carry = {}  # dropout/noise state at the baseline's best checkpoint
 
     # === Baseline training ===
     print("\n" + "=" * 80)
@@ -422,9 +453,11 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
                           binWeights=binWeights, compWeights=compWeights, max_N=max_N, device=device, which_heads_to_freeze = which_heads_to_freeze,
                           chem_alpha=chem_alpha, mole_alpha=mole_alpha, bulk_alpha=bulk_alpha, sat_alpha=sat_alpha, amsgrad=amsgrad, eps = eps,
                                                dropout_step_up=dropout_step_up, dropout_step_down=dropout_step_down,
-                                               noise_step_up=noise_step_up, noise_step_down=noise_step_down)
+                                               noise_step_up=noise_step_up, noise_step_down=noise_step_down,
+                                               train_params=best_tp, carry_state=baseline_carry)
+        best_tp.update(baseline_carry)
 
-    results = [{'model': deepcopy(Model.config), 'loss': best_loss}]
+    results = [{'model': deepcopy(Model.config), 'train_params': dict(best_tp), 'loss': best_loss}]
     best_model = Model
 
     # === Begin tuning loop ===
@@ -437,8 +470,10 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
         anchor_bundle = TEMP_MODELS_DIR / "Temp_Upper_Anchor.pt"
         _save_anchor_bundle(best_model, anchor_bundle)
 
-        active_config = deepcopy(best_model.config)
+        active_config = {**deepcopy(best_model.config), **best_tp}
         parameter_best_config = deepcopy(best_model.config)
+        parameter_best_tp = dict(best_tp)
+        last_trial_tp = last_trial_carry = None
         parameter_best_model = best_model
         parameter_best_loss = best_loss
 
@@ -446,6 +481,9 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
 
         # ---- shared trial runner: build the model, train it, record, compare --------
         def _run_trial(substitutions, load_prefixes=None, label=''):
+            nonlocal last_trial_tp, last_trial_carry
+            substitutions, last_trial_tp = _split_trial(substitutions, best_tp)
+            last_trial_carry = {}
             trial_model = _load_trial_model(
                 anchor_bundle,
                 best_model.ml_indexer,
@@ -463,17 +501,20 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
                 chem_alpha=chem_alpha, mole_alpha=mole_alpha, bulk_alpha=bulk_alpha, sat_alpha=sat_alpha,
                 amsgrad=amsgrad, eps=eps,
                 dropout_step_up=dropout_step_up, dropout_step_down=dropout_step_down,
-                noise_step_up=noise_step_up, noise_step_down=noise_step_down)
-            results.append({'model': deepcopy(trial_model.config), 'loss': trial_loss})
+                noise_step_up=noise_step_up, noise_step_down=noise_step_down,
+                train_params=last_trial_tp, carry_state=last_trial_carry)
+            results.append({'model': deepcopy(trial_model.config),
+                            'train_params': dict(last_trial_tp), 'loss': trial_loss})
             return trial_model, trial_loss
 
         def _accept(trial_model, trial_loss):
-            nonlocal parameter_best_loss, parameter_best_config, parameter_best_model
+            nonlocal parameter_best_loss, parameter_best_config, parameter_best_model, parameter_best_tp
             if trial_loss >= parameter_best_loss:
                 return False
             print(f"Improved! Loss {trial_loss:.4e} < {parameter_best_loss:.4e}")
             parameter_best_loss = trial_loss
             parameter_best_config = deepcopy(trial_model.config)
+            parameter_best_tp = {**last_trial_tp, **last_trial_carry}
             parameter_best_model = trial_model
             if sweep:
                 _save_anchor_bundle(parameter_best_model, anchor_bundle)
@@ -563,6 +604,7 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
                         print(f"No improvement ({trial_loss:.4e})")
 
         best_model = parameter_best_model
+        best_tp = parameter_best_tp
         best_loss = parameter_best_loss
 
 
@@ -575,9 +617,10 @@ def tune_Upper_MELTS(Model, trainData=None, testData=None, lr=1E-4, scheduler=No
     print("TUNING COMPLETE")
     print(f"Best overall loss: {best_loss:.4e}")
     print(f"Best config: {best_model.config}")
+    print(f"Best training settings: {best_tp}")
     print("=" * 80)
 
-    return best_model, results
+    return best_model, results, best_tp
 
 
 

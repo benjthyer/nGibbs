@@ -218,3 +218,6 @@ src/ngibbs/engine/EOS_arithmetic_MELTS/melts_vec/tests
 
 
 copilot-instructions.md
+
+# Single-process training lock (builder/training/training_lock.py)
+src/builder/training/training.lock

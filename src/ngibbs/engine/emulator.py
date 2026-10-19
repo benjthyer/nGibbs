@@ -69,7 +69,7 @@ class NN_MELTS:
 
         Parameters
         ----------
-        model : MidLevelNetwork or ContinuousModel
+        model : MidLevelNetwork, ContinuousModel or AffinityModel
             The neural network model with attached ml_indexer. Both architectures emit
             raw, NON mass-balanced component moles through an identical
             `forward(detailed=True)` 7-tuple -- this wrapper is the sole owner of the

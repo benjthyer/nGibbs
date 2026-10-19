@@ -84,8 +84,12 @@ from builder.training.benchmark import ThroughputBenchmark
 from builder.training.trainer import (
     TEMP_MODELS_DIR, _make_train_loader, _read_text_file, _regularization_spec,
     _resolve_heads_to_freeze, _set_adaptive_dropout_rate, _iter_adaptive_dropout_modules,
+    _record_dropout_state, _describe_adaptive_dropout, _resolve_train_params,
+    _activation_params, _required_boundary_temperature, BOUNDARY_TEMPERATURE_DEFAULTS,
     _upper_forward, _upper_loss, symmetric_rel_l2, _mole_targets,
     _anneal_a, _boundary_T, _print_histogram,
+    _accumulate_presence_counts, _print_presence_precision_recall,
+    _fit_check_rows, _train_reference_loader, _adapt_regularization, _check_fit_train_mode,
 )
 
 # Batch layout. The first four are the historical `TensorDatasetFour`; the derivative
@@ -204,13 +208,16 @@ def _evaluate_sobolev(model, test_loader, feature_offset, criterion_sat, criteri
                       criterion_mole, criterion_bulk, compWeights, binWeights,
                       sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
                       dndp_alpha, dndt_alpha, deriv_scale, feat_idx, ranges,
-                      device, max_N=np.inf, project_tangent=True, huber_delta=3.0, T=None):
+                      device, max_N=np.inf, project_tangent=True, huber_delta=3.0, T=None,
+                      verbose=True, act_params=None):
+    """`verbose=False`: scalar loss only -- see trainer._evaluate_upper_model."""
     model.eval()
     tot = {k: 0.0 for k in ('loss', 'sat', 'chem', 'mole', 'bulk', 'dndp', 'dndt')}
     N = 0
     out = None
     g_phi_chunks = []
     residual_chunks = []
+    presence = None
     T0 = getattr(getattr(model, 'ml_indexer', None), 'T0', None)
     # Tangents need grad through the inputs, so this cannot run under `no_grad`; the
     # parameter graph is discarded per batch instead.
@@ -220,13 +227,14 @@ def _evaluate_sobolev(model, test_loader, feature_offset, criterion_sat, criteri
         dndp_t, dndt_t = batch[_N_BASE], batch[_N_BASE + 1]
 
         with torch.no_grad():
-            out = _upper_forward(model, x_batch, b_batch, T=T)
+            out = _upper_forward(model, x_batch, b_batch, T=T, act_params=act_params)
             loss, l_sat, l_chem, l_mole, l_bulk = _upper_loss(
                 model, out, x_batch, b_batch, y_batch, m_batch, feature_offset,
                 criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
                 compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha)
 
-            if out.g_phi is not None:
+            if verbose and out.g_phi is not None:
+                presence = _accumulate_presence_counts(presence, out.g_phi, b_batch)
                 # See trainer.py's _evaluate_upper_model for why this normalizes by T0
                 # (per phase) before pooling across phases.
                 if T0 is not None:
@@ -235,7 +243,7 @@ def _evaluate_sobolev(model, test_loader, feature_offset, criterion_sat, criteri
                     g_phi_chunks.append((out.g_phi / T0_norm).detach().to('cpu', torch.float32))
                 else:
                     g_phi_chunks.append(out.g_phi.detach().to('cpu', torch.float32))
-            if out.g_phi is not None and T0 is not None:
+            if verbose and out.g_phi is not None and T0 is not None:
                 gt = _mole_targets(model, m_batch)
                 T0_t = torch.as_tensor(T0, dtype=gt.dtype, device=gt.device).reshape(1, -1)
                 near_boundary = (gt > 0) & (gt <= 2.0 * T0_t)
@@ -256,6 +264,8 @@ def _evaluate_sobolev(model, test_loader, feature_offset, criterion_sat, criteri
         if N > max_N:
             break
 
+    if not verbose:
+        return tot['loss'] / N
     has_sat = out is not None and out.logits is not None
     sat_str = 'n/a (no saturation head)' if not has_sat else f"{tot['sat']/N:.3e}"
     print(f"[TEST] Sat {sat_str}\tChem {tot['chem']/N:.3e}\tMole {tot['mole']/N:.3e}\t"
@@ -266,6 +276,8 @@ def _evaluate_sobolev(model, test_loader, feature_offset, criterion_sat, criteri
         {'sat': sat_alpha, 'chem': chem_alpha, 'mole': mole_alpha, 'bulk': bulk_alpha,
          'dndp': dndp_alpha, 'dndt': dndt_alpha})
 
+    if presence is not None:
+        _print_presence_precision_recall(presence, model)
     if g_phi_chunks:
         title = "g_phi / T0 (2nd-98th pct)" if T0 is not None else "g_phi, RAW -- no T0, not comparable across phases (2nd-98th pct)"
         _print_histogram(torch.cat(g_phi_chunks).flatten(), title)
@@ -329,7 +341,10 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
                         config_yaml=None, training_yaml=None, processing_yaml=None,
                         stats=None, log_path=None, amsgrad=True, eps=1E-4,
                         project_tangent=True, deriv_subsample=1.0, huber_delta=3.0,
-                        deriv_scale=None, row_weights=None, boundary_temperature=None):
+                        deriv_scale=None, row_weights=None, boundary_temperature=None,
+                        val_checks_per_epoch=1, fit_train_mode='train', fit_ref_rows=None,
+                        overfit_ratio=1.02, underfit_ratio=1.0, train_params=None,
+                        carry_state=None):
     """Upper-model training with `dn/dP` and `dn/dT` supervision.
 
     Extra arguments beyond `train_Upper_MELTS`:
@@ -354,6 +369,8 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
         schedule mechanism as `train_Upper_MELTS`; independent of `project_tangent`
         (which controls `tangent_project`, a different, already-existing analytic
         projection this episode may separately use for the derivative tangent).
+    val_checks_per_epoch, fit_train_mode, fit_ref_rows, overfit_ratio, underfit_ratio
+        Fit checks, as in `train_Upper_MELTS`.
     """
     if not hasattr(model, 'derivative_outputs'):
         raise TypeError(
@@ -387,8 +404,12 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
     print(f"Derivative directions: feature[{p_idx}] (dn/dP, range {ranges[p_idx]:.4g}), "
           f"feature[{t_idx}] (dn/dT, range {ranges[t_idx]:.4g})")
 
-    upper_reg = _regularization_spec(model, 'upper')
-    if 'batchnorm' in upper_reg.lower():
+    train_params = _resolve_train_params(model, train_params)
+    act_params = _activation_params(train_params)
+    upper_reg = _regularization_spec(model, 'upper', train_params)
+    norms = ' '.join(str(model.config.get(k, '')) for k in
+                     ('encoder_regularization', 'mole_regularization'))
+    if 'batchnorm' in (upper_reg + ' ' + norms).lower():
         print("WARNING: batchnorm under forward-mode AD makes each row's tangent depend on "
               "the rest of the batch, which is not a property the physics has. Prefer "
               "layernorm for derivative episodes.")
@@ -397,12 +418,13 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
         print(f"dropout in {upper_reg}: {dropout_rate} -> {max_drop}. Note each derivative "
               f"direction is a separate forward and so draws its own mask; consider 0.")
         _set_adaptive_dropout_rate(model, dropout_rate)
+        print(f"Adaptive dropout: {_describe_adaptive_dropout(model)}")
     else:
         dropout_rate = max_drop = 0
 
-    noise = model.config['noise']
-    optimizer = create_optimizer(model, lr=lr, highWD=model.config['highWD'],
-                                 lowWD=model.config['lowWD'], amsgrad=amsgrad, eps=eps)
+    noise = train_params['noise']
+    optimizer = create_optimizer(model, lr=lr, highWD=train_params['highWD'],
+                                 lowWD=train_params['lowWD'], amsgrad=amsgrad, eps=eps)
     wrappedScheduler = create_scheduler(optimizer, scheduler, **scheduler_kwargs) \
         if scheduler else SchedulerWrapper()
 
@@ -433,9 +455,10 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
         deriv_scale = torch.as_tensor(np.asarray(deriv_scale, dtype=np.float32))
 
     # --- Boundary-temperature annealing (see NN_continuous.py's upper_forward) ---
+    boundary_temperature = _required_boundary_temperature(model, boundary_temperature)
     if boundary_temperature:
-        a_start = float(boundary_temperature.get('a_start', 1.0))
-        a_end = float(boundary_temperature.get('a_end', 1e-4))
+        a_start = float(boundary_temperature.get('a_start', BOUNDARY_TEMPERATURE_DEFAULTS['a_start']))
+        a_end = float(boundary_temperature.get('a_end', BOUNDARY_TEMPERATURE_DEFAULTS['a_end']))
         print(f"[boundary_temperature] enabled: a {a_start:.3e} -> {a_end:.3e} over {Epochs} epochs")
     else:
         a_start = a_end = None
@@ -446,11 +469,11 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
         a = _anneal_a(epoch_idx, Epochs, a_start, a_end)
         return _boundary_T(model.ml_indexer, a, device)
 
-    ev = lambda T=None: _evaluate_sobolev(
-        model, test_loader, feature_offset, criterion_sat, criterion_chem, criterion_mole,
+    ev = lambda T=None, loader=test_loader, verbose=True: _evaluate_sobolev(
+        model, loader, feature_offset, criterion_sat, criterion_chem, criterion_mole,
         criterion_bulk, compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha,
         bulk_alpha, dndp_alpha, dndt_alpha, deriv_scale, feat_idx, ranges, device, max_N,
-        project_tangent, huber_delta, T=T)
+        project_tangent, huber_delta, T=T, verbose=verbose, act_params=act_params)
 
     print("Evaluating baseline (pre-training) model on validation set...")
     best_test_loss = ev(_epoch_T(0))
@@ -460,6 +483,49 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
     early_stopping_counter = 0
     bench = ThroughputBenchmark()  # one training-speed/inference-speed record, after epoch 5
 
+    # --- Fit checks (see trainer._train_reference_loader / _adapt_regularization) ---
+    checks_per_epoch = max(1, int(val_checks_per_epoch))
+    check_rows = _fit_check_rows(trainData, max_N, checks_per_epoch)
+    fit_train_mode = _check_fit_train_mode(fit_train_mode)
+    ref_loader = (_train_reference_loader(trainData, fit_ref_rows or len(testData), batch_size)
+                  if fit_train_mode == 'eval' else None)
+    patience_checks = early_stopping_patience * checks_per_epoch  # patience is configured in epochs
+
+    def _fit_check(label, T, verbose, running_train_loss):
+        """Validate, checkpoint, and step adaptive dropout. Returns (test_loss, stop)."""
+        nonlocal best_test_loss, best_epoch, early_stopping_counter, dropout_rate, noise
+        avg_test_loss = ev(T, verbose=verbose)
+        if fit_train_mode == 'eval':
+            ref_loss, ref_desc = ev(T, loader=ref_loader, verbose=False), 'eval mode'
+        else:
+            ref_loss, ref_desc = running_train_loss, 'running, train mode'
+        print(f"Check {label}: Test {avg_test_loss:.5f} | Train ({ref_desc}) {ref_loss:.5f} | "
+              f"Test/Train {avg_test_loss/max(ref_loss, 1e-30):.3f}")
+
+        if avg_test_loss < best_test_loss:
+            print(f"New best test loss: {avg_test_loss:.5f} "
+                  f"(improvement of {(best_test_loss-avg_test_loss)/best_test_loss*100:.2f}%) Saving model.")
+            best_test_loss = avg_test_loss
+            best_epoch = label
+            _record_dropout_state(model, 'upper', dropout_rate, noise, train_params, carry_state)
+            torch.save(model.state_dict(), str(TEMP_MODELS_DIR / 'temp_upper_sobolev.pt'))
+            if DictFilePath is not None:
+                model.save(DictFilePath, config_yaml=config_yaml,
+                           processing_yaml=processing_yaml, training_yaml=training_yaml,
+                           stats=stats, log_text=_read_text_file(log_path))
+            early_stopping_counter = 0
+        else:
+            early_stopping_counter += 1
+            print(f"No improvement. Counter: {early_stopping_counter}/{patience_checks} checks")
+            if early_stopping_counter >= patience_checks:
+                return avg_test_loss, True
+
+        dropout_rate, noise = _adapt_regularization(
+            model, avg_test_loss, ref_loss, dropout_rate, max_drop, noise,
+            dropout_step_up, dropout_step_down, noise_step_up, noise_step_down,
+            overfit_ratio, underfit_ratio)
+        return avg_test_loss, False
+
     for epoch in range(Epochs):
         start = time.time()
         model.train()
@@ -467,6 +533,9 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
         N = 0
         out = None
         epoch_T = _epoch_T(epoch)
+        next_check = 0
+        stop = False
+        win_loss0, win_N0 = 0.0, 0  # running totals at the previous check
         for batch in tqdm(train_loader, desc="Training", leave=False):
             if len(batch) < _N_BASE + 2:
                 raise ValueError(
@@ -495,7 +564,7 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
             else:
                 x_noisy = x_batch
 
-            out = _upper_forward(model, x_noisy, b_batch, T=epoch_T)
+            out = _upper_forward(model, x_noisy, b_batch, T=epoch_T, act_params=act_params)
             loss, l_sat, l_chem, l_mole, l_bulk = _upper_loss(
                 model, out, x_noisy, b_batch, y_batch, m_batch, feature_offset,
                 criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
@@ -520,7 +589,7 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
                 print(f"sat {float(l_sat):.3e} chem {float(l_chem):.3e} mole {float(l_mole):.3e} "
                       f"bulk {float(l_bulk):.3e} dndp {float(l_dp):.3e} dndt {float(l_dt):.3e}")
                 print('ENDING EARLY')
-                early_stopping_counter = early_stopping_patience + 1
+                early_stopping_counter = patience_checks + 1
                 break
 
             loss.backward()
@@ -550,6 +619,18 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
                 break
             wrappedScheduler.step_batch()
 
+            if next_check < len(check_rows) and N >= check_rows[next_check]:
+                next_check += 1
+                window_loss = (run['train'] - win_loss0) / max(N - win_N0, 1)
+                win_loss0, win_N0 = run['train'], N
+                _, stop = _fit_check(f"{epoch+1}.{next_check}", epoch_T, verbose=False,
+                                     running_train_loss=window_loss)
+                if stop:
+                    break
+                model.train()
+
+        if stop:
+            break
         avg_train_loss = run['train'] / max(N, 1)
         has_sat = out is not None and out.logits is not None
         sat_str = 'n/a (no saturation head)' if not has_sat else f"{run['sat']/N:.3e}"
@@ -561,50 +642,15 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
             {'sat': sat_alpha, 'chem': chem_alpha, 'mole': mole_alpha, 'bulk': bulk_alpha,
              'dndp': dndp_alpha, 'dndt': dndt_alpha})
 
-        avg_test_loss = ev(epoch_T)
-        print(f"Epoch {epoch+1:02d}: Train {avg_train_loss:.5f} | Test {avg_test_loss:.5f} "
+        label = f"{epoch+1}.{checks_per_epoch}" if checks_per_epoch > 1 else f"{epoch+1}"
+        avg_test_loss, stop = _fit_check(label, epoch_T, verbose=True,
+                                         running_train_loss=(run['train'] - win_loss0) / max(N - win_N0, 1))
+        print(f"Epoch {epoch+1:02d}: Train {avg_train_loss:.5f} (running, train mode) | Test {avg_test_loss:.5f} "
               f"| time = {time.time()-start:.1f}s")
-
-        if avg_test_loss < best_test_loss:
-            print(f"New best test loss: {avg_test_loss:.5f} "
-                  f"(improvement of {(best_test_loss-avg_test_loss)/best_test_loss*100:.2f}%) Saving model.")
-            best_test_loss = avg_test_loss
-            best_epoch = epoch + 1
-            torch.save(model.state_dict(), str(TEMP_MODELS_DIR / 'temp_upper_sobolev.pt'))
-            if DictFilePath is not None:
-                model.save(DictFilePath, config_yaml=config_yaml,
-                           processing_yaml=processing_yaml, training_yaml=training_yaml,
-                           stats=stats, log_text=_read_text_file(log_path))
-            early_stopping_counter = 0
-        else:
-            early_stopping_counter += 1
-            print(f"No improvement. Counter: {early_stopping_counter}/{early_stopping_patience}")
-            if early_stopping_counter >= early_stopping_patience:
-                break
+        if stop:
+            break
 
         wrappedScheduler.step_epoch(avg_test_loss)
-
-        # Adaptive dropout / noise, identical in policy to train_Upper_MELTS.
-        if avg_test_loss > avg_train_loss * 1.02:
-            if min(dropout_rate + dropout_step_up, max_drop) > dropout_rate:
-                old = dropout_rate
-                dropout_rate = min(dropout_rate + dropout_step_up, max_drop)
-                _set_adaptive_dropout_rate(model, dropout_rate)
-                print(f"Overfitting. Increasing Dropout: {old} -> {dropout_rate}")
-            else:
-                old = noise
-                noise = noise + noise_step_up
-                print(f"Overfitting, dropout at max {dropout_rate}. Noise: {old} -> {noise}")
-        elif avg_test_loss < avg_train_loss:
-            if max(dropout_rate - dropout_step_down, 0) < dropout_rate:
-                old = dropout_rate
-                dropout_rate = max(dropout_rate - dropout_step_down, 0)
-                _set_adaptive_dropout_rate(model, dropout_rate)
-                print(f"Underfitting. Decreasing Dropout: {old} -> {dropout_rate}")
-            else:
-                old = noise
-                noise = max(noise - noise_step_down, 0)
-                print(f"Underfitting, dropout at min {dropout_rate}. Noise: {old} -> {noise}")
         gc.collect()
 
     model.load_state_dict(torch.load(str(TEMP_MODELS_DIR / 'temp_upper_sobolev.pt'),
@@ -613,5 +659,6 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
         print(f"Best Test Loss: {best_test_loss:.5f} was the pre-training baseline; "
               f"no epoch improved on it.")
     else:
-        print(f"Best Test Loss: {best_test_loss:.5f} at epoch {best_epoch}")
+        print(f"Best Test Loss: {best_test_loss:.5f} at "
+              f"{'check (epoch.check)' if checks_per_epoch > 1 else 'epoch'} {best_epoch}")
     return best_test_loss

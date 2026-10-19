@@ -847,6 +847,18 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
                       f"EQUILIBRIUM heat capacity, not the fixed-assemblage one, before "
                       f"training on dndp_s/dnds.")
     
+    # Every phase the network has a head for must be present somewhere in the data. Late
+    # filters can in principle remove a phase's last rows; such a bundle is broken, so stop
+    # here rather than export it.
+    _binary = np.load(self.filename + 'binary_labels.npy', mmap_mode='r')
+    _seen = np.zeros(_binary.shape[1], dtype=bool)
+    for _start in range(0, _binary.shape[0], 1_000_000):
+        _seen |= (np.asarray(_binary[_start:_start + 1_000_000]) > 0).any(axis=0)
+    del _binary
+    _empty = [p for p in indexer.ml_indexer.all_phases if not _seen[indexer.ml_indexer.mass_phasedict[p]]]
+    if _empty:
+        raise ValueError(f"The exported dataset contains empty phase column(s): {_empty}")
+
     # Per-phase vanishing-abundance scale (5th percentile of nonzero training-label
     # molar abundance), for ContinuousModel's annealed complementarity-smoothing
     # temperature T = a*T0 (see NN_continuous.py). Computed once here, post-filter, on
@@ -861,9 +873,6 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
         _t0_path = Path(self.filename + 'T0.npy')
         np.save(_t0_path, _T0)
         file_mappings[str(_t0_path)] = 'T0.npy'
-        _zero_T0 = [p for p in indexer.ml_indexer.all_phases if _T0[indexer.ml_indexer.mass_phasedict[p]] == 0.0]
-        if _zero_T0:
-            print(f"[T0] WARNING: never-present phases (T0=0, cannot anneal): {_zero_T0}")
     else:
         print("Skipping T0 (compute_T0_scale=False)")
 

@@ -162,10 +162,14 @@ class _Geometry:
     """Everything the inverter needs from an `NN_MELTS`, as tensors on one device."""
 
     def __init__(self, emulator: NN_MELTS):
-        if type(emulator.model).__name__ != 'ContinuousModel':
+        if type(emulator.model).__name__ not in ('ContinuousModel', 'AffinityModel'):
             raise TypeError(
-                "Cumulate inversion needs a ContinuousModel checkpoint (signed per-phase "
-                f"affinities); got {type(emulator.model).__name__}.")
+                "Cumulate inversion needs a ContinuousModel or AffinityModel checkpoint "
+                f"(signed per-phase affinities); got {type(emulator.model).__name__}.")
+        # AffinityModel: the activated output y_hat already is the signed affinity (same
+        # sign as g, smooth through 0), and its per-phase c is the natural scale.
+        aff_c = getattr(emulator.model, 'aff_c', None)
+        self.is_affinity = aff_c is not None
         ix = emulator.ml_indexer
         if LIQUID not in ix.mass_phasedict:
             raise ValueError("Model has no 'melts-liquid' phase; nothing to invert for.")
@@ -223,6 +227,10 @@ class _Geometry:
 
         # per-phase vanishing-abundance scale
         T0 = getattr(ix, 'T0', None)
+        if T0 is None and self.is_affinity:
+            T0 = aff_c.detach().cpu().numpy().ravel()
+            print("[cumulate] no ml_indexer.T0; using AffinityModel's per-phase c as the "
+                  "affinity scale (margins/hinge widths are then in units of c)")
         T0 = np.full(len(self.phases), 1e-3, np.float32) if T0 is None else np.asarray(T0, np.float32)
         T0 = np.where(T0 > 0, T0, np.float32(1e-3))
         self.T0 = torch.as_tensor(T0, dtype=f32, device=dev)
@@ -241,8 +249,6 @@ class _Geometry:
         self.ox_lo = torch.tensor([b[0] for b in ox], dtype=f32, device=dev)
         self.ox_hi = torch.tensor([b[1] for b in ox], dtype=f32, device=dev)
 
-        leak = float(getattr(self.model, 'mole_activation_leak', 0.05) or 1e-6)
-        self.leak = leak
         self.model.eval()
 
     # ---- conversions ---------------------------------------------------------
@@ -282,8 +288,11 @@ class _Geometry:
 
     def network(self, P, T, x):
         """Run the network body. Returns (componentMoles_raw, chem_out, g)."""
-        cm, chem, m, _pm, _pp = self.model.network_component_moles(self.norm_inputs(P, T, x))
-        g = torch.where(m >= 0, m, m / self.leak)
+        cm, chem, g, _pm, _pp = self.model.network_component_moles(self.norm_inputs(P, T, x))
+        if self.is_affinity:
+            # The activated affinity at the default eps: same sign as g and, unlike the
+            # eps = 0 reporting form, keeps a gradient for a deeply-absent phase.
+            g = self.model._mole_activation(g)
         return cm, chem, g
 
     def phase_fractions(self, cm):

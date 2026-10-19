@@ -1,15 +1,19 @@
 dataset:
-  MELTSModel: '120'
-  Date: July8AffTest
-  Mode: OpenNoCrBatchCooling
+  MELTSModel: '120' 
+  Date: October14
+  Mode: closedNoCrSedIgFxBatch
   subset: false
   use_external: false
-outname: 120AffTest
+outname: 120ClosedFxBatch_NoCr_NPT
 featureNames:
-- Pressure(System_main)
-- Temperature(System_main)
-- logfO2-QFM(System_main)
-free_outputs: null
+  - 'Pressure(System_main)'
+  #- 'S(System_main) / mass(System_main)'
+  - 'Temperature(System_main)' 
+  #- 'logfO2-QFM(System_main)'
+
+  
+free_outputs: 
+  - 'S(System_main) / mass(System_main)' # Specific entropy (J/g-K)
 preprocessing:
   preprocessed: false
   recover_untracked_phases: true
@@ -18,7 +22,7 @@ preprocessing:
   separate_analcime: false
   separate_feldspar: true
   excluded_oxides: []
-min_phase_proportion: 0.02
+min_phase_proportion: 0.001
 upsampling:
   enabled: false
   phases:
