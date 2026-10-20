@@ -1,0 +1,81 @@
+## NO STRUCTURAL TUNING HERE. TRYING TO FORCE MARS MODEL TO IMPROVE
+
+
+tarname: HeFESTo_Mars_Profiles_NPS_Continuous  # loads <tarname>_Train.tar.gz / _Test.tar.gz
+warm_start: HeFESTo_Mars_Profiles_NPS_Continuous_train1 #None #HeFESTo_Earth_Adiabat_NPS_heavy_train1 #None
+
+model_class: ContinuousModel
+
+
+
+######### model (initial values; tune1-tune4 below search around these) ###########
+encoderLayerUp: 2
+encoderLayerDown: 2
+encoderBase: 128
+moleLayerUp: 2
+moleLayerDown: 1
+moleBranchBase: 128
+chemBranchBase: 64         # 0 = bare Linear-to-softmax (the original, pre-hidden-layer
+                            # chem head); tune1 below searches whether a hidden layer helps
+head_order: chem_first     # mole heads see the endmember fractions; 'parallel' to decouple
+
+encoder_regularization: 0.0layernormdropout0.3     # NOT batchnorm -- see note at bottom
+mole_regularization: 0.01dropout0.3
+activation_leak: 0.05
+mole_activation_leak: 0.05            # the leaky branch is what makes phase-out continuous
+massbalance_iters: 3
+massbalance_tikhonov: 1.0e-6
+massbalance_damping: 1.0
+lowWD: 0.001
+highWD: 0.001
+noise: 0.0                 # goes into the value path only; derivative targets see clean x
+description: "HeFESTo continuous"
+
+######### data ####################################################################
+batch_size: 8192         
+ram_threshold_gb: 26
+device: cuda
+
+######### shared loss defaults (every episode needs a complete loss_config) #######
+loss_config:
+  binary:
+    weight: 0.002                 # ContinuousModel has no saturation head
+  chemistry:
+    type: symmetric_rel_l2
+    weight: 500
+  moles:
+    type: huber
+    weight: 50
+  bulk:
+    type: symmetric_rel_l2
+    weight: 0                 # OFF through tune1-tune4; train1 switches it on -- see note at top
+
+phase_weights:                 # one weight per phase, applied to binary + mole + chemistry
+                                # loss alike (never bulk, which has no per-phase concept) --
+                                # carried over from HeFESToTuney.yaml's binweights
+  akimotoite: 10
+  hp-clinopyroxene: 4
+  plagioclase: 10
+  spinel: 4
+  stishovite: 5
+
+########### EPISODES ############
+
+train2:
+  strategy: full
+  which_heads_to_freeze: []
+  epochs: 120
+  learning_rate: 1e-4
+  early_stopping_patience: 25
+  max_N: null
+  boundary_temperature:
+    enabled: true
+    a_start: 5.0e-2
+    a_end: 1.0e-4
+  scheduler:
+    type: CosineAnnealingLR
+    args:
+      T_max: 10
+  loss_config:
+    bulk:
+      weight: 50

@@ -36,7 +36,7 @@ DATA_DIR = REPO_ROOT / 'data'
 Out_Folder = Path(internal_data_dir('MORB'))
 os.makedirs(Out_Folder, exist_ok=True)
     
-alphaMELTSLocation = os.path.join(REPO_ROOT, 'src', 'builder', 'alphamelts', 'engine', 'alphamelts-app-2.3.1-linux', 'alphamelts_linux')
+#alphaMELTSLocation = os.path.join(REPO_ROOT, 'src', 'builder', 'alphamelts', 'engine', 'alphamelts-app-2.3.1-linux', 'alphamelts_linux')
 # Location to where to put the computed files.
 EnsembleLocation = str(internal_scratch_dir())
 

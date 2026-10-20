@@ -32,7 +32,7 @@
 ####################################################################################
 
 tarname: HeFESTo_Mars_Profiles_NPT_Continuous #loads <tarname>_Train.tar.gz / _Test.tar.gz
-warm_start: HeFESTo_Mars_Profiles_NPT_Continuous_train1
+warm_start: HeFESTo_Mars_Profiles_NPT_Continuous_train2
 
 model_class: ContinuousModel
 
@@ -107,33 +107,17 @@ phase_weights:                 # one weight per phase, applied to binary + mole 
 # without any interference from the (not-yet-trained) mole branches.
 ####################################################################################
 
-train1:
-  strategy: full
-  which_heads_to_freeze: []
-  epochs: 70 # 120
-  learning_rate: 1e-4
-  early_stopping_patience: 25
-  max_N: null
-  boundary_temperature:
-    enabled: true
-    a_start: 0.6
-    a_end: 5.0e-2
-  scheduler:
-    type: CosineAnnealingLR
-    args:
-      T_max: 10
-
 
 train2:
   strategy: full
   which_heads_to_freeze: []
-  epochs: 120
+  epochs: 80
   learning_rate: 1e-4
   early_stopping_patience: 25
   max_N: null
   boundary_temperature:
     enabled: true
-    a_start: 5.0e-2
+    a_start: 3.0e-2
     a_end: 1.0e-4
   scheduler:
     type: CosineAnnealingLR

@@ -1,5 +1,9 @@
 _____________________ Unreleased _______________________
 
+2026-09-18: Auto-detect HeFESTo and MELTS temperature labels.
+- Residual temperature training now recognizes both supported output names.
+- Pressure and entropy feature names now support both bundle conventions.
+
 2026-06-20: Fixed publish workflow non-fast-forward push failures.
 - Publish workflow rebases on latest `origin/main` before pushing.
 - Rebase failures now stop with a clear, explicit workflow error.
