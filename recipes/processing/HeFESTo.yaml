@@ -1,17 +1,17 @@
 # Configuration for MELTS data processing and ML dataset generation
 # This file controls all aspects of the process_for_ML() workflow
-
+#data/MELTStables/HeFESTo/HeFESTo_Trainset101926EarthRealSimulatedConductiveAdiabat.
 # ============================================================================
 # DATASET SELECTION
 # ============================================================================
 dataset: #EXPECTED FILENAME: "nMELTS/data/MELTStables/{MELTSModel}/{'MELTS' if MELTSModel in ['102', '110', '120', 'p'] else ''}{MELTSModel}_<Train/Valid>set{Date}{Mode}"
   MELTSModel: 'HeFESTo'          # MELTS model version: '102', '110', '120', 'p'. Affects which directory dataproducts are read from and written to
-  Date: '082726'               # Date identifier for dataset naming
-  Mode: 'EarthAdiabatsCompiled'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
+  Date: '101926'               # Date identifier for dataset naming
+  Mode: 'EarthRealSimulatedConductiveAdiabat'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
   subset: false              # Whether to use subset versions of datasets
   use_external: false        # Whether to use external storage directory (specified in settings.py)
 
-outname: HeFESTo_Earth_Adiabat_NPS            # Base name for output folder (without extension). Auto-Generated if blank
+outname: HeFESTo_Earth_NPT            # Base name for output folder (without extension). Auto-Generated if blank
 
 
 # ============================================================================
@@ -19,15 +19,15 @@ outname: HeFESTo_Earth_Adiabat_NPS            # Base name for output folder (wit
 # ============================================================================
 featureNames: # Non-chemical features to include in the dataset
   - 'P(GPa)(System_main)'
-  #- 'T(K)(System_main)'
-  - 'S(J/g/K)(System_main)'
+  - 'T(K)(System_main)'
+  #- 'S(J/g/K)(System_main)'
   #- 'S(System_main)' # Isentropic 
   
 
 free_outputs: # Non-chemical labels to predict. These are used for training the saturation predictor and as auxiliary outputs for the encoder.
   #- 'Temperature(System_main)' 
-  #- 'S(J/g/K)(System_main)'
-  - 'T(K)(System_main)'
+  - 'S(J/g/K)(System_main)'
+  #- 'T(K)(System_main)'
   #- 'VS(km/s)(System_main)'
   #- 'VP(km/s)(System_main)'
   #- 'dVdP*10^6(System_main)' # COMPRESSIBILITY
