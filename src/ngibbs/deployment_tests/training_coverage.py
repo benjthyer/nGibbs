@@ -26,8 +26,11 @@ oxide set, e.g. the Cr variant adds Cr2O3):
   column (``_bundle_ps_t``);
 - the composition columns' identity and order, read straight off the
   bundle's own ``ml_indexer`` 'Oxides' (MELTS) or 'Elkeys' (HeFESTo) list
-  (``_bundle_composition``) -- MELTS's composition space is oxide mole
-  fraction, HeFESTo's is elemental mole fraction (with a ferric-iron
+  (``_bundle_composition``) -- MELTS's composition space is oxide WEIGHT
+  fraction (sum == 1; confirmed empirically -- feeding the MELTS standards
+  as oxide or cation mole fraction instead raises the isothermal emulator's
+  phase-mass error from ~1% to 22-38%), HeFESTo's is elemental mole
+  fraction (with a ferric-iron
   fraction, 'Fe3', split out of total Fe); see ``emulator.py``'s
   ``reorder_input_table(composition_space=...)`` and
   ``meltstable_comparison.py``'s ``ELEMENT_KEYS`` usage, which this module's
@@ -155,7 +158,7 @@ def _bundle_composition(features, indexer_meta, composition_space: str) -> Dict[
 def melts_standard_points(standards_dir: Path, variant: str = 'NoCr',
                            rocks: Optional[Sequence[str]] = None, *,
                            oxide_cols: Sequence[str]):
-    """(P_bar, T_C, S_specific, comp_molefrac, rock_ids) for every row of
+    """(P_bar, T_C, S_specific, comp_wtfrac, rock_ids) for every row of
     every standard rock's isobaric-cooling run under
     ``standards_dir/<variant>/<rock>/``, reusing ``melts_comparison``'s own
     table readers -- so these values are guaranteed consistent with what's
@@ -163,13 +166,15 @@ def melts_standard_points(standards_dir: Path, variant: str = 'NoCr',
 
     ``oxide_cols`` is the emulator's own input oxide set
     (``melts_comparison._emulator_input_oxides``), which differs by MELTS
-    version and Cr/NoCr variant. ``comp_molefrac`` is a dict {oxide: array}:
-    ``read_bulk_comp`` returns oxide wt%, converted here to mole fraction
-    (via each oxide's molar mass) over ``oxide_cols`` to match the bundle's
-    own oxide-mole-fraction convention. Returns None if no rock directory
-    exists for this variant at all.
+    version and Cr/NoCr variant. ``comp_wtfrac`` is a dict {oxide: array}:
+    ``read_bulk_comp`` returns oxide wt%, renormalized here to sum == 1 over
+    ``oxide_cols`` -- the bundle's own oxide-weight-fraction convention, and
+    exactly what ``EmulatorAPI.parse_input`` does to the same wt% when
+    ``melts_comparison`` feeds it to the emulator. (Converting to mole
+    fraction here used to shift every standard off the training cloud, e.g.
+    MORB's SiO2 from 0.50 to 0.83 relative to Al2O3.) Returns None if no rock
+    directory exists for this variant at all.
     """
-    from ngibbs.config.constants import get_oxide_molar_mass
     from ngibbs.deployment_tests.melts_comparison import (
         ROCKS, read_system_main, read_bulk_comp,
     )
@@ -196,12 +201,11 @@ def melts_standard_points(standards_dir: Path, variant: str = 'NoCr',
         return None
 
     wtpct = {ox: np.concatenate(cols) for ox, cols in wtpct_cols.items()}
-    moles = {ox: wtpct[ox] / get_oxide_molar_mass(ox) for ox in oxide_cols}
-    total_moles = np.sum(list(moles.values()), axis=0)
-    total_moles = np.where(total_moles == 0, 1.0, total_moles)
-    comp_molefrac = {ox: moles[ox] / total_moles for ox in oxide_cols}
+    total_wt = np.sum(list(wtpct.values()), axis=0)
+    total_wt = np.where(total_wt == 0, 1.0, total_wt)
+    comp_wtfrac = {ox: wtpct[ox] / total_wt for ox in oxide_cols}
 
-    return np.concatenate(P_all), np.concatenate(T_all), np.concatenate(S_all), comp_molefrac, ids_all
+    return np.concatenate(P_all), np.concatenate(T_all), np.concatenate(S_all), comp_wtfrac, ids_all
 
 
 # --------------------------------------------------------------------------- #

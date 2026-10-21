@@ -756,28 +756,32 @@ def _discover_standards_dir(deployment_tests_root: Path, model_dir: Path) -> Opt
     A model_dir named after a bare version number (MELTS's '120', say) shares
     no name token at all with a directory like 'MELTSIsobaricStandards' --
     the overlap is only findable one level down, in a numeric-named
-    subdirectory ('MELTSIsobaricStandards/120'). So for each 'standard'
-    candidate, a numeric-named subdirectory matching one of model_dir's own
-    numeric tokens counts as a match in its own right (and is what gets
-    returned for that candidate), on top of plain top-level name overlap.
+    subdirectory ('MELTSIsobaricStandards/120'). Likewise HeFESTo's standards
+    are split per planet ('HeFESToAdiabatStandards/Earth', '.../Mars'), since
+    each set is run along that planet's own P-T conditions. So for each
+    'standard' candidate, the subdirectory sharing the most name tokens with
+    model_dir ('120', 'Earth', 'Mars', ...) adds to that candidate's score
+    and is what gets returned for it, on top of plain top-level name overlap.
     Returns None if nothing scores > 0 either way.
     """
     if not deployment_tests_root.is_dir():
         return None
     target = _name_tokens(model_dir.name)
-    numeric_tokens = {t for t in target if t.isdigit()}
     candidates = [d for d in deployment_tests_root.iterdir()
                   if d.is_dir() and 'standard' in _name_tokens(d.name)]
     best_score, best_result = 0, None
     for c in candidates:
         score = len(_name_tokens(c.name) & target)
         result = c
-        if numeric_tokens:
-            for sub in sorted(c.iterdir()):
-                if sub.is_dir() and sub.name in numeric_tokens:
-                    score = max(score, 1)
-                    result = sub
-                    break
+        sub_score, best_sub = 0, None
+        for sub in sorted(c.iterdir()):
+            if sub.is_dir():
+                s = len(_name_tokens(sub.name) & target)
+                if s > sub_score:
+                    sub_score, best_sub = s, sub
+        if best_sub is not None:
+            score += sub_score
+            result = best_sub
         if score > best_score:
             best_score, best_result = score, result
     return best_result
@@ -2227,8 +2231,9 @@ class HeFESToAPI(EmulatorAPI):
             standards directory for the HeFESTo-specific bulk-property/
             phase-abundance comparison in ``self.test()`` is auto-discovered
             the same way, by fuzzy name match against ``model_dir``'s name
-            (e.g. ``engine/TrainedModels/HeFESTo_Adiabats`` ->
-            ``deployment_tests/HeFESToAdiabatStandards``); left unconfigured
+            (e.g. ``engine/TrainedModels/HeFESToEarthAdiabat`` ->
+            ``deployment_tests/HeFESToAdiabatStandards/Earth``,
+            ``HeFESToMars`` -> ``.../Mars``); left unconfigured
             (comparison skipped, not failed) if nothing matches.
         device : str, default='cpu'
             Torch device ('cpu' or 'cuda')

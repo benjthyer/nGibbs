@@ -1,4 +1,3 @@
-Title: Early WR Bishop Tuff - Hildreth 1979. 
 Output: both
 Initial Pressure: 1500
 Final Pressure: 1500
@@ -17,7 +16,8 @@ Initial Composition: CaO 0.45
 Initial Composition: Na2O 3.9
 Initial Composition: K2O 4.8
 Initial Composition: P2O5 0.01
-Initial Composition: H2O 0.4
+Initial Composition: H2O 0.3
+Initial Composition: CO2 0.1
 Suppress: rutile
 Suppress: sphene
 Suppress: melilite

@@ -43,10 +43,6 @@ _MODEL_SPECS = {
         HeFESToAPI,
         dict(model_dir=str(_this_file_dir / "TrainedModels" / "HeFESToMars")),
     ),
-    "HeFESToMarsGatedEmulator": (
-        HeFESToAPI,
-        dict(model_dir=str(_this_file_dir / "TrainedModels" / "HeFESToMarsGated")),
-    ),
 }
 
 # CPU_MODELS is always fully populated; GPU_MODELS only gains entries when

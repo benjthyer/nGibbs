@@ -1,5 +1,4 @@
 Title: (Carbonated) Lherzolite, Perc3, Dasgupta and Hirshmann, 2007 
-
 Output: both
 Initial Pressure: 9000
 Final Pressure: 9000
@@ -19,7 +18,6 @@ Initial Composition: MgO 39.27
 Initial Composition: CaO 3.52
 Initial Composition: Na2O 0.3
 Initial Composition: K2O 0.01
-!Initial Composition: CO2 1.02
 Suppress: rutile
 Suppress: sphene
 Suppress: melilite
