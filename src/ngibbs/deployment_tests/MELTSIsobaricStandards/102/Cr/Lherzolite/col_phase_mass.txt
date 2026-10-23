@@ -20,10 +20,6 @@ Table: clinopyroxene1
 Columns: mass
 
 File: Phase_main_tbl.txt
-Table: garnet1
-Columns: mass
-
-File: Phase_main_tbl.txt
 Table: leucite1
 Columns: mass
 

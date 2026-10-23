@@ -12,19 +12,11 @@ Table: liquid1
 Columns: V
 
 File: Phase_main_tbl.txt
-Table: alkali-feldspar1
-Columns: V
-
-File: Phase_main_tbl.txt
 Table: clinopyroxene1
 Columns: V
 
 File: Phase_main_tbl.txt
-Table: garnet1
-Columns: V
-
-File: Phase_main_tbl.txt
-Table: leucite1
+Table: fluid1
 Columns: V
 
 File: Phase_main_tbl.txt
@@ -36,18 +28,6 @@ Table: orthopyroxene1
 Columns: V
 
 File: Phase_main_tbl.txt
-Table: plagioclase1
-Columns: V
-
-File: Phase_main_tbl.txt
-Table: quartz1
-Columns: V
-
-File: Phase_main_tbl.txt
 Table: spinel1
-Columns: V
-
-File: Phase_main_tbl.txt
-Table: tridymite1
 Columns: V
 

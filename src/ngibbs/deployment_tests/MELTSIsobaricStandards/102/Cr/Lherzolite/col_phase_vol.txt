@@ -20,10 +20,6 @@ Table: clinopyroxene1
 Columns: V
 
 File: Phase_main_tbl.txt
-Table: garnet1
-Columns: V
-
-File: Phase_main_tbl.txt
 Table: leucite1
 Columns: V
 

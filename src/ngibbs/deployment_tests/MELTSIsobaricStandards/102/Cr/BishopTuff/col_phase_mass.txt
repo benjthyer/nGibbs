@@ -20,6 +20,10 @@ Table: apatite1
 Columns: mass
 
 File: Phase_main_tbl.txt
+Table: biotite1
+Columns: mass
+
+File: Phase_main_tbl.txt
 Table: clinopyroxene1
 Columns: mass
 
@@ -28,15 +32,15 @@ Table: leucite1
 Columns: mass
 
 File: Phase_main_tbl.txt
+Table: olivine1
+Columns: mass
+
+File: Phase_main_tbl.txt
 Table: plagioclase1
 Columns: mass
 
 File: Phase_main_tbl.txt
 Table: rhm-oxide1
-Columns: mass
-
-File: Phase_main_tbl.txt
-Table: rhm-oxide2
 Columns: mass
 
 File: Phase_main_tbl.txt
