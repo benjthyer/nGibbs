@@ -18,7 +18,7 @@ import numpy as np
 import torch
 import matplotlib
 
-matplotlib.use("Agg")
+# matplotlib.use("Agg")  # disabled: a global backend switch breaks interactive plotting (e.g. PetThermoTools)
 import matplotlib.pyplot as plt
 
 # Ensure repo root and src are on path

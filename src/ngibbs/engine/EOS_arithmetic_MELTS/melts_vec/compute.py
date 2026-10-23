@@ -193,6 +193,7 @@ def compute(T, P, params: MELTSSolidParams, names=None, is_pmelts: bool = False)
                 eoc[None, :, 0], eoc[None, :, 1], eoc[None, :, 2], eoc[None, :, 3],
                 cpc[None, :, 0], cpc[None, :, 1], cpc[None, :, 2], cpc[None, :, 3],
                 cpc[None, :, 4], cpc[None, :, 6], cpc[None, :, 7],
+                is_pmelts=is_pmelts,
             )
             G, H, S = np.where(is_tridymite, tdy["G"], G), np.where(is_tridymite, tdy["H"], H), np.where(is_tridymite, tdy["S"], S)
             Cp, dCpdT = np.where(is_tridymite, tdy["Cp"], Cp), np.where(is_tridymite, tdy["dCpdT"], dCpdT)

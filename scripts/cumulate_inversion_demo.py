@@ -167,7 +167,7 @@ def main(argv=None):
     print(f"{len(targets)} targets: " + ', '.join(t.name for t in targets), flush=True)
 
     import matplotlib
-    matplotlib.use('Agg')
+    # matplotlib.use('Agg')  # disabled: a global backend switch breaks interactive plotting (e.g. PetThermoTools)
     import matplotlib.pyplot as plt
 
     recovery = []
