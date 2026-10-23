@@ -29,7 +29,7 @@ _this_file_dir = Path(__file__).parent
 _MODEL_SPECS = {
     "HeFESToEmulator": (
         HeFESToAPI,
-        dict(model_dir=str(_this_file_dir / "TrainedModels" / "HeFESToEarthAdiabat")),
+        dict(model_dir=str(_this_file_dir / "TrainedModels" / "HeFESToEarth")),
     ),
     "MELTS120Emulator": (
         MELTSAPI,
