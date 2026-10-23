@@ -33,11 +33,13 @@ HeFESTo has no analogue of):
     output, i.e. ``EmulatorAPI.get_T``) -- exactly what inference does, and
     what HeFESTo's ``meltstable_comparison`` does -- never at the GT T.
   - ``emulation_openox``: the trained MELTS120 OPEN (fO2-buffered) emulator's
-    own predicted assemblage, fed (P, T, logfO2-QFM) -- every
-    MELTSIsobaricStandards run really is fO2-buffered (FMQ+0, confirmed
-    directly against each rock's ``input.melts``/``System_main_tbl.txt``),
-    so the real ``fO2-(QFM)`` column is a genuine, appropriate input here,
-    not an approximation. This model derives its own FeO/Fe2O3 split
+    own predicted assemblage, fed (P, T, logfO2-QFM). This is only valid
+    for fO2-buffered MELTSIsobaricStandards runs, where each rock has its own
+    buffer offset (e.g. MORB FMQ+0, Lherzolite FMQ-2, BishopTuff FMQ+2;
+    see ``input.melts``). The QFM-relative value comes from
+    System_main_tbl.txt's ``fO2-(QFM[+/-offset])`` column, adjusted by the
+    offset encoded in the column name (see ``_fO2_qfm``), so it is a
+    genuine input here, not an approximation. This model derives its own FeO/Fe2O3 split
     internally rather than taking one as input, so its single 'FeO'
     composition column is fed the GT's total iron (FeO + Fe2O3 collapsed to
     one FeO-equivalent value -- see ``_bulk_total_feo``), not the GT's
@@ -791,9 +793,10 @@ def run_melts_property_comparison(
 
             # source 4: emulator-predicted assemblage, open/fO2-buffered
             # (P, T, logfO2-QFM) pathway. NoCr only (no Cr openox
-            # checkpoint exists); guarded on the fO2-(QFM) column existing
-            # too, though every MELTSIsobaricStandards run has one (these
-            # are FMQ+0-buffered runs -- see module docstring).
+            # checkpoint exists); guarded on an fO2-(QFM[+/-offset]) column
+            # existing, which only buffered runs have. Rocks use different
+            # buffer offsets (MORB FMQ+0, Lherzolite FMQ-2, BishopTuff FMQ+2);
+            # _fO2_qfm adds the offset back.
             props_open = cov_open = None
             fO2_QFM = _fO2_qfm(sysmain)
             if variant == 'NoCr' and api.nocr.open_emulator is not None and fO2_QFM is not None:

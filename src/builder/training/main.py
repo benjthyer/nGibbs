@@ -38,6 +38,7 @@ from builder.training.sobolev import train_Upper_Sobolev
 from builder.training.tuners import tune_Lower_MELTS, tune_Upper_MELTS
 from builder.training.logger import setup_training_logger, redirect_output, restore_output
 from builder.training.training_lock import training_lock
+from builder.training.history import TrainingHistory, history_wanted, CONFIG_KEY as HISTORY_KEY
 from ngibbs.utils.string_utils import apply_type_conversions
 from ngibbs.config.constants import TYPE_CONVERSION_MAP
 
@@ -778,6 +779,14 @@ def main() -> None:
 
     # Discover and execute episodes in order
     episodes = _discover_episodes(config)
+
+    # Training-curve history: LR, adaptive dropout/noise and window-mean weighted losses
+    # every `history_every_n_batches` batches of every train episode, on one epoch axis
+    # continuous across episodes -> {log_dir}/{tarname}_history.csv, rewritten after each
+    # episode. Plot with scripts/plot_training_history.py.
+    history = TrainingHistory(log_dir / f"{tarname}_history.csv") if history_wanted(config) else None
+    if history is not None:
+        print(f"[history] recording train episodes to {history.path}")
     
     for episode_key, episode_type, episode_cfgI in episodes:
 
@@ -1095,6 +1104,10 @@ def main() -> None:
             redirect_output(logger)
             log_path = getattr(logger, "log_path", None)
             
+            if history is not None:
+                history.start_episode(episode_key, _dataset_n_rows(train_set),
+                                      episode_cfg.get(HISTORY_KEY))
+
             try:
                 if strategy == "lower":
                     train_Lower_MELTS(
@@ -1122,6 +1135,7 @@ def main() -> None:
                         log_path=log_path,
                         train_params=train_params,
                         carry_state=carry_state,
+                        history=history,
                     )
                 else:
                     #raise ValueError('This temporary config works on lower model only')
@@ -1129,6 +1143,11 @@ def main() -> None:
                     _train_fn, _dkw = _derivative_settings(episode_cfg, train_set)
                     _dkw.update(_boundary_temperature_settings(episode_cfg))
                     _dkw.update(fit_check_kw)
+                    if _train_fn is train_Upper_MELTS:
+                        _dkw['history'] = history
+                    elif history is not None:
+                        print("[history] not recorded for derivative (Sobolev) episodes; "
+                              "the epoch axis does not advance over this episode.")
                     _train_fn(
                         best_model,
                         train_set,
@@ -1183,11 +1202,19 @@ def main() -> None:
                     print(f"No improvement in episode {episode_key}; carrying forward previous best model without a new checkpoint.")
                 
             finally:
+                if history is not None and history.active:
+                    history.end_episode()
+                    try:
+                        print(f"[history] wrote {history.write_csv()}")
+                    except OSError as exc:  # never mask a training error with a CSV one
+                        print(f"[history] WARNING: could not write {history.path}: {exc}")
                 restore_output(original_stdout)
                 logger.close()
 
     print(f"\n{'='*60}")
     print("All episodes completed successfully!")
+    if history is not None:
+        print(f"Training history: {history.path}")
     print(f"{'='*60}")
 
 
