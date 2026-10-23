@@ -1,10 +1,10 @@
 dataset:
   MELTSModel: '120' 
-  Date: October14
-  Mode: closedNoCrSedIgFxBatch
+  Date: October20
+  Mode: openCrSedIgFxBatch
   subset: false
   use_external: false
-outname: 120ClosedFxBatch_NoCr_NPT
+outname: 120OpenFxBatch_Cr_NPT
 featureNames:
   - 'Pressure(System_main)'
   #- 'S(System_main) / mass(System_main)'

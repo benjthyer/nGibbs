@@ -40,14 +40,6 @@ Table: plagioclase1
 Columns: V
 
 File: Phase_main_tbl.txt
-Table: quartz1
-Columns: V
-
-File: Phase_main_tbl.txt
 Table: spinel1
-Columns: V
-
-File: Phase_main_tbl.txt
-Table: tridymite1
 Columns: V
 

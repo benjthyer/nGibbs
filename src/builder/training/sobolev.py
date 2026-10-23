@@ -85,7 +85,7 @@ from builder.training.trainer import (
     TEMP_MODELS_DIR, _make_train_loader, _read_text_file, _regularization_spec,
     _resolve_heads_to_freeze, _set_adaptive_dropout_rate, _iter_adaptive_dropout_modules,
     _record_dropout_state, _describe_adaptive_dropout, _resolve_train_params,
-    _activation_params, _required_boundary_temperature, BOUNDARY_TEMPERATURE_DEFAULTS,
+    _activation_params, _hinge_params, _required_boundary_temperature, BOUNDARY_TEMPERATURE_DEFAULTS,
     _upper_forward, _upper_loss, symmetric_rel_l2, _mole_targets,
     _anneal_a, _boundary_T, _print_histogram,
     _accumulate_presence_counts, _print_presence_precision_recall,
@@ -209,7 +209,7 @@ def _evaluate_sobolev(model, test_loader, feature_offset, criterion_sat, criteri
                       sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
                       dndp_alpha, dndt_alpha, deriv_scale, feat_idx, ranges,
                       device, max_N=np.inf, project_tangent=True, huber_delta=3.0, T=None,
-                      verbose=True, act_params=None):
+                      verbose=True, act_params=None, hinge_params=None):
     """`verbose=False`: scalar loss only -- see trainer._evaluate_upper_model."""
     model.eval()
     tot = {k: 0.0 for k in ('loss', 'sat', 'chem', 'mole', 'bulk', 'dndp', 'dndt')}
@@ -231,7 +231,8 @@ def _evaluate_sobolev(model, test_loader, feature_offset, criterion_sat, criteri
             loss, l_sat, l_chem, l_mole, l_bulk = _upper_loss(
                 model, out, x_batch, b_batch, y_batch, m_batch, feature_offset,
                 criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
-                compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha)
+                compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
+                hinge_params=hinge_params)
 
             if verbose and out.g_phi is not None:
                 presence = _accumulate_presence_counts(presence, out.g_phi, b_batch)
@@ -406,6 +407,7 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
 
     train_params = _resolve_train_params(model, train_params)
     act_params = _activation_params(train_params)
+    hinge_params = _hinge_params(train_params)
     upper_reg = _regularization_spec(model, 'upper', train_params)
     norms = ' '.join(str(model.config.get(k, '')) for k in
                      ('encoder_regularization', 'mole_regularization'))
@@ -473,7 +475,8 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
         model, loader, feature_offset, criterion_sat, criterion_chem, criterion_mole,
         criterion_bulk, compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha,
         bulk_alpha, dndp_alpha, dndt_alpha, deriv_scale, feat_idx, ranges, device, max_N,
-        project_tangent, huber_delta, T=T, verbose=verbose, act_params=act_params)
+        project_tangent, huber_delta, T=T, verbose=verbose, act_params=act_params,
+        hinge_params=hinge_params)
 
     print("Evaluating baseline (pre-training) model on validation set...")
     best_test_loss = ev(_epoch_T(0))
@@ -568,7 +571,8 @@ def train_Upper_Sobolev(model, trainData, testData, scheduler, scheduler_kwargs=
             loss, l_sat, l_chem, l_mole, l_bulk = _upper_loss(
                 model, out, x_noisy, b_batch, y_batch, m_batch, feature_offset,
                 criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
-                compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha)
+                compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
+                hinge_params=hinge_params)
 
             sub = None
             if deriv_subsample < 1.0:

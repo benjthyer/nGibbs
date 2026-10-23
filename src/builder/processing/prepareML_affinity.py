@@ -449,21 +449,23 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, outn
             # chunked training readers never have to worry about row-order
             # structure (e.g. upsampled rows resample_rare_phase appends as a
             # block at the end of the table) - see MLexporter.shuffle_bundle_rows.
-            print("Shuffling training row order (one-time, out-of-core, post-packaging)...")
-            # Label every simulation path (g, s) while rows are still in table order, then
-            # shuffle - one extract and one repack (see affinity_labels.finalize_bundle).
-            finalize_bundle(train_bundle_path, shuffle=True, compute_cstats_flag=False,
-                            params=affinity_params, chunk_size=chunk_size)
-
             TrainIndexer = deepcopy(TrainMELTS.indexer)  # Capture indexer for consistency with validation/test dataset
 
             del TrainMELTS.table
             del TrainMELTS
             gc.collect()
 
-            # Clear intermediate memory maps
+            # Clear intermediate memory maps before finalize_bundle: the extract + shuffle
+            # needs roughly 2x the unpacked bundle in free disk, and a full disk surfaces as
+            # SIGBUS (Bus error) on the shuffle's memmap writes rather than a Python error.
             delete_files_with_keyword(str(INTERNAL_DIR), keyword='working', dry_run=False)
             delete_files_with_keyword(str(INTERNAL_DIR), keyword='temp', dry_run=False)
+
+            print("Shuffling training row order (one-time, out-of-core, post-packaging)...")
+            # Label every simulation path (g, s) while rows are still in table order, then
+            # shuffle - one extract and one repack (see affinity_labels.finalize_bundle).
+            finalize_bundle(train_bundle_path, shuffle=True, compute_cstats_flag=False,
+                            params=affinity_params, chunk_size=chunk_size)
 
         else:
             # Load pre-built training artifacts; skip the full training pipeline.
@@ -577,10 +579,6 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, outn
         )
 
         test_bundle_path = ensure_bundle_in_train_dir(test_bundle_path)
-        # Label the validation ("Test") bundle and build cStats from its crossings. Not
-        # shuffled (the trainer does not need it shuffled), so rows stay in table order.
-        finalize_bundle(test_bundle_path, shuffle=False, compute_cstats_flag=True,
-                        params=affinity_params, chunk_size=chunk_size)
 
         # Generate plots of the test data (saved to PLOT_DIR, not displayed due to 'Agg' backend)
         if plot_enabled:
@@ -591,8 +589,14 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, outn
         del TestMELTS
         gc.collect()
 
+        # Free intermediate memory maps before extracting the bundle (see the train branch).
         delete_files_with_keyword(str(INTERNAL_DIR), keyword='working', dry_run=False)
         delete_files_with_keyword(str(INTERNAL_DIR), keyword='temp', dry_run=False)
+
+        # Label the validation ("Test") bundle and build cStats from its crossings. Not
+        # shuffled (the trainer does not need it shuffled), so rows stay in table order.
+        finalize_bundle(test_bundle_path, shuffle=False, compute_cstats_flag=True,
+                        params=affinity_params, chunk_size=chunk_size)
         #sanity_check_bundle(test_bundle)  # Verify test bundle integrity before proceeding
 
         # Move ALL files to external directory if requested

@@ -32,7 +32,7 @@
 ####################################################################################
 
 tarname: HeFESTo_Earth_NPT   # loads <tarname>_Train.tar.gz / _Test.tar.gz
-warm_start: HeFESTo_Earth_NPT_train1 # 120SedIgClosed_Cr_NPT_train1e
+warm_start: HeFESTo_Earth_NPT_train5 # 120SedIgClosed_Cr_NPT_train1e
 
 encoderLayerUp: 3
 encoderLayerDown: 2
@@ -97,8 +97,8 @@ noise: 0.0                 # goes into the value path only; derivative targets s
 description: "102 Continuous, closed+FXtal, parallel"
 
 ######### data ####################################################################
-batch_size: 16384
-ram_threshold_gb: 13
+batch_size: 32768
+ram_threshold_gb: 26
 device: cuda
 
 ######### shared loss defaults (every episode needs a complete loss_config) #######
@@ -107,7 +107,7 @@ loss_config:
     weight: 0.01                 
   chemistry:
     type: symmetric_rel_l2
-    weight: 100
+    weight: 10
   moles: 
     weight: 50
   bulk:
@@ -136,28 +136,6 @@ phase_weights:                 # one weight per phase, applied to binary + mole 
 # so it stays inert everywhere it is left at 0.
 ####################################################################################
 
-
-train3:
-  strategy: full
-  which_heads_to_freeze: []
-  epochs: 60
-  # Fit checks: validate + step adaptive dropout 4x per epoch (3 in-epoch, 1 at the end),
-  # on Test / eval-mode-Train. Dead band [0.97, 1.05] is the code default. Steps are per
-  # check; recovering (down) is 5x slower than the overfitting penalty (up).
-  val_checks_per_epoch: 4
-  dropout_step_up: 0.001
-  dropout_step_down: 0.0002
-  learning_rate: 1e-4
-  early_stopping_patience: 15
-  max_N: null
-  scheduler:
-    type: CosineAnnealingLR
-    args:
-      T_max: 5
-  boundary_temperature: # MUST KEEP THIS ON
-    enabled: true
-    a_start: 0.7
-    a_end: 0.4
 
 train4:
   strategy: full

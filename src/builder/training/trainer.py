@@ -27,6 +27,7 @@ from ngibbs.utils.string_utils import pull_number_range, _number_pattern as _DRO
 from builder.training.optimizer_factory import create_optimizer, create_scheduler, SchedulerWrapper
 from builder.training.benchmark import ThroughputBenchmark
 from ngibbs.config import constants
+from ngibbs.utils.file_utils import load_ml_bundle
 import ngibbs.engine.NN as NN
 from ngibbs.engine.NN_continuous import (AFFINITY_LOSS_DEFAULTS, ACTIVATION_TRAIN_DEFAULTS,
                                          split_regularization)
@@ -484,8 +485,11 @@ def _resolve_heads_to_freeze(model, names):
 # (AFFINITY_LOSS_DEFAULTS) and training-only output activations
 # (ACTIVATION_TRAIN_DEFAULTS) are included; a model ignores the ones it has no use for.
 # `dropout` is the shared '<initial>dropout<max>' spec ('none' = no adaptive dropout).
+# ContinuousModel's absent-side margin hinge (see `_absent_hinge_loss`); weight 0 = off.
+ABSENT_HINGE_DEFAULTS = {'absent_hinge_weight': 0.0, 'absent_hinge_margin': 1.0}
 TRAIN_PARAM_DEFAULTS = {'lowWD': 0.0, 'highWD': 0.0, 'noise': 0.0, 'dropout': 'none',
-                        **ACTIVATION_TRAIN_DEFAULTS, **AFFINITY_LOSS_DEFAULTS}
+                        **ACTIVATION_TRAIN_DEFAULTS, **AFFINITY_LOSS_DEFAULTS,
+                        **ABSENT_HINGE_DEFAULTS}
 
 
 def _resolve_train_params(model, train_params=None):
@@ -515,10 +519,41 @@ def _activation_params(train_params):
     return {k: train_params[k] for k in ACTIVATION_TRAIN_DEFAULTS}
 
 
+def _hinge_params(train_params):
+    return {k: train_params[k] for k in ABSENT_HINGE_DEFAULTS}
+
+
+def _absent_hinge_loss(model, out: UpperBatch, b_batch, hinge_params):
+    """Mean over GT-absent cells of `relu(g_phi/T0 + m)^2`, or None when the weight is 0.
+
+    The BCE on `5*g_phi/T0` is two-sided: besides pushing absent phases below the boundary
+    it pulls present trace phases (t < T0) up past it, inflating their abundance. This
+    acts on GT-absent cells only, so it opens a margin of `m*T0` on the side the false
+    positives come from without biasing present phases. Dividing by T0 makes `m` mean
+    the same thing for every phase, as the BCE logit's scaling does."""
+    if not hinge_params or not float(hinge_params['absent_hinge_weight']):
+        return None
+    if out.g_phi is None or getattr(model, 'affinity_mole_loss', None) is not None:
+        raise ValueError(f"absent_hinge_weight > 0 needs a ContinuousModel's raw g_phi; "
+                         f"{type(model).__name__} does not provide one (AffinityModel has "
+                         f"its own hinge).")
+    T0 = getattr(model.ml_indexer, 'T0', None)
+    if T0 is None:
+        raise ValueError("absent_hinge_weight > 0 needs ml_indexer.T0 (see compute_T0).")
+    # float32 for the same reason as upper_forward: T0 is as small as ~1e-5.
+    with torch.autocast(device_type=out.g_phi.device.type, enabled=False):
+        T0_t = torch.as_tensor(T0, dtype=torch.float32,
+                               device=out.g_phi.device).reshape(1, -1).clamp(min=1e-30)
+        absent = (b_batch <= 0.5).to(torch.float32)
+        u = out.g_phi.float() / T0_t
+        h = torch.relu(u + float(hinge_params['absent_hinge_margin'])) ** 2
+        return (h * absent).sum() / absent.sum().clamp(min=1.0)
+
+
 def _upper_loss(model, out: UpperBatch, x_batch, b_batch, y_batch, m_batch, feature_offset,
                 criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
                 compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
-                mask_batch=None, affinity_params=None):
+                mask_batch=None, affinity_params=None, hinge_params=None):
     """Single definition of the upper objective, shared by the training step and the
     evaluation pass. These were two copies of the same twenty lines; a change to one that
     missed the other would silently score models against a different loss than it trained
@@ -565,6 +600,9 @@ def _upper_loss(model, out: UpperBatch, x_batch, b_batch, y_batch, m_batch, feat
     total = 1E4 * (sat_alpha * loss_sat + chem_alpha * chem_loss + mole_alpha * mole_loss)
     if bulk_alpha != 0:   # Bulk can be numerically unstable, so it stays opt-in.
         total = total + 1E4 * bulk_alpha * bulk_loss
+    hinge_loss = _absent_hinge_loss(model, out, b_batch, hinge_params)
+    if hinge_loss is not None:
+        total = total + 1E4 * float(hinge_params['absent_hinge_weight']) * hinge_loss
     return total, loss_sat, chem_loss, mole_loss, bulk_loss
 
 
@@ -682,23 +720,54 @@ def _accumulate_presence_counts(acc, g_phi, b_batch):
     return new if acc is None else acc + new
 
 
+def abundance_f1_weights(abundance):
+    """Per-phase weight for the pooled presence F1: `0.3 + 0.7*(a - min a)/(max a - min a)`,
+    `a` = mean modal wt% (zeros included). Every phase counts; the most abundant counts
+    1, the rarest 0.3."""
+    a = np.asarray(abundance, dtype=np.float64)
+    span = a.max() - a.min()
+    return 0.3 + 0.7 * ((a - a.min()) / span if span > 0 else np.zeros_like(a))
+
+
+def weighted_pooled_f1(tp, fp, fn, w):
+    """F1 of the weight-pooled counts: 2*sum(w*TP) / (2*sum(w*TP) + sum(w*FP) + sum(w*FN))."""
+    tp, fp, fn = (np.asarray(v, dtype=np.float64) * w for v in (tp, fp, fn))
+    return 2 * tp.sum() / max(2 * tp.sum() + fp.sum() + fn.sum(), 1e-12)
+
+
+def mean_modal_wtpct(bundle_path, n_phases=None):
+    """Mean modal wt% per phase over a bundle's mass_labels (zeros included), or None when
+    the bundle has none. The input to `abundance_f1_weights`."""
+    mass = load_ml_bundle(bundle_path, arrays=['mass_labels']).mass_labels
+    if mass is None:
+        return None
+    mass = np.asarray(mass, dtype=np.float64)
+    return mass[:, :n_phases].mean(0) if n_phases else mass.mean(0)
+
+
 def _print_presence_precision_recall(acc, model):
-    tp, fp, fn = acc
+    tp, fp, fn = (v.numpy() for v in acc)
     names = list(model.label_indices.keys())
     T, F_p, F_n = float(tp.sum()), float(fp.sum()), float(fn.sum())
+    # Set by main.py from the validation bundle; absent -> no weighted F1.
+    abundance = getattr(getattr(model, 'ml_indexer', None), 'presence_abundance_wtpct', None)
+    w = abundance_f1_weights(abundance) if abundance is not None else None
+    f1w = f" | abundance-weighted F1 {weighted_pooled_f1(tp, fp, fn, w):.4f}" if w is not None else ''
     print(f"\n[presence g_phi > 0] overall precision {T / max(T + F_p, 1):.4f} | "
-          f"recall {T / max(T + F_n, 1):.4f}")
-    print(f"  {'phase':<20}{'prec':>8}{'recall':>8}{'n_pres':>12}")
+          f"recall {T / max(T + F_n, 1):.4f}{f1w}")
+    print(f"  {'phase':<20}{'prec':>8}{'recall':>8}{'F1':>8}{'w':>6}{'n_pres':>12}")
     for j, n in enumerate(names):
         prec = float(tp[j]) / max(float(tp[j] + fp[j]), 1)
         rec = float(tp[j]) / max(float(tp[j] + fn[j]), 1)
-        print(f"  {n:<20}{prec:>8.3f}{rec:>8.3f}{int(tp[j] + fn[j]):>12d}")
+        f1 = 2 * float(tp[j]) / max(float(2 * tp[j] + fp[j] + fn[j]), 1)
+        wj = f"{w[j]:>6.2f}" if w is not None else f"{'-':>6}"
+        print(f"  {n:<20}{prec:>8.3f}{rec:>8.3f}{f1:>8.3f}{wj}{int(tp[j] + fn[j]):>12d}")
 
 
 def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, criterion_chem, criterion_mole,
                            criterion_bulk, compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
                            device, max_N=np.inf, T=None, amp_dtype=torch.float32, use_amp=False,
-                           verbose=True, affinity_params=None, act_params=None):
+                           verbose=True, affinity_params=None, act_params=None, hinge_params=None):
     """`verbose=False` skips the per-term prints and the affinity/boundary diagnostics
     (and the work of collecting them) -- used for in-epoch fit checks and the train
     reference, where only the scalar loss is needed."""
@@ -732,6 +801,7 @@ def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, cri
                     criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
                     compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
                     mask_batch=mask_batch, affinity_params=affinity_params,
+                    hinge_params=hinge_params,
                 )
             if verbose and mask_batch is not None:
                 aff_diag = _accumulate_affinity_diagnostics(aff_diag, model, out.mole, m_batch, mask_batch)
@@ -1053,6 +1123,7 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     train_params = _resolve_train_params(model, train_params)
     affinity_params = _affinity_params(train_params)
     act_params = _activation_params(train_params)
+    hinge_params = _hinge_params(train_params)
     noise = train_params['noise']
     optimizer = create_optimizer(model, lr=lr, highWD=train_params['highWD'], lowWD=train_params['lowWD'], amsgrad=amsgrad, eps=eps)
     wrappedScheduler = create_scheduler(optimizer, scheduler, **scheduler_kwargs) if scheduler else SchedulerWrapper()
@@ -1120,7 +1191,7 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         model, test_loader, feature_offset, criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
         compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha, device, max_N,
         T=_epoch_T(0), amp_dtype=amp_dtype, use_amp=use_amp, affinity_params=affinity_params,
-        act_params=act_params,
+        act_params=act_params, hinge_params=hinge_params,
     )
     print(f"Baseline Test Loss: {baseline_test_loss:.5f}")
 
@@ -1145,7 +1216,7 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
             model, loader, feature_offset, criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
             compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha, device, max_N,
             T=T, amp_dtype=amp_dtype, use_amp=use_amp, verbose=verbose,
-            affinity_params=affinity_params, act_params=act_params,
+            affinity_params=affinity_params, act_params=act_params, hinge_params=hinge_params,
         )
 
     def _fit_check(label, T, verbose, running_train_loss):
@@ -1241,6 +1312,7 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                     criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
                     compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
                     mask_batch=mask_batch, affinity_params=affinity_params,
+                    hinge_params=hinge_params,
                 )
 
             batch_size_curr = x_batch.size(0)

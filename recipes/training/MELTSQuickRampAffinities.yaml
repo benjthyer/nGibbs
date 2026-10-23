@@ -31,7 +31,7 @@
 #       --config recipes/training/HeFESTotuneyContinuousLight.yaml
 ####################################################################################
 
-tarname: 120ClosedFxBatch_NoCr_NPT  # loads <tarname>_Train.tar.gz / _Test.tar.gz
+tarname: 120OpenFxBatch_Cr_NPT  # loads <tarname>_Train.tar.gz / _Test.tar.gz
 warm_start: None # 120SedIgClosed_Cr_NPT_train1e
 
 encoderLayerUp: 3

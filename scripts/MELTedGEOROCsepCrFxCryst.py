@@ -53,14 +53,14 @@ import time
 time.sleep(sleepytime)"""
 
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-input_date = 'September28open'
+input_date = 'October21Closed'
 
 input_ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
-MELTSmodels = ['102']#, '120']#, '102'] # MELTS models to run. To add: MAGEmin
+MELTSmodels = ['120']#, '120']#, '102'] # MELTS models to run. To add: MAGEmin
 FXes = ['FxCryst']#, 'FxCryst']
 Prange = None # Auto if None, for lithosphere/aesthenospere (p)
 
-Oxygen = 'Open' # 'Closed' or 'Open' system with respect to oxygen. Buffered or constant oxygen?
+Oxygen = 'Closed' # 'Closed' or 'Open' system with respect to oxygen. Buffered or constant oxygen?
 
 total_to_run = int(300) # How many total simulations to run. Now 
 
@@ -88,7 +88,7 @@ for N, MELTSModel in enumerate(MELTSmodels):#, '102', '120']):
         mafics_to_run = int(total_to_run * 0.5)
         full_to_run = int(total_to_run * 0.25) #0.55)
 
-    for C, Tag in enumerate(['NoCr', 'Cr']): ###################################################################
+    for C, Tag in enumerate(['NoCr']):#, 'Cr']): ###################################################################
         ZeroOxides = input_ZeroOxides.copy()
         if Tag == 'NoCr':
             ZeroOxides.append('Cr2O3')

@@ -60,9 +60,11 @@ Plots/
 *.png
 *.jpg
 
-# Outputs of EmulatorAPI.test() / HeFESToAPI.test() (written into each model's
-# home directory). Regenerated on demand; never tracked or packaged.
+# tests
 deployment_test/
+grid_test_out/
+hinge_search/
+dataset_workspace_test/
 
 
 # Agent Configurations

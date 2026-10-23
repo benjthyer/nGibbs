@@ -1,9 +1,9 @@
-"""
+""" DOES NOT CALCULATE AFFINITIES
 Retroactively shuffle row order and add a feature_bounds.json to an existing
 ML-ready bundle, without rerunning the BigMetaTable/resampling_to_datasets
 pipeline from raw MELTS output.
 
-This exists for bundles built before two processing-pipeline changes:
+This exists for bundles built before two processing-pipeline changes. 
   1. Shuffling row order - a one-time out-of-core shuffle applied post-
      packaging, to the finished bundle (see MLexporter.shuffle_bundle_rows,
      also called by prepareML.py/prepareML_fullvalid.py after
