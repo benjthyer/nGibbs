@@ -32,7 +32,7 @@
 ####################################################################################
 
 tarname: 120ClosedFxBatch_NoCr_NPT   # loads <tarname>_Train.tar.gz / _Test.tar.gz
-warm_start: 120ClosedFxBatch_NoCr_NPT_train2 # 120SedIgClosed_Cr_NPT_train1e
+warm_start: 120ClosedFxBatch_NoCr_NPT_train4 # 120SedIgClosed_Cr_NPT_train1e
 
 encoderLayerUp: 3
 encoderLayerDown: 2
@@ -43,7 +43,7 @@ moleBranchBase: 32
 chemBranchBase: 64
 
 
-dropout: 0.0dropout0.3            # shared: initial rate, max. Encoder + mole heads.
+dropout: 0.01dropout0.01            # shared: initial rate, max. Encoder + mole heads.
 encoder_regularization: layernorm # normalization only: none | layernorm | batchnorm
 mole_regularization: none
 lowWD: 0.001
@@ -129,35 +129,11 @@ phase_weights:                 # one weight per phase, applied to binary + mole 
   calcite: 5
 
 
-train3:
-  strategy: full
-  which_heads_to_freeze: []
-  epochs: 120
-  # Fit checks: validate + step adaptive dropout 4x per epoch (3 in-epoch, 1 at the end),
-  # on Test / eval-mode-Train. Dead band [0.97, 1.05] is the code default. Steps are per
-  # check; recovering (down) is 5x slower than the overfitting penalty (up).
-  val_checks_per_epoch: 4
-  dropout_step_up: 0.001
-  dropout_step_down: 0.0002
-  learning_rate: 1e-4
-  early_stopping_patience: 15
-  max_N: null
-  boundary_temperature:
-    enabled: False
-    # a_start: 1.0
-    # a_end: 5.0e-2
-  scheduler:
-    type: CosineAnnealingLR
-    args:
-      T_max: 5
-
-
-
 train4:
   strategy: full
-  dropout: 0.001dropout0.3            # shared: initial rate, max. Encoder + mole heads.
-  encoder_regularization: layernorm # normalization only: none | layernorm | batchnorm
-  mole_regularization: none
+  ##dropout: 0.001dropout0.3            # shared: initial rate, max. Encoder + mole heads.
+  #encoder_regularization: layernorm # normalization only: none | layernorm | batchnorm
+  #mole_regularization: none
   which_heads_to_freeze: []
   # batch_size: 16384
   epochs: 120

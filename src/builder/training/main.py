@@ -33,7 +33,7 @@ from builder.training.affinity_targets import AffinityTargets, check_phase_order
 from builder.training.optimizer_factory import normalize_scheduler_name
 from builder.training.trainer import (train_Lower_MELTS, train_Upper_MELTS, symmetric_rel_l1,
                                       symmetric_rel_l2, TRAIN_PARAM_DEFAULTS,
-                                      BOUNDARY_TEMPERATURE_DEFAULTS)
+                                      BOUNDARY_TEMPERATURE_DEFAULTS, mean_modal_wtpct)
 from builder.training.sobolev import train_Upper_Sobolev
 from builder.training.tuners import tune_Lower_MELTS, tune_Upper_MELTS
 from builder.training.logger import setup_training_logger, redirect_output, restore_output
@@ -722,6 +722,13 @@ def main() -> None:
         print("Train bundle has no T0; using the validation set's (saved with every checkpoint "
               "via ml_indexer).")
         ml_indexer.T0 = test_ml_indexer.T0
+
+    # Mean modal wt% per phase on the validation set: the weights of the abundance-weighted
+    # presence F1 printed with every phasewise precision/recall table (not saved).
+    ml_indexer.presence_abundance_wtpct = mean_modal_wtpct(
+        f"{test_bundle}.tar.gz", n_phases=len(ml_indexer.mass_phasedict))
+    if ml_indexer.presence_abundance_wtpct is None:
+        print(f"{test_bundle} has no mass_labels: presence tables will omit the weighted F1.")
 
     print(f"MOLAR EPSILON FROM LOADED DATA: {ml_indexer.molar_epsilon}")
 

@@ -31,7 +31,7 @@
 #       --config recipes/training/HeFESTotuneyContinuousLight.yaml
 ####################################################################################
 
-tarname: 102ClosedFxBatch_Cr_NPT   # loads <tarname>_Train.tar.gz / _Test.tar.gz
+tarname: HeFESTo_Mars_NPS   # loads <tarname>_Train.tar.gz / _Test.tar.gz
 warm_start: None # 120SedIgClosed_Cr_NPT_train1e
 
 encoderLayerUp: 3
@@ -97,8 +97,8 @@ noise: 0.0                 # goes into the value path only; derivative targets s
 description: "102 Continuous, closed+FXtal, parallel"
 
 ######### data ####################################################################
-batch_size: 16384
-ram_threshold_gb: 13
+batch_size: 32768
+ram_threshold_gb: 26
 device: cuda
 
 ######### shared loss defaults (every episode needs a complete loss_config) #######
@@ -107,7 +107,7 @@ loss_config:
     weight: 0.01                 
   chemistry:
     type: symmetric_rel_l2
-    weight: 100
+    weight: 10
   moles: 
     weight: 50
   bulk:

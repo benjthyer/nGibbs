@@ -60,8 +60,8 @@ def QFM_fO2_torch(P, K, use_torch=False):
         raise ImportError("PyTorch is not available. Install torch to use use_torch=True")
     xp = torch if use_torch else np  # shorthand for backend
 
-    trans1 = 573 + (0.025 * P)
-    lowKind = K > trans1
+    trans1 = 573 + (0.025 * P)  # alpha-beta quartz transition, in Celsius
+    lowKind = (K - 273.15) > trans1
 
     output = xp.zeros_like(K)
 
@@ -131,7 +131,7 @@ def Fe2O3_FeO_ratio(fO2, T, P, composition, use_torch=False, device='cpu'):
             a * np.log(fO2) +
             b / T +
             c +
-            dX_sum +
+            dX_sum.flatten() +
             e * (1 - (T0 / T) - (np.log(T / T0))) +
             f * P / T +
             g * (T - T0) * P / T +
