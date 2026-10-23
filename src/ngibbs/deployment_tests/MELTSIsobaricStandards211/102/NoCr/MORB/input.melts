@@ -1,0 +1,36 @@
+Title: Allan et al. 1989 (see Ghiorso 1997)
+Output: both
+Initial Pressure: 500
+Final Pressure: 500
+Increment Pressure: 0
+Initial Temperature: 1400
+Final Temperature: 700
+Increment Temperature: -1
+Log fo2 Path: FMQ
+Log fo2 Offset: 0
+Initial Composition: SiO2 48.68
+Initial Composition: TiO2 1.01
+Initial Composition: Al2O3 17.64
+Initial Composition: Fe2O3 0.89
+Initial Composition: FeO 7.59
+Initial Composition: MgO 9.10
+Initial Composition: CaO 12.45
+Initial Composition: Na2O 2.65
+Initial Composition: K2O 0.03
+Initial Composition: P2O5 0.08
+Initial Composition: H2O 0.20
+Suppress: rutile
+Suppress: sphene
+Suppress: melilite
+Suppress: aegirine
+Suppress: aenigmatite
+Suppress: cummingtonite
+Suppress: clinoamphibole
+Suppress: orthoamphibole
+Suppress: cristobalite
+Suppress: kalsilite
+Suppress: corundum
+Suppress: rutile
+Suppress: perovskite
+Suppress: ortho-oxide
+Suppress: sillimanite
