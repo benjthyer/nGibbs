@@ -95,6 +95,9 @@ def _dropout_from_numbers(spec):
     return spec
 
 
+_warned_split_dropout = False
+
+
 def split_regularization(encoder_regularization='none', mole_regularization='none',
                          dropout=None):
     """Resolve (encoder_norm, mole_norm, dropout_spec) from new- or old-style config.
@@ -125,9 +128,13 @@ def split_regularization(encoder_regularization='none', mole_regularization='non
         source = mole_regularization if mole_legacy else encoder_regularization
         legacy = _dropout_from_numbers(source)
         if enc_legacy and mole_legacy and _dropout_from_numbers(encoder_regularization) != legacy:
-            print(f"[regularization] encoder ({encoder_regularization}) and mole "
-                  f"({mole_regularization}) dropout differ; dropout is now one shared rate, "
-                  f"using the mole spec's: {legacy}")
+            # Every legacy checkpoint hits this on load (dozens per `import models`), so say it once.
+            global _warned_split_dropout
+            if not _warned_split_dropout:
+                _warned_split_dropout = True
+                print(f"[regularization] encoder ({encoder_regularization}) and mole "
+                      f"({mole_regularization}) dropout differ; dropout is now one shared rate, "
+                      f"using the mole spec's: {legacy} (further notices suppressed)")
         if shared != 'none' and shared != legacy:
             print(f"[regularization] per-part dropout {legacy} overrides dropout={shared}")
         shared = legacy

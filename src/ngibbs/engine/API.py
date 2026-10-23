@@ -366,52 +366,81 @@ class InputParser:
         tuple
             (table_with_fe3, updated_headers) where O has been replaced by Fe3+
         """
-        # Get column indices for Fe and O
-        header_map = {str(h).strip(): i for i, h in enumerate(headers)}
+        return add_ferric_column(values, headers)
 
-        if 'Fe' not in header_map or 'O' not in header_map:
-            raise ValueError("Elemental inputs with oxygen must include both 'Fe' and 'O'")
 
-        fe_idx = header_map['Fe']
-        o_idx = header_map['O']
+def add_ferric_column(
+    values: np.ndarray,
+    headers: Sequence[str],
+) -> Tuple[np.ndarray, Sequence[str]]:
+    """
+    Replace an 'O' column with 'Fe3' by charge balance, leaving ferrous iron in 'Fe'.
 
-        # Extract Fe and O columns
-        fe_total = values[:, fe_idx].astype(np.float32)  # Total Fe in moles
-        o_total = values[:, o_idx].astype(np.float32)    # Total O in moles
+    Module-level so code that holds element moles in HeFESTo's input format
+    (cations + O, any total) but no API instance -- e.g. the deployment tests'
+    standard-rock loaders -- uses exactly the speciation ``ForwardMB`` applies
+    (``InputParser.parse_composition`` -> ``InputParser._add_ferric_column``
+    delegates here). Fe3+ comes from ``speciate_iron_from_charge_balance`` and
+    is clipped to [0, Fe_total]; 'Fe' becomes Fe_total - Fe3.
 
-        element_moles: Dict[str, np.ndarray] = {
-            'Fe': fe_total,
-            'O': o_total,
-        }
-        for elem in ('Si', 'Mg', 'Ca', 'Al', 'Na', 'K', 'Cr'):
-            if elem in header_map:
-                element_moles[elem] = values[:, header_map[elem]].astype(np.float32)
+    Parameters
+    ----------
+    values : np.ndarray
+        (N, F) input table with elemental composition
+    headers : sequence of str
+        Column headers matching input table; must include 'Fe' and 'O'
 
-        fe3_moles = speciate_iron_from_charge_balance(element_moles)
-
-        # Clip to valid range: 0 <= Fe3+ <= Fe_total
-        fe3_moles = np.clip(fe3_moles, 0.0, fe_total).astype(np.float32)
-
-        # 'Fe' and 'Fe3' are disjoint ferrous-only/ferric-only pools in the
-        # model's compositional basis (compToEl gives every component either
-        # a pure 'Fe' or a pure 'Fe3' formula, never both -- see
-        # HeFESToEmulatorCPU.get_property_hefesto_vectorized_from_assemblage).
-        # Subtract the estimated ferric fraction out of 'Fe' so the two
-        # columns partition, rather than double-count, the true total Fe.
-        # Leaving 'Fe' at its original total here would inflate the bulk
-        # mass-balance target that polish_masses corrects the predicted
-        # assemblage against by exactly fe3_moles, biasing every predicted
-        # assemblage iron-rich relative to the true composition.
-        updated_values = values.astype(np.float32, copy=True)
-        updated_values[:, fe_idx] = fe_total - fe3_moles
-
-        o_idx = header_map['O']
-        updated_values = np.delete(updated_values, o_idx, axis=1)
-        updated_values = np.insert(updated_values, o_idx, fe3_moles, axis=1).astype(np.float32, copy=False)
-
-        updated_headers = list(headers)
-        updated_headers[o_idx] = 'Fe3'
-        return updated_values, updated_headers
+    Returns
+    -------
+    tuple
+        (table_with_fe3, updated_headers) where O has been replaced by Fe3+
+    """
+    # Get column indices for Fe and O
+    header_map = {str(h).strip(): i for i, h in enumerate(headers)}
+    
+    if 'Fe' not in header_map or 'O' not in header_map:
+        raise ValueError("Elemental inputs with oxygen must include both 'Fe' and 'O'")
+    
+    fe_idx = header_map['Fe']
+    o_idx = header_map['O']
+    
+    # Extract Fe and O columns
+    fe_total = values[:, fe_idx].astype(np.float32)  # Total Fe in moles
+    o_total = values[:, o_idx].astype(np.float32)    # Total O in moles
+    
+    element_moles: Dict[str, np.ndarray] = {
+        'Fe': fe_total,
+        'O': o_total,
+    }
+    for elem in ('Si', 'Mg', 'Ca', 'Al', 'Na', 'K', 'Cr'):
+        if elem in header_map:
+            element_moles[elem] = values[:, header_map[elem]].astype(np.float32)
+    
+    fe3_moles = speciate_iron_from_charge_balance(element_moles)
+    
+    # Clip to valid range: 0 <= Fe3+ <= Fe_total
+    fe3_moles = np.clip(fe3_moles, 0.0, fe_total).astype(np.float32)
+    
+    # 'Fe' and 'Fe3' are disjoint ferrous-only/ferric-only pools in the
+    # model's compositional basis (compToEl gives every component either
+    # a pure 'Fe' or a pure 'Fe3' formula, never both -- see
+    # HeFESToEmulatorCPU.get_property_hefesto_vectorized_from_assemblage).
+    # Subtract the estimated ferric fraction out of 'Fe' so the two
+    # columns partition, rather than double-count, the true total Fe.
+    # Leaving 'Fe' at its original total here would inflate the bulk
+    # mass-balance target that polish_masses corrects the predicted
+    # assemblage against by exactly fe3_moles, biasing every predicted
+    # assemblage iron-rich relative to the true composition.
+    updated_values = values.astype(np.float32, copy=True)
+    updated_values[:, fe_idx] = fe_total - fe3_moles
+    
+    o_idx = header_map['O']
+    updated_values = np.delete(updated_values, o_idx, axis=1)
+    updated_values = np.insert(updated_values, o_idx, fe3_moles, axis=1).astype(np.float32, copy=False)
+    
+    updated_headers = list(headers)
+    updated_headers[o_idx] = 'Fe3'
+    return updated_values, updated_headers
 
 
 def speciate_iron_from_charge_balance(
@@ -944,6 +973,9 @@ class EmulatorAPI:
         # subclasses the __init_subclass__ wrapper calls _clone_as_cpu after
         # the subclass __init__ has finished storing its own extra state.
         self._cpu_api = None
+        # Set by MELTSAPI on its sub-APIs: computes the internal-EOS phase
+        # properties behind ForwardMB(..., outputs=['ptt_props']).
+        self._ptt_props_fn = None
         if type(self) is EmulatorAPI and self.device.type != 'cpu':
             self._cpu_api = self._clone_as_cpu()
 
@@ -1855,6 +1887,12 @@ class EmulatorAPI:
             - 'phase_moles'
             - 'temperature' #NN temp output for isentropic models
             - 'ptt_out' Phase table output formatting like ptt
+            - 'ptt_props' (MELTS models only) Implies 'ptt_out', and adds
+              per-phase '<phase>_prop' tables plus bulk thermodynamic columns
+              in ptt_out['Conditions'], computed with the internal vectorised
+              MELTS EOS (melts_vec) -- the same layout PetThermoTools'
+              alphaMELTS-backed calc_phase_props_MELTS_parallel produces. See
+              engine/melts_assemblage.ptt_phase_props.
         Returns
         -------
         torch.Tensor, tuple, list, or dict
@@ -1862,6 +1900,20 @@ class EmulatorAPI:
             batches if needed.
         """
         features, modeltype = self.parse_input(table, headers=headers, composition_space=composition_space)
+
+        get_ptt_props = outputs == 'ptt_props' or (
+            outputs is not None and not isinstance(outputs, str) and 'ptt_props' in outputs)
+        if get_ptt_props:
+            outputs = [outputs] if isinstance(outputs, str) else list(outputs)
+            if self._ptt_props_fn is None:
+                raise ValueError("'ptt_props' needs the internal MELTS EOS and is only available "
+                                 "through a MELTSAPI (e.g. MELTS102EmulatorCPU / MELTS120EmulatorCPU).")
+            outputs.remove('ptt_props')
+            for needed in ('ptt_out', 'component_moles', 'phase_tables'):
+                if needed not in outputs:
+                    outputs.append(needed)
+            if modeltype == 'isentropic' and 'temperature' not in outputs:
+                outputs.append('temperature')  # the EOS needs T; isentropic inputs only carry S
 
         if modeltype == 'isothermal':
             if 'temperature' in outputs:
@@ -1912,6 +1964,9 @@ class EmulatorAPI:
 
         if get_ptt_tables:
             results['ptt_out'] = self.make_ptt_out(features, results['phase_tables'][0], results['phase_tables'][1], isentropic=(modeltype=='isentropic'), openox=(modeltype=='openox'))
+
+        if get_ptt_props:
+            results['ptt_out'] = self._ptt_props_fn(self, emulator, results, modeltype)
 
         return results
 
@@ -2116,32 +2171,10 @@ class EmulatorAPI:
         ptt_Ox_Idx = np.array([ptt_oxide_indexer[ox] for ox in indexer.Oxides]).astype(int)
 
         # Build correct-order name mappings for ptt output
-        phasePresent = (phaseMassNorm > 1e-3).any(dim=0).detach().cpu().numpy().astype(int)  # (P,)
-        accountedPhases = np.zeros_like(phasePresent, dtype=int) # Track which phases we've mapped to ptt namings
-        phaseMappings = []
-        mass_array = np.zeros((features.size(0), int(phasePresent.sum())))
+        phaseMappings = self._ptt_phase_mappings(indexer, phaseMassNorm)
+        mass_array = np.zeros((features.size(0), len(phaseMappings)))
         mass_cols = []
         all_mass_cols = []
-        
-
-        for ptt_long, ptt_short in ptt_to_short.items():
-            if ptt_long in ptt_longs:
-                internal_name = ptt_longs[ptt_long] # special mappings for K-spar and liquid.
-            else:
-                internal_name = ptt_long[:-1] # Exclude number at the end
-            internalPhaseCol = indexer.mass_phasedict[internal_name]
-            if phasePresent[internalPhaseCol]:
-                accountedPhases[internalPhaseCol] = 1
-                phaseMappings.append((ptt_long, ptt_short, internal_name, internalPhaseCol))
-        
-        unaccountedPhases = phasePresent - accountedPhases
-
-
-        if np.sum(unaccountedPhases):
-            for idx in np.where(unaccountedPhases)[0]:
-                intName = indexer.all_phases[idx]
-                pttName = intName + '1'
-                phaseMappings.append((pttName, '_' + pttName, intName, idx)) # Map phases with no naming scheme in ptt
 
 
         # Now build output tables!
@@ -2173,6 +2206,36 @@ class EmulatorAPI:
 
         return output
     
+    @staticmethod
+    def _ptt_phase_mappings(indexer, phaseMassNorm):
+        """[(ptt_long, ptt_short, internal_name, mass column), ...] for every
+        phase with > 1e-3 mass in any row, in ptt naming order (phases ptt has
+        no name for go last, as '<name>1'). Shared by make_ptt_out and the
+        ptt_props path so both always agree on the phase set."""
+        phasePresent = (phaseMassNorm > 1e-3).any(dim=0).detach().cpu().numpy().astype(int)  # (P,)
+        accountedPhases = np.zeros_like(phasePresent, dtype=int) # Track which phases we've mapped to ptt namings
+        phaseMappings = []
+
+        for ptt_long, ptt_short in ptt_to_short.items():
+            if ptt_long in ptt_longs:
+                internal_name = ptt_longs[ptt_long] # special mappings for K-spar and liquid.
+            else:
+                internal_name = ptt_long[:-1] # Exclude number at the end
+            internalPhaseCol = indexer.mass_phasedict[internal_name]
+            if phasePresent[internalPhaseCol]:
+                accountedPhases[internalPhaseCol] = 1
+                phaseMappings.append((ptt_long, ptt_short, internal_name, internalPhaseCol))
+
+        unaccountedPhases = phasePresent - accountedPhases
+
+        if np.sum(unaccountedPhases):
+            for idx in np.where(unaccountedPhases)[0]:
+                intName = indexer.all_phases[idx]
+                pttName = intName + '1'
+                phaseMappings.append((pttName, '_' + pttName, intName, idx)) # Map phases with no naming scheme in ptt
+
+        return phaseMappings
+
     def divide_ptt_tables(self, ptt_out, tableIDX):
         """
         Divide ptt rows in output tables according to tableIDX
@@ -2846,8 +2909,37 @@ class MELTSAPI:
                       f"{self.melts_solid_params.nspec} solid endmembers, "
                       f"{self.melts_liquid_mode_params.nspec} liquid species")
 
+        # ForwardMB(..., outputs=['ptt_props']) on either sub-API (incl. its
+        # GPU sub-API's CPU twin) computes properties with this object's EOS.
+        for sub in (self.nocr, self.cr):
+            sub._ptt_props_fn = self._ptt_props
+            if getattr(sub, '_cpu_api', None) is not None:
+                sub._cpu_api._ptt_props_fn = self._ptt_props
+
         if verbose:
             print("[INFO] MELTSAPI initialized successfully.")
+
+    def _ptt_props(self, sub, emulator, results, modeltype):
+        """Back end of EmulatorAPI.ForwardMB(..., outputs=['ptt_props']):
+        bridges the forward pass to melts_vec (melts_assemblage.
+        ml_indexer_to_melts_vec_assemblage) and writes ptt-style property
+        tables into results['ptt_out'] (melts_assemblage.ptt_phase_props)."""
+        if self.melts_solid_params is None or self.melts_liquid_params is None:
+            raise RuntimeError("'ptt_props' needs the melts_vec EOS params; construct MELTSAPI "
+                               "with load_melts_eos=True (the default).")
+        from .melts_assemblage import ml_indexer_to_melts_vec_assemblage, ptt_phase_props
+        comp_wtpct, mass_wtpct = results['phase_tables']
+        ptt_out = results['ptt_out']
+        bridged = ml_indexer_to_melts_vec_assemblage(
+            sub, self, emulator, results['component_moles'], mass_wtpct, comp_wtpct)
+        P_bar = ptt_out['Conditions']['P_bar'].to_numpy(dtype=np.float64)
+        if modeltype == 'isentropic':
+            # The isentropic temperature model returns Celsius for MELTS.
+            T_C = results['temperature'].detach().cpu().numpy().reshape(-1).astype(np.float64)
+        else:
+            T_C = ptt_out['Conditions']['T_C'].to_numpy(dtype=np.float64)
+        mappings = sub._ptt_phase_mappings(emulator.ml_indexer, mass_wtpct)
+        return ptt_phase_props(self, ptt_out, bridged, mappings, T_C, P_bar)
 
     def _route(
         self,
@@ -3019,6 +3111,10 @@ class MELTSAPI:
     _MELTS_SOLUTION_PHASES = {
         'feldspar':    (_melts_feldspar.ENDMEMBERS, melts_compute_feldspar_solution),
         'plagioclase': (_melts_feldspar.ENDMEMBERS, melts_compute_feldspar_solution),
+        # alkali feldspar: same albite-anorthite-sanidine model as plagioclase
+        # (alphaMELTS's 'alkali-feldspar'; the nMELTS ml_indexer's 'k-feldspar').
+        'alkali-feldspar': (_melts_feldspar.ENDMEMBERS, melts_compute_feldspar_solution),
+        'k-feldspar':      (_melts_feldspar.ENDMEMBERS, melts_compute_feldspar_solution),
         'olivine':     (_melts_olivine.ENDMEMBERS,  melts_compute_olivine_solution),
         'clinopyroxene': (_melts_clinopyroxene.ENDMEMBERS, melts_compute_clinopyroxene_solution),
         'cpx':           (_melts_clinopyroxene.ENDMEMBERS, melts_compute_clinopyroxene_solution),

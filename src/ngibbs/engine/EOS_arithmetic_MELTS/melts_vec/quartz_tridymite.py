@@ -85,6 +85,15 @@ _TRIDYMITE_BETA_V4 = 0.0
 # matches that -- pass is_pmelts=True for a pMELTS-calibrated calculation.
 _QUARTZ_ADJUSTMENT_MELTS = -1291.0
 _WETTING_ANGLE_CORR = 0.0        # gibbs.c line 201 -- always 0 in this build
+# TRIDYMITE_ADJUSTMENT: empirical G/H offset applied to tridymite only, in
+# libalphamelts gibbs.c (-2625.0 J/mol when PHMELTS_ADJUSTMENTS is compiled in,
+# which the alphaMELTS library build always does, and calculationMode !=
+# MODE_pMELTS). Absent from the MAGMA snapshot's gibbs.c. Confirmed against
+# alphaMELTS 2.3 output: tridymite.tbl H/mol - melts_vec H = -2625.0 J/mol in
+# all MELTS 1.0.2/1.2.0 BishopTuff standards. (CRISTOBALITE_ADJUSTMENT = -450 J
+# and RUTILE_ADJUSTMENT are not applicable: cristobalite and rutile are not
+# translated.)
+_TRIDYMITE_ADJUSTMENT_MELTS = -2625.0
 
 
 def _berman_cp_hs(T, k0, k1, k2, k3, h_ref, s_ref):
@@ -284,7 +293,8 @@ def compute_quartz(T, P, h, s, v0, v1, v2, v3, v4, k0, k1, k2, k3, Tt, l1, l2,
                 is_beta=is_beta)
 
 
-def compute_tridymite(T, P, h, s, v0, v1, v2, v3, v4, k0, k1, k2, k3, Tt, l1, l2):
+def compute_tridymite(T, P, h, s, v0, v1, v2, v3, v4, k0, k1, k2, k3, Tt, l1, l2,
+                      is_pmelts=False):
     """Tridymite G/H/S/Cp/V(+derivatives), verbatim from gibbs.c's
     tridymite branch (lines 1920-1993). Simpler than quartz: no
     pressure-dependent transition temperature and no lambda volumetric
@@ -340,7 +350,9 @@ def compute_tridymite(T, P, h, s, v0, v1, v2, v3, v4, k0, k1, k2, k3, Tt, l1, l2
     v3_use = np.where(is_beta, v3_beta, v3)
     v4_use = np.where(is_beta, v4_beta, v4)
 
-    gs = hs - T*ss   # no QUARTZ_ADJUSTMENT/WETTING_ANGLE_CORR analogue for tridymite
+    tridymite_adj = 0.0 if is_pmelts else _TRIDYMITE_ADJUSTMENT_MELTS   # libalphamelts gibbs.c
+    gs = hs - T*ss + tridymite_adj
+    hs = hs + tridymite_adj
 
     eos = eos_berman(P, T, v0_use, v1_use, v2_use, v3_use, v4_use)
     G = gs + eos["g_add"]

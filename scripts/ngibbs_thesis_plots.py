@@ -50,7 +50,7 @@ import numpy as np
 import pandas as pd
 import torch
 import matplotlib
-matplotlib.use('Agg')
+# matplotlib.use('Agg')  # disabled: a global backend switch breaks interactive plotting (e.g. PetThermoTools)
 import matplotlib.pyplot as plt
 
 import ngibbs.engine as _ngibbs_engine

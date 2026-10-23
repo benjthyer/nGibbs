@@ -29,7 +29,7 @@ sys.path.insert(0, str(REPO / 'src'))
 sys.path.insert(0, str(REPO / 'scripts'))
 
 import matplotlib                                                       # noqa: E402
-matplotlib.use('Agg')
+# matplotlib.use('Agg')  # disabled: a global backend switch breaks interactive plotting (e.g. PetThermoTools)
 import matplotlib.pyplot as plt                                         # noqa: E402
 
 from ngibbs.engine.NN import rebuild_MELTS_model                        # noqa: E402

@@ -43,7 +43,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import matplotlib
-matplotlib.use('Agg')
+# matplotlib.use('Agg')  # disabled: a global backend switch breaks interactive plotting (e.g. PetThermoTools)
 import matplotlib.pyplot as plt
 
 if str(Path(__file__).resolve().parent) not in sys.path:

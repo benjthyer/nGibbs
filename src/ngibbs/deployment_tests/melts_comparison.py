@@ -61,7 +61,7 @@ import numpy as np
 import pandas as pd
 import torch
 import matplotlib
-matplotlib.use('Agg')
+# matplotlib.use('Agg')  # disabled: a global backend switch breaks interactive plotting (e.g. PetThermoTools)
 import matplotlib.pyplot as plt
 
 from ngibbs.config.constants import OXIDE_MOLAR_MASSES, get_oxide_molar_mass
@@ -85,45 +85,15 @@ DEFAULT_STANDARDS_DIR = PACKAGE_DIR / 'MELTSIsobaricStandards' / '120'
 
 _BARS_PER_GPA = 10000.0
 
-# --------------------------------------------------------------------------- #
-# GT solid-solution endmember columns, IN melts_vec'S OWN ORDER -- verified
-# against real MELTSIsobaricStandards .tbl headers this session (every
-# solution-phase .tbl file already carries its endmember mole fractions as
-# its trailing columns, in exactly this order; nothing needs reindexing).
-# --------------------------------------------------------------------------- #
-_GT_SOLUTION_ENDMEMBERS: Dict[str, List[str]] = {
-    'olivine': ['tephroite', 'fayalite', 'co-olivine', 'ni-olivine', 'monticellite', 'forsterite'],
-    'clinopyroxene': ['diopside', 'clinoenstatite', 'hedenbergite', 'alumino-buffonite',
-                       'buffonite', 'essenite', 'jadeite'],
-    'orthopyroxene': ['diopside', 'clinoenstatite', 'hedenbergite', 'alumino-buffonite',
-                       'buffonite', 'essenite', 'jadeite'],
-    'spinel': ['chromite', 'hercynite', 'magnetite', 'spinel', 'ulvospinel'],
-    'plagioclase': ['albite', 'anorthite', 'sanidine'],
-    'alkali-feldspar': ['albite', 'anorthite', 'sanidine'],
-    'rhm-oxide': ['geikielite', 'hematite', 'ilmenite', 'pyrophanite', 'corundum'],
-    'garnet': ['almandine', 'grossular', 'pyrope'],
-    'leucite': ['leucite', 'analcime', 'na-leucite'],
-    'biotite': ['annite', 'phlogopite'],
-    'hornblende': ['pargasite', 'ferropargasite', 'magnesiohastingsite'],
-    'nepheline': ['na-nepheline', 'k-nepheline', 'vc-nepheline', 'ca-nepheline'],
-}
-# melts_vec's own _MELTS_SOLUTION_PHASES recognises 'feldspar'/'plagioclase' but
-# has no 'alkali-feldspar' entry (alphaMELTS models plagioclase and alkali
-# feldspar as two immiscible solutions over the SAME albite-anorthite-sanidine
-# ternary -- confirmed by alkali-feldspar.tbl and plagioclase.tbl sharing
-# identical endmember columns). MELTSAPI._MELTS_SOLUTION_PHASES is extended
-# with this alias at import time in `_ensure_alkali_feldspar_alias` below
-# rather than routing alkali-feldspar through the (wrong) pure-phase fallback.
-_GT_PURE_PHASES = ('quartz', 'tridymite', 'apatite', 'whitlockite', 'muscovite') + tuple(_MELTS_CARBON_PHASES)
-# Phase_mass_tbl.txt names the liquid column 'liquid1' (de-suffixed: 'liquid'),
-# while its own per-row data lives in 'melts-liquid.tbl' -- two different
-# names for the same phase across these two raw-output files.
-_GT_LIQUID_NAMES = ('liquid', 'melts-liquid')
-# fluid.tbl: 1.1/1.2 Duan H2O-CO2 fluid (h2oduan, co2duan mole fractions);
-# 1.0.2 writes its pure-water phase to fluid.tbl as well (no endmember columns).
-_GT_FLUID_NAMES = ('fluid', 'water')
+# Phase-name / endmember tables and the emulator -> melts_vec bridge now live
+# in ngibbs.engine.melts_assemblage (inference uses them too, via
+# EmulatorAPI.ForwardMB(..., outputs=['ptt_props'])); re-exported here under
+# their original names.
+from ngibbs.engine.melts_assemblage import (  # noqa: E402
+    _GT_SOLUTION_ENDMEMBERS, _GT_PURE_PHASES, _GT_LIQUID_NAMES, _GT_FLUID_NAMES,
+    _FLUID_MOLAR_MASSES, _embed_by_name, ml_indexer_to_melts_vec_assemblage,
+)
 _FLUID_ENDMEMBERS = ('h2oduan', 'co2duan')
-_FLUID_MOLAR_MASSES = np.array([_melts_molar_mass_from_formula('H2O'), _melts_molar_mass_from_formula('CO2')])
 
 # wt% oxide columns present in every raw .tbl / Bulk_comp/Liquid_comp file.
 _RAW_OXIDE_COLS = ['SiO2', 'TiO2', 'Al2O3', 'Fe2O3', 'Cr2O3', 'FeO', 'MnO', 'MgO',
@@ -506,222 +476,6 @@ def load_gt_assemblage(rock_dir: Path, api) -> Dict[str, np.ndarray]:
         'index': full_index, 'T_K': T_K, 'P_bar': P_bar, 'mass_g': mass_g,
         'S_specific_JgK': S_specific, 'S_total_JK': S_total_JK,
         'fO2_QFM': _fO2_qfm(sysmain),
-    }
-
-
-# --------------------------------------------------------------------------- #
-# Emulator-predicted assemblage -> melts_vec internal EOS bridge
-# --------------------------------------------------------------------------- #
-def _embed_by_name(ml_component_moles: np.ndarray, ml_component_names: Sequence[str],
-                    melts_vec_endmembers: Sequence[str], warn_prefix: str = '') -> np.ndarray:
-    """(B, n_ml) ml_indexer component moles -> (B, n_mv) melts_vec endmember
-    array, matched by exact endmember NAME. Any melts_vec endmember this
-    checkpoint doesn't track (e.g. tephroite for a training set with no
-    Mn-olivine, because MnO isn't in this checkpoint's tracked oxide set at
-    all) is zero-filled -- a real statement that its abundance is
-    structurally 0 given this checkpoint's tracked composition space, not an
-    approximation."""
-    B = ml_component_moles.shape[0]
-    out = np.zeros((B, len(melts_vec_endmembers)), dtype=np.float64)
-    idx = {name: i for i, name in enumerate(melts_vec_endmembers)}
-    for j, name in enumerate(ml_component_names):
-        if name in idx:
-            out[:, idx[name]] = ml_component_moles[:, j]
-        else:
-            warnings.warn(f"{warn_prefix}ml_indexer component {name!r} has no melts_vec "
-                           f"endmember match; dropped.")
-    return out
-
-
-def ml_indexer_to_melts_vec_assemblage(
-    api_sub, api, emulator, component_moles: torch.Tensor, mass_wtpct: torch.Tensor,
-    comp_wtpct: torch.Tensor,
-) -> Dict[str, object]:
-    """Bridge one ForwardMB(...) call's raw 'component_moles' + 'phase_tables'
-    mass output (api_sub's own ml_indexer basis) into melts_vec's own
-    phase_composition/phase_moles/liquid_oxides inputs for
-    ``api.get_property_melts_vectorized_from_assemblage``.
-
-    Solid solution phases: component_moles is first mapped to native MELTS
-    endmember moles with ``emulator.native_component_moles`` -- pyroxenes and
-    spinel are learned in the transformed PxSp_Comp_TransformV2 basis, and
-    reading those columns as endmember amounts gave badly wrong pyroxene and
-    spinel compositions (e.g. orthopyroxene FeO 0.1 wt% instead of 16), the
-    cause of the MORB emulator-pathway H/V/Cp errors. The native columns are
-    then embedded into melts_vec's endmember order by exact NAME match (verified
-    against a real checkpoint this session -- clinopyroxene/orthopyroxene
-    already match melts_vec's order exactly; olivine/spinel/rhm-oxide are
-    checkpoint-tracked SUBSETS of melts_vec's full endmember list, missing
-    only Mn/Ni/Co-bearing endmembers this checkpoint's oxide set doesn't
-    track at all -- see _embed_by_name). alphaMELTS's 'k-feldspar' is routed
-    through melts_vec's 'feldspar'/'plagioclase' mixing model too (same
-    albite-anorthite-sanidine ternary; MELTSAPI's own _MELTS_SOLUTION_PHASES
-    has no separate 'k-feldspar' key -- see _ensure_alkali_feldspar_alias).
-
-    Liquid: NOT bridged via component_moles/get_liquid_oxides -- empirically,
-    for this checkpoint, component_moles's liquid slice (indexed through
-    label_indices_comp['melts-liquid'], labelled 'wt% <oxide>') comes back
-    structurally wrong (major oxides SiO2/Al2O3/MgO/CaO/FeO all exactly 0,
-    nonzero only in K2O/P2O5/Cr2O3/Fe2O3/CO2) even on a real, in-range,
-    100%-liquid row, while 'phase_tables'' comp_tens output for the SAME row
-    gives a fully plausible liquid oxide composition. So liquid instead
-    reads its oxide wt% straight from comp_wtpct (the comp_tens half of
-    'phase_tables', already validated), converts wt%->moles/100g (same
-    convention as load_gt_assemblage), and feeds THAT into
-    oxides_to_liquid_components -- component_moles/get_liquid_oxides is
-    only used for the solid solution phases above, where it checks out.
-
-    Per-phase molar abundance is NOT taken from ForwardMB's own 'phase_moles'
-    output (that output is normalized within the ml_indexer's own internal
-    basis, not a cross-phase-consistent extensive quantity) -- instead each
-    phase's own real molar mass (from its bridged composition, via
-    melts_vec.molar_masses / the liquid's own oxide molar mass) converts its
-    'phase_tables' mass fraction into an internally-consistent mole count,
-    exactly mirroring how ``load_gt_assemblage`` derives GT phase_moles from
-    real mass. Bulk 'phase_moles' units are arbitrary/self-consistent -- the
-    aggregation in get_property_melts_vectorized_from_assemblage only uses
-    relative proportions between phases.
-
-    api_sub : EmulatorAPI
-        api.nocr or api.cr -- whichever sub-API actually ran the forward
-        pass (needed for its ml_indexer).
-    api : MELTSAPI
-        Top-level object -- get_property_melts_vectorized_from_assemblage and
-        melts_solid_params/melts_liquid_params live here.
-    emulator : NN_MELTS
-        The specific wrapped emulator that produced component_moles/
-        mass_wtpct/comp_wtpct (api_sub.isothermal_emulator /
-        .isentropic_emulator / .open_emulator) -- only its ml_indexer
-        (component/oxide/phasedict layout) is used here.
-    component_moles, mass_wtpct, comp_wtpct : torch.Tensor
-        'component_moles' and both halves (mass, comp) of 'phase_tables'
-        from ``emulator``'s own forwardMB (or api_sub.ForwardMB) call --
-        i.e. call ForwardMB(..., outputs=['component_moles', 'phase_tables'])
-        and pass phase_tables' (comp_tens, mass_tens) here as
-        (comp_wtpct, mass_wtpct).
-
-    Returns dict with 'phase_composition', 'phase_moles', 'liquid_oxides',
-    'liquid_oxide_labels', 'mass_wtpct_by_phase' (mass-phasedict-indexed
-    mass-fraction array, for the phase-comparison diagrams), 'mass_phasedict'
-    (for indexing mass_wtpct_by_phase).
-    """
-    mi = emulator.ml_indexer
-    B = component_moles.shape[0]
-    cm_np = np.asarray(emulator.native_component_moles(
-        component_moles.detach().cpu().numpy().astype(np.float64)))
-    mass_np = mass_wtpct.detach().cpu().numpy().astype(np.float64)  # (B, n_phases) mass fraction of system
-
-    phase_composition: Dict[str, np.ndarray] = {}
-    phase_moles: Dict[str, np.ndarray] = {}
-
-    for phase_name, comp_idx in mi.label_indices_comp.items():
-        if phase_name in _GT_LIQUID_NAMES:
-            continue
-        solution_key = 'plagioclase' if phase_name == 'k-feldspar' else phase_name
-        if solution_key not in _GT_SOLUTION_ENDMEMBERS:
-            continue  # tracked by this checkpoint but melts_vec has no mixing model for it
-        endmembers = _GT_SOLUTION_ENDMEMBERS[solution_key]
-        ml_names = mi.components_in_phases[phase_name]
-        ml_moles = cm_np[:, comp_idx]
-        X = _embed_by_name(ml_moles, ml_names, endmembers, warn_prefix=f"[{phase_name}] ")
-        row_sum = X.sum(axis=1)
-        present = row_sum > 1e-10
-        X_norm = np.where(present[:, None], X / np.where(present[:, None], row_sum[:, None], 1.0), 0.0)
-        X_norm[~present, -1] = 1.0
-
-        gt_key = 'alkali-feldspar' if phase_name == 'k-feldspar' else phase_name
-        mass_idx = mi.mass_phasedict[phase_name]
-        # mass_np is percent-of-SYSTEM (rows sum to 100 across phases, verified
-        # empirically), i.e. mass_frac numerically equals grams of this phase
-        # per 100 g of system -- so dividing by molar mass alone already gives
-        # moles per 100 g system; no extra *100 (that would overcount moles by
-        # 100x, as an earlier version of this function did -- see validation
-        # note below).
-        mass_frac = mass_np[:, mass_idx]
-        endmember_mm = _melts_molar_masses(api.melts_solid_params, names=endmembers)
-        mm = X_norm @ endmember_mm
-        moles = np.where(present & (mm > 0), mass_frac / np.where(mm > 0, mm, 1.0), 0.0)
-
-        phase_composition[gt_key] = X_norm
-        phase_moles[gt_key] = moles
-
-    for phase_name in _GT_PURE_PHASES:
-        if phase_name not in mi.mass_phasedict:
-            continue
-        mass_idx = mi.mass_phasedict[phase_name]
-        mass_frac = mass_np[:, mass_idx]  # percent-of-system == grams per 100g system
-        mm = float(_melts_molar_masses(api.melts_solid_params, names=[phase_name])[0])
-        phase_composition[phase_name] = np.ones((B, 1))
-        phase_moles[phase_name] = mass_frac / mm if mm > 0 else np.zeros(B)
-
-    # Liquid: NOT sourced from component_moles/get_liquid_oxides (empirically
-    # structurally wrong for this phase on this checkpoint -- see docstring
-    # above). Instead read the liquid's own oxide wt% straight out of
-    # comp_wtpct (the comp_tens half of the SAME 'phase_tables' ForwardMB
-    # output that mass_wtpct comes from), indexed the same way API.py itself
-    # indexes it (comp_wtpct[:, comp_phasedict[phase], :], oxide columns in
-    # mi.Oxides order) -- then follow the EXACT same wt%->moles/100g->
-    # oxides_to_liquid_components pipeline load_gt_assemblage uses for the
-    # real GT liquid, so both pathways treat liquid identically apart from
-    # where the wt% numbers come from.
-    liq_key = 'melts-liquid' if 'melts-liquid' in mi.mass_phasedict else 'liquid'
-    comp_wtpct_np = comp_wtpct.detach().cpu().numpy().astype(np.float64)
-    liq_comp_idx = mi.comp_phasedict[liq_key]
-    liq_wtpct = comp_wtpct_np[:, liq_comp_idx, :]  # (B, n_oxides), columns = mi.Oxides order
-    liquid_oxide_labels = list(mi.Oxides)
-    mole_cols = {ox: liq_wtpct[:, i] / get_oxide_molar_mass(ox)
-                 for i, ox in enumerate(liquid_oxide_labels)}
-    liquid_moles_np = np.column_stack([mole_cols[ox] for ox in liquid_oxide_labels])
-
-    comp_moles_liq = _oxides_to_liquid_components(mole_cols, api.melts_liquid_params)
-    # comp_moles_liq's row sum is moles per 100 g of PURE liquid (liq_wtpct is
-    # a within-phase wt% that itself sums to 100 -- verified above). To get
-    # moles per 100 g of SYSTEM, scale by how many grams of liquid are
-    # actually in 100 g of system: mass_np is percent-of-system (grams per
-    # 100 g system), so that scale factor is liq_mass_frac / 100 -- matching
-    # the *100 removal above, and mirroring load_gt_assemblage's own
-    # `total_comp_moles_per_100g * mass_phase / 100.0` (there mass_phase is
-    # real grams over a real total system mass, here it's the same ratio
-    # expressed as a percent-of-100g).
-    total_comp_moles_per_100g = comp_moles_liq.sum(axis=1)
-
-    liq_mass_idx = mi.mass_phasedict[liq_key]
-    liq_mass_frac = mass_np[:, liq_mass_idx]
-    phase_composition[liq_key] = np.ones((B, 1))
-    phase_moles[liq_key] = total_comp_moles_per_100g * liq_mass_frac / 100.0  # per-100g-system now
-
-    # Fluid: same route as the liquid -- its own oxide wt% (H2O, CO2 columns of
-    # comp_wtpct) gives the [H2O, CO2] mole fractions, 'phase_tables' mass the
-    # abundance. A 1.0.2 fluid carrying CO2 is rejected downstream by the API.
-    # A 1.0.2 checkpoint (no CO2 tracked) has only a fluid mass column: its
-    # pure-water fluid has a fixed composition, so none is predicted -- it is
-    # bridged as pure H2O.
-    fluid_key = next((k for k in _GT_FLUID_NAMES if k in mi.mass_phasedict), None)
-    if fluid_key is not None:
-        ox = list(mi.Oxides)
-        flu_mass = mass_np[:, mi.mass_phasedict[fluid_key]]
-        if fluid_key not in mi.comp_phasedict:
-            if 'CO2' in ox:
-                raise KeyError(f"ml_indexer has a '{fluid_key}' mass column but no composition slot for it.")
-            present = flu_mass > 0
-            X = np.tile([1.0, 0.0], (B, 1))
-        else:
-            if 'H2O' not in ox:
-                raise KeyError(f"ml_indexer Oxides {ox} lack H2O; cannot build the fluid composition.")
-            flu_wt = comp_wtpct_np[:, mi.comp_phasedict[fluid_key], :]
-            co2 = flu_wt[:, ox.index('CO2')] if 'CO2' in ox else np.zeros(B)
-            n = np.column_stack([flu_wt[:, ox.index('H2O')], co2]) / _FLUID_MOLAR_MASSES
-            tot = n.sum(1)
-            present = (tot > 0) & (flu_mass > 0)
-            X = np.where(present[:, None], n / np.where(tot > 0, tot, 1.0)[:, None], 0.0)
-            X[~present] = [1.0, 0.0]
-        phase_composition['fluid'] = X
-        phase_moles['fluid'] = np.where(present, flu_mass / (X @ _FLUID_MOLAR_MASSES), 0.0)
-
-    return {
-        'phase_composition': phase_composition, 'phase_moles': phase_moles,
-        'liquid_oxides': liquid_moles_np, 'liquid_oxide_labels': liquid_oxide_labels,
-        'mass_wtpct_by_phase': mass_np, 'mass_phasedict': dict(mi.mass_phasedict),
     }
 
 

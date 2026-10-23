@@ -483,7 +483,7 @@ def _save_residual_histogram(
     """
     try:
         import matplotlib
-        matplotlib.use("Agg")
+        # matplotlib.use("Agg")  # disabled: a global backend switch breaks interactive plotting (e.g. PetThermoTools)
         import matplotlib.pyplot as plt
     except Exception as exc:  # pragma: no cover - environment dependent
         print(f"Skipping residual histogram (matplotlib unavailable: {exc})")

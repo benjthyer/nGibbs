@@ -689,7 +689,7 @@ def _placement_colors(M: int):
 def plot_table(df: pd.DataFrame, path: Path, title: str, *, kind: str,
                models: List[Model], subtitle: str = ''):
     import matplotlib
-    matplotlib.use('Agg')
+    # matplotlib.use('Agg')  # disabled: a global backend switch breaks interactive plotting (e.g. PetThermoTools)
     import matplotlib.pyplot as plt
     from matplotlib.patches import Patch
 
