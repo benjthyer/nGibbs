@@ -26,7 +26,7 @@ if repo_src not in sys.path:
 
 from ngibbs.utils.file_utils import load_ml_bundle
 
-KEEP_RANGE = [0,2000] #[1.75, 3.5]
+KEEP_RANGE = [1.75, 3.5] #[0,2000] #
 P_MAX_DEFAULT = None
 
 
@@ -88,19 +88,19 @@ def compute_T_from_S_and_bulk_regression(
 
     p_name = _find_name(
         feature_names,
-        exact=["P", "Pressure", "Pressure(System_main)", "P(GPa)"],
+        exact=["P", "Pressure", "Pressure(System_main)", "P(GPa)", "P(GPa)(System_main)"],
         prefixes=["P(", "Pressure("],
         label="pressure (P)",
     )
     s_name = _find_name(
         feature_names,
-        exact=["S", "Entropy", "S(System_main) / mass(System_main)"],
+        exact=["S", "Entropy", "S(System_main) / mass(System_main)", "S(J/g/K)(System_main)"],
         prefixes=["S(", "Entropy("],
         label="entropy (S)",
     )
     t_name = _find_name(
         output_names,
-        exact=["T", "Temperature", "Temperature(System_main)"],
+        exact=["T", "Temperature", "Temperature(System_main)", "T(K)(System_main)"],
         prefixes=["T(", "Temperature("],
         label="temperature (T)",
     )
