@@ -3,7 +3,7 @@ ALPHAMELTS_MAXT 2000
 ALPHAMELTS_DELTAT -1
 
 ! <><> alphaMELTS 2.3 run by bthyer <><> 
-! Time started: Oct 23 2026 at 19:43 
+! Time started: Oct 23 2026 at 19:56 
 
 ! Command line: -m input.melts -f settings.txt -b 102batch 
 
