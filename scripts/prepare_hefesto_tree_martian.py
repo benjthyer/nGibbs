@@ -61,6 +61,16 @@ def parse_args() -> argparse.Namespace:
 			'unmodified (aside from Fe speciation to the sampled Fe3+/Fetotal ratio).'
 		),
 	)
+	parser.add_argument(
+		'--real-rock-proportion',
+		type=float,
+		default=None,
+		help=(
+			'Probability in [0, 1] that each simulation keeps its GEOROC/PetDB '
+			'(or mixed) chemistry unperturbed, skipping the strong random '
+			'Fe/Cr/Si/Mg/Ca/Al changes. Overrides --real-rocks when given.'
+		),
+	)
 	return parser.parse_args()
 
 
@@ -72,6 +82,7 @@ def main() -> None:
 		control_path=args.control_path,
 		N=args.n,
 		real_rocks=args.real_rocks,
+		real_rock_proportion=args.real_rock_proportion,
 	)
 
 

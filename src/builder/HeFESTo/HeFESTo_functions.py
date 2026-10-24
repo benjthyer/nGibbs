@@ -179,7 +179,7 @@ def make_PT_path_martian(S, P, func, P_lit, cold_temp = 220, out_path=None):
 KM_PER_GPA = 250.0 / 9.0
 
 # Approximate core-mantle boundary pressure (GPa).
-CMB_PRESSURE_GPA = 135.0
+CMB_PRESSURE_GPA = 140.0 # So it matches adiabat extent.
 
 # Target pressure spacing (GPa) for the boundary-layer ad.in paths built by
 # prepare_HeFESTo_tree_surface / prepare_HeFESTo_tree_cmb. The number of
@@ -785,8 +785,37 @@ def _normalize_total_moles(element_moles: Dict[str, float], target_total_moles: 
 
 
 
+def _real_rock_mask(
+    N: int, real_rocks: bool = False, real_rock_proportion: Optional[float] = None,
+) -> np.ndarray:
+    """Per-simulation flags for which compositions skip the random perturbation.
+
+    Returns a length-``N`` boolean array; ``True`` marks a "real rock" whose
+    GEOROC/PetDB (or mixed) chemistry is left unperturbed by the strong random
+    Fe/Cr/Si/Mg/Ca/Al mole changes in the ``prepare_HeFESTo_tree_*`` functions.
+    Each simulation is drawn independently with probability
+    ``real_rock_proportion``. When that is ``None`` the legacy ``real_rocks``
+    switch decides (1.0 if True, else 0.0), so existing calls are unchanged.
+    """
+    if real_rock_proportion is None:
+        real_rock_proportion = 1.0 if real_rocks else 0.0
+    elif real_rocks and float(real_rock_proportion) < 1.0:
+        raise ValueError(
+            'real_rocks=True conflicts with real_rock_proportion < 1; '
+            'pass only real_rock_proportion.')
+    p = float(real_rock_proportion)
+    if not 0.0 <= p <= 1.0:
+        raise ValueError(f'real_rock_proportion must be in [0, 1], got {p}')
+    mask = rng.random(N) < p
+    if 0.0 < p < 1.0:
+        print(f'[real rocks] {int(mask.sum())}/{N} simulations unperturbed '
+              f'(real_rock_proportion={p:.3f})')
+    return mask
+
+
 def prepare_HeFESTo_tree_fulladiabat(
     directory: Path, GEOROC_DIR: Path, control_path: Path, N: int, real_rocks: bool = False,
+    real_rock_proportion: Optional[float] = None,
 ) -> None:
     """Prepare a BatchNNNN/SimulationN directory tree for HeFESTo isentrope runs.
 
@@ -818,8 +847,16 @@ def prepare_HeFESTo_tree_fulladiabat(
         to each sampled composition, leaving the mixed GEOROC/PetDB rock
         chemistry unmodified (aside from Fe speciation to the sampled
         Fe3+/Fetotal ratio, which is unrelated to this perturbation).
+    real_rock_proportion : float, optional
+        Probability in [0, 1] that a given simulation keeps its GEOROC/PetDB
+        (or mixed) chemistry unperturbed, i.e. skips the strong random
+        Fe/Cr/Si/Mg/Ca/Al mole perturbation. Drawn independently per
+        simulation (see ``_real_rock_mask``). ``None`` (default) falls back
+        to ``real_rocks``: 1.0 if True, else 0.0.
     """
 
+    # Draw (and validate) the real-rock flags before touching the filesystem.
+    is_real_rock = _real_rock_mask(N, real_rocks, real_rock_proportion)
     directory = Path(directory)
     GEOROC_DIR = Path(GEOROC_DIR)
     control_path = Path(control_path)
@@ -942,7 +979,7 @@ def prepare_HeFESTo_tree_fulladiabat(
 
             mg_val = element_moles.get('Mg', 0.0)
 
-            if not real_rocks:
+            if not is_real_rock[sim_idx]:
                 d_fe = float(np.random.uniform(0.00, 0.05))*float(np.random.uniform()>0.3) # Add Fe to some compositions, but not all
                 d_cr = float(np.random.uniform(0.0, 0.01))
                 d_si = float(np.random.uniform(-0.5/24, 2.0/24)) # Read these values off of norm 24 histograms
@@ -1020,6 +1057,7 @@ def prepare_HeFESTo_tree_fulladiabat(
 
 def prepare_HeFESTo_tree_Mars(
     directory: Path, GEOROC_DIR: Path, control_path: Path, N: int, real_rocks: bool = False,
+    real_rock_proportion: Optional[float] = None,
 ) -> None:
     """Prepare a BatchNNNN/SimulationN directory tree for Martian HeFESTo runs.
 
@@ -1054,8 +1092,16 @@ def prepare_HeFESTo_tree_Mars(
         to each sampled composition, leaving the mixed GEOROC/PetDB rock
         chemistry unmodified (aside from Fe speciation to the sampled
         Fe3+/Fetotal ratio, which is unrelated to this perturbation).
+    real_rock_proportion : float, optional
+        Probability in [0, 1] that a given simulation keeps its GEOROC/PetDB
+        (or mixed) chemistry unperturbed, i.e. skips the strong random
+        Fe/Cr/Si/Mg/Ca/Al mole perturbation. Drawn independently per
+        simulation (see ``_real_rock_mask``). ``None`` (default) falls back
+        to ``real_rocks``: 1.0 if True, else 0.0.
     """
 
+    # Draw (and validate) the real-rock flags before touching the filesystem.
+    is_real_rock = _real_rock_mask(N, real_rocks, real_rock_proportion)
     directory = Path(directory)
     GEOROC_DIR = Path(GEOROC_DIR)
     control_path = Path(control_path)
@@ -1162,7 +1208,7 @@ def prepare_HeFESTo_tree_Mars(
 
         mg_val = element_moles.get('Mg', 0.0)
 
-        if not real_rocks:
+        if not is_real_rock[sim_idx]:
             d_fe = float(np.random.uniform(0.0, 0.1))
             d_cr = float(np.random.uniform(0.0, 0.01))
             d_si = float(np.random.uniform(-0.5/24, 2.0/24)) # Read these values off of norm 24 histograms
@@ -1225,6 +1271,7 @@ def prepare_HeFESTo_tree_Mars(
 
 def prepare_HeFESTo_tree_surface(
     directory: Path, GEOROC_DIR: Path, control_path: Path, N: int, real_rocks: bool = False,
+    real_rock_proportion: Optional[float] = None,
 ) -> None:
     """Prepare a BatchNNNN/SimulationN directory tree for HeFESTo surface-lid runs.
 
@@ -1259,8 +1306,16 @@ def prepare_HeFESTo_tree_surface(
         to each sampled composition, leaving the mixed GEOROC/PetDB rock
         chemistry unmodified (aside from Fe speciation to the sampled
         Fe3+/Fetotal ratio, which is unrelated to this perturbation).
+    real_rock_proportion : float, optional
+        Probability in [0, 1] that a given simulation keeps its GEOROC/PetDB
+        (or mixed) chemistry unperturbed, i.e. skips the strong random
+        Fe/Cr/Si/Mg/Ca/Al mole perturbation. Drawn independently per
+        simulation (see ``_real_rock_mask``). ``None`` (default) falls back
+        to ``real_rocks``: 1.0 if True, else 0.0.
     """
 
+    # Draw (and validate) the real-rock flags before touching the filesystem.
+    is_real_rock = _real_rock_mask(N, real_rocks, real_rock_proportion)
     directory = Path(directory)
     GEOROC_DIR = Path(GEOROC_DIR)
     control_path = Path(control_path)
@@ -1366,7 +1421,7 @@ def prepare_HeFESTo_tree_surface(
 
             mg_val = element_moles.get('Mg', 0.0)
 
-            if not real_rocks:
+            if not is_real_rock[sim_idx]:
                 d_fe = float(np.random.uniform(0.00, 0.05)) * float(np.random.uniform() > 0.3)
                 d_cr = float(np.random.uniform(0.0, 0.01))
                 d_si = float(np.random.uniform(-0.5 / 24, 2.0 / 24))
@@ -1435,6 +1490,7 @@ def prepare_HeFESTo_tree_surface(
 
 def prepare_HeFESTo_tree_cmb(
     directory: Path, GEOROC_DIR: Path, control_path: Path, N: int, real_rocks: bool = False,
+    real_rock_proportion: Optional[float] = None,
 ) -> None:
     """Prepare a BatchNNNN/SimulationN directory tree for HeFESTo CMB-boundary-layer runs.
 
@@ -1470,8 +1526,16 @@ def prepare_HeFESTo_tree_cmb(
         to each sampled composition, leaving the mixed GEOROC/PetDB rock
         chemistry unmodified (aside from Fe speciation to the sampled
         Fe3+/Fetotal ratio, which is unrelated to this perturbation).
+    real_rock_proportion : float, optional
+        Probability in [0, 1] that a given simulation keeps its GEOROC/PetDB
+        (or mixed) chemistry unperturbed, i.e. skips the strong random
+        Fe/Cr/Si/Mg/Ca/Al mole perturbation. Drawn independently per
+        simulation (see ``_real_rock_mask``). ``None`` (default) falls back
+        to ``real_rocks``: 1.0 if True, else 0.0.
     """
 
+    # Draw (and validate) the real-rock flags before touching the filesystem.
+    is_real_rock = _real_rock_mask(N, real_rocks, real_rock_proportion)
     directory = Path(directory)
     GEOROC_DIR = Path(GEOROC_DIR)
     control_path = Path(control_path)
@@ -1521,7 +1585,7 @@ def prepare_HeFESTo_tree_cmb(
 
     # Each simulation covers only the CMB boundary layer: a transition
     # sampled 100-300 km above the CMB down to a small jitter around the
-    # core pressure (135 GPa), sampled in ~BOUNDARY_LAYER_P_STEP_GPA increments.
+    # core pressure (140 GPa), sampled in ~BOUNDARY_LAYER_P_STEP_GPA increments.
     T_cmbs = np.random.uniform(3500.0, 5000.0, N)  # mantle-side CMB temperatures
     P_cores = CMB_PRESSURE_GPA + np.random.uniform(0, 1, size=N)
     depth_above_cmb_km = np.random.uniform(100.0, 300.0, N)
@@ -1578,7 +1642,7 @@ def prepare_HeFESTo_tree_cmb(
 
             mg_val = element_moles.get('Mg', 0.0)
 
-            if not real_rocks:
+            if not is_real_rock[sim_idx]:
                 d_fe = float(np.random.uniform(0.00, 0.05)) * float(np.random.uniform() > 0.3)
                 d_cr = float(np.random.uniform(0.0, 0.01))
                 d_si = float(np.random.uniform(-0.5 / 24, 2.0 / 24))
@@ -1643,6 +1707,279 @@ def prepare_HeFESTo_tree_cmb(
             cmb_temp=float(T_cmbs[sim_idx]),
             out_path=sim_dir / 'ad.in',
         )
+
+
+# Pressure window (GPa) for the CMB gap-filling isobars. The conductive CMB
+# runs from prepare_HeFESTo_tree_cmb end at CMB_PRESSURE_GPA + U(0, 1), while
+# the whole-mantle adiabats run to ~140 GPa, so everything hotter than the
+# adiabats between ~136 and 140 GPa was never sampled. The window starts a
+# little above that cut-off so the isobars also close the notch at 135-136 GPa
+# where the conductive lines thin out against the adiabat band.
+CMB_ISOBAR_P_RANGE_GPA = (134.0, 140.0)
+
+# Hot end (K) of each isobar, sampled uniformly so the 5000 K edge (the top of
+# the conductive runs' mantle-side CMB temperature range) is not a hard line.
+CMB_ISOBAR_T_MAX_RANGE_K = (4900.0, 5100.0)
+
+# Isobaric temperature step (K).
+CMB_ISOBAR_DT_K = 25.0
+
+
+def prepare_HeFESTo_tree_cmb_isobars(
+    directory: Path, GEOROC_DIR: Path, control_path: Path, N: int, real_rocks: bool = False,
+    real_rock_proportion: Optional[float] = None,
+    P_range: Tuple[float, float] = CMB_ISOBAR_P_RANGE_GPA,
+    T_max_range: Tuple[float, float] = CMB_ISOBAR_T_MAX_RANGE_K,
+    dT: float = CMB_ISOBAR_DT_K,
+    adiabat_overlap_K: float = 0.0,
+) -> int:
+    """Prepare a BatchNNNN/SimulationN tree of isobaric runs that fill the CMB gaps.
+
+    Complements ``prepare_HeFESTo_tree_fulladiabat`` (adiabats to ~140 GPa)
+    and ``prepare_HeFESTo_tree_cmb`` (conductive boundary layer ending at
+    ~135-136 GPa). The conductive runs are straight lines in P-T that stop at
+    the core pressure, so they leave (a) nothing hotter than the adiabats
+    between ~136 and 140 GPa, and (b) a thin dead zone between the adiabat band
+    and the coolest conductive lines near 135 GPa. Isobars cross both gaps in
+    a single scan per simulation.
+
+    Each simulation is one isobar at ``P ~ U(*P_range)`` that sweeps T from
+    the adiabat, ``get_T(P, S)`` with ``S ~ N(TRANSITION_S_MEAN,
+    TRANSITION_S_STD)`` (minus ``adiabat_overlap_K``), up to
+    ``T_max ~ U(*T_max_range)`` in steps of ~``dT``. The adiabat start is
+    sampled per run, so the cold ends interleave with the existing adiabat
+    band instead of leaving a seam. The sweep is written as a native HeFESTo
+    P-T grid run code, ``[P, P, 0, T_min, T_max, n_T, 0, ...]`` (the same form
+    ``HeFESTo_deep_sampling.prepare_deep_tree`` uses for isobars), so no
+    ``ad.in`` file is needed.
+
+    Composition sampling, the FeOT/SiO2 rejection loop and Fe speciation are
+    identical to ``prepare_HeFESTo_tree_cmb``.
+
+    Parameters
+    ----------
+    directory : Path
+        Root directory under which ``BatchNNNN/`` subdirectories are created.
+    GEOROC_DIR : Path
+        Path to a GEOROC/PetDB CSV file with oxide wt% columns.
+    control_path : Path
+        HeFESTo control template (a deep-mantle template, e.g. ``deepHeFESTo``).
+    N : int
+        Total number of simulations (isobars) to generate.
+    real_rocks : bool, default=False
+        Legacy switch: if True, no simulation gets the random composition
+        perturbation. Superseded by ``real_rock_proportion``.
+    real_rock_proportion : float, optional
+        Probability in [0, 1] that a given simulation keeps its GEOROC/PetDB
+        (or mixed) chemistry unperturbed, i.e. skips the strong random
+        Fe/Cr/Si/Mg/Ca/Al mole perturbation. Drawn independently per
+        simulation (see ``_real_rock_mask``). ``None`` (default) falls back
+        to ``real_rocks``: 1.0 if True, else 0.0.
+    P_range : (float, float), default=CMB_ISOBAR_P_RANGE_GPA
+        Pressure window (GPa) the isobars are drawn from uniformly.
+    T_max_range : (float, float), default=CMB_ISOBAR_T_MAX_RANGE_K
+        Range (K) the hot end of each isobar is drawn from uniformly.
+    dT : float, default=CMB_ISOBAR_DT_K
+        Target temperature step (K) along each isobar.
+    adiabat_overlap_K : float, default=0.0
+        Extra K to start each sweep below its sampled adiabat temperature,
+        for more overlap with the adiabat dataset.
+
+    Returns
+    -------
+    int
+        Number of simulations written.
+    """
+    # Draw (and validate) the real-rock flags before touching the filesystem.
+    is_real_rock = _real_rock_mask(N, real_rocks, real_rock_proportion)
+    directory = Path(directory)
+    GEOROC_DIR = Path(GEOROC_DIR)
+    control_path = Path(control_path)
+    if not control_path.exists() or not control_path.is_file():
+        raise FileNotFoundError(f'Control template not found: {control_path}')
+    if dT <= 0:
+        raise ValueError('dT must be positive')
+    directory.mkdir(parents=True, exist_ok=True)
+
+    batch_dir = _next_available_batch_dir(directory, 1)
+    batch_dir.mkdir(parents=True, exist_ok=False)
+    simulations_in_batch = 0
+    batch_number = int(batch_dir.name.removeprefix('Batch'))
+
+    target_total_moles = 24.0
+
+    georoc_df = pd.read_csv(GEOROC_DIR)
+    mgo_col = 'MgO'
+    with open(control_path, 'r', encoding='utf-8', errors='ignore') as handle:
+        template_lines = [line.rstrip('\n') for line in handle]
+    mgo_numeric = pd.to_numeric(georoc_df[mgo_col], errors='coerce').fillna(0.0)
+    ultramafic_df = georoc_df[mgo_numeric > 20.0]
+    mafic_df = georoc_df[(mgo_numeric > 5.0) & (mgo_numeric <= 20.0)]
+
+    # Composition split: 30% ultramafic, 20% mafic, 50% mixtures of the two
+    N_ultra = int(round(N * 0.3))
+    N_mafic = int(round(N * 0.2))
+    N_mix = N - N_ultra - N_mafic
+
+    ultra_pure = ultramafic_df.sample(n=N_ultra, replace=True).reset_index(drop=True)
+    mafic_pure = mafic_df.sample(n=N_mafic, replace=True).reset_index(drop=True)
+    mix_ultra = ultramafic_df.sample(n=N_mix, replace=True).reset_index(drop=True)
+    mix_mafic = mafic_df.sample(n=N_mix, replace=True).reset_index(drop=True)
+    mix_alphas = np.random.uniform(0.0, 1.0, N_mix)  # ultramafic fraction in mixture
+
+    specs: List[Tuple] = (
+        [('ultra', row, None, None) for _, row in ultra_pure.iterrows()] +
+        [('mafic', row, None, None) for _, row in mafic_pure.iterrows()] +
+        [('mix', mix_ultra.iloc[i], mix_mafic.iloc[i], mix_alphas[i]) for i in range(N_mix)]
+    )
+    order = rng.permutation(N)
+    specs = [specs[i] for i in order]
+
+    logfo2 = np.random.uniform(-6, 3, N)  # logfO2 relative to FMQ
+    logfe3_fe2 = (0.2 * logfo2) - 1
+    fe3_fe2 = 10 ** logfe3_fe2
+    fe3_fet_grid = fe3_fe2 / (1 + fe3_fe2)  # Convert to Fe3+/Fetotal
+
+    # One isobar per simulation: adiabat (sampled entropy) -> T_max.
+    P_iso = np.random.uniform(P_range[0], P_range[1], N)
+    S_start = np.random.normal(TRANSITION_S_MEAN, TRANSITION_S_STD, N)
+    T_starts = get_T(P=P_iso, S=S_start) - float(adiabat_overlap_K)
+    T_ends = np.random.uniform(T_max_range[0], T_max_range[1], N)
+    T_starts = np.minimum(T_starts, T_ends - dT)  # always at least one step
+    n_T = np.maximum(np.round((T_ends - T_starts) / dT).astype(int), 1)
+    run_code = [
+        [float(P_iso[i]), float(P_iso[i]), 0,
+         float(T_starts[i]), float(T_ends[i]), int(n_T[i]), 0, 0, 0, 0, 0]
+        for i in range(N)
+    ]
+    print(f'[cmb isobars] {N} isobars, P in [{P_range[0]}, {P_range[1]}] GPa, '
+          f'T from adiabat ({T_starts.min():.0f}-{T_starts.max():.0f} K) to '
+          f'{T_max_range[0]:.0f}-{T_max_range[1]:.0f} K, '
+          f'~{int(np.sum(n_T + 1)):,} P-T points total')
+
+    for sim_idx, spec in enumerate(specs):
+        if simulations_in_batch >= 1000:
+            batch_number += 1
+            batch_dir = _next_available_batch_dir(directory, batch_number)
+            batch_dir.mkdir(parents=True, exist_ok=False)
+            simulations_in_batch = 0
+
+        sim_dir = batch_dir / f'Simulation{simulations_in_batch + 1}'
+        sim_dir.mkdir(parents=True, exist_ok=True)
+        simulations_in_batch += 1
+
+        ratio = float(fe3_fet_grid[sim_idx])
+        element_moles = _draw_earth_tree_composition(
+            spec, ultramafic_df, mafic_df, ratio,
+            perturb=not is_real_rock[sim_idx],
+            target_total_moles=target_total_moles,
+            sim_label=f'Sim {sim_idx+1}',
+        )
+
+        wt_debug = ', '.join(f'{key}={value:.4f}' for key, value in element_moles.items())
+        print(f'Sim {sim_idx+1} P={P_iso[sim_idx]:.2f} GPa '
+              f'T={T_starts[sim_idx]:.0f}->{T_ends[sim_idx]:.0f} K '
+              f'real={bool(is_real_rock[sim_idx])} Fe3/FeT={ratio:.4f} -> {wt_debug}')
+
+        control_copy_path = sim_dir / 'control'
+        updated_control_lines = _build_control_lines(
+            template_lines=template_lines,
+            element_values=element_moles,
+            run_code=run_code[sim_idx],
+        )
+        with open(control_copy_path, 'w', encoding='utf-8') as handle:
+            handle.write('\n'.join(updated_control_lines) + '\n')
+
+    return N
+
+
+def _draw_earth_tree_composition(
+    spec: Tuple, ultramafic_df: pd.DataFrame, mafic_df: pd.DataFrame, ratio: float,
+    perturb: bool, target_total_moles: float = 24.0, sim_label: str = '',
+    max_attempts: int = 25,
+) -> Dict[str, float]:
+    """One Earth-tree bulk composition, as in ``prepare_HeFESTo_tree_cmb``.
+
+    ``spec`` is ``(category, row_a, row_b, alpha)`` with category in
+    {'ultra', 'mafic', 'mix'} (``alpha`` = ultramafic fraction of a mix).
+    Optionally applies the random Fe/Cr/Si/Mg/Ca/Al perturbation, speciates Fe
+    to ``ratio`` (Fe3+/FeT) through the bulk O budget, normalises to
+    ``target_total_moles`` and redraws from the same pool(s) until
+    FeOT <= 30 wt% and SiO2 >= 25 wt% (at most ``max_attempts`` draws; the
+    last draw is kept with a warning otherwise).
+    """
+    category, row_a, row_b, alpha = spec
+    for attempt in range(max_attempts):
+        if attempt > 0:
+            if category == 'ultra':
+                row_a = ultramafic_df.sample(n=1).iloc[0]
+            elif category == 'mafic':
+                row_a = mafic_df.sample(n=1).iloc[0]
+            else:  # 'mix'
+                row_a = ultramafic_df.sample(n=1).iloc[0]
+                row_b = mafic_df.sample(n=1).iloc[0]
+                alpha = float(np.random.uniform(0.0, 1.0))
+
+        if row_b is None:
+            base_oxide_wt = _build_oxide_wt_from_row(row_a)
+        else:
+            ultra_oxide = _build_oxide_wt_from_row(row_a)
+            mafic_oxide = _build_oxide_wt_from_row(row_b)
+            base_oxide_wt = {
+                key: float(alpha) * ultra_oxide.get(key, 0.0) + (1.0 - float(alpha)) * mafic_oxide.get(key, 0.0)
+                for key in set(ultra_oxide) | set(mafic_oxide)
+            }
+
+        unspeciated_wt = _speciate_iron_and_normalize(base_oxide_wt, 0.0)
+        element_moles = _oxide_wt_to_element_moles(unspeciated_wt)
+        element_moles = _normalize_total_moles(element_moles, 1.0)
+
+        mg_val = element_moles.get('Mg', 0.0)
+
+        if perturb:
+            d_fe = float(np.random.uniform(0.00, 0.05)) * float(np.random.uniform() > 0.3)
+            d_cr = float(np.random.uniform(0.0, 0.01))
+            d_si = float(np.random.uniform(-0.5 / 24, 2.0 / 24))
+            d_mg = float(np.random.uniform(1.5 / 24, 2.75 / 24)) * (mg_val < 1.5 / 24)
+            d_mg += float(np.random.uniform(0.25 / 24, 2.0 / 24))
+            d_ca = -(float(np.random.uniform(0.0, 0.1)) * (element_moles.get('Ca', 0.0) > 0.1))
+            d_al = -(float(np.random.uniform(0.0, 0.05)) * (element_moles.get('Al', 0.0) > 0.05))
+
+            element_moles['Fe'] = element_moles.get('Fe', 0.0) + d_fe
+            element_moles['Cr'] = element_moles.get('Cr', 0.0) + d_cr
+            element_moles['Ca'] = element_moles.get('Ca', 0.0) + d_ca
+            element_moles['Al'] = element_moles.get('Al', 0.0) + d_al
+            element_moles['Si'] = element_moles.get('Si', 0.0) + d_si
+            element_moles['Mg'] = element_moles.get('Mg', 0.0) + d_mg
+            element_moles['O'] = (
+                element_moles.get('O', 0.0)
+                + 1.0 * d_fe
+                + 1.5 * d_cr
+                + 1.0 * d_ca
+                + 1.5 * d_al
+                + 2.0 * d_si
+                + 1.0 * d_mg
+            )
+
+        fe_total = element_moles.get('Fe', 0.0)
+        element_moles['O'] = element_moles.get('O', 0.0) + 0.5 * ratio * fe_total
+
+        element_moles = _normalize_total_moles(element_moles, target_total_moles)
+
+        bulk_comp_wt, _, _ = _compute_bulk_from_elements(element_moles)
+        feot_wt = bulk_comp_wt['FeO'] + bulk_comp_wt['Fe2O3'] * (
+            2.0 * OXIDE_MOLAR_MASSES['FeO'] / OXIDE_MOLAR_MASSES['Fe2O3']
+        )
+        sio2_wt = bulk_comp_wt['SiO2']
+        if feot_wt <= 30.0 and sio2_wt >= 25.0:
+            break
+    else:
+        print(
+            f'{sim_label}: no composition satisfied FeOT<=30%, SiO2>=25% '
+            f'after {max_attempts} attempts; using last draw '
+            f'(FeOT={feot_wt:.2f}%, SiO2={sio2_wt:.2f}%)'
+        )
+    return element_moles
 
 
 def _find_all_control_files(workspace_dir: str) -> List[str]:
