@@ -145,6 +145,44 @@ _EMULATOR_ATTR = {'isothermal': 'isothermal_emulator',
                   'openox': 'open_emulator'}
 
 
+def _align_bundle_phases(bundle, ml_indexer):
+    """Restrict a test bundle's per-phase arrays to the model's phases, matched by name.
+
+    A bundle can carry a phase the model does not: one removed from the model's
+    basis as too rare to learn (e.g. pseudowollastonite in the HeFESTo Earth test
+    bundles). Its per-phase columns (``binary_labels``, ``molar_labels``, ...) then
+    no longer line up with the model's, and the ground-truth reconstruction fails.
+    The model cannot represent rows in which such a phase is present, so -- as in
+    the training pipeline's rare-phase removal -- those rows are dropped, and the
+    remaining per-phase columns are reordered to the model's phase order.
+
+    Returns (bundle, n_rows_dropped, unmodelled_phases). The bundle is modified in
+    place; it is a no-op when the phase lists already match.
+    """
+    b_ph = list(bundle.ml_indexer.all_phases)
+    m_ph = list(ml_indexer.all_phases)
+    if b_ph == m_ph:
+        return bundle, 0, []
+    missing = [ph for ph in m_ph if ph not in b_ph]
+    if missing:
+        raise ValueError(f'Test bundle lacks model phase(s) {missing}; cannot score this model on it.')
+    extra = [ph for ph in b_ph if ph not in m_ph]
+    cols = [b_ph.index(ph) for ph in m_ph]
+    binaries = np.asarray(bundle.binary_labels)
+    n_rows = binaries.shape[0]
+    keep = np.ones(n_rows, dtype=bool)
+    if extra:
+        keep = ~(binaries[:, [b_ph.index(ph) for ph in extra]] > 0.5).any(axis=1)
+    for name, arr in list(vars(bundle).items()):
+        if not isinstance(arr, np.ndarray) or arr.ndim == 0 or arr.shape[0] != n_rows:
+            continue
+        arr = arr[keep]
+        if arr.ndim == 2 and arr.shape[1] == len(b_ph):     # per-phase columns
+            arr = arr[:, cols]
+        setattr(bundle, name, arr)
+    return bundle, int(n_rows - keep.sum()), extra
+
+
 def _select_emulator(api, bundle, emulator_name: Optional[str] = None):
     """Return (name, NN_MELTS). Honour ``emulator_name`` if given, else pick the
     wrapped emulator whose training feature space matches the bundle."""
@@ -209,6 +247,7 @@ def evaluate_emulator_quality(
     bundle = load_ml_bundle(bundle_path)
     emu_name, emulator = _select_emulator(api, bundle, emulator_name)
     ml_indexer = emulator.ml_indexer
+    bundle, n_dropped_unmodelled, unmodelled_phases = _align_bundle_phases(bundle, ml_indexer)
     device = emulator.dev if hasattr(emulator, 'dev') else 'cpu'
     device = 'cuda' if str(device) == 'cuda' and torch.cuda.is_available() else 'cpu'
 
@@ -376,6 +415,8 @@ def evaluate_emulator_quality(
         'emulator': emu_name,
         'n_samples': int(n),
         'n_total_rows': int(n_total),
+        'n_rows_dropped_unmodelled_phase': n_dropped_unmodelled,
+        'unmodelled_phases': unmodelled_phases,
         'mass_balance': getattr(emulator, 'mass_balance', None),
         'recon_residual_l2_mean': float(np.mean(recon_resid)),
         'recon_residual_l2_p95': float(np.percentile(recon_resid, 95)),

@@ -53,7 +53,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 import matplotlib
-matplotlib.use('Agg')
+# matplotlib.use('Agg')  # disabled: a global backend switch breaks interactive plotting (e.g. PetThermoTools)
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
 
@@ -218,20 +218,17 @@ def hefesto_standard_points(standards_dir: Path):
     ``control`` for bulk composition -- never a pre-baked CSV).
 
     ``comp_molefrac`` is a dict {element: array} keyed by the SAME element
-    vocabulary as a HeFESTo bundle's own Elkeys (e.g. 'Fe3' present, 'O'
-    dropped), and on the SAME mole-FRACTION (sum == 1) basis a bundle's own
-    composition columns are -- ``_load_composition`` renormalizes HeFESTo's
-    raw control-file element moles (a fixed total-moles basis, not sum == 1)
-    before returning them; without that, every standard-rock overlay point
-    would sit off that same total-moles factor outside this plot's axes.
-    'Fe3' is filled with 0.0, mirroring how the existing HeFESTo comparison
-    pipeline already feeds these standards to the emulator itself
-    (``reorder_input_table(composition_space='elements')``) -- not a new
-    approximation introduced here. Returns None if no simulation directories
+    vocabulary as a HeFESTo bundle's own Elkeys ('Fe' ferrous, 'Fe3' ferric, 'O'
+    dropped), on the SAME cation mole-FRACTION (sum == 1) basis a bundle's own
+    composition columns are. It comes from ``_load_cation_fractions``, which
+    converts the control file's oxygen to Fe3 by charge balance with the same
+    function ``HeFESToAPI.ForwardMB`` uses (``API.add_ferric_column``), so each
+    standard's ferric iron is shown as HeFESTo ran it rather than as 0. Returns
+    None if no simulation directories
     are found.
     """
     from ngibbs.deployment_tests.meltstable_comparison import (
-        find_tables, _load_composition, _read_conditions, ELEMENT_KEYS,
+        find_tables, _load_cation_fractions, _read_conditions,
     )
     try:
         tables = find_tables(standards_dir)
@@ -241,22 +238,21 @@ def hefesto_standard_points(standards_dir: Path):
         return None
 
     P_all, T_all, S_all, ids_all = [], [], [], []
-    comp_cols = {k: [] for k in ELEMENT_KEYS if k != 'O'}
+    comp_cols = {}
     for sim_dir in tables:
         _, P, T, S = _read_conditions(sim_dir)
-        comp = _load_composition(sim_dir)  # single dict of scalars for this rock
+        comp = _load_cation_fractions(sim_dir)  # single dict of scalars for this rock
         n = len(P)
         P_all.append(P)
         T_all.append(T)
         S_all.append(S)
         ids_all.extend([sim_dir.name] * n)
-        for k in comp_cols:
-            comp_cols[k].append(np.full(n, comp[k]))
+        for k, v in comp.items():
+            comp_cols.setdefault(k, []).append(np.full(n, v))
     if not P_all:
         return None
 
     comp_molefrac = {k: np.concatenate(v) for k, v in comp_cols.items()}
-    comp_molefrac['Fe3'] = np.zeros_like(comp_molefrac['Fe'])  # see docstring
     return np.concatenate(P_all), np.concatenate(T_all), np.concatenate(S_all), comp_molefrac, ids_all
 
 

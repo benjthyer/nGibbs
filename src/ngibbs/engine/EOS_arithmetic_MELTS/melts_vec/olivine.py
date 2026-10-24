@@ -657,7 +657,16 @@ def solve_ordering(r, T, P, n_iter=60):
     # exactly (olivine.c lines 1910-1913) -- clip toward that with tight
     # bounds to keep the Newton solve well-posed there too.
     s_bound = 0.999*np.ones(4)
-    s = newton_solve_ordering(_dgds_func, s0, r, T, P, n_iter=n_iter,
+    # The Taylor coefficients depend only on P, which is fixed for the whole
+    # solve: build them once instead of on every one of the ~9*n_iter dG/ds
+    # evaluations (they were ~60% of olivine's runtime). Same arithmetic as
+    # _dgds_func, so the result is bit-identical.
+    Gc = _g_taylor_coeffs(P)
+
+    def _dgds_fixed_P(s, r, T, P):
+        return _dgds(Gc, r, s, T, site_fractions(r, s))
+
+    s = newton_solve_ordering(_dgds_fixed_P, s0, r, T, P, n_iter=n_iter,
                                 s_min=-s_bound, s_max=s_bound)
     for i in range(4):
         s[:, i] = np.where(np.abs(r[:, i] + 1.0) < 1e-8, 0.0, s[:, i])

@@ -200,7 +200,7 @@ def plot_bulk_reconstruction(result: Dict[str, object], out_dir, model_label: st
     format ('png', 'pdf', 'svg'); scatter layers are rasterized (at ``dpi``) so
     vector PDFs stay small.  Returns {'parity': Path, 'relerr': Path}."""
     import matplotlib
-    matplotlib.use('Agg')
+    # matplotlib.use('Agg')  # disabled: a global backend switch breaks interactive plotting (e.g. PetThermoTools)
     import matplotlib.pyplot as plt
     from matplotlib.ticker import FixedLocator, NullFormatter, NullLocator
 

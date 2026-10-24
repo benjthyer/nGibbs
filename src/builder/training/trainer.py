@@ -26,6 +26,7 @@ if src_path not in sys.path:
 from ngibbs.utils.string_utils import pull_number_range, _number_pattern as _DROPOUT_NUMBER
 from builder.training.optimizer_factory import create_optimizer, create_scheduler, SchedulerWrapper
 from builder.training.benchmark import ThroughputBenchmark
+from builder.training.history import upper_terms
 from ngibbs.config import constants
 from ngibbs.utils.file_utils import load_ml_bundle
 import ngibbs.engine.NN as NN
@@ -35,6 +36,10 @@ from ngibbs.engine.NN_continuous import (AFFINITY_LOSS_DEFAULTS, ACTIVATION_TRAI
 # Mixed precision: constants.TRAIN_PRECISION selects the autocast dtype. See that
 # constant's docstring in constants.py for the float32/bfloat16/float16 tradeoffs.
 _PRECISION_DTYPES = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}
+
+# Factor on the upper objective (see _upper_loss) keeping it large relative to Adam's eps.
+# Training-history rows report the weighted loss terms at this same scale.
+LOSS_SCALE = 1E4
 
 
 def _resolve_precision(device: str):
@@ -597,12 +602,12 @@ def _upper_loss(model, out: UpperBatch, x_batch, b_batch, y_batch, m_batch, feat
     bulk_loss = (bulk_loss_raw * bulk_zero_mask).sum() / bulk_zero_mask.sum().clamp(min=1)
 
     # Scale loss to be large wrt Epsilon for optimizer stability.
-    total = 1E4 * (sat_alpha * loss_sat + chem_alpha * chem_loss + mole_alpha * mole_loss)
+    total = LOSS_SCALE * (sat_alpha * loss_sat + chem_alpha * chem_loss + mole_alpha * mole_loss)
     if bulk_alpha != 0:   # Bulk can be numerically unstable, so it stays opt-in.
-        total = total + 1E4 * bulk_alpha * bulk_loss
+        total = total + LOSS_SCALE * bulk_alpha * bulk_loss
     hinge_loss = _absent_hinge_loss(model, out, b_batch, hinge_params)
     if hinge_loss is not None:
-        total = total + 1E4 * float(hinge_params['absent_hinge_weight']) * hinge_loss
+        total = total + LOSS_SCALE * float(hinge_params['absent_hinge_weight']) * hinge_loss
     return total, loss_sat, chem_loss, mole_loss, bulk_loss
 
 
@@ -883,7 +888,7 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                       dropout_step_up = 0.05, dropout_step_down = 0.02,
                       noise_step_up = 0.002, noise_step_down = 0.001,
                       config_yaml = None, training_yaml = None, processing_yaml = None, stats = None, log_path = None,
-                      train_params = None, carry_state = None):
+                      train_params = None, carry_state = None, history = None):
     
     """    # --- Build (copy) model ---
     scheduler is text: one of ['steplr', 'cosine', 'cosinewarm', 'plateau'] or None for no scheduler. 
@@ -952,6 +957,8 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     best_test_loss = baseline_test_loss
     best_epoch = 0  # 0 = the pre-training baseline model
     torch.save(model.state_dict(), str(TEMP_MODELS_DIR / 'temp_binary_train.pt'))
+    if history is not None:  # builder.training.history: training-curve CSV
+        history.add_val(optimizer.param_groups[0]['lr'], dropout_rate, noise, baseline_test_loss)
 
     train_losses, test_losses = [], []
     early_stopping_counter = 0
@@ -976,13 +983,21 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
             loss = _weighted_binary_loss_gt_positive_only(logits, yb, binWeights)
             loss.backward()
             optimizer.step()
+            batch_lr = optimizer.param_groups[0]['lr']  # the LR this step used (history)
             wrappedScheduler.step_batch() # Step scheduler if it's batch-based (Does nothing if it's epoch-based)
 
             running_train_loss += loss.item() * xb.size(0)
             N += xb.size(0)
+            if history is not None:
+                batch_loss = loss.item()
+                history.add_batch(epoch, N, xb.size(0), batch_lr, dropout_rate, noise,
+                                  {'total': batch_loss, 'sat': batch_loss})
             if N >= max_N:
                 print(f"Reached max_N={max_N} samples for this epoch. Stopping early.")
                 break
+        else:  # the batch loop ran to completion (no max_N break)
+            if history is not None:
+                history.epoch_done(epoch)
 
         avg_train_loss = running_train_loss / N
         train_losses.append(avg_train_loss)
@@ -990,6 +1005,8 @@ def train_Lower_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         # --- Evaluate ---
         avg_test_loss, precision, recall = _evaluate_binary_model(model, test_loader, binWeights, device, max_N)
         test_losses.append(avg_test_loss)
+        if history is not None:
+            history.add_val(optimizer.param_groups[0]['lr'], dropout_rate, noise, avg_test_loss)
 
         print("[TEST] Phasewise precision/recall:")
         for i, phase in enumerate(phase_names):
@@ -1082,7 +1099,7 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                       val_checks_per_epoch = 1, fit_train_mode = 'train', fit_ref_rows = None,
                       overfit_ratio = 1.02, underfit_ratio = 1.0,
                       config_yaml = None, training_yaml = None, processing_yaml = None, stats = None, log_path = None, amsgrad=True, eps = 1E-4,
-                      train_params = None, carry_state = None):
+                      train_params = None, carry_state = None, history = None):
     """`val_checks_per_epoch`: how many fit checks per epoch, evenly spaced, the last at the
     end of the epoch. Each check evaluates the validation set, saves a new best checkpoint,
     and steps adaptive dropout on Test/Train against the dead band [underfit_ratio,
@@ -1099,7 +1116,11 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
     `criterion` is the chemistry criterion; `criterion_mole` / `criterion_bulk` default to
     it when None. All three must be elementwise (see `symmetric_rel_l2`). main.py builds
-    them from `loss_config.{chemistry,moles,bulk}.type`."""
+    them from `loss_config.{chemistry,moles,bulk}.type`.
+
+    `history`: an optional builder.training.history.TrainingHistory whose episode main.py
+    has opened; it receives window-mean weighted losses, LR, dropout and noise every
+    N batches, plus the validation loss at the baseline and at every fit check."""
     # iF which_heads_to_freeze is [], then this is a full model trainer!
     # Currently does not handle limited VC training!! Need to adjust model to make bulk output optional, then not use it in this loop
     """model = NN.MidLevelNetwork(**Model.config)#.to(Model.device) # Copy the old model, so no overwriting. 
@@ -1124,6 +1145,7 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     affinity_params = _affinity_params(train_params)
     act_params = _activation_params(train_params)
     hinge_params = _hinge_params(train_params)
+    hinge_on = bool(float(hinge_params['absent_hinge_weight']))
     noise = train_params['noise']
     optimizer = create_optimizer(model, lr=lr, highWD=train_params['highWD'], lowWD=train_params['lowWD'], amsgrad=amsgrad, eps=eps)
     wrappedScheduler = create_scheduler(optimizer, scheduler, **scheduler_kwargs) if scheduler else SchedulerWrapper()
@@ -1198,6 +1220,8 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
     best_test_loss = baseline_test_loss
     best_epoch = 0  # 0 = the pre-training baseline model
     torch.save(model.state_dict(), str(TEMP_MODELS_DIR / 'temp_upper_train.pt'))
+    if history is not None:  # builder.training.history: training-curve CSV
+        history.add_val(optimizer.param_groups[0]['lr'], dropout_rate, noise, baseline_test_loss)
 
     train_losses, test_losses = [], []
     early_stopping_counter = 0
@@ -1230,6 +1254,8 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         else:
             ref_loss, ref_desc = running_train_loss, 'running, train mode'
         test_losses.append(avg_test_loss)
+        if history is not None:  # dropout/noise as trained with, before this check adapts them
+            history.add_val(optimizer.param_groups[0]['lr'], dropout_rate, noise, avg_test_loss)
         print(f"Check {label}: Test {avg_test_loss:.5f} | Train ({ref_desc}) {ref_loss:.5f} | "
               f"Test/Train {avg_test_loss/max(ref_loss, 1e-30):.3f}")
 
@@ -1379,6 +1405,12 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                 #train_losses.append(loss.item())
                 #print(f"[{percent_done:>5.1f}%] Batch {batch_idx:>5d} Loss: {loss.item():.4f}")
             N += batch_size_curr
+            if history is not None:  # before step_batch, so lr is the one this step used
+                history.add_batch(epoch, N, batch_size_curr, optimizer.param_groups[0]['lr'],
+                                  dropout_rate, noise,
+                                  upper_terms(loss, loss_sat, chem_loss_masked, mole_loss_masked,
+                                              bulk_loss_masked, sat_alpha, chem_alpha, mole_alpha,
+                                              bulk_alpha, LOSS_SCALE, hinge_on))
             if N > max_N:
                 break
 
@@ -1393,6 +1425,9 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                 if stop:
                     break
                 model.train()
+        else:  # the batch loop ran to completion (no stop / max_N / non-finite break)
+            if history is not None:
+                history.epoch_done(epoch)
 
         if stop:
             break

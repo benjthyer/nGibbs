@@ -17,14 +17,18 @@ The low-level fort.*/``control`` parsers (``_parse_control_file``,
 stays dependency-free of the dev-only ``builder`` package while sharing its
 exact parsing logic.
 
-Bulk composition comes from the ``control`` file's element-mole block, which
-HeFESTo normalizes to a fixed total-moles basis (commonly ~24 for mantle
-compositions -- see ``HeFESTo_functions._normalize_total_moles``), NOT to
-mole fraction (sum == 1) the way nGibbs' own 'elements' composition space
-does. ``_load_composition`` renormalizes it to sum == 1 before it's used
-anywhere (fed to the emulator here, or overlaid on the training-coverage
-Harker plots in ``training_coverage.py``) -- without this, every standard-rock
-point sits off-scale by that same total-moles factor.
+Bulk composition comes from the ``control`` file's element-mole block: cation
+moles plus oxygen, on HeFESTo's fixed total-moles basis (commonly ~24 for mantle
+compositions -- see ``HeFESTo_functions._normalize_total_moles``). HeFESTo has no
+separate ferric-iron entry; Fe3+ is implied by the oxygen in excess of an
+all-ferrous charge balance. ``_load_composition`` returns that block unchanged
+(including 'O'), which is the element-mole input format ``HeFESToAPI.ForwardMB``
+already accepts: its ``InputParser`` converts O to Fe3 by charge balance
+(``ngibbs.engine.API.add_ferric_column``) and renormalizes the cations to sum
+to 1, so the emulator sees each standard with the redox state HeFESTo ran it
+at. ``_load_cation_fractions`` applies the same conversion for consumers that
+need the emulator's own composition space without calling the API (the
+training-coverage Harker overlay in ``training_coverage.py``).
 
 Two entry points, both taking an already-constructed ``HeFESToAPI``:
 
@@ -46,7 +50,7 @@ import numpy as np
 import pandas as pd
 import torch
 import matplotlib
-matplotlib.use('Agg')
+# matplotlib.use('Agg')  # disabled: a global backend switch breaks interactive plotting (e.g. PetThermoTools)
 import matplotlib.pyplot as plt
 
 from ngibbs.engine.EOS_arithmetic.hefesto_vec import compute_within_phase_frac
@@ -129,38 +133,46 @@ def find_tables(table_dir, tables: List[str] = None) -> List[Path]:
 
 
 def _load_composition(sim_dir: Path) -> Dict[str, float]:
-    """Bulk CATION mole fraction (sum == 1 over cations only -- 'O' is
-    dropped, not one of the returned keys) for this standard rock, read
-    straight off its ``control`` file and renormalized to match the
-    emulator's own 'elements' composition-space convention
-    (``self.Elkeys``: Si/Mg/Fe/Ca/Al/Na/Cr/Fe3, no 'O' -- see
-    ``emulator.py``'s ``reorder_input_table(composition_space='elements')``).
+    """Bulk composition of this standard rock exactly as HeFESTo was given it:
+    element moles (cations AND 'O') from its ``control`` file, on HeFESTo's
+    fixed total-moles basis.
 
-    The control file's own bulk total INCLUDES oxygen (HeFESTo's fixed
-    total-moles basis, e.g. ~24 moles for a typical mantle composition of
-    which O is roughly 14, i.e. ~58%) -- normalizing over that total instead
-    of over cations alone used to understate every cation's fraction by
-    roughly a factor of 2, feeding the emulator (via
-    ``run_meltstable_property_comparison``'s own forward passes) and
-    overlaying the training-coverage Harker plots
-    (``training_coverage.hefesto_standard_points``) with compositions that
-    summed to well under 1 -- badly off the sum-to-1 basis the model
-    actually trains and predicts on, and off the bundle's own training-data
-    axes on the Harker plots specifically. 'Fe3' (ferric fraction) is not
-    present in the control file at all (no ferrous/ferric split there) and
-    is intentionally NOT added here at 0.0 -- ``reorder_input_table(strict=
-    False)`` already fills a missing 'Fe3' feature column with 0.0 when
-    this composition is fed to the emulator (the existing production
-    approximation for these standards, unchanged), and
-    ``hefesto_standard_points`` adds it explicitly for the same reason when
-    building its own comp dict for the Harker overlay.
+    This is the HeFESTo element-mole input format that ``HeFESToAPI.ForwardMB``
+    accepts directly: with 'O' among the headers, ``InputParser.parse_composition``
+    replaces it by 'Fe3' via charge balance (``API.add_ferric_column``), leaving
+    ferrous iron in 'Fe', and ``parse_input`` then renormalizes the cations to
+    sum to 1. Passing the oxygen through (rather than dropping it and letting
+    ``reorder_input_table(strict=False)`` zero-fill 'Fe3', as this function used
+    to) keeps each standard's ferric iron -- e.g. Fe3+/sum(Fe) of ~0.12 for BASALT
+    and ~0.19 for SHERG -- so emulator and HeFESTo see the same bulk.
     """
     element_moles, _ = _parse_control_file(str(Path(sim_dir) / 'control'))
-    cation_keys = [k for k in ELEMENT_KEYS if k != 'O']
-    total = sum(element_moles.get(k, 0.0) for k in cation_keys)
+    missing = [k for k in ELEMENT_KEYS if k not in element_moles]
+    if missing:
+        raise ValueError(f'{sim_dir}/control is missing element(s) {missing}')
+    return {k: float(element_moles[k]) for k in ELEMENT_KEYS}
+
+
+def _load_cation_fractions(sim_dir: Path) -> Dict[str, float]:
+    """Bulk CATION mole fractions (sum == 1, no 'O') in the emulator's 'elements'
+    space -- 'Fe' ferrous only, 'Fe3' ferric -- for this standard rock.
+
+    Same conversion ``ForwardMB`` applies to ``_load_composition``'s output
+    (``API.add_ferric_column``, then renormalization over cations), for callers
+    that need the composition itself rather than an emulator prediction, such
+    as the training-coverage Harker overlay.
+    """
+    from ngibbs.engine.API import add_ferric_column
+
+    raw = _load_composition(sim_dir)
+    headers = list(raw)
+    values, headers = add_ferric_column(np.array([[raw[k] for k in headers]], dtype=np.float64),
+                                        headers)
+    comp = {h: float(v) for h, v in zip(headers, values[0])}
+    total = sum(comp.values())
     if total <= 0:
         raise ValueError(f'Non-positive total cation moles in {sim_dir}/control')
-    return {k: element_moles.get(k, 0.0) / total for k in cation_keys}
+    return {k: v / total for k, v in comp.items()}
 
 
 def _load_component_moles(sim_dir: Path, indexer) -> np.ndarray:

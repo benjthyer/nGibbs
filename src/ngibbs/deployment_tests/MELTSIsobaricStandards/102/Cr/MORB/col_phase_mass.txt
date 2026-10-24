@@ -44,6 +44,10 @@ Table: plagioclase1
 Columns: mass
 
 File: Phase_main_tbl.txt
+Table: rhm-oxide1
+Columns: mass
+
+File: Phase_main_tbl.txt
 Table: spinel1
 Columns: mass
 

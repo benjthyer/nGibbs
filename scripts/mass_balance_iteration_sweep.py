@@ -170,7 +170,7 @@ def sweep_one(label, ckpt, bundle, *, iters, repeats, max_samples, seed, quality
 
 def plot_sweep(df, out_dir):
     import matplotlib
-    matplotlib.use('Agg')
+    # matplotlib.use('Agg')  # disabled: a global backend switch breaks interactive plotting (e.g. PetThermoTools)
     import matplotlib.pyplot as plt
     colors = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948']
     panels = [('l2_mean', 'L2 residual, mean', True), ('l2_p99', 'L2 residual, p99', True),

@@ -16,6 +16,10 @@ Table: apatite1
 Columns: V
 
 File: Phase_main_tbl.txt
+Table: biotite1
+Columns: V
+
+File: Phase_main_tbl.txt
 Table: clinopyroxene1
 Columns: V
 

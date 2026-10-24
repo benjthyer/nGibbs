@@ -12,7 +12,7 @@ from pathlib import Path
 import yaml
 
 import matplotlib
-matplotlib.use('Agg')  # Non-interactive backend - save plots without displaying
+# matplotlib.use('Agg')  # Non-interactive backend - save plots without displaying
 
 # Ensure repo root and src are on path
 import sys

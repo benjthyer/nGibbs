@@ -5,36 +5,41 @@ Nothing here touches ``src/``, ``builder`` or ``scripts`` on sys.path -- every
 import is ``ngibbs.<...>``, and every data file is located relative to the
 installed package (``ngibbs.engine`` / ``ngibbs.deployment_tests``).
 
-Produces, under ``--out-dir``:
+Produces, under ``--out-dir`` (default: ``generated/`` next to this file), as
+300 dpi PDFs:
 
 1. Training/test-data density clouds (one figure per data family), drawn from
    the ``*_Test_subset*.tar.gz`` bundles the deployment tests evaluate on,
    with the deployment-test standard rocks overlaid as red 'x':
 
-     density_PT_HeFESToMars.png        P-T cloud (NPT + NPS subsets pooled)
-     density_PT_HeFESToEarth.png
-     density_Harker_HeFESToMars.png    Si vs every other element (cation mol frac)
-     density_Harker_HeFESToEarth.png
-     density_Harker_MELTS102.png       SiO2 vs every other oxide (oxide wt frac),
-     density_Harker_MELTS120.png       closed-system Cr bundles (NPT + NPS pooled)
+     density_PT_HeFESToMars.pdf        P-T cloud (NPT + NPS subsets pooled)
+     density_PT_HeFESToEarth.pdf
+     density_Harker_HeFESToMars.pdf    Si vs every other element (cation mol frac)
+     density_Harker_HeFESToEarth.pdf
+     density_Harker_MELTS102.pdf       SiO2 vs every other oxide (oxide wt frac),
+     density_Harker_MELTS120.pdf       closed-system Cr bundles (NPT + NPS pooled)
 
 2. Phase and property sections for the deployment-test standard rocks, one
    figure per model x pathway, one row per standard rock -- the same layout as
    scripts/phase_comparison.py and scripts/property_comparison.py:
 
-     sections_phase_<model>_<pathway>.png     GT phase stack | emulator phase stack
-     sections_property_<model>_<pathway>.png  one column per property: GT (k-),
-                                              emulator (r--), GT assemblage +
-                                              internal EOS (b:); isentropic adds
-                                              a T panel (GT vs temperature model)
+     sections_phase_<model>_<pathway>.pdf     GT phase stack | emulator phase stack
+     sections_property_<model>_<pathway>.pdf  one column per property: GT (k-),
+                                              emulator (r--), GT assemblage (b:);
+                                              isentropic adds a T panel (GT vs
+                                              temperature model)
                                               HeFESTo: rho, VP, VS, S, Cp, KS, alpha vs P
-                                              MELTS:   rho, S, Cp, V, H vs T
+                                                       (assemblages through the internal EOS)
+                                              MELTS:   rho, S, Cp, V, H vs T (assemblages
+                                                       through alphaMELTS's phase-property
+                                                       calculator, via PetThermoTools)
 
    <model> in {HeFESToMars, HeFESToEarth, MELTS102, MELTS120}; MELTS uses the
    Cr sub-API and the Cr standards. <pathway> in {isothermal, isentropic}.
 
 Usage
 -----
+    python ngibbs_thesis_plots.py                         # -> generated/
     python ngibbs_thesis_plots.py --out-dir thesis_plots
     python ngibbs_thesis_plots.py --only density          # no model loading
     python ngibbs_thesis_plots.py --only sections --gpu
@@ -50,7 +55,7 @@ import numpy as np
 import pandas as pd
 import torch
 import matplotlib
-matplotlib.use('Agg')
+# matplotlib.use('Agg')  # disabled: a global backend switch breaks interactive plotting (e.g. PetThermoTools)
 import matplotlib.pyplot as plt
 
 import ngibbs.engine as _ngibbs_engine
@@ -83,9 +88,8 @@ FAMILIES = {
         bundles=['HeFESToMars_NPT_Test_subset*.tar.gz', 'HeFESToMars_NPS_Test_subset*.tar.gz'],
         space='elements', singleton='HeFESToMarsEmulator', std_planet='Mars'),
     'HeFESToEarth': dict(
-        model_dir='HeFESToEarthAdiabat', label='HeFESTo Earth',
-        bundles=['HeFESToEarthAdiabat_NPT_Test_subset*.tar.gz',
-                 'HeFESToEarthAdiabat_NPS_Test_subset*.tar.gz'],
+        model_dir='HeFESToEarth', label='HeFESTo Earth',
+        bundles=['HeFESToEarth_NPT_Test_subset*.tar.gz', 'HeFESToEarth_NPS_Test_subset*.tar.gz'],
         space='elements', singleton='HeFESToEmulator', std_planet='Earth'),
     'MELTS102': dict(
         model_dir='102', label='MELTS 1.0.2',
@@ -136,16 +140,58 @@ def _load_family(fam: dict):
 # --------------------------------------------------------------------------- #
 # 1. density clouds
 # --------------------------------------------------------------------------- #
+# Figures are drawn at the size they are printed in the thesis (text width 5.5 in;
+# landscape pages 9 in), so the font sizes below are the printed sizes in points.
+TEXT_W = 5.5
+LAND_W = 9.0
+FS = dict(title=9.5, label=9, tick=8, inplot=8, legend=8.5)
+
+
+def _fonts(ax, title=None, xlabel=True, ylabel=True):
+    """Re-apply the printed font sizes to an axis drawn by an ngibbs helper."""
+    if title is not None:
+        ax.set_title(title, fontsize=FS['title'])
+    else:
+        ax.title.set_fontsize(FS['title'])
+    if not xlabel:
+        ax.set_xlabel('')
+    if not ylabel:
+        ax.set_ylabel('')
+    ax.xaxis.label.set_fontsize(FS['label'])
+    ax.yaxis.label.set_fontsize(FS['label'])
+    ax.tick_params(labelsize=FS['tick'])
+    ax.xaxis.get_offset_text().set_fontsize(FS['tick'])
+    ax.yaxis.get_offset_text().set_fontsize(FS['tick'])
+    for t in ax.texts:
+        t.set_fontsize(FS['inplot'])
+    if ax.get_legend() is not None:
+        ax.get_legend().remove()
+
+
+def _tex(label):
+    """'Al2O3' -> 'Al$_2$O$_3$'."""
+    import re as _re
+    if label in ('Fe3', 'Fe2'):
+        return f'Fe$^{{{label[-1]}+}}$'
+    return _re.sub(r'(\d+)', r'$_{\1}$', label)
+
+
 def plot_pt_density(name, fam, P, T, std, out_dir):
-    fig, ax = plt.subplots(figsize=(6, 5))
-    sxy = (std[1], std[0]) if std is not None else None
-    _density_heatmap(ax, T, P, 'T (K)', 'P (GPa)',
-                     f"{fam['label']}: P-T distribution of test data (n={np.isfinite(T).sum():,})",
-                     bins=80, standard_xy=sxy)
+    # Printed at half the text width (one of two subfigures).
+    fig, ax = plt.subplots(figsize=(0.49 * TEXT_W, 0.49 * TEXT_W * 0.95), layout='constrained')
+    _density_heatmap(ax, T, P, 'T (K)', 'P (GPa)', '', bins=80, standard_xy=None)
+    if std is not None:
+        # Each standard rock is a path in P-T: draw it as a line, not a scatter of points.
+        P_std, T_std, rock = np.asarray(std[0]), np.asarray(std[1]), np.asarray(std[4])
+        for r in dict.fromkeys(rock):
+            m = (rock == r) & np.isfinite(P_std) & np.isfinite(T_std)
+            o = np.argsort(P_std[m])
+            ax.plot(T_std[m][o], P_std[m][o], color='red', lw=1.4, zorder=5)
     ax.invert_yaxis()
-    fig.tight_layout()
-    path = out_dir / f'density_PT_{name}.png'
-    fig.savefig(path, dpi=200, facecolor='white')
+    ax.locator_params(axis='x', nbins=5)
+    _fonts(ax, title=f"n = {np.isfinite(T).sum():,}")
+    path = out_dir / f'density_PT_{name}.pdf'
+    fig.savefig(path, dpi=300, facecolor='white')
     plt.close(fig)
     print(f'  -> {path}')
 
@@ -155,21 +201,26 @@ def plot_harker_density(name, fam, comp, std_comp, out_dir, ncols=4):
     unit = 'oxide wt frac.' if fam['space'] == 'oxides' else 'cation mol frac.'
     others = [k for k in comp if k != pivot]
     nrows = int(np.ceil(len(others) / ncols))
-    fig, axes = plt.subplots(nrows, ncols, figsize=(3.1 * ncols, 2.9 * nrows), squeeze=False)
+    # MELTS (oxide) Harker grids have more panels and get a whole landscape page each;
+    # the HeFESTo (element) grids print at the text width on a portrait page.
+    figsize = (LAND_W, 4.6) if fam['space'] == 'oxides' else (TEXT_W, 1.45 * nrows + 0.35)
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False, layout='constrained')
     for k, other in enumerate(others):
         ax = axes[k // ncols][k % ncols]
         sxy = None
         if std_comp is not None and pivot in std_comp and other in std_comp:
             sxy = (std_comp[pivot], std_comp[other])
-        _density_heatmap(ax, comp[pivot], comp[other], f'{pivot} ({unit})', other, other,
-                         bins=50, standard_xy=sxy)
+        _density_heatmap(ax, comp[pivot], comp[other], '', '', '', bins=50, standard_xy=sxy)
+        ax.locator_params(nbins=3)
+        _fonts(ax, title=_tex(other))
     for k in range(len(others), nrows * ncols):
         axes[k // ncols][k % ncols].axis('off')
     n = len(next(iter(comp.values())))
-    fig.suptitle(f"{fam['label']}: Harker diagrams of test data (n={n:,})", fontsize=11)
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
-    path = out_dir / f'density_Harker_{name}.png'
-    fig.savefig(path, dpi=200, facecolor='white')
+    print(f'  {fam["label"]}: n = {n:,}')
+    fig.supxlabel(f'{_tex(pivot)} ({unit})', fontsize=FS['label'])
+    fig.supylabel(unit, fontsize=FS['label'])
+    path = out_dir / f'density_Harker_{name}.pdf'
+    fig.savefig(path, dpi=300, facecolor='white')
     plt.close(fig)
     print(f'  -> {path}')
 
@@ -200,63 +251,66 @@ def _np(x) -> np.ndarray:
 _PATHWAY_LABEL = {'isothermal': 'Isothermal (P, T)', 'isentropic': 'Isentropic (P, S)'}
 
 
-def _save(fig, path, top=0.96):
-    fig.tight_layout(rect=(0, 0, 1, top))
-    fig.savefig(path, dpi=200, facecolor='white')
+def _save(fig, path):
+    fig.savefig(path, dpi=300, facecolor='white')
     plt.close(fig)
     print(f'  -> {path}')
 
 
-def _phase_grid(rows, draw, gt_label, pathway, xlabel, title, path):
-    """One row per rock: GT phase stack (left) | emulator phase stack (right).
-    ``draw(ax, fractions, rock, panel_title)`` renders one stack."""
-    fig, axes = plt.subplots(len(rows), 2, figsize=(11, 3.4 * len(rows)), squeeze=False)
+def _phase_grid(rows, draw, gt_label, pathway, xlabel, title, path, ylabel='phase fraction'):
+    """One row per rock: GT phase stack (left) | emulator phase stack (right), printed
+    at the text width. Column headers on the top row, rock names as row labels."""
+    fig, axes = plt.subplots(len(rows), 2, figsize=(TEXT_W, 2.15 * len(rows) + 0.3),
+                             squeeze=False, sharex='row', layout='constrained')
+    heads = (gt_label, f'Emulator ({pathway})')
     for r, d in enumerate(rows):
-        draw(axes[r][0], d['gt_phase'], d, f"{d['title']} -- {gt_label} (GT)")
-        draw(axes[r][1], d['em_phase'], d, f"{d['title']} -- Emulator ({pathway})")
-        for ax in axes[r]:
-            ax.set_xlabel(xlabel)
-    fig.suptitle(f'{title} -- {_PATHWAY_LABEL[pathway]} pathway: GT vs emulator', fontsize=12)
+        draw(axes[r][0], d['gt_phase'], d, '')
+        draw(axes[r][1], d['em_phase'], d, '')
+        for c, ax in enumerate(axes[r]):
+            ax.set_xlabel(xlabel if r == len(rows) - 1 else '')
+            ax.set_ylabel(f"{d['title']}\n{ylabel}" if c == 0 else '')
+            if c == 1:
+                ax.tick_params(labelleft=False)
+            _fonts(ax, title=heads[c] if r == 0 else '')
     _save(fig, path)
 
 
-def _property_grid(rows, props, gt_label, pathway, xlabel, title, path):
-    """One row per rock, one column per property: ground truth (k-), emulator
-    predicted assemblage (r--), GT assemblage through the internal EOS (b:).
-    The isentropic pathway adds a final T panel (GT vs temperature model)."""
+def _property_grid(rows, props, gt_label, pathway, xlabel, title, path, prop_label='nGibbs EOS'):
+    """One row per rock, one column per property, printed across a landscape page:
+    ground truth (k-), emulator predicted assemblage (r--), GT assemblage through the
+    property calculator ``prop_label`` (b:). The isentropic pathway adds a final T panel
+    (GT vs temperature model). Property names head the top row; rock names label the
+    rows; one legend."""
+    from matplotlib.lines import Line2D
     show_T = pathway == 'isentropic'
     n_cols = len(props) + (1 if show_T else 0)
-    col_w = 3.6 if n_cols <= 5 else 3.0
-    fig, axes = plt.subplots(len(rows), n_cols, figsize=(col_w * n_cols, 3.2 * len(rows)),
-                             squeeze=False)
+    fig, axes = plt.subplots(len(rows), n_cols, figsize=(LAND_W, 1.35 * len(rows) + 0.45),
+                             squeeze=False, layout='constrained')
     for r, d in enumerate(rows):
         order = np.argsort(d['x'])
         x = d['x'][order]
-        for c, (key, label) in enumerate(props):
-            ax = axes[r][c]
-            ax.plot(x, d['gt'][key][order], 'k-', lw=1.5, label=f'{gt_label} (GT)')
-            ax.plot(x, d['em'][key][order], 'r--', lw=1.5, label='Emulator (pred. assemblage)')
-            ax.plot(x, d['gi'][key][order], 'b:', lw=1.8, label='GT assemblage + internal EOS')
-            ax.set_xlabel(xlabel)
-            ax.set_ylabel(label if c > 0 else f"{d['title']}\n{label}", fontsize=9)
-            ax.grid(True, alpha=0.25)
-            if r == 0:
-                ax.set_title(label, fontsize=10)
-            if r == 0 and c == len(props) - 1:
-                ax.legend(fontsize=7, loc='best')
+        panels = [(d['gt'][k][order], d['em'][k][order], d['gi'][k][order], label)
+                  for k, label in props]
         if show_T:
-            ax = axes[r][-1]
-            ax.plot(x, d['T_gt'][order], 'k-', lw=1.5, label=f'{gt_label} (GT)')
-            ax.plot(x, d['T_em'][order], 'r--', lw=1.5, label='Emulator T(P, S)')
-            ax.set_xlabel(xlabel)
-            ax.set_ylabel(d['T_label'])
+            panels.append((d['T_gt'][order], d['T_em'][order], None, d['T_label']))
+        for c, (gt, em, gi, label) in enumerate(panels):
+            ax = axes[r][c]
+            ax.plot(x, gt, 'k-', lw=1.2)
+            ax.plot(x, em, 'r--', lw=1.2)
+            if gi is not None:
+                ax.plot(x, gi, 'b:', lw=1.4)
             ax.grid(True, alpha=0.25)
-            if r == 0:
-                ax.set_title(d['T_label'], fontsize=10)
-                ax.legend(fontsize=7, loc='best')
-    fig.suptitle(f'{title} -- {_PATHWAY_LABEL[pathway]} pathway: emulator vs {gt_label} ground truth',
-                 fontsize=12)
-    _save(fig, path, top=0.97)
+            ax.locator_params(nbins=3)
+            ax.set_xlabel(xlabel if r == len(rows) - 1 else '')
+            ax.set_ylabel(d['title'] if c == 0 else '')
+            _fonts(ax, title=label if r == 0 else '')
+    handles = [Line2D([], [], color='k', ls='-', label=f'{gt_label}'),
+               Line2D([], [], color='r', ls='--', label=f'emulator assemblage + {prop_label}'
+                      + (' (T: temperature model)' if show_T else '')),
+               Line2D([], [], color='b', ls=':', lw=1.4, label=f'{gt_label} assemblage + {prop_label}')]
+    fig.legend(handles=handles, loc='outside upper center', ncol=3, frameon=False,
+               fontsize=FS['legend'])
+    _save(fig, path)
 
 
 # --------------------------------------------------------------------------- #
@@ -326,9 +380,9 @@ def hefesto_sections(name, fam, api, out_dir):
                 T_gt=d['T'], T_em=T_eval, T_label='T (K)',
             ))
         _phase_grid(rows, draw, 'HeFESTo', pathway, 'P (GPa)', f"{fam['label']}: phase abundances",
-                    out_dir / f'sections_phase_{name}_{pathway}.png')
+                    out_dir / f'sections_phase_{name}_{pathway}.pdf')
         _property_grid(rows, HEFESTO_SECTION_PROPS, 'HeFESTo', pathway, 'P (GPa)', fam['label'],
-                       out_dir / f'sections_property_{name}_{pathway}.png')
+                       out_dir / f'sections_property_{name}_{pathway}.pdf')
 
 
 # --------------------------------------------------------------------------- #
@@ -336,36 +390,105 @@ def hefesto_sections(name, fam, api, out_dir):
 # --------------------------------------------------------------------------- #
 MELTS_SECTION_PROPS = [('rho', r'$\rho$ (g/cm$^3$)'), ('S', 'S (J/g/K)'), ('Cp', r'$C_p$ (J/g/K)'),
                        ('V', r'V (cm$^3$/g)'), ('H', 'H (J/g)')]
+MELTS_PTT_MODEL = {'102': 'MELTSv1.0.2', '120': 'MELTSv1.2.0'}
+# ptt_out names the emulator's alkali feldspar 'k-feldspar1'; alphaMELTS only knows 'alkali-feldspar'.
+_PTT_TO_MELTS_PHASE = {'k-feldspar1': 'alkali-feldspar1'}
+# Fixed-composition phases (oxide moles per formula unit). ptt_out writes composition tables
+# only for compositionally variable phases, so these would otherwise get no properties.
+# 'fluid' is the MELTS 1.0.2 pure-water phase; graphite has no oxide form and stays out.
+_PURE_PHASE_OXIDES = {
+    'quartz': {'SiO2': 1}, 'tridymite': {'SiO2': 1}, 'fluid': {'H2O': 1},
+    'apatite': {'CaO': 5, 'P2O5': 1.5, 'H2O': 0.5}, 'whitlockite': {'CaO': 3, 'P2O5': 1},
+    'muscovite': {'K2O': 0.5, 'Al2O3': 1.5, 'SiO2': 3, 'H2O': 1}, 'calcite': {'CaO': 1, 'CO2': 1},
+}
+
+
+def _pure_phase_table(phase, n):
+    """(n,) rows of the fixed oxide wt% of a pure phase, as a ptt composition table."""
+    from ngibbs.config.constants import OXIDE_MOLAR_MASSES
+    grams = {ox: k * OXIDE_MOLAR_MASSES[ox] for ox, k in _PURE_PHASE_OXIDES[phase].items()}
+    total = sum(grams.values())
+    # PetThermoTools finds a phase's table by its SiO2_ column, so always write one.
+    cols = {'SiO2': 0.0, **{ox: 100.0 * g / total for ox, g in grams.items()}}
+    return pd.DataFrame({f'{ox}_{phase}': np.full(n, wt) for ox, wt in cols.items()})
+
+
+def _melts_ptt_props(res, model, label):
+    """Bulk per-gram properties of a PTT-format assemblage ('Conditions' with T_C/P_bar, one
+    oxide wt% table per phase, 'mass_g'), from alphaMELTS's own phase-property calculator
+    via PetThermoTools. Phases alphaMELTS can't evaluate are dropped from the totals, so
+    the per-gram values cover the remaining mass; a warning reports the uncovered share."""
+    from petthermotools.nGibbs_bridge import add_phase_props
+    res = {_PTT_TO_MELTS_PHASE.get(k, k): v for k, v in res.items() if k != 'All'}
+    res['mass_g'] = res['mass_g'].rename(columns=_PTT_TO_MELTS_PHASE)
+    n = len(res['Conditions'])
+    for k in res['mass_g'].columns:
+        phase = k.rstrip('0123456789')
+        if k not in res and phase in _PURE_PHASE_OXIDES:
+            res[k] = _pure_phase_table(phase, n)
+    phases = [k for k in res['mass_g'].columns if k in res]
+    total = res['mass_g'].sum(axis=1).to_numpy(dtype=np.float64)
+    add_phase_props(res, Model=model)
+    cond = res['Conditions']
+    with np.errstate(divide='ignore', invalid='ignore'):
+        mass = np.where(cond['mass_g'] > 0, cond['mass_g'], np.nan)
+        missed = np.nanmax(1.0 - mass / total)
+        # 'Cp_J/(kg.K^2)' is PetThermoTools' column name; the values are J/K scaled to phase mass.
+        Cp = sum(np.nan_to_num(res[f'{k}_prop']['Cp_J/(kg.K^2)'].to_numpy(dtype=np.float64))
+                 for k in phases)
+        out = {'rho': cond['rho_kg/m^3'].to_numpy(dtype=np.float64) / 1000.0,
+               'S': cond['S_J/K'].to_numpy(dtype=np.float64) / mass, 'Cp': Cp / mass,
+               'V': cond['V_cm^3'].to_numpy(dtype=np.float64) / mass,
+               'H': cond['H_J'].to_numpy(dtype=np.float64) / mass}
+    if missed > 1e-3:
+        warnings.warn(f'{label}: up to {100 * missed:.1f}% of the assemblage mass has no '
+                      'alphaMELTS phase properties and is left out of the bulk values.')
+    return out
+
+
+def _gt_ptt_results(rock_dir, sysmain):
+    """The alphaMELTS standard run as a PTT-format dict: per-phase oxide wt% from each
+    <phase>.tbl and phase grams from Phase_mass_tbl.txt. Co-existing instances of one
+    phase (e.g. rhm-oxide1/2) are merged: masses summed, compositions mass-weighted."""
+    from ngibbs.deployment_tests.melts_comparison import (
+        read_phase_mass, read_phase_tbl, _dedupe_tbl_instances, _reindex_to,
+    )
+    index = sysmain['index'].values.astype(int)
+    mass_df, phase_cols = read_phase_mass(rock_dir)
+    mass_df = _reindex_to(index, mass_df, index_col='index')
+    res = {'Conditions': pd.DataFrame({'T_C': sysmain['Temperature'].values,
+                                       'P_bar': sysmain['Pressure'].values})}
+    masses = {}
+    for col, phase in phase_cols:
+        tbl = read_phase_tbl(rock_dir, 'melts-liquid' if phase == 'liquid' else phase)
+        if tbl is None:
+            warnings.warn(f'{rock_dir}: no {phase}.tbl; {phase} left out of the GT properties.')
+            continue
+        key = f'{phase}1'
+        masses[key] = masses.get(key, 0.0) + mass_df[col].fillna(0.0).values
+        if key not in res:
+            wt = [c for c in tbl.columns if c.startswith('wt% ')]
+            tbl = _reindex_to(index, _dedupe_tbl_instances(tbl, wt), index_col='Index')
+            res[key] = pd.DataFrame({f'{c[4:]}_{phase}': tbl[c].fillna(0.0).values for c in wt})
+    res['mass_g'] = pd.DataFrame(masses)
+    return res
 
 
 def melts_sections(name, fam, api, out_dir):
     from ngibbs.deployment_tests.melts_comparison import (
         ROCKS, read_system_main, read_bulk_comp, _system_main_feature, _ENTROPY_FEATURE,
-        _emulator_forward, _emulator_input_oxides, ml_indexer_to_melts_vec_assemblage,
-        _bulk_props_and_coverage, _gt_property_table, _gt_phase_mass_fractions,
-        _emulator_phase_mass_fractions, _ensure_alkali_feldspar_alias, _BARS_PER_GPA,
-        load_gt_assemblage,
+        _emulator_input_oxides, _bulk_oxide, _gt_property_table, _gt_phase_mass_fractions,
+        _emulator_phase_mass_fractions, _BARS_PER_GPA,
     )
     from ngibbs.deployment_tests._melts_phase_plotting import (
         MELTS_PHASE_STACK_ORDER, melts_phase_colors, build_ordered_melts_phases,
         draw_melts_phase_stack,
     )
-    _ensure_alkali_feldspar_alias(api)
     sub = api.cr if MELTS_VARIANT == 'Cr' else api.nocr
     std_dir = MELTS_STANDARDS / fam['std_version'] / MELTS_VARIANT
     ordered = build_ordered_melts_phases(MELTS_PHASE_STACK_ORDER)
     colors = melts_phase_colors()
-    have_eos = getattr(api, 'melts_solid_params', None) is not None \
-        and getattr(api, 'melts_liquid_params', None) is not None
-    if not have_eos:
-        warnings.warn(f"{fam['label']}: MELTS EOS params not loaded -- property sections skipped.")
-
-    def _props(asm, PT, mass):
-        props, _cov = _bulk_props_and_coverage(
-            api, asm['phase_composition'], asm['phase_moles'], PT, mass,
-            liquid_oxides=asm['liquid_oxides'], liquid_oxide_labels=asm['liquid_oxide_labels'])
-        n = PT.shape[0]
-        return {k: _np(props.get(k, np.full(n, np.nan))) for k, _ in MELTS_SECTION_PROPS}
+    model = MELTS_PTT_MODEL[fam['std_version']]
 
     data = []
     for rock in ROCKS[:3]:
@@ -378,15 +501,13 @@ def melts_sections(name, fam, api, out_dir):
         P_bar = sysmain['Pressure'].values
         d = dict(
             rock_dir=rock_dir, bulk=read_bulk_comp(rock_dir),
-            title=f"{rock} (P={P_bar[0] / _BARS_PER_GPA:.3g} GPa)",
+            title=f"{rock}, {P_bar[0] / _BARS_PER_GPA:.3g} GPa",
             T_C=sysmain['Temperature'].values, P_bar=P_bar,
             S_spec=_system_main_feature(sysmain, _ENTROPY_FEATURE),
             gt_phase=_gt_phase_mass_fractions(rock_dir, sysmain['index'].values.astype(int), mass_g),
             gt={k: _np(v) for k, v in _gt_property_table(sysmain, mass_g).items()},
+            gi=_melts_ptt_props(_gt_ptt_results(rock_dir, sysmain), model, f'{rock} GT'),
         )
-        if have_eos:
-            gt_asm = load_gt_assemblage(rock_dir, api)
-            d['gi'] = _props(gt_asm, gt_asm['PT'], mass_g)
         data.append(d)
 
     def draw(ax, fracs, d, title):
@@ -403,27 +524,30 @@ def melts_sections(name, fam, api, out_dir):
             rows.append(dict(d, x=d['T_C'], second=second, em_phase=_emulator_phase_mass_fractions(
                 api, emu, d['P_bar'], second, header, d['bulk'])))
         _phase_grid(rows, draw, 'alphaMELTS', pathway, 'T (°C)', f'{title}: phase mass fractions',
-                    out_dir / f'sections_phase_{name}_{pathway}.png')
-        if not have_eos:
-            continue
+                    out_dir / f'sections_phase_{name}_{pathway}.pdf', ylabel='mass fraction')
 
         # Separate from the phase figure so a failing temperature model (needed
         # only by the isentropic property pathway) doesn't cost the phase plot.
         try:
             for row in rows:
-                cm, comp, mass, T_C_em = _emulator_forward(
-                    api, _emulator_input_oxides(emu), row['P_bar'], row['second'], header,
-                    row['bulk'], temperature=isen)
-                bridged = ml_indexer_to_melts_vec_assemblage(sub, api, emu, cm, mass, comp)
-                T_C_eval = _np(T_C_em) if isen else row['T_C']
-                PT = np.column_stack([row['P_bar'] / _BARS_PER_GPA, T_C_eval + 273.15])
-                row.update(em=_props(bridged, PT, 100.0),
+                oxides = _emulator_input_oxides(emu)
+                table = np.column_stack([row['P_bar'], row['second']]
+                                        + [_bulk_oxide(row['bulk'], ox) for ox in oxides])
+                with torch.no_grad():
+                    out = api.ForwardMB(table.astype(np.float32),
+                                        headers=['Pressure(System_main)', header] + oxides,
+                                        outputs=['ptt_out'] + (['temperature'] if isen else []))
+                T_C_eval = _np(out['temperature']) if isen else row['T_C']
+                res = out['ptt_out']
+                res['Conditions']['T_C'] = T_C_eval
+                row.update(em=_melts_ptt_props(res, model, f"{row['title']} emulator ({pathway})"),
                            T_gt=row['T_C'], T_em=T_C_eval, T_label='T (°C)')
         except Exception as e:
             warnings.warn(f"{title} {pathway} property section skipped: {type(e).__name__}: {e}")
             continue
         _property_grid(rows, MELTS_SECTION_PROPS, 'alphaMELTS', pathway, 'T (°C)', title,
-                       out_dir / f'sections_property_{name}_{pathway}.png')
+                       out_dir / f'sections_property_{name}_{pathway}.pdf',
+                       prop_label='alphaMELTS EOS')
 
 
 def run_sections(out_dir: Path, use_gpu: bool):
@@ -444,7 +568,7 @@ def run_sections(out_dir: Path, use_gpu: bool):
 # --------------------------------------------------------------------------- #
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--out-dir', default='ngibbs_thesis_plots')
+    ap.add_argument('--out-dir', default=str(Path(__file__).resolve().parent / 'generated'))
     ap.add_argument('--only', choices=['density', 'sections'], default=None)
     ap.add_argument('--gpu', action='store_true', help='use the GPU singletons when CUDA is available')
     args = ap.parse_args()
@@ -453,7 +577,6 @@ if __name__ == '__main__':
     if args.only in (None, 'density'):
         run_density(out)
     if args.only in (None, 'sections'):
-        # No torch.no_grad() here: the MELTS internal EOS (melts_vec's Duan
-        # fluid terms) takes autograd derivatives; the emulator forward passes
-        # already run without grad on their own.
+        # No torch.no_grad() here: the internal EOS may take autograd derivatives;
+        # the emulator forward passes already run without grad on their own.
         run_sections(out, args.gpu)

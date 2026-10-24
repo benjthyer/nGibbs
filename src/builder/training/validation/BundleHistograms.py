@@ -29,7 +29,7 @@ from typing import Optional
 import numpy as np
 import matplotlib
 
-matplotlib.use("Agg")
+# matplotlib.use("Agg")  # disabled: a global backend switch breaks interactive plotting (e.g. PetThermoTools)
 import matplotlib.pyplot as plt
 
 # --- path setup (same depth as RecoveryPlots.py) ---

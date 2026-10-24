@@ -226,7 +226,7 @@ TITLE_SIZE, LABEL_SIZE, TICK_SIZE, LEGEND_SIZE, SUPTITLE_SIZE = 20, 17, 15, 11, 
 
 def _pyplot(scale=1.0):
     import matplotlib
-    matplotlib.use('Agg')
+    # matplotlib.use('Agg')  # disabled: a global backend switch breaks interactive plotting (e.g. PetThermoTools)
     import matplotlib.pyplot as plt
 
     plt.rcParams.update({
