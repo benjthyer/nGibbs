@@ -367,10 +367,12 @@ def finalize_bundle(bundle_path, shuffle=False, compute_cstats_flag=False, param
             from builder.processing.MLexporter import generate_dataset_stats
             n_rows = np.load(extract_dir / 'features.npy', mmap_mode='r').shape[0]
             perm = np.random.default_rng(seed).permutation(n_rows)
-            for nm in present:
+            print(f'[finalize_bundle] Shuffling {n_rows:,} rows across {len(present)} arrays...')
+            for i, nm in enumerate(present, 1):
                 src = np.load(extract_dir / nm, mmap_mode='r')
                 tmp = extract_dir / f'_shuffled_{nm}'
-                chunked_permutation_copy(src, tmp, perm, chunk_size=chunk_size)
+                chunked_permutation_copy(src, tmp, perm, chunk_size=chunk_size,
+                                         desc=f'[{i}/{len(present)}] {nm}')
                 del src
                 gc.collect()
                 tmp.replace(extract_dir / nm)

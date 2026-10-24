@@ -16,6 +16,7 @@ import pickle
 from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 # Repo root, used to keep temp directories on disk (not a RAM-backed /tmp)
 _repo_root = Path(__file__).resolve().parents[3]
@@ -57,20 +58,31 @@ def chunked_mask_copy(src, dst_path, keep_mask, chunk_size=100_000):
     return n_keep
 
 
-def chunked_permutation_copy(src, dst_path, permutation, chunk_size=100_000):
-    """Write `dst[i] = src[permutation[i]]` for every row, one output row-chunk
-    at a time.
+def chunked_permutation_copy(src, dst_path, permutation, chunk_size=100_000, desc=None,
+                             mem_budget=None):
+    """Write `dst[i] = src[permutation[i]]` for every row.
 
-    The *write* into `dst` is always a contiguous chunk; the *read* from `src`
-    is a scattered fancy-index gather (`src[permutation[start:end]]`), so this
-    is only as fast as random access to `src` allows - but peak RAM is bounded
-    to O(chunk_size) regardless of how large `src`/`permutation` are, since only
-    one chunk's worth of gathered rows exists at a time. `permutation` itself
-    (a single (n,) int array) is expected to already be in RAM - cheap even at
-    tens of millions of rows, unlike the row data itself.
+    `permutation` itself (a single (n,) int array) is expected to already be in
+    RAM - cheap even at tens of millions of rows, unlike the row data itself.
 
-    This is the one-time "shuffle a table's row order" primitive: pay a
-    scattered-read cost once during processing so that later, repeated
+    Two strategies, picked by how much of `src` fits in `mem_budget` bytes
+    (default: half of currently available RAM):
+
+    - Column slabs (the normal path): `src` is split into blocks of columns,
+      each small enough to hold in RAM. Each slab is read into memory with a
+      sequential pass over `src`, then gathered in RAM and written out one
+      contiguous row-chunk at a time. An array that fits in the budget is a
+      single slab. Cost is one sequential read of `src` (and read-modify-write
+      of `dst`) per slab, so a 28 GB array on a 25 GB machine takes a few
+      sequential passes rather than tens of millions of random page reads.
+    - Row gather (fallback, for 1-D or non-C-ordered arrays, or when even one
+      column exceeds the budget): the original scattered fancy-index gather
+      `src[permutation[start:end]]` per output chunk. Peak RAM is O(chunk_size),
+      but once `src` is larger than the page cache nearly every row is a disk
+      seek, which is pathologically slow.
+
+    This is the one-time "shuffle a table's row order" primitive: pay the
+    shuffle cost once during processing so that later, repeated
     sequential/chunked reads (e.g. a chunked training data loader) never need
     to worry about the underlying row order carrying any structure (such as
     upsampled rows appended as a block at the end of a table).
@@ -84,10 +96,46 @@ def chunked_permutation_copy(src, dst_path, permutation, chunk_size=100_000):
         f"either silently corrupt the output (when a short last chunk masked the size "
         f"difference) or raise a confusing numpy broadcast error, instead of naming the "
         f"actual problem here where it's cheap to catch.")
+    if mem_budget is None:
+        import psutil
+        mem_budget = psutil.virtual_memory().available // 2
     dst = np.lib.format.open_memmap(dst_path, mode='w+', dtype=src.dtype, shape=(n,) + src.shape[1:])
-    for start in range(0, n, chunk_size):
-        end = min(start + chunk_size, n)
-        dst[start:end] = src[permutation[start:end]]
+    desc = desc or f'Shuffling {Path(dst_path).name}'
+    n_cols = int(np.prod(src.shape[1:], dtype=np.int64))
+    col_bytes = n * src.dtype.itemsize
+    # Leave room for one gathered output chunk alongside the slab.
+    slab_cols = min(n_cols, (mem_budget - chunk_size * n_cols * src.dtype.itemsize) // col_bytes)
+    sliceable = src.ndim >= 2 and src.flags.c_contiguous
+
+    if sliceable and slab_cols >= 1:
+        src2, dst2 = src.reshape(n, n_cols), dst.reshape(n, n_cols)
+        slabs = [(c, min(c + slab_cols, n_cols)) for c in range(0, n_cols, slab_cols)]
+        # Progress counts bytes read into the slab plus bytes written out.
+        with tqdm(total=2 * src.nbytes, desc=f'{desc} ({len(slabs)} slab{"s" * (len(slabs) > 1)})',
+                  unit='B', unit_scale=True, unit_divisor=1024, mininterval=5) as pbar:
+            for c0, c1 in slabs:
+                slab = np.empty((n, c1 - c0), dtype=src.dtype)
+                for start in range(0, n, chunk_size):
+                    end = min(start + chunk_size, n)
+                    slab[start:end] = src2[start:end, c0:c1]
+                    pbar.update((end - start) * (c1 - c0) * src.dtype.itemsize)
+                for start in range(0, n, chunk_size):
+                    end = min(start + chunk_size, n)
+                    dst2[start:end, c0:c1] = slab[permutation[start:end]]
+                    pbar.update((end - start) * (c1 - c0) * src.dtype.itemsize)
+                del slab
+                dst.flush()
+        del src2, dst2
+    else:
+        if src.nbytes > mem_budget:
+            warnings.warn(f'chunked_permutation_copy: {Path(dst_path).name} ({src.nbytes / 2**30:.1f} GiB) '
+                          f'exceeds the {mem_budget / 2**30:.1f} GiB memory budget and cannot be split '
+                          f'into column slabs; falling back to a random row gather, which can be very slow.')
+        with tqdm(total=n, desc=desc, unit='row', unit_scale=True, mininterval=5) as pbar:
+            for start in range(0, n, chunk_size):
+                end = min(start + chunk_size, n)
+                dst[start:end] = src[permutation[start:end]]
+                pbar.update(end - start)
     dst.flush()
     del dst
     gc.collect()
