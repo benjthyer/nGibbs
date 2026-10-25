@@ -175,7 +175,6 @@ def get_or_build_train_workspace(bundle_path, only_VP=None, molar_epsilon=0,
     if not bundle_path.exists():
         raise FileNotFoundError(f"Bundle not found: {bundle_path}")
 
-    have_deriv = _bundle_has_derivatives(bundle_path)
     if affinity is not None:
         if with_derivatives is True:
             raise ValueError("Affinity targets and derivative supervision cannot be combined "
@@ -183,6 +182,9 @@ def get_or_build_train_workspace(bundle_path, only_VP=None, molar_epsilon=0,
         if molar_epsilon:
             raise ValueError("Affinity targets are linear; molar_epsilon must be 0.")
         with_derivatives = False
+    # Listing a .tar.gz decompresses the whole stream -- minutes for a large bundle, paid on
+    # every cache hit too -- so only ask when the answer changes what gets built.
+    have_deriv = _bundle_has_derivatives(bundle_path) if with_derivatives is not False else False
     if with_derivatives is True and not have_deriv:
         raise FileNotFoundError(
             f"{bundle_path.name} carries no {list(_DERIV_ARRAY_NAMES)}; re-export it from a "
