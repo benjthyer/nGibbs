@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import tarfile
 from copy import deepcopy
 from pathlib import Path
@@ -372,7 +373,14 @@ def _read_text_file(path: Optional[Path]) -> Optional[str]:
         return None
 
 
+_BUNDLE_METADATA_CACHE = Path(__file__).parent / "bundle_metadata_cache.json"
+
+
 def _read_bundle_metadata(bundle_path: str) -> Tuple[Optional[str], Optional[str]]:
+    """(bundle yaml, stats.txt) text, cached by bundle path+mtime+size.
+
+    Both members sit at the end of the archive, so reading them decompresses the whole
+    bundle -- minutes for a large Train bundle. The cache makes that a one-time cost."""
     tar_path = Path(bundle_path)
     if not str(tar_path).endswith(".tar.gz"):
         tar_path = Path(f"{bundle_path}.tar.gz")
@@ -380,6 +388,27 @@ def _read_bundle_metadata(bundle_path: str) -> Tuple[Optional[str], Optional[str
     if not tar_path.exists():
         return None, None
 
+    stat = tar_path.stat()
+    key = str(tar_path.resolve())
+    stamp = [stat.st_mtime, stat.st_size]
+    try:
+        cache = json.loads(_BUNDLE_METADATA_CACHE.read_text())
+    except (OSError, json.JSONDecodeError):
+        cache = {}
+    hit = cache.get(key)
+    if hit is not None and hit.get("stamp") == stamp:
+        return hit.get("yaml"), hit.get("stats")
+
+    bundle_yaml, stats_text = _scan_bundle_metadata(bundle_path, tar_path)
+    cache[key] = {"stamp": stamp, "yaml": bundle_yaml, "stats": stats_text}
+    try:
+        _BUNDLE_METADATA_CACHE.write_text(json.dumps(cache, indent=1))
+    except OSError:
+        pass
+    return bundle_yaml, stats_text
+
+
+def _scan_bundle_metadata(bundle_path, tar_path) -> Tuple[Optional[str], Optional[str]]:
     bundle_yaml = None
     stats_text = None
     try:
