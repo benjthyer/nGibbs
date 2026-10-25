@@ -16,19 +16,11 @@ Table: apatite1
 Columns: V
 
 File: Phase_main_tbl.txt
-Table: biotite1
-Columns: V
-
-File: Phase_main_tbl.txt
 Table: clinopyroxene1
 Columns: V
 
 File: Phase_main_tbl.txt
-Table: hornblende1
-Columns: V
-
-File: Phase_main_tbl.txt
-Table: leucite1
+Table: fluid1
 Columns: V
 
 File: Phase_main_tbl.txt

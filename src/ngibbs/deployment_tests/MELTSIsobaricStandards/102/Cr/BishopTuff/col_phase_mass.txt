@@ -28,6 +28,10 @@ Table: clinopyroxene1
 Columns: mass
 
 File: Phase_main_tbl.txt
+Table: fluid1
+Columns: mass
+
+File: Phase_main_tbl.txt
 Table: leucite1
 Columns: mass
 
