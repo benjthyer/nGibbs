@@ -1375,11 +1375,12 @@ def shuffle_bundle_rows(bundle_path, seed=None, chunk_size=1_000_000):
         permutation = rng.permutation(n_rows)
         print(f"[shuffle_bundle_rows] Shuffling {n_rows:,} rows in {bundle_path.name} (seed={seed})...")
 
-        for name in present_arrays:
+        for i, name in enumerate(present_arrays, 1):
             src_path = extract_dir / name
             src = np.load(src_path, mmap_mode="r")
             tmp_path = extract_dir / f"_shuffled_{name}"
-            chunked_permutation_copy(src, tmp_path, permutation, chunk_size=chunk_size)
+            chunked_permutation_copy(src, tmp_path, permutation, chunk_size=chunk_size,
+                                     desc=f"[{i}/{len(present_arrays)}] {name}")
             del src
             gc.collect()
             tmp_path.replace(src_path)
