@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -119,11 +120,29 @@ class ThroughputBenchmark:
         Safe to call only once per instance -- a second call is a no-op returning {}
         (mirrors `.tick`'s own one-shot guard, so a caller that races both epoch-loop
         exit and mid-loop `.ready` checks can't double-fire).
+
+        Never raises: this runs mid-training, and a diagnostic must not kill a run (e.g.
+        the mass-balance projector hitting a singular element system on one sample). An
+        inference-side failure still writes the record, with `infer_samples_per_sec`
+        NaN and the error under `infer_error`; any other failure writes nothing and
+        returns {}. Either way the traceback is printed and training carries on.
         """
         if self._done:
             return {}
         self._done = True
+        try:
+            return self._finalize(
+                model=model, infer_batches=infer_batches, batch_size=batch_size,
+                device=device, episode_label=episode_label,
+                training_config=training_config, log_path=log_path,
+                amp_dtype=amp_dtype, use_amp=use_amp, mass_balance=mass_balance)
+        except Exception:
+            print("[benchmark] finalize failed; no record written, training continues:\n"
+                  + traceback.format_exc(), flush=True)
+            return {}
 
+    def _finalize(self, *, model, infer_batches, batch_size, device, episode_label,
+                  training_config, log_path, amp_dtype, use_amp, mass_balance) -> Dict[str, Any]:
         # n_samples passed explicitly (not left to measure_inference_throughput's own
         # default): that default is bound to SAMPLE_COUNT at module-import time, so it
         # would silently stop tracking any later rebinding of the module-level constant.
@@ -133,10 +152,18 @@ class ThroughputBenchmark:
         # Measured under the same precision training/eval just ran under, so the
         # reported inference cost reflects what deployment at this precision would
         # actually see, not always a float32 number regardless of constants.TRAIN_PRECISION.
-        infer_rate = measure_inference_throughput(model, infer_batches, batch_size, device,
-                                                   n_samples=SAMPLE_COUNT,
-                                                   amp_dtype=amp_dtype, use_amp=use_amp,
-                                                   mass_balance=mass_balance)
+        infer_error = None
+        try:
+            infer_rate = measure_inference_throughput(model, infer_batches, batch_size, device,
+                                                       n_samples=SAMPLE_COUNT,
+                                                       amp_dtype=amp_dtype, use_amp=use_amp,
+                                                       mass_balance=mass_balance)
+        except Exception as e:
+            # Keep the (already paid for) train-side measurement; only inference is lost.
+            print("[benchmark] inference timing failed; recording train rate only:\n"
+                  + traceback.format_exc(), flush=True)
+            infer_rate = float('nan')
+            infer_error = f"{type(e).__name__}: {e}"
         train_rate = self.train_samples_per_sec
 
         record: Dict[str, Any] = {
@@ -153,6 +180,8 @@ class ThroughputBenchmark:
             'infer_time_for_1048576_s': SAMPLE_COUNT / infer_rate if infer_rate and infer_rate > 0 else None,
             'system_stats': get_system_stats(),
         }
+        if infer_error is not None:
+            record['infer_error'] = infer_error
         append_json_record(record, log_path)
         return record
 
