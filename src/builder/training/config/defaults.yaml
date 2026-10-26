@@ -28,6 +28,11 @@ early_stopping_patience: 2
 device: cuda
 max_N: null
 max_N_tune: 1.0e6
+# Training-curve history: every N batches of each train episode, record the LR,
+# adaptive dropout/noise and window-mean weighted losses (plus validation loss at each
+# fit check) to {log_dir}/{tarname}_history.csv -- see builder/training/history.py.
+# null = off. Can be set per episode (null there switches that episode off).
+history_every_n_batches: null
 log_dir: src/builder/training/logs
 inherit_loss: False
 checkpoints: # All relative to training

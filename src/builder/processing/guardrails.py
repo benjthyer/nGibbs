@@ -112,10 +112,21 @@ def check_resampling_config(upsample_enabled: bool, upsample_cfg: dict, resampli
     """
     bounds_by_source = []
     if upsample_enabled:
-        for section in ('phases', 'test_set_phases'):
-            for phase, phase_cfg in ((upsample_cfg or {}).get(section) or {}).items():
+        # `test_set_phases` lives *inside* `upsampling.phases` (that is where
+        # process_for_ML reads it from), so it must be skipped as a phase name and
+        # walked as its own section. A top-level `upsampling.test_set_phases` is also
+        # accepted for safety.
+        phases_cfg = (upsample_cfg or {}).get('phases') or {}
+        sections = [
+            ('upsampling.phases',
+             {k: v for k, v in phases_cfg.items() if k != 'test_set_phases'}),
+            ('upsampling.phases.test_set_phases', phases_cfg.get('test_set_phases') or {}),
+            ('upsampling.test_set_phases', (upsample_cfg or {}).get('test_set_phases') or {}),
+        ]
+        for prefix, section in sections:
+            for phase, phase_cfg in section.items():
                 bounds_by_source.append((
-                    f"upsampling.{section}.{phase}.multiplier_bounds",
+                    f"{prefix}.{phase}.multiplier_bounds",
                     (phase_cfg or {}).get('multiplier_bounds'),
                 ))
         for bounds in (resampling_cfg or {}).get('train_bounds') or []:
