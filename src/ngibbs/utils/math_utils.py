@@ -661,9 +661,22 @@ class Normalizer:
         return Normalizer(min_tensor, range_tensor, cuda=(device == 'cuda'))
 
 # BJT Cooked indexing helper for Ji Ching's isentropic-isothermal divide problem
-def IDX_2D_Lithosphere(min_idxes, n_idx):
-    """Generates two 2D indexing arrays given a list of minimum indexes for each column and the total number of column IDXs,
-    where isentropic is higher and isothermal is lower"""
+def IDX_2D_Split_2Part(min_idxes, n_idx):
+    """Splits each pressure profile (column) into two parts at a per-column index and returns two 2D indexers
+    (x = column, y = pressure index), where isentropic is higher (deeper) and isothermal is lower (shallower).
+
+    Parameters
+    ----------
+    min_idxes : sequence of int
+        For each column, the pressure index of the isothermal-isentropic transition.
+    n_idx : int
+        Total number of pressure indexes per column.
+
+    Returns
+    -------
+    (isentropic_x, isentropic_y), (isothermal_x, isothermal_y)
+        isentropic covers [min_idx, n_idx); isothermal covers [0, min_idx).
+    """
     isentropicxIDX = np.empty((0,), dtype=int)
     isentropicyIDX = np.empty((0,), dtype=int)
     isothermalxIDX = np.empty((0,), dtype=int)
@@ -676,6 +689,47 @@ def IDX_2D_Lithosphere(min_idxes, n_idx):
         isentropicxIDX = np.append(isentropicxIDX, np.full_like(new_S_IDX, i))
         isothermalxIDX = np.append(isothermalxIDX, np.full_like(new_T_IDX, i))
     return (isentropicxIDX.astype(int), isentropicyIDX.astype(int)), (isothermalxIDX.astype(int), isothermalyIDX.astype(int))
+
+
+def IDX_2D_Split_3Part(upper_idxes, lower_idxes, n_idx):
+    """Splits each pressure profile (column) into three parts at two per-column indexes and returns three 2D
+    indexers (x = column, y = pressure index). Used to treat a conductive regime at the core-mantle boundary
+    in addition to the one at the surface, with the adiabatic (isentropic) regime in between.
+
+    Parameters
+    ----------
+    upper_idxes : sequence of int
+        For each column, the pressure index of the upper (surface-side) conductive-adiabatic transition.
+    lower_idxes : sequence of int
+        For each column, the pressure index of the lower (CMB-side) adiabatic-conductive transition.
+        Must satisfy upper_idxes[i] <= lower_idxes[i] <= n_idx.
+    n_idx : int
+        Total number of pressure indexes per column.
+
+    Returns
+    -------
+    (lower_x, lower_y), (middle_x, middle_y), (upper_x, upper_y)
+        lower covers [lower_idx, n_idx); middle covers [upper_idx, lower_idx); upper covers [0, upper_idx).
+        Ordered deepest to shallowest, matching IDX_2D_Split_2Part (higher pressure first).
+    """
+    upper_idxes = np.asarray(upper_idxes, dtype=int)
+    lower_idxes = np.asarray(lower_idxes, dtype=int)
+    if upper_idxes.shape != lower_idxes.shape:
+        raise ValueError(f"upper_idxes {upper_idxes.shape} and lower_idxes {lower_idxes.shape} must have the same shape")
+    if np.any(upper_idxes > lower_idxes) or np.any(lower_idxes > n_idx) or np.any(upper_idxes < 0):
+        raise ValueError("Require 0 <= upper_idxes <= lower_idxes <= n_idx for every column")
+
+    def _build(starts, stops):
+        counts = stops - starts
+        x = np.repeat(np.arange(len(starts)), counts)
+        # y = start of own column + offset within the column
+        offsets = np.arange(counts.sum()) - np.repeat(np.cumsum(counts) - counts, counts)
+        y = np.repeat(starts, counts) + offsets
+        return x.astype(int), y.astype(int)
+
+    zeros = np.zeros_like(upper_idxes)
+    full = np.full_like(lower_idxes, n_idx)
+    return _build(lower_idxes, full), _build(upper_idxes, lower_idxes), _build(zeros, upper_idxes)
 
 
 def match_rows(

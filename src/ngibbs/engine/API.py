@@ -75,6 +75,7 @@ snames_dict = {name: i for i, name in enumerate(HeFESTo_snames_long)}
 from .NN import _load_temperature_model
 from .emulator import NN_MELTS
 from ..utils.math_utils import Normalizer, get_T as _reference_adiabat
+from ..utils import batch_tuning as _bt
 
 
 def _eval_adiabat_poly(
@@ -1431,7 +1432,7 @@ class EmulatorAPI:
         headers: Sequence[str],
         pressures: Union[np.ndarray, torch.Tensor] = None,
         potential_temperatures: Optional[Union[np.ndarray, torch.Tensor]] = None,
-        batch_size: int = 2**16,
+        batch_size: Optional[int] = None,
         normalize_features: bool = True,
         outputs=None,
         properties: Optional[Sequence[str]] = None,
@@ -1467,8 +1468,10 @@ class EmulatorAPI:
             Pressure grid in GPa. Defaults to linspace(0, 140, 300).
         potential_temperatures : array-like, optional
             Potential temperatures (K). None → use T column from features.
-        batch_size : int
-            Batch size for staged evaluation.
+        batch_size : int, optional
+            Rows per GPU chunk for the emulator passes. None (default) uses the
+            tuned value for this GPU when one exists (see tune_batch_size),
+            otherwise 2**16. EOS property chunks are sized separately.
         normalize_features : bool
             Whether to normalize input features before emulator calls.
         properties : sequence of str, optional
@@ -1544,6 +1547,7 @@ class EmulatorAPI:
             self.isothermal_emulator.forwardMB,
             iso_ref,
             batch_size,
+            _default_batch_size=self._ISENTROPE_BATCH_SIZE,
             Normalize=normalize_features,
             outputs=['component_moles'],
         )
@@ -1575,11 +1579,12 @@ class EmulatorAPI:
             self.isentropic_emulator.forwardMB,
             isen_design,
             batch_size,
+            _default_batch_size=self._ISENTROPE_BATCH_SIZE,
             Normalize=normalize_features,
             outputs=['phase_moles', 'chem_out', 'component_moles'],
         )
         pred_component_moles = isen_out['component_moles'].to(device=self.device, dtype=torch.float64)
-        temperatures_pred = self.get_T(torch.concatenate([isen_design, isen_out['phase_moles'], isen_out['chem_out']], dim=1), normalize_features=normalize_features) # This is another neural network!
+        temperatures_pred = self.get_T(torch.concatenate([isen_design, isen_out['phase_moles'].to(self.device), isen_out['chem_out'].to(self.device)], dim=1), normalize_features=normalize_features, batch_size=batch_size) # This is another neural network!
 
         # --- Step 6: Reshape → (n_S, n_press) ---
         temperatures_grid = temperatures_pred.reshape(n_S, n_press)
@@ -1617,11 +1622,46 @@ class EmulatorAPI:
     # for both NN forward passes and the HeFESTo EOS kernel.
     _CPU_BATCH_THRESHOLD: int = 8_192
 
+    # Fallback GPU chunk sizes when no tuned profile exists for this GPU
+    # (see tune_batch_size / ngibbs.utils.batch_tuning).
+    _NN_BATCH_SIZE: int = 2 ** 15
+    _ISENTROPE_BATCH_SIZE: int = 2 ** 16
+
+    def _nn_workload_keys(self, func, kwargs) -> Optional[list]:
+        """Tuning keys for an emulator bound method, most specific first.
+
+        forwardNN falls back to the forwardMB entry of the same emulator: it
+        runs the same network without the mass balance, so the forwardMB
+        memory model is a conservative upper bound for it.
+        """
+        owner = getattr(func, '__self__', None)
+        method = getattr(getattr(func, '__func__', None), '__name__', None)
+        if owner is None or method is None:
+            return None
+        for kind, attr, path_attr in _bt._NN_KINDS:
+            if owner is getattr(self, attr, None):
+                mb = kwargs.get('mass_balance') or getattr(owner, 'mass_balance', None)
+                ckpt = getattr(self, path_attr, None)
+                keys = [_bt.nn_key(kind, ckpt, method, mb)]
+                if method != 'forwardMB':
+                    keys.append(_bt.nn_key(kind, ckpt, 'forwardMB', getattr(owner, 'mass_balance', None)))
+                return keys
+        return None
+
+    def tune_batch_size(self, workloads=('nn', 'eos_isomorphic'), **kwargs):
+        """Measure and persist VRAM-aware batch sizes for this GPU.
+
+        Runs once per machine (results are saved per GPU fingerprint and
+        reused by every later session). See
+        ``ngibbs.utils.batch_tuning.tune_batch_size`` for the options.
+        """
+        return _bt.tune_batch_size(self, workloads=workloads, **kwargs)
+
     def _staged_forward(
         self,
         func,
         input_tensor: torch.Tensor,
-        batch_size: int,
+        batch_size: Optional[int],
         **kwargs
     ) -> Union[torch.Tensor, list]:
         """Execute function in batches, routing small inputs to the CPU API.
@@ -1632,8 +1672,15 @@ class EmulatorAPI:
             Function to apply (e.g., model forward pass).
         input_tensor : torch.Tensor
             Input batch tensor.
-        batch_size : int
-            Maximum rows per GPU chunk.
+        batch_size : int or None
+            Maximum rows per GPU chunk. None resolves, in order, to the tuned
+            value for this GPU and workload, then ``_default_batch_size``.
+            On a CUDA out-of-memory error the chunk is halved and retried.
+        _workload : str or list of str, keyword-only (popped)
+            Tuning key(s) for ``batch_size=None``; inferred for emulator
+            bound methods.
+        _default_batch_size : int, keyword-only (popped)
+            Untuned fallback for ``batch_size=None`` (default _NN_BATCH_SIZE).
         _cpu_fallback : callable, keyword-only (popped before forwarding)
             Explicit CPU function to call for small batches.  Used by
             _compute_bulk_EOS_properties; NN forward calls are routed
@@ -1648,33 +1695,52 @@ class EmulatorAPI:
         """
         # _cpu_fallback is an internal sentinel — pop before forwarding to func
         cpu_fallback = kwargs.pop('_cpu_fallback', None)
+        workload = kwargs.pop('_workload', None)
+        default_batch_size = kwargs.pop('_default_batch_size', self._NN_BATCH_SIZE)
 
-        def _merge_outputs(existing, batch):
-            if isinstance(existing, dict) and isinstance(batch, dict):
-                merged = {}
-                for key in existing:
-                    if key not in batch:
-                        raise KeyError(f"Missing key '{key}' in staged batch output")
-                    merged[key] = _merge_outputs(existing[key], batch[key])
-                return merged
+        def _to_host(x):
+            # Move every tensor leaf to the CPU so finished batches never
+            # accumulate in VRAM (including the first batch).
+            if isinstance(x, torch.Tensor):
+                return x.detach().cpu()
+            if isinstance(x, dict):
+                return {k: _to_host(v) for k, v in x.items()}
+            if isinstance(x, list):
+                return [_to_host(v) for v in x]
+            if isinstance(x, tuple):
+                return tuple(_to_host(v) for v in x)
+            return x
 
-            if isinstance(existing, list) and isinstance(batch, (list, tuple)):
-                if len(existing) != len(batch):
-                    raise ValueError("Staged batch output list length mismatch")
-                return [_merge_outputs(existing[i], batch[i]) for i in range(len(existing))]
+        def _merge_chunks(chunks):
+            # Concatenate all batch outputs once, at the end (linear cost),
+            # instead of re-copying the growing result after every batch.
+            first = chunks[0]
+            if isinstance(first, dict):
+                for c in chunks[1:]:
+                    if not isinstance(c, dict):
+                        return chunks[-1]
+                    for key in first:
+                        if key not in c:
+                            raise KeyError(f"Missing key '{key}' in staged batch output")
+                return {k: _merge_chunks([c[k] for c in chunks]) for k in first}
 
-            if isinstance(existing, tuple) and isinstance(batch, (list, tuple)):
-                if len(existing) != len(batch):
-                    raise ValueError("Staged batch output tuple length mismatch")
-                return tuple(_merge_outputs(existing[i], batch[i]) for i in range(len(existing)))
+            if isinstance(first, (list, tuple)):
+                for c in chunks[1:]:
+                    if not isinstance(c, (list, tuple)):
+                        return chunks[-1]
+                    if len(c) != len(first):
+                        kind = "list" if isinstance(first, list) else "tuple"
+                        raise ValueError(f"Staged batch output {kind} length mismatch")
+                merged = [_merge_chunks([c[i] for c in chunks]) for i in range(len(first))]
+                return merged if isinstance(first, list) else tuple(merged)
 
-            if isinstance(existing, torch.Tensor) and isinstance(batch, torch.Tensor):
-                return torch.cat([existing, batch.detach().cpu()], dim=0)
+            if all(isinstance(c, torch.Tensor) for c in chunks):
+                return torch.cat(chunks, dim=0)
 
-            if isinstance(existing, np.ndarray) and isinstance(batch, np.ndarray):
-                return np.concatenate([existing, batch], axis=0)
+            if all(isinstance(c, np.ndarray) for c in chunks):
+                return np.concatenate(chunks, axis=0)
 
-            return batch
+            return chunks[-1]
 
         n_samples = input_tensor.size(0)
 
@@ -1686,28 +1752,48 @@ class EmulatorAPI:
             if cpu_fn is not None:
                 return cpu_fn(input_tensor.detach().cpu(), **kwargs)
 
-        # ── GPU path (existing batched logic) ─────────────────────────────────
+        # ── GPU path ──────────────────────────────────────────────────────────
+        if batch_size is None:
+            if workload is None:
+                workload = self._nn_workload_keys(func, kwargs)
+            batch_size = _bt.resolve_batch_size(workload, self.device, default_batch_size)
+        batch_size = max(int(batch_size), 1)
+
+        def _halve(bs, exc):
+            if not _bt.is_oom(exc) or bs <= _bt.MIN_ROWS:
+                raise exc
+            torch.cuda.empty_cache()
+            new_bs = max(bs // 2, _bt.MIN_ROWS)
+            _warnings.warn(
+                f"[nGibbs] CUDA out of memory at batch size {bs}; retrying with {new_bs}. "
+                "If this recurs, re-run tune_batch_size() or pass a smaller batch_size.",
+                RuntimeWarning, stacklevel=3)
+            return new_bs
+
         if n_samples <= batch_size:
-            return func(input_tensor, **kwargs)
+            try:
+                return func(input_tensor, **kwargs)
+            except RuntimeError as exc:
+                batch_size = _halve(batch_size, exc)
 
-        # Process first batch
-        with torch.no_grad():
-            outputs = func(input_tensor[:batch_size], **kwargs)
+        chunks = []
+        start = 0
+        with torch.no_grad(), tqdm.tqdm(total=n_samples, unit='rows',
+                                        desc="Processing batches of size " + str(batch_size)) as pbar:
+            while start < n_samples:
+                end = min(start + batch_size, n_samples)
+                try:
+                    out = func(input_tensor[start:end], **kwargs)
+                except RuntimeError as exc:
+                    batch_size = _halve(batch_size, exc)
+                    pbar.set_description("Processing batches of size " + str(batch_size))
+                    continue
+                chunks.append(_to_host(out))
+                del out
+                pbar.update(end - start)
+                start = end
 
-            # Process remaining batches
-            n_batches = (n_samples + batch_size - 1) // batch_size
-            for batch_idx in tqdm.tqdm(range(1, n_batches), desc="Processing batches of size " + str(batch_size)):
-                start = batch_idx * batch_size
-                end = min((batch_idx + 1) * batch_size, n_samples)
-
-                batch_outputs = func(input_tensor[start:end], **kwargs)
-                outputs = _merge_outputs(outputs, batch_outputs)
-                del batch_outputs
-                gc.collect()
-
-                torch.cuda.empty_cache()
-
-            return outputs
+        return _merge_chunks(chunks)
 
     def parse_input(
         self,
@@ -1851,7 +1937,7 @@ class EmulatorAPI:
         table: Union[pd.DataFrame, np.ndarray, torch.Tensor, Sequence],
         headers: Optional[Sequence[str]] = None,
         composition_space: Optional[str] = None,
-        batch_size: int = 2**15,
+        batch_size: Optional[int] = None,
         normalize_features: bool = True,
         wt_percent: bool = False,
         comp_table_out: str = 'oxides',
@@ -1870,8 +1956,9 @@ class EmulatorAPI:
             'elements' or 'oxides'. Auto-detected if omitted.
         model : str, default='isothermal'
             Emulator to use: 'isothermal' or 'isentropic'.
-        batch_size : int, default=2**16
-            Batch size for staged evaluation.
+        batch_size : int, optional
+            Rows per GPU chunk. None (default) uses the tuned value for this
+            GPU when one exists (see tune_batch_size), otherwise 2**15.
         normalize_features : bool, default=True
             Whether to normalize features before model evaluation.
         wt_percent : bool, default=False
@@ -1960,7 +2047,7 @@ class EmulatorAPI:
         )
 
         if get_temp:
-            results['temperature'] = self.get_T(torch.concatenate([features, results['phase_moles'].to(self.device), results['chem_out'].to(self.device)], dim=1), normalize_features=normalize_features)
+            results['temperature'] = self.get_T(torch.concatenate([features, results['phase_moles'].to(self.device), results['chem_out'].to(self.device)], dim=1), normalize_features=normalize_features, batch_size=batch_size)
 
         if get_ptt_tables:
             results['ptt_out'] = self.make_ptt_out(features, results['phase_tables'][0], results['phase_tables'][1], isentropic=(modeltype=='isentropic'), openox=(modeltype=='openox'))
@@ -1976,7 +2063,7 @@ class EmulatorAPI:
         table: Union[pd.DataFrame, np.ndarray, torch.Tensor, Sequence],
         headers: Optional[Sequence[str]] = None,
         composition_space: Optional[str] = None,
-        batch_size: int = 2**15,
+        batch_size: Optional[int] = None,
         normalize_features: bool = True,
         wt_percent: bool = False,
         outputs: Optional[Sequence[str]] = None,
@@ -1994,8 +2081,9 @@ class EmulatorAPI:
             'elements' or 'oxides'. Auto-detected if omitted.
         model : str, default='isothermal'
             Emulator to use: 'isothermal' or 'isentropic'.
-        batch_size : int, default=2**16
-            Batch size for staged evaluation.
+        batch_size : int, optional
+            Rows per GPU chunk. None (default) uses the tuned value for this
+            GPU when one exists (see tune_batch_size), otherwise 2**15.
         normalize_features : bool, default=True
             Whether to normalize features before model evaluation.
         wt_percent : bool, default=False
@@ -2057,20 +2145,70 @@ class EmulatorAPI:
         )
 
         if get_temp:
-            results['temperature'] = self.get_T(torch.concatenate([features, results['phase_moles'].to(self.device), results['chem_out'].to(self.device)], dim=1), normalize_features=normalize_features)
+            results['temperature'] = self.get_T(torch.concatenate([features, results['phase_moles'].to(self.device), results['chem_out'].to(self.device)], dim=1), normalize_features=normalize_features, batch_size=batch_size)
 
         if get_ptt_tables:
             results['ptt_out'] = self.make_ptt_out(features, results['phase_tables'][0], results['phase_tables'][1], isentropic=(modeltype=='isentropic'), openox=(modeltype=='openox'))
 
         return results
 
+    # Untuned GPU chunk for get_T. The temperature FCNN is far lighter than
+    # forwardMB, and get_T was unbatched before, so the fallback is generous.
+    _T_BATCH_SIZE: int = 2 ** 17
+
+    def _temperature_workload_key(self) -> str:
+        return _bt.nn_key('temperature', getattr(self, '_temp_path', None), 'get_T', None)
+
     def get_T(
+        self,
+        features: Union[np.ndarray, torch.Tensor],
+        normalize_features: bool = True,
+        batch_size: Optional[int] = None,
+    ) -> torch.Tensor:
+        """
+        Get temperature from isentropic emulator output, in GPU-sized chunks.
+
+        Rows are evaluated through ``_staged_forward``: inputs smaller than
+        ``_CPU_BATCH_THRESHOLD`` go to the CPU twin (as for the emulator
+        passes), larger ones in chunks of ``batch_size`` rows. ``batch_size``
+        None uses the tuned value for this GPU (see tune_batch_size), else
+        ``_T_BATCH_SIZE``. The result is always returned on ``self.device``.
+        See ``_get_T_unstaged`` for the model itself.
+
+        Parameters
+        ----------
+        features : array-like
+            Input features (B, F) with intensive variables + composition (raw, unnormalized)
+        normalize_features : bool, default=True
+            Whether to normalize input features
+        batch_size : int, optional
+            Rows per GPU chunk.
+
+        Returns
+        -------
+        torch.Tensor
+            Temperatures (B,) in the temperature model's native units (the bundle's
+            own: Kelvin for HeFESTo, Celsius for MELTS)
+        """
+        features = torch.as_tensor(features, dtype=torch.float32, device=self.device)
+        cpu_api = getattr(self, '_cpu_api', None)
+        cpu_fn = cpu_api._get_T_unstaged if getattr(cpu_api, 'temperature_model', None) is not None else None
+        temperatures = self._staged_forward(
+            self._get_T_unstaged, features, batch_size,
+            _cpu_fallback=cpu_fn,
+            _workload=self._temperature_workload_key(),
+            _default_batch_size=self._T_BATCH_SIZE,
+            normalize_features=normalize_features,
+        )
+        return temperatures.to(self.device)
+
+    def _get_T_unstaged(
         self,
         features: Union[np.ndarray, torch.Tensor],
         normalize_features: bool = True,
     ) -> torch.Tensor:
         """
-        Get temperature from isentropic emulator output.
+        Get temperature from isentropic emulator output (one batch, no chunking).
 
         If the loaded checkpoint contains p_feature_idx / s_feature_idx (written by
         train_temperature_residual_fcnn.py), the NN predicts a residual against
@@ -2567,8 +2705,11 @@ class HeFESToAPI(EmulatorAPI):
                 )
             cpu_fn = _eos_cpu
 
+        tier = _bt.eos_tier(property_names, self._METAMORPHIC_KEYS, self._FAST_KEYS)
         return self._staged_forward(
-            _eos_gpu, combined, self._EOS_BATCH_SIZE, _cpu_fallback=cpu_fn
+            _eos_gpu, combined, None, _cpu_fallback=cpu_fn,
+            _workload=_bt.eos_key(tier, type(self).__name__),
+            _default_batch_size=self._EOS_BATCH_SIZE,
         )
 
     def get_property_hefesto_vectorized_from_assemblage(

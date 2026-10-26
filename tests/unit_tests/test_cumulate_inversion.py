@@ -205,7 +205,7 @@ def test_rejects_gated_or_open_models(setup):
 def test_history_axes_and_plots(setup, tmp_path):
     """Convergence history, derived NKC/2A index, axis choice and the figures."""
     import matplotlib
-    matplotlib.use('Agg')
+    # matplotlib.use('Agg')  # disabled: a global backend switch breaks interactive plotting (e.g. PetThermoTools)
     import matplotlib.pyplot as plt
     em, b, geo = setup
     t = _target(em, b, geo)

@@ -1,4 +1,4 @@
-"""Three-panel training-curve figure from a training-history CSV.
+"""Four-panel training-curve figure from a training-history CSV.
 
     python scripts/plot_training_history.py src/builder/training/logs/<tarname>_history.csv
     python scripts/plot_training_history.py <csv> --components --smooth 5 --out fig.pdf
@@ -8,7 +8,8 @@ Rows (shared x = epochs since the start of the first recorded episode):
     2. loss (log scale): training loss (window mean every N batches) and validation
        loss at the pre-training baseline and every fit check; --components adds the
        weighted terms (saturation, chemistry, moles, bulk, hinge) that sum to the total
-    3. adaptive dropout rate (a step function: it only changes at fit checks)
+    3. adaptive dropout rate } step functions: both change only at fit checks (noise
+    4. input noise           }  moves only once dropout is pinned at its floor/ceiling)
 Dashed vertical lines mark episode transitions; each episode is named above the top panel.
 
 The CSV is written by builder.training.history.TrainingHistory (recipe key
@@ -23,13 +24,15 @@ import argparse
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 import numpy as np
 import pandas as pd
 
 # Fixed categorical order (validated default palette, light mode): train, val, then terms.
 INK = '#2b2b2a'
 MUTED = '#8a8984'
-TRAIN = '#2a78d6'      # blue
+TRAIN = '#2a78d6'      # blue (LR / dropout / noise)
+TOTAL = 'black'        # total training loss
 VAL = '#eb6834'        # orange
 TERM_COLORS = {        # components, in fixed order after train/val
     'sat': '#1baf7a',   # aqua
@@ -66,7 +69,7 @@ def _per_episode(ax, df, y, smooth=1, **kw):
         label = None
 
 
-def plot_history(csv_path, out=None, components=False, smooth=1, show_val=True,
+def plot_history(csv_path, out=None, components=False, smooth=1, show_val=True, val_ms=2.5,
                  figsize=(6.5, 6.5), dpi=300):
     df = pd.read_csv(csv_path)
     train = df[df['kind'] == 'train']
@@ -78,12 +81,14 @@ def plot_history(csv_path, out=None, components=False, smooth=1, show_val=True,
                          'xtick.labelcolor': INK, 'ytick.labelcolor': INK,
                          'axes.spines.top': False, 'axes.spines.right': False,
                          'font.size': 9, 'axes.labelsize': 9, 'legend.fontsize': 8})
-    fig, axes = plt.subplot_mosaic([['lr'], ['loss'], ['dropout']], sharex=True,
-                                   figsize=figsize, height_ratios=[1, 1.6, 1],
+    # The old dropout row is split in half between dropout and noise; the LR row gives up
+    # a little height so the two halves are not too short.
+    fig, axes = plt.subplot_mosaic([['lr'], ['loss'], ['dropout'], ['noise']], sharex=True,
+                                   figsize=figsize, height_ratios=[0.8, 1.6, 0.6, 0.6],
                                    layout='constrained')
-    ax_lr, ax_loss, ax_do = axes['lr'], axes['loss'], axes['dropout']
+    ax_lr, ax_loss, ax_do, ax_nz = axes['lr'], axes['loss'], axes['dropout'], axes['noise']
 
-    # LR and dropout come from every row (val rows carry them too, including each
+    # LR, dropout and noise come from every row (val rows carry them too, including each
     # episode's baseline at its start). A row reports the state over the stretch since the
     # previous row -- a train row its window, a val row the run-up to that check, before
     # the check adapts dropout -- so they are drawn as 'steps-pre'.
@@ -97,37 +102,46 @@ def plot_history(csv_path, out=None, components=False, smooth=1, show_val=True,
     ax_lr.set_yscale('log')
     ax_lr.set_ylabel('Learning rate')
 
-    # --- loss
+    # --- loss. Stacking, bottom to top: validation points (1.5), total training loss
+    # (1.8, black), weighted components (Line2D default 2). The total is plotted first so it
+    # leads the legend.
+    _per_episode(ax_loss, train, 'loss_total', smooth, color=TOTAL, lw=1.5, zorder=1.8,
+                 label='train (total)' if components else 'train')
     if components:
         for term, color in TERM_COLORS.items():
             col = f'loss_{term}'
             if col in train and (train[col].fillna(0) != 0).any():
                 _per_episode(ax_loss, train, col, smooth, color=color, lw=1.0,
                              label=TERM_LABELS[term])
-    _per_episode(ax_loss, train, 'loss_total', smooth, color=TRAIN, lw=1.5,
-                 label='train (total)' if components else 'train')
     if show_val and not val.empty:
-        ax_loss.plot(val['epoch'], val['loss_total'], ls='none', marker='o', ms=4,
-                     mfc=VAL, mec='white', mew=0.8, label='validation', zorder=3)
+        # Small, edgeless and BELOW the training lines, so a long run's many checks don't
+        # bury the curves; the line passes over each point.
+        ax_loss.plot(val['epoch'], val['loss_total'], ls='none', marker='o', ms=val_ms,
+                     mfc=VAL, mec='none', label='validation', zorder=1.5)
     ax_loss.set_yscale('log')
     ax_loss.set_ylabel('Loss (weighted)')
     ax_loss.legend(loc='best', ncols=2 if components else 1, frameon=True, framealpha=0.9,
+                   markerscale=max(1.0, 4 / val_ms),  # keep the legend's val dot readable
                    edgecolor='none')
 
-    # --- dropout (steps: it changes only at fit checks)
-    _per_episode(ax_do, state, 'dropout', color=TRAIN, lw=1.5, drawstyle='steps-pre')
-    ax_do.set_ylabel('Dropout rate')
-    ax_do.set_ylim(bottom=0)
-    ax_do.set_xlabel('Epoch')
+    # --- dropout and noise (steps: they change only at fit checks)
+    for ax, col, label in ((ax_do, 'dropout', 'Dropout'), (ax_nz, 'noise', 'Noise')):
+        _per_episode(ax, state, col, color=TRAIN, lw=1.5, drawstyle='steps-pre')
+        ax.set_ylabel(label)
+        ax.set_ylim(bottom=0)
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=3))  # short panels: few ticks
+        if not (state[col].fillna(0) > 0).any():  # e.g. noise never moved off 0
+            ax.set_ylim(0, 1e-3 if col == 'noise' else 0.1)
+    ax_nz.set_xlabel('Epoch')
 
     # --- episode transitions and names
-    for ax in (ax_lr, ax_loss, ax_do):
+    for ax in (ax_lr, ax_loss, ax_do, ax_nz):
         ax.grid(True, axis='y', color='#e4e3df', lw=0.6)
         ax.set_axisbelow(True)
         for _, start, _ in spans[1:]:
             ax.axvline(start, color=MUTED, lw=0.8, ls='--', zorder=0)
     x0, x1 = spans[0][1], max(end for *_, end in spans)
-    ax_do.set_xlim(x0, x1 + 0.01 * (x1 - x0))
+    ax_nz.set_xlim(x0, x1 + 0.01 * (x1 - x0))
     for name, start, end in spans:
         ax_lr.annotate(name, xy=((start + end) / 2, 1.0), xycoords=('data', 'axes fraction'),
                        xytext=(0, 3), textcoords='offset points', ha='center', va='bottom',
@@ -149,10 +163,12 @@ def main():
     p.add_argument('--smooth', type=int, default=1,
                    help='rolling mean over this many recorded points (training curves only)')
     p.add_argument('--no-val', action='store_true', help='omit validation points')
+    p.add_argument('--val-ms', type=float, default=2.5, help='validation marker size (points)')
     p.add_argument('--show', action='store_true')
     a = p.parse_args()
     out = a.out or a.csv.with_suffix('.pdf')
-    plot_history(a.csv, out, components=a.components, smooth=a.smooth, show_val=not a.no_val)
+    plot_history(a.csv, out, components=a.components, smooth=a.smooth, show_val=not a.no_val,
+                 val_ms=a.val_ms)
     if a.show:
         plt.show()
 

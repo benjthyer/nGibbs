@@ -25,7 +25,7 @@ import importlib.util
 import sys
 
 import matplotlib
-matplotlib.use('Agg')
+# matplotlib.use('Agg')  # disabled: a global backend switch breaks interactive plotting (e.g. PetThermoTools)
 import matplotlib.pyplot as plt
 
 src_path = str(Path(__file__).parent.parent.parent)
