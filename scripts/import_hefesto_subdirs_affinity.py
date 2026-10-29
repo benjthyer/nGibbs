@@ -21,6 +21,8 @@ partially matched keeps its qout so it can be inspected.
 Phases that HeFESTo did not evaluate at the final assemblage (flag
 NOT_EVALUATED: added-then-removed, spinodal, or redundant) are left NaN for a
 downstream back-calculation; the ``mu_*`` columns are recorded for exactly that.
+Workspaces run with the patched HeFESTo (diagnostic phaseadd pass, see
+``HeFESTo_affinity_import``) leave only spinodal phases NOT_EVALUATED.
 """
 
 from __future__ import annotations
@@ -284,6 +286,7 @@ def main() -> int:
         flags = {k[5:]: v for k, v in aff_totals.items() if k.startswith('flag_')}
         print('  Row status:  ' + '  '.join(f'{n}={rows.get(n, 0)}' for n in ROW_NAMES.values()))
         print('  Phase flags: ' + '  '.join(f'{n}={flags.get(n, 0)}' for n in FLAG_NAMES.values()))
+        print(f'  Points with the diagnostic (patched HeFESTo) table: {aff_totals.get("diag_points", 0)}')
         if args.delete_qout_after_parse:
             print(f'  qout deleted after parse: {tot["qout_deleted"]}')
         print(f'  Affinity shadow: {aff_name}')

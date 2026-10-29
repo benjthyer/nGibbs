@@ -104,7 +104,7 @@ device: cuda
 ######### shared loss defaults (every episode needs a complete loss_config) #######
 loss_config:
   binary:
-    weight: 0.01                 
+    weight: 0.03                 
   chemistry:
     type: symmetric_rel_l2
     weight: 10
@@ -208,6 +208,7 @@ train3:
 
 train4:
   strategy: full
+  dropout: 0.0dropout0.0
   which_heads_to_freeze: []
   epochs: 60
   # Fit checks: validate + step adaptive dropout 4x per epoch (3 in-epoch, 1 at the end),
@@ -233,6 +234,7 @@ train4:
 
 train5:
   strategy: full
+  dropout: 0.0dropout0.0
   which_heads_to_freeze: []
   # batch_size: 16384
   epochs: 120

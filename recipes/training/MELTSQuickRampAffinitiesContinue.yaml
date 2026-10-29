@@ -31,8 +31,8 @@
 #       --config recipes/training/HeFESTotuneyContinuousLight.yaml
 ####################################################################################
 
-tarname: 120ClosedFxBatch_NoCr_NPT   # loads <tarname>_Train.tar.gz / _Test.tar.gz
-warm_start: 120ClosedFxBatch_NoCr_NPT_train4 # 120SedIgClosed_Cr_NPT_train1e
+tarname: 102ClosedFxBatch_Cr_NPT  # loads <tarname>_Train.tar.gz / _Test.tar.gz
+warm_start: 102ClosedFxBatch_Cr_NPT_train3 # 120SedIgClosed_Cr_NPT_train1e
 
 encoderLayerUp: 3
 encoderLayerDown: 2
@@ -43,7 +43,8 @@ moleBranchBase: 32
 chemBranchBase: 64
 
 
-dropout: 0.01dropout0.01            # shared: initial rate, max. Encoder + mole heads.
+
+dropout: 0.0dropout0.05            # shared: initial rate, max. Encoder + mole heads.
 encoder_regularization: layernorm # normalization only: none | layernorm | batchnorm
 mole_regularization: none
 lowWD: 0.001
@@ -57,6 +58,7 @@ val_checks_per_epoch: 4
 overfit_ratio: 1.05
 underfit_ratio: 0.95
 fit_train_mode: train
+history_every_n_batches: 50
 
 model_class: AffinityModel
 
@@ -72,9 +74,9 @@ affinity:
                              # Proceed with caution:such rare phases shouldn't be in the training set anyway!
 
 # Loss shape for untrusted cells (model config, saved with the checkpoint)
-affinity_margin: 0.5         # hinge: penalize y_hat/c > -margin
+affinity_margin: 0.2         # hinge: penalize y_hat/c > -margin
 affinity_hinge_weight: 0.25
-affinity_pull_weight: 0.05   # weak pull toward the -c placeholder
+affinity_pull_weight: 0.02  # weak pull toward the -c placeholder
 affinity_present_margin: 0.03  # present-side hinge: penalize y_hat/c < min(y/c, margin)
 affinity_present_weight: 3.0   # 0 = off; counters the present->absent offset near u = 0
 
@@ -124,16 +126,25 @@ phase_weights:                 # one weight per phase, applied to binary + mole 
   muscovite: 4
   nepheline: 4
   spinel: 2
-  alloy-solid: 5
   graphite: 2
   calcite: 5
+  alloy-solid: 5
+
+    
+####################################################################################
+# Joint training: everything unfrozen together. tune1-4 already left the model in a
+# decent state ("rapidly trains a solid network"), so this is a real (long,
+# early-stopped) run rather than another short diagnostic. This is also where the bulk
+# (pre-projection mass-balance residual) term switches on -- the mole branches now
+# exist, so `normalize(n_raw @ compToEl)` is a meaningful quantity. _upper_loss puts it
+# on the same 1E4 * weight footing as chemistry/moles and only adds it when weight != 0,
+# so it stays inert everywhere it is left at 0.
+####################################################################################
 
 
 train4:
+  dropout: 0.0dropout0.0            # shared: initial rate, max. Encoder + mole heads.
   strategy: full
-  ##dropout: 0.001dropout0.3            # shared: initial rate, max. Encoder + mole heads.
-  #encoder_regularization: layernorm # normalization only: none | layernorm | batchnorm
-  #mole_regularization: none
   which_heads_to_freeze: []
   # batch_size: 16384
   epochs: 120

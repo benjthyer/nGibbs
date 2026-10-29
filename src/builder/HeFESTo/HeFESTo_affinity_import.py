@@ -32,6 +32,21 @@ What the final table does NOT contain (flag NOT_EVALUATED, value NaN)
   * a redundant duplicate of a phase listed directly before it in the control file.
 These must be back-calculated (or masked) downstream.
 
+Patched HeFESTo (diagnostic pass, ``petsub.f`` diagaff)
+------------------------------------------------------
+A locally patched HeFESTo (``~/HeFESTo/diagaff.patch``) calls ``phaseadd`` once
+more at the final assemblage with ``diag = .true.``: it evaluates every absent,
+non-spinodal phase INCLUDING the ``allow = .false.`` ones and never adds a phase.
+That table is preceded by a ``Final affinity evaluation`` line and is always the
+last table of the block, so it is the one recorded here; the point's
+``diagnostic`` attribute (manifest ``n_diag``) says it was found. With it,
+NOT_EVALUATED is left for spinodal phases only.
+
+An absent phase can then come back with a NEGATIVE affinity (flag SUPERSATURATED):
+either a trace phase that tracesub removed (small |A|), or a point whose reported
+assemblage is not the true minimum -- HeFESTo added the phase but kept an earlier
+saved solution without it (|A| of several kJ/mol-atom). Treat these as untrusted.
+
 Upper bounds (flag UPPER_BOUND)
 -------------------------------
 If the best starting guess is already worse than ``alarge`` = 10 kJ/mol-atom,
@@ -102,10 +117,12 @@ FLAG_FAILED = 4          # listed, but value unparseable (every minimisation fai
 FLAG_CONFLICT = 5        # listed as absent in qout but fort.99 carries moles
 FLAG_NOT_IN_CONTROL = 6  # schema phase not in this simulation's control file
 FLAG_NO_DATA = 7         # absent, but no usable qout table for this row
+FLAG_SUPERSATURATED = 8  # absent; minimised affinity < 0 (only from the diagnostic table)
 FLAG_NAMES = {
     FLAG_PRESENT: 'present', FLAG_MINIMIZED: 'minimized', FLAG_UPPER_BOUND: 'upper_bound',
     FLAG_NOT_EVALUATED: 'not_evaluated', FLAG_FAILED: 'failed', FLAG_CONFLICT: 'conflict',
     FLAG_NOT_IN_CONTROL: 'not_in_control', FLAG_NO_DATA: 'no_data',
+    FLAG_SUPERSATURATED: 'supersaturated',
 }
 
 # ── row status ───────────────────────────────────────────────────────────────
@@ -125,6 +142,7 @@ ROW_NAMES = {
 _POINT_HEADER = re.compile(
     r'^-{5,} Pressure \(GPa\), Depth \(km\), Temperature \(K\) -{5,}[ \t]*\r?$', re.M)
 _TABLE_MARK = 'Check for phase addition or subtraction'
+_DIAG_MARK = 'Final affinity evaluation'          # patched petsub.f, line before _TABLE_MARK
 _TABLE_END = 'Ti at end of phaseadd'
 _MU_LABEL = 'Component chemical potentials = '   # a32 in lagcomp.f
 _PHASE_EQ = 'Phase equilibria'
@@ -153,6 +171,7 @@ class QoutPoint:
     P: float
     T: float                                  # final T (NaN if not printed)
     has_table: bool = False
+    diagnostic: bool = False                  # last table is the patched diagnostic pass
     stale_add: bool = False
     stale_restore: bool = False
     rows: List[QoutRow] = field(default_factory=list)
@@ -215,6 +234,8 @@ def _parse_point(block: str) -> QoutPoint:
     t = block.rfind(_TABLE_MARK)
     if t >= 0:
         pt.has_table = True
+        d = block.rfind(_DIAG_MARK, 0, t)
+        pt.diagnostic = d >= 0 and not block[d:t].split('\n', 1)[1].strip()
         end = block.find(_TABLE_END, t)
         region = block[t:end] if end >= 0 else block[t:]
         after = block[end:] if end >= 0 else ''
@@ -302,7 +323,7 @@ def _merge(results: List[Tuple[float, int]]) -> Tuple[float, int]:
     if FLAG_PRESENT in flags:
         return 0.0, FLAG_PRESENT
     finite = [(a, f) for a, f in results
-              if f in (FLAG_MINIMIZED, FLAG_UPPER_BOUND) and np.isfinite(a)]
+              if f in (FLAG_MINIMIZED, FLAG_UPPER_BOUND, FLAG_SUPERSATURATED) and np.isfinite(a)]
     if finite:
         return min(finite, key=lambda x: x[0])
     for f in (FLAG_CONFLICT, FLAG_FAILED, FLAG_NOT_EVALUATED, FLAG_NO_DATA):
@@ -396,6 +417,8 @@ def simulation_affinities(sim_dir: str, sim_id: int, phases: Sequence[str],
             status = ROW_OK
         out[i, 4] = status
         stats[f'row_{ROW_NAMES[status]}'] += 1
+        if pt is not None and pt.diagnostic:
+            stats['diag_points'] += 1
         if pt is not None:
             out[i, 5] = P[i] - pt.P
             out[i, 6] = T[i] - pt.T
@@ -428,8 +451,9 @@ def simulation_affinities(sim_dir: str, sim_id: int, phases: Sequence[str],
                         else:
                             best = min(vals, key=lambda r: r.affinity)
                             ub = m_species[ab] > 1 and best.total_iter == 0
-                            res.append((best.affinity,
-                                        FLAG_UPPER_BOUND if ub else FLAG_MINIMIZED))
+                            flag = (FLAG_UPPER_BOUND if ub else
+                                    FLAG_SUPERSATURATED if best.affinity < 0 else FLAG_MINIMIZED)
+                            res.append((best.affinity, flag))
                     elif present:
                         res.append((0.0, FLAG_PRESENT))
                     elif pt is None or not pt.has_table:
@@ -445,6 +469,7 @@ def simulation_affinities(sim_dir: str, sim_id: int, phases: Sequence[str],
     info = dict(sim_id=sim_id, n_rows=nrows, qout_present=have_qout,
                 n_qout_points=len(points), n_matched=n_matched,
                 n_ok=int(stats['row_ok']),
+                n_diag=int(stats['diag_points']),
                 n_stale=int(stats['row_stale_add'] + stats['row_stale_restore']),
                 fully_matched=bool(have_qout and n_matched == nrows),
                 stats=stats)
@@ -521,7 +546,7 @@ def import_HeFESTo_affinities(
             block[:, 4] = ROW_NO_QOUT
             block[:, 7 + len(ELEMENT_ORDER) + len(phases):] = FLAG_NO_DATA
             info = dict(sim_id=sim_id, n_rows=nrows, qout_present=False, n_qout_points=0,
-                        n_matched=0, n_ok=0, n_stale=0, fully_matched=False,
+                        n_matched=0, n_ok=0, n_diag=0, n_stale=0, fully_matched=False,
                         stats=Counter(), error=f'{type(exc).__name__}: {exc}')
             failed_ids.append(sim_id)
         blocks.append(block)
@@ -539,6 +564,16 @@ def import_HeFESTo_affinities(
     _flush()
 
     if manifest_name is not None and manifest:
-        pd.DataFrame(manifest).to_csv(manifest_name, mode='a', index=False,
-                                      header=not os.path.exists(manifest_name))
+        new = pd.DataFrame(manifest)
+        if os.path.exists(manifest_name):
+            old_cols = list(pd.read_csv(manifest_name, nrows=0).columns)
+            if old_cols != list(new.columns):
+                # Written by an older importer (e.g. before n_diag): appending would
+                # misalign columns, so rewrite with the union (missing values blank).
+                new = pd.concat([pd.read_csv(manifest_name), new], ignore_index=True)
+                new.to_csv(manifest_name, index=False)
+            else:
+                new.to_csv(manifest_name, mode='a', index=False, header=False)
+        else:
+            new.to_csv(manifest_name, index=False)
     return full_ids, partial_ids, noq_ids, failed_ids, totals

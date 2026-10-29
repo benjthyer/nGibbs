@@ -1,19 +1,19 @@
 dataset:
-  MELTSModel: '120' 
-  Date: October20
-  Mode: openCrSedIgFxBatch
+  MELTSModel: '102' 
+  Date: October27
+  Mode: openCrFxBatch
   subset: false
   use_external: false
-outname: 120OpenFxBatch_Cr_NPT
+outname: 102OpenFxBatch_Cr_NPT
 featureNames:
   - 'Pressure(System_main)'
   #- 'S(System_main) / mass(System_main)'
   - 'Temperature(System_main)' 
-  #- 'logfO2-QFM(System_main)'
+  - 'logfO2-QFM(System_main)'
 
   
 free_outputs: 
-  - 'S(System_main) / mass(System_main)' # Specific entropy (J/g-K)
+  #- 'S(System_main) / mass(System_main)' # Specific entropy (J/g-K)
 preprocessing:
   preprocessed: false
   recover_untracked_phases: true
