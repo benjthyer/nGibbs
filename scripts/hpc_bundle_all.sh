@@ -32,7 +32,7 @@
 #                       (add --partition/--account/--qos as your cluster needs)
 #   DELETE_SBATCH_OPTS  default "--cpus-per-task=1 --mem=4G --time=24:00:00"
 #   REMOTE_PRELUDE      shell commands run first inside the jobs, e.g. "module load zstd"
-#   ZSTD_LEVEL (10)  CHUNK_FILES (200000 files/archive)  LOCAL_JOBS (4)  POLL_SECS (60)
+#   ZSTD_LEVEL (10)  CHUNK_FILES (200000 files/archive)  LOCAL_JOBS (4)  POLL_SECS (60)  ADOPT_PREVIOUS (1 = reuse results left by an earlier failed verify)
 
 set -euo pipefail
 
@@ -215,7 +215,7 @@ wait_job() {
       if [[ -n $state ]]; then gone=0; log "$label job $jid: $state"
       else
         gone=$((gone + 1))
-        (( gone < 3 )) || { err "$label job $jid left the queue without reporting success (cancelled / timed out?)"; return 1; }
+        (( gone < 3 )) || { err "$label job $jid left the queue without reporting success (cancelled / timed out / out of memory?). Check: sacct -j $jid -o JobID,State,Elapsed,Timelimit,MaxRSS -- then re-run the same command (packing resumes; if you override SBATCH_OPTS, include cpus, mem AND a longer --time)"; return 1; }
       fi
     fi
     sleep "$POLL_SECS"
@@ -302,43 +302,64 @@ step3_fetch() {
 
 VWORK=
 verify_one() { # archive; run in parallel by xargs. Needs exported VWORK.
-  local a=$1 b tmp ok=0
+  local a=$1 b sig tmp ok=0
   b=$(basename "$a")
+  sig=$(stat -c '%s %Y' "$a")
+  if [[ -f $VWORK/out/$b.ok && $(cat "$VWORK/out/$b.ok") == "$sig" ]]; then
+    echo "  skipped (already verified): $b" >&2; return 0
+  fi
+  rm -f "$VWORK/out/$b".{ok,sha,cnt,lnk}
   tmp=$(mktemp -d -p "$VWORK" ex.XXXXXX) || return 1
   if tar -I zstd -xf "$a" -C "$tmp" \
      && (cd "$tmp" && find . -type f -print0 | xargs -0 -r sha256sum --) > "$VWORK/out/$b.sha" \
      && (cd "$tmp" && find . ! -type d | wc -l) > "$VWORK/out/$b.cnt" \
      && (cd "$tmp" && find . -type l -printf '%p\t%l\n') > "$VWORK/out/$b.lnk"; then ok=1; fi
   chmod -R u+rwX "$tmp" 2>/dev/null; rm -rf "$tmp"
-  (( ok )) || { echo "FAILED: $b" >&2; return 1; }
-  echo "  checked $b" >&2
+  if (( ok )); then echo "$sig" > "$VWORK/out/$b.ok"; echo "  checked $b" >&2; return 0; fi
+  rm -f "$VWORK/out/$b".{sha,cnt,lnk}
+  echo "FAILED: $b" >&2; echo "$b" >> "$VWORK/failed.txt"
+  return 1
 }
 export -f verify_one
 
 step4_verify() {
   VWORK="$WORKSPACE/verify_$NAME"; export VWORK
-  local total_bytes n avg expect actual
+  local total_bytes n avg expect actual a b adopted=0
   total_bytes=$(cat "$DEST/TOTAL_BYTES")
   n=$(find "$DEST" -maxdepth 1 -name '*.tar.zst' | wc -l)
   avg=$(( total_bytes / (n > 0 ? n : 1) ))
   need_space "$WORKSPACE" $(( LOCAL_JOBS * avg * 3 + 2147483648 )) "workspace"
-  [[ -e $VWORK ]] && { chmod -R u+rwX "$VWORK" 2>/dev/null || true; rm -rf "$VWORK"; }
   mkdir -p "$VWORK/out"
+  [[ -d $VWORK ]] && { chmod -R u+rwX "$VWORK"/ex.* 2>/dev/null || true; rm -rf "$VWORK"/ex.* "$VWORK/failed.txt"; }
+
+  if [[ ${ADOPT_PREVIOUS:-0} == 1 ]]; then
+    while IFS= read -r -d '' a; do
+      b=$(basename "$a")
+      if [[ ! -f $VWORK/out/$b.ok && -f $VWORK/out/$b.sha && -f $VWORK/out/$b.cnt && -f $VWORK/out/$b.lnk ]]; then
+        stat -c '%s %Y' "$a" > "$VWORK/out/$b.ok"; adopted=$((adopted + 1))
+      fi
+    done < <(find "$DEST" -maxdepth 1 -name '*.tar.zst' -print0)
+    log "step 4: adopted $adopted results from an earlier run (the final whole-dataset comparison still catches any bad ones)"
+  fi
+
   log "step 4: verifying $n archives, $LOCAL_JOBS at a time (temp space only; $DEST is not touched)"
   find "$DEST" -maxdepth 1 -name '*.tar.zst' -print0 | xargs -0 -P "$LOCAL_JOBS" -I{} bash -c 'verify_one "$1"' _ {} \
-    || die "extract/hash failed for at least one archive (see FAILED lines above)"
+    || {
+      if [[ -s $VWORK/failed.txt ]]; then err "these archives failed to read/extract:"; sed 's/^/    /' "$VWORK/failed.txt" >&2; fi
+      die "re-run the same command: already-verified archives are skipped and only the failed ones are retried (try LOCAL_JOBS=1 if reads keep failing; test one with: zstd -t <file>)"
+    }
 
   log "step 4: comparing against the ORIGINAL manifest"
   expect=$(cat "$DEST/TOTAL_FILES")
   actual=$(cat "$VWORK"/out/*.cnt | awk '{s+=$1} END{printf "%d\n", s}')
-  [[ $actual -eq $expect ]] || die "entry count mismatch: extracted $actual, expected $expect"
+  [[ $actual -eq $expect ]] || die "entry count mismatch: extracted $actual, expected $expect (if this persists, delete $VWORK and re-run)"
   cat "$VWORK"/out/*.sha | LC_ALL=C sort -T "$VWORK" > "$VWORK/local.sha"
   LC_ALL=C sort -T "$VWORK" "$DEST/MANIFEST.sha256" > "$VWORK/orig.sha"
   cmp -s "$VWORK/local.sha" "$VWORK/orig.sha" \
-    || { diff "$VWORK/orig.sha" "$VWORK/local.sha" | head -20; die "FILE CHECKSUM MISMATCH -- do NOT delete anything"; }
+    || { diff "$VWORK/orig.sha" "$VWORK/local.sha" | head -20; die "FILE CHECKSUM MISMATCH -- do NOT delete anything (if this persists, delete $VWORK and re-run)"; }
   cat "$VWORK"/out/*.lnk | LC_ALL=C sort > "$VWORK/local.lnk"
   LC_ALL=C sort "$DEST/LINKS.tsv" > "$VWORK/orig.lnk"
-  cmp -s "$VWORK/local.lnk" "$VWORK/orig.lnk" || die "symlink mismatch -- do NOT delete anything"
+  cmp -s "$VWORK/local.lnk" "$VWORK/orig.lnk" || die "symlink mismatch -- do NOT delete anything (if this persists, delete $VWORK and re-run)"
 
   printf 'verified %s: %s entries, %s bytes\n' "$(date -u +%FT%TZ)" "$expect" "$total_bytes" > "$DEST/VERIFIED"
   log "step 4: VERIFIED ($expect entries, $(numfmt --to=iec "$total_bytes"))"

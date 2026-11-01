@@ -7,15 +7,15 @@ The pipeline the emitted script runs, in order:
   stage 0  import the original (already-run) workspace and export a
            phase-boundary CSV
              import_hefesto_subdirs.py --phase-change-dataname ...
-  stage 1  build a phase-change resample tree from that CSV
+  stage 1a build a phase-change resample tree from that CSV
              prepare_hefesto_tree_from_phase_changes.py
-           -> run HeFESTo on it (local GNU parallel, or SLURM + wait barrier)
-           -> re-import it, this time exporting *deep* phase-boundary bounds
+  stage 1b run HeFESTo on it (local GNU parallel, or SLURM + wait barrier)
+  stage 1c re-import it, this time exporting *deep* phase-boundary bounds
              import_hefesto_subdirs.py --deep-phase-change-dataname ...
-  stage 2  build a fine deep-resample tree from the deep bounds
+  stage 2a build a fine deep-resample tree from the deep bounds
              prepare_hefesto_tree_fine.py --deep
-           -> run HeFESTo on it
-           -> re-import it (no phase-boundary export this time)
+  stage 2b run HeFESTo on it
+  stage 2c re-import it (no phase-boundary export this time)
   stage 3  merge the three imported BigMetaTables (stage 0 / 1 / 2 main
            tables only -- the phase-boundary CSVs used to seed the resample
            trees are deliberately NOT merged)
@@ -47,13 +47,21 @@ Derived directories follow the repo's existing convention:
   <output-root>/<name>_resample2   (fine deep tree)
 
 The emitted script is always written to disk first (default:
-<output-root>/run_<name>_pipeline.sh) and its 5 stages (stage0..stage4) are
-each a standalone shell function over a fixed CONFIG block, so a run that
-gets interrupted can be resumed -- without re-running this generator -- by
-copy-pasting the CONFIG block plus function definitions into a shell, or
-simply re-invoking the saved script with the stage to resume from:
+<output-root>/run_<name>_pipeline.sh) and its stages (stage0, stage1a-c,
+stage2a-c, stage3, stage4) are each a standalone shell function over a fixed
+CONFIG block, so a run that gets interrupted can be resumed -- without
+re-running this generator -- by copy-pasting the CONFIG block plus function
+definitions into a shell, or simply re-invoking the saved script with the
+stage to resume from:
 
-  bash /scratch/hefesto/run_earthadiabats_pipeline.sh stage2
+  bash /scratch/hefesto/run_earthadiabats_pipeline.sh stage1b
+
+The build stages (1a, 2a) delete and rebuild their tree. The run stages (1b,
+2b) are safe to re-run on a partly run tree: the cluster submitter skips
+batches already listed in <tree>/submitted_jobs.log, and the local runner
+skips simulations that already have output. So an interrupted run stage is
+resumed by re-invoking that stage. `stage1` / `stage2` are accepted as
+shorthand for stage1a / stage2a.
 
 Usage:
   python scripts/gen_hefesto_resample_pipeline.py \
@@ -83,6 +91,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _SIM_DIR = re.compile(r"^Simulation\d+$", re.IGNORECASE)
+
+STAGES = ("stage0", "stage1a", "stage1b", "stage1c",
+          "stage2a", "stage2b", "stage2c", "stage3", "stage4")
+# Pre-split stage names, kept so old resume commands still work
+STAGE_ALIASES = {"stage1": "stage1a", "stage2": "stage2a"}
 
 
 def count_simulation_dirs(root: Path) -> int:
@@ -205,13 +218,14 @@ def parse_args() -> argparse.Namespace:
                    help="Write the script to --script-path and print it to "
                         "stdout, but do not run it (the old default behavior).")
     g.add_argument("--start-stage", default="stage0",
-                    choices=("stage0", "stage1", "stage2", "stage3", "stage4"),
+                    choices=STAGES + tuple(STAGE_ALIASES),
                     help="Stage to start the run from when executing the script "
                          "(runs that stage and every one after it). Useful for "
                          "resuming a previously interrupted run without redoing "
                          "earlier, possibly expensive, stages. Ignored with "
                          "--print-only; pass it directly to the saved script "
-                         "instead, e.g. `bash run_x_pipeline.sh stage2`.")
+                         "instead, e.g. `bash run_x_pipeline.sh stage1b`. "
+                         "stage1/stage2 mean stage1a/stage2a.")
     a = p.parse_args()
     if a.derivatives and a.affinity:
         p.error("--derivatives and --affinity are mutually exclusive")
@@ -293,12 +307,17 @@ def main() -> None:
     w("# scripts/ClusterHeFESTo.sh). The prepare/import/merge steps only need the")
     w("# nGibbs Python env; the run steps need HeFESTo itself.")
     w("#")
-    w("# USAGE:  bash $0 [STAGE]     STAGE in {stage0,stage1,stage2,stage3,stage4}")
-    w("#   Runs STAGE and everything after it (default: stage0, i.e. everything).")
+    w("# USAGE:  bash $0 [STAGE]")
+    w(f"#   STAGE in {{{','.join(STAGES)}}}")
+    w("#   (stage1 / stage2 = stage1a / stage2a). Runs STAGE and everything after")
+    w("#   it (default: stage0, i.e. everything).")
     w("#   If a run gets interrupted partway, resume it -- without rebuilding")
     w("#   earlier, possibly expensive, stages -- by re-running with the stage")
     w("#   name it stopped in, e.g.:")
-    w("#     bash $0 stage2")
+    w("#     bash $0 stage1b")
+    w("#   1a/2a delete and rebuild their tree. 1b/2b are safe to re-run on a")
+    w("#   partly run tree: already-submitted batches (submitted_jobs.log) or")
+    w("#   already-run simulations are skipped.")
     w("#   Or copy-paste the CONFIG block below plus the helper/stageN functions")
     w("#   you need directly into an interactive shell.")
     w("")
@@ -464,7 +483,7 @@ def main() -> None:
     # Each stage below is a standalone function over the CONFIG block above,
     # so a run can be resumed after an interruption -- without re-running
     # this generator -- either by re-invoking this saved script with the
-    # stage to resume from (e.g. `bash $0 stage2`), or by copy-pasting the
+    # stage to resume from (e.g. `bash $0 stage1b`), or by copy-pasting the
     # CONFIG block, the helper functions, and the one stageN function you
     # want straight into an interactive shell.
 
@@ -479,15 +498,21 @@ def main() -> None:
     w("")
 
     # ---- stage 1 --------------------------------------------------------
-    w("stage1() {")
+    w("stage1a() {")
     w('  banner "stage 1a -- build phase-change resample tree -> RS1"')
     w('  rm -rf "$RS1"')
     w(f'  "$PYTHON" "$PREP_PC_PY" --directory "$RS1" \\')
     w('      --phase-path "$PC1" --control-dir "$CONTROL_DIR"'
       + ("" if limit1 is None else f' \\\n      --limit {limit1}'))
+    w("}")
     w("")
+    w("# Safe to re-run on a partly run RS1 (see the USAGE note at the top).")
+    w("stage1b() {")
+    w('  banner "stage 1b -- run HeFESTo on RS1"')
     w('  run_hefesto_tree "$RS1"')
+    w("}")
     w("")
+    w("stage1c() {")
     w('  banner "stage 1c -- re-import RS1 + export DEEP phase boundaries"')
     if not a.no_clean:
         w('  clean_table "$T1"')
@@ -497,7 +522,7 @@ def main() -> None:
     w("")
 
     # ---- stage 2 ------------------------------------------------------
-    w("stage2() {")
+    w("stage2a() {")
     w('  banner "stage 2a -- build fine deep resample tree -> RS2"')
     w('  rm -rf "$RS2"')
     fine = [f'"$PYTHON" "$PREP_FINE_PY" --directory "$RS2"',
@@ -510,9 +535,15 @@ def main() -> None:
     if limit2 is not None:
         fine.append(f'--limit {limit2}')
     w("  " + " \\\n      ".join(fine))
+    w("}")
     w("")
+    w("# Safe to re-run on a partly run RS2 (see the USAGE note at the top).")
+    w("stage2b() {")
+    w('  banner "stage 2b -- run HeFESTo on RS2"')
     w('  run_hefesto_tree "$RS2"')
+    w("}")
     w("")
+    w("stage2c() {")
     w('  banner "stage 2c -- re-import RS2 (no phase-boundary export)"')
     if not a.no_clean:
         w('  clean_table "$T2"')
@@ -603,12 +634,16 @@ def main() -> None:
 
     # ---- dispatch: run STAGE (arg 1, default stage0) through stage4 -------
     w("# ------------------------------------------------------------- DISPATCH")
-    w('STAGES=(stage0 stage1 stage2 stage3 stage4)')
+    w(f'STAGES=({" ".join(STAGES)})')
     w('START_STAGE="${1:-stage0}"')
+    w("# pre-split stage names")
+    for old, new in STAGE_ALIASES.items():
+        w(f'[ "$START_STAGE" = {old} ] && START_STAGE={new}')
     w("")
     w('if [ "$START_STAGE" = "-h" ] || [ "$START_STAGE" = "--help" ]; then')
     w('  echo "Usage: $0 [STAGE]" >&2')
     w('  echo "  STAGE: one of ${STAGES[*]} (default: stage0)." >&2')
+    w('  echo "  stage1 / stage2 are shorthand for stage1a / stage2a." >&2')
     w('  echo "  Runs STAGE and every stage after it -- pass the stage where a" >&2')
     w('  echo "  previous run was interrupted to resume without redoing earlier," >&2')
     w('  echo "  possibly expensive, stages." >&2')
@@ -636,7 +671,8 @@ def main() -> None:
 
     print(f"Wrote pipeline script to {script_path}", file=sys.stderr)
     print(f"Resume (or re-run from a given stage) with: "
-          f"bash {q(script_path)} stageN", file=sys.stderr)
+          f"bash {q(script_path)} <stage>  ({', '.join(STAGES)})",
+          file=sys.stderr)
 
     if a.print_only:
         print(script_text)
