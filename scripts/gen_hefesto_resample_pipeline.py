@@ -39,9 +39,8 @@ checked), and stage 4 folds it and the manifests into the bundle.
 
 With --runner cluster, every import stage is also run on a compute node: it
 is submitted as a single-node SLURM job via submit_import_hefesto_subdirs.py
---wait, which blocks until the import finishes (logs in <tables-dir>/logs).
-The --derivatives and --affinity importers have no submitter yet, so with
-either of those the imports still run in the calling shell.
+--wait (with --importer derivs / affinity for --derivatives / --affinity),
+which blocks until the import finishes (logs in <tables-dir>/logs).
 
 Derived directories follow the repo's existing convention:
   <output-root>/<name>_resample1   (phase-change tree)
@@ -246,14 +245,14 @@ def main() -> None:
                   else output_root / f"{name}_tables")
 
     scripts = repo_root / "scripts"
-    if a.derivatives:
-        import_py = scripts / "import_hefesto_subdirs_derivs.py"
-    elif a.affinity:
-        import_py = scripts / "import_hefesto_subdirs_affinity.py"
-    else:
-        import_py = scripts / "import_hefesto_subdirs.py"
-    # Only the plain importer has a SLURM submitter.
-    can_submit = not (a.derivatives or a.affinity)
+    # submit_import_hefesto_subdirs.py --importer name for each import script
+    importer = ("derivs" if a.derivatives else
+                "affinity" if a.affinity else "plain")
+    import_py = scripts / {
+        "plain": "import_hefesto_subdirs.py",
+        "derivs": "import_hefesto_subdirs_derivs.py",
+        "affinity": "import_hefesto_subdirs_affinity.py",
+    }[importer]
     submit_import_py = scripts / "submit_import_hefesto_subdirs.py"
     prep_pc_py = scripts / "prepare_hefesto_tree_from_phase_changes.py"
     prep_fine_py = scripts / "prepare_hefesto_tree_fine.py"
@@ -331,14 +330,14 @@ def main() -> None:
     w(f"SBATCH_MAX_QUEUED={a.sbatch_max_queued}")
     w(f"POLL_INTERVAL={a.poll_interval}")
     w(f"SQUEUE_FILTER={q(a.squeue_filter)}")
-    if can_submit:
-        w(f"IMPORT_JOB_NAME={q(f'imp_{name}')}")
-        w(f"IMPORT_HOURS={a.import_hours}")
-        w(f"IMPORT_MEM={q(a.import_mem)}")
+    w(f"IMPORT_JOB_NAME={q(f'imp_{name}')}")
+    w(f"IMPORT_HOURS={a.import_hours}")
+    w(f"IMPORT_MEM={q(a.import_mem)}")
     w("")
+    if importer != "plain":
+        w(f"IMPORTER={q(importer)}           # submit_import_hefesto_subdirs.py --importer")
     w(f"IMPORT_PY={q(import_py)}")
-    if can_submit:
-        w(f"SUBMIT_IMPORT_PY={q(submit_import_py)}")
+    w(f"SUBMIT_IMPORT_PY={q(submit_import_py)}")
     w(f"PREP_PC_PY={q(prep_pc_py)}")
     w(f"PREP_FINE_PY={q(prep_fine_py)}")
     w(f"MERGE_PY={q(merge_py)}")
@@ -351,49 +350,44 @@ def main() -> None:
     w("banner() { printf '\\n========== %s ==========\\n' \"$*\"; }")
     w("")
 
+    # Both run modes go through run_import. In cluster mode every import --
+    # whichever importer -- is submitted as a single-node SLURM job and the
+    # call blocks until it finishes; the submitter exits with the job's code.
+    tolerant = None
     if a.derivatives:
         w("# import_hefesto_subdirs_derivs.py exits 1 on a chain-rule verification")
         w("# failure and >=2 on a real error. Treat 1 as a warning so the pipeline")
         w("# still completes; anything higher aborts.")
-        w("run_import() {")
-        w('  set +e')
-        w('  "$PYTHON" "$IMPORT_PY" "$@"')
-        w('  local rc=$?')
-        w('  set -e')
-        w('  if [ "$rc" -ge 2 ]; then')
-        w('    echo "ERROR: import failed (rc=$rc)" >&2; exit "$rc"')
-        w('  elif [ "$rc" -eq 1 ]; then')
-        w('    echo "WARNING: chain-rule verification failure during import (rc=1); continuing" >&2')
-        w('  fi')
-        w("}")
+        tolerant = "chain-rule verification failure during import (rc=1); continuing"
     elif a.affinity:
         w("# import_hefesto_subdirs_affinity.py exits 1 when the affinity shadow's")
         w("# row count does not match the main table's, and 2 on a real error.")
         w("# Treat 1 as a warning so the main pipeline still completes (stage 3")
         w("# re-checks parity and skips the misaligned affinity merge); 2+ aborts.")
-        w("run_import() {")
+        tolerant = "affinity/main row parity mismatch during import (rc=1); continuing"
+    w("# cluster: submit the import as a single-node SLURM job and block until")
+    w("# it finishes (exit code is the job's); logs land in $TABLES_DIR/logs.")
+    w("run_import() {")
+    if tolerant:
         w('  set +e')
-        w('  "$PYTHON" "$IMPORT_PY" "$@"')
+    w('  if [ "$RUNNER" = "cluster" ]; then')
+    w('    ( cd "$TABLES_DIR" && "$PYTHON" "$SUBMIT_IMPORT_PY" --wait \\')
+    if importer != "plain":
+        w('        --importer "$IMPORTER" \\')
+    w('        --job-name "$IMPORT_JOB_NAME" --hours "$IMPORT_HOURS" \\')
+    w('        --mem "$IMPORT_MEM" "$@" )')
+    w('  else')
+    w('    "$PYTHON" "$IMPORT_PY" "$@"')
+    w('  fi')
+    if tolerant:
         w('  local rc=$?')
         w('  set -e')
         w('  if [ "$rc" -ge 2 ]; then')
         w('    echo "ERROR: import failed (rc=$rc)" >&2; exit "$rc"')
         w('  elif [ "$rc" -eq 1 ]; then')
-        w('    echo "WARNING: affinity/main row parity mismatch during import (rc=1); continuing" >&2')
+        w(f'    echo "WARNING: {tolerant}" >&2')
         w('  fi')
-        w("}")
-    else:
-        w("# cluster: submit the import as a single-node SLURM job and block until")
-        w("# it finishes (exit code is the job's); logs land in $TABLES_DIR/logs.")
-        w("run_import() {")
-        w('  if [ "$RUNNER" = "cluster" ]; then')
-        w('    ( cd "$TABLES_DIR" && "$PYTHON" "$SUBMIT_IMPORT_PY" --wait \\')
-        w('        --job-name "$IMPORT_JOB_NAME" --hours "$IMPORT_HOURS" \\')
-        w('        --mem "$IMPORT_MEM" "$@" )')
-        w('  else')
-        w('    "$PYTHON" "$IMPORT_PY" "$@"')
-        w('  fi')
-        w("}")
+    w("}")
     w("")
 
     if not a.no_clean:

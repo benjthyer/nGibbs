@@ -42,19 +42,18 @@ if str(REPO_ROOT) not in sys.path:
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from builder.HeFESTo.HeFESTo_functions import import_HeFESTo_components  # noqa: E402
-from builder.HeFESTo.HeFESTo_deep_sampling import collect_deep_phase_changes  # noqa: E402
-from builder.HeFESTo.HeFESTo_affinity_import import (  # noqa: E402
-    import_HeFESTo_affinities, FLAG_NAMES, ROW_NAMES, QOUT)
-from builder.indexer import DatasetIndexer, generate_column_headers_hefesto  # noqa: E402
-from ngibbs.config.constants import COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO  # noqa: E402
-from ngibbs.utils.file_utils import get_dropped_rows, reset_dropped_rows  # noqa: E402
+# The builder/ngibbs imports live inside the functions that use them, so
+# submit_import_hefesto_subdirs.py can import build_parser() on a login node
+# without pulling in the heavy dependencies.
 
 
 _SIM_DIR_PATTERN = re.compile(r'^simulation\d+$', flags=re.IGNORECASE)
 
 
-def _build_hefesto_indexer() -> DatasetIndexer:
+def _build_hefesto_indexer():
+    from builder.indexer import DatasetIndexer, generate_column_headers_hefesto
+    from ngibbs.config.constants import COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO
+
     excluded = {'System_main', 'Bulk_comp', 'Bulk_comp_elements'}
     phases = [
         phase_name
@@ -126,7 +125,7 @@ def _count_rows(path: str) -> int:
         return sum(1 for _ in fh) - 1
 
 
-def parse_args() -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             'Recursively find HeFESTo workspaces under a root directory, run '
@@ -159,10 +158,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--deep-axis', choices=('isotherm', 'isobar', 'both'),
                         default='isotherm',
                         help='Scan direction for --deep-phase-change-dataname.')
-    return parser.parse_args()
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return build_parser().parse_args(argv)
 
 
 def main() -> int:
+    from builder.HeFESTo.HeFESTo_functions import import_HeFESTo_components
+    from builder.HeFESTo.HeFESTo_deep_sampling import collect_deep_phase_changes
+    from builder.HeFESTo.HeFESTo_affinity_import import (
+        import_HeFESTo_affinities, FLAG_NAMES, ROW_NAMES, QOUT)
+    from ngibbs.utils.file_utils import get_dropped_rows, reset_dropped_rows
+
     args = parse_args()
     root = args.root.resolve()
 

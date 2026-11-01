@@ -38,19 +38,17 @@ for _p in (REPO_ROOT, SRC_DIR):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-from builder.HeFESTo.HeFESTo_functions import import_HeFESTo_components  # noqa: E402
-from builder.HeFESTo.HeFESTo_derivative_import import (  # noqa: E402
-    import_HeFESTo_derivatives, verify_chain_rule)
-from builder.HeFESTo.HeFESTo_deep_sampling import (  # noqa: E402
-    collect_deep_phase_changes)
-from builder.indexer import DatasetIndexer, generate_column_headers_hefesto  # noqa: E402
-from ngibbs.config.constants import COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO  # noqa: E402
-from ngibbs.utils.file_utils import get_dropped_rows, reset_dropped_rows  # noqa: E402
+# The builder/ngibbs imports live inside the functions that use them, so
+# submit_import_hefesto_subdirs.py can import build_parser() on a login node
+# without pulling in the heavy dependencies.
 
 _SIM_DIR_PATTERN = re.compile(r'^simulation\d+$', flags=re.IGNORECASE)
 
 
-def _build_hefesto_indexer() -> DatasetIndexer:
+def _build_hefesto_indexer():
+    from builder.indexer import DatasetIndexer, generate_column_headers_hefesto
+    from ngibbs.config.constants import COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO
+
     excluded = {'System_main', 'Bulk_comp', 'Bulk_comp_elements'}
     phases = [p for p in COMPOSITIONAL_COMPONENTS_IN_PHASES_HEFESTO if p not in excluded]
     return DatasetIndexer(generate_column_headers_hefesto(phases),
@@ -107,7 +105,7 @@ def _find_workspace_dirs(root: Path):
     return found
 
 
-def parse_args() -> argparse.Namespace:
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description='Import HeFESTo workspaces and their fort.42 composition derivatives.')
     p.add_argument('--root', type=Path, default=Path('.'))
@@ -156,10 +154,20 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--verify', type=int, default=2, metavar='N',
                    help='Chain-rule check on the first N imported simulations per '
                         'workspace (0 disables).')
-    return p.parse_args()
+    return p
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return build_parser().parse_args(argv)
 
 
 def main() -> int:
+    from builder.HeFESTo.HeFESTo_functions import import_HeFESTo_components
+    from builder.HeFESTo.HeFESTo_derivative_import import (
+        import_HeFESTo_derivatives, verify_chain_rule)
+    from builder.HeFESTo.HeFESTo_deep_sampling import collect_deep_phase_changes
+    from ngibbs.utils.file_utils import get_dropped_rows, reset_dropped_rows
+
     args = parse_args()
     root = args.root.resolve()
     if not root.is_dir():
