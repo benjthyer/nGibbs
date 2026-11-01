@@ -29,11 +29,19 @@ all three import stages to import_hefesto_subdirs_derivs.py instead, which
 additionally reconstructs/verifies dn/dP and dn/dT and folds their shadow
 tables and manifests into the stage-4 bundle.
 
+Pass --affinity (mutually exclusive with --derivatives) to switch all three
+import stages to import_hefesto_subdirs_affinity.py instead, which keeps qout
+and parses phase affinities / component chemical potentials from it into a
+row-aligned <table>_affinity.csv shadow (+ _affinity_manifest.csv). Stage 3
+then also concatenates the three affinity shadows, in the same order as the
+main merge, into <merged>_affinity.csv (row parity with the merged table is
+checked), and stage 4 folds it and the manifests into the bundle.
+
 With --runner cluster, every import stage is also run on a compute node: it
 is submitted as a single-node SLURM job via submit_import_hefesto_subdirs.py
 --wait, which blocks until the import finishes (logs in <tables-dir>/logs).
-The --derivatives importer has no submitter yet, so with --derivatives the
-imports still run in the calling shell.
+The --derivatives and --affinity importers have no submitter yet, so with
+either of those the imports still run in the calling shell.
 
 Derived directories follow the repo's existing convention:
   <output-root>/<name>_resample1   (phase-change tree)
@@ -169,13 +177,22 @@ def parse_args() -> argparse.Namespace:
                         "every import stage, reconstructing/verifying dn/dP and "
                         "dn/dT from fort.42 and folding their shadow tables and "
                         "manifests into the stage-4 bundle. Off by default.")
+    g.add_argument("--affinity", action="store_true",
+                   help="Use import_hefesto_subdirs_affinity.py instead of the "
+                        "default import_hefesto_subdirs.py for every import "
+                        "stage, parsing phase affinities from qout into a "
+                        "row-aligned <table>_affinity.csv shadow. Stage 3 also "
+                        "concatenates the three shadows into <merged>_affinity.csv "
+                        "and stage 4 bundles it with the manifests. Mutually "
+                        "exclusive with --derivatives. Off by default.")
     g.add_argument("--verify", type=int, default=2,
                    help="[--derivatives only] --verify N forwarded to every "
                         "derivative import (chain-rule check on N sims/workspace).")
     g.add_argument("--import-args", default="",
                    help="Extra arguments appended verbatim to every import call "
                         "(e.g. \"--phase-change-offset-only\", or, with "
-                        "--derivatives, \"--no-recover --param-dir /x\").")
+                        "--derivatives, \"--no-recover --param-dir /x\", or, with "
+                        "--affinity, \"--delete-qout-after-parse\").")
     g.add_argument("--no-clean", action="store_true",
                    help="Do not delete pre-existing table/sidecar/manifest files "
                         "before each import. Default is to clean so imports never "
@@ -196,7 +213,10 @@ def parse_args() -> argparse.Namespace:
                          "earlier, possibly expensive, stages. Ignored with "
                          "--print-only; pass it directly to the saved script "
                          "instead, e.g. `bash run_x_pipeline.sh stage2`.")
-    return p.parse_args()
+    a = p.parse_args()
+    if a.derivatives and a.affinity:
+        p.error("--derivatives and --affinity are mutually exclusive")
+    return a
 
 
 def q(value) -> str:
@@ -226,8 +246,14 @@ def main() -> None:
                   else output_root / f"{name}_tables")
 
     scripts = repo_root / "scripts"
-    import_py = scripts / ("import_hefesto_subdirs_derivs.py" if a.derivatives
-                            else "import_hefesto_subdirs.py")
+    if a.derivatives:
+        import_py = scripts / "import_hefesto_subdirs_derivs.py"
+    elif a.affinity:
+        import_py = scripts / "import_hefesto_subdirs_affinity.py"
+    else:
+        import_py = scripts / "import_hefesto_subdirs.py"
+    # Only the plain importer has a SLURM submitter.
+    can_submit = not (a.derivatives or a.affinity)
     submit_import_py = scripts / "submit_import_hefesto_subdirs.py"
     prep_pc_py = scripts / "prepare_hefesto_tree_from_phase_changes.py"
     prep_fine_py = scripts / "prepare_hefesto_tree_fine.py"
@@ -305,13 +331,13 @@ def main() -> None:
     w(f"SBATCH_MAX_QUEUED={a.sbatch_max_queued}")
     w(f"POLL_INTERVAL={a.poll_interval}")
     w(f"SQUEUE_FILTER={q(a.squeue_filter)}")
-    if not a.derivatives:
+    if can_submit:
         w(f"IMPORT_JOB_NAME={q(f'imp_{name}')}")
         w(f"IMPORT_HOURS={a.import_hours}")
         w(f"IMPORT_MEM={q(a.import_mem)}")
     w("")
     w(f"IMPORT_PY={q(import_py)}")
-    if not a.derivatives:
+    if can_submit:
         w(f"SUBMIT_IMPORT_PY={q(submit_import_py)}")
     w(f"PREP_PC_PY={q(prep_pc_py)}")
     w(f"PREP_FINE_PY={q(prep_fine_py)}")
@@ -340,6 +366,22 @@ def main() -> None:
         w('    echo "WARNING: chain-rule verification failure during import (rc=1); continuing" >&2')
         w('  fi')
         w("}")
+    elif a.affinity:
+        w("# import_hefesto_subdirs_affinity.py exits 1 when the affinity shadow's")
+        w("# row count does not match the main table's, and 2 on a real error.")
+        w("# Treat 1 as a warning so the main pipeline still completes (stage 3")
+        w("# re-checks parity and skips the misaligned affinity merge); 2+ aborts.")
+        w("run_import() {")
+        w('  set +e')
+        w('  "$PYTHON" "$IMPORT_PY" "$@"')
+        w('  local rc=$?')
+        w('  set -e')
+        w('  if [ "$rc" -ge 2 ]; then')
+        w('    echo "ERROR: import failed (rc=$rc)" >&2; exit "$rc"')
+        w('  elif [ "$rc" -eq 1 ]; then')
+        w('    echo "WARNING: affinity/main row parity mismatch during import (rc=1); continuing" >&2')
+        w('  fi')
+        w("}")
     else:
         w("# cluster: submit the import as a single-node SLURM job and block until")
         w("# it finishes (exit code is the job's); logs land in $TABLES_DIR/logs.")
@@ -365,6 +407,10 @@ def main() -> None:
             w('        "${base}_dndP".csv "${base}_dndP".npy \\')
             w('        "${base}_dndT".csv "${base}_dndT".npy \\')
             w('        "${base}_deriv_manifest".csv \\')
+            w('        "${base}blurredbinaries".npy')
+        elif a.affinity:
+            w('  rm -f "$base".csv "$base".npy "$base".txt \\')
+            w('        "${base}_affinity".csv "${base}_affinity_manifest".csv \\')
             w('        "${base}blurredbinaries".npy')
         else:
             w('  rm -f "$base".csv "$base".npy "$base".txt "${base}blurredbinaries".npy')
@@ -489,12 +535,41 @@ def main() -> None:
     w(f'  "$PYTHON" "$MERGE_PY" \\')
     w(f'      --tables "${{T0%.csv}}" "${{T1%.csv}}" "${{T2%.csv}}" \\')
     w(f'      --output "$MERGED" --csv-output header')
+    if a.affinity:
+        w("")
+        w('  banner "stage 3b -- concatenate the affinity shadows (same order)"')
+        w("  # merge_bigmetatables.py only concatenates rows (it never drops or")
+        w("  # reorders them), so concatenating the shadows in the same T0/T1/T2")
+        w("  # order keeps them row-aligned with the merged table. Parity is")
+        w("  # checked; on a mismatch the merged shadow is not written.")
+        w('  rm -f "${MERGED}_affinity.csv"')
+        w('  "$PYTHON" - "$MERGED" "${T0%.csv}_affinity.csv" "${T1%.csv}_affinity.csv" \\')
+        w("      \"${T2%.csv}_affinity.csv\" <<'PY' || \\")
+        w('    echo "WARNING: affinity merge skipped (see message above); main merge is unaffected" >&2')
+        w("import os, sys")
+        w("import numpy as np, pandas as pd")
+        w("merged, srcs = sys.argv[1], sys.argv[2:]")
+        w("missing = [s for s in srcs if not os.path.isfile(s)]")
+        w("if missing:")
+        w('    sys.exit(f"missing affinity shadow(s): {missing}")')
+        w("frames = [pd.read_csv(s) for s in srcs]")
+        w("cols = list(frames[0].columns)")
+        w("for s, f in zip(srcs, frames):")
+        w("    if list(f.columns) != cols:")
+        w('        sys.exit(f"affinity header mismatch: {s}")')
+        w("out = pd.concat(frames, ignore_index=True)")
+        w("n_main = np.load(merged + '.npy', mmap_mode='r').shape[0]")
+        w("if len(out) != n_main:")
+        w('    sys.exit(f"affinity rows {len(out)} != merged rows {n_main}")')
+        w("out.to_csv(merged + '_affinity.csv', index=False)")
+        w('print(f"affinity shadow: {len(out)} rows -> {merged}_affinity.csv (parity MATCH)")')
+        w("PY")
     w("}")
     w("")
 
     # ---- stage 4 --------------------------------------------------------
     w("stage4() {")
-    if a.derivatives:
+    if a.derivatives or a.affinity:
         w('  banner "stage 4 -- tar + gzip the merged table, sidecars and manifests"')
     else:
         w('  banner "stage 4 -- tar + gzip the merged table"')
@@ -508,6 +583,12 @@ def main() -> None:
         w('      "$(basename "${T0%.csv}")_deriv_manifest.csv" \\')
         w('      "$(basename "${T1%.csv}")_deriv_manifest.csv" \\')
         w('      "$(basename "${T2%.csv}")_deriv_manifest.csv" ; do')
+    elif a.affinity:
+        w('      "$(basename "$MERGED")blurredbinaries.npy" \\')
+        w('      "$(basename "$MERGED")_affinity.csv" \\')
+        w('      "$(basename "${T0%.csv}")_affinity_manifest.csv" \\')
+        w('      "$(basename "${T1%.csv}")_affinity_manifest.csv" \\')
+        w('      "$(basename "${T2%.csv}")_affinity_manifest.csv" ; do')
     else:
         w('      "$(basename "$MERGED")blurredbinaries.npy" ; do')
     w('    [ -f "$TABLES_DIR/$f" ] && members+=("$f")')
