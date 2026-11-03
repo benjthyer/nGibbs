@@ -18,15 +18,20 @@
 # submitted_jobs.log but still have Simulation dirs with no output (e.g. jobs
 # killed by a cluster reset) -- the submitter would otherwise skip them. It
 # aborts if it finds any, unless you pass:
-#   --prune  remove those directories from submitted_jobs.log (backup kept as
-#            submitted_jobs.log.bak.<timestamp>) so they are resubmitted
-#   --force  resume anyway, leaving them skipped
+#   --skip-incomplete      leave them skipped (what the new-style script's
+#                          stage1b/2b does); nothing on disk is changed
+#   --resubmit-incomplete  remove them from submitted_jobs.log (backup kept as
+#                          submitted_jobs.log.bak.<timestamp>) so they are
+#                          resubmitted. DESTRUCTIVE: every Simulation in those
+#                          directories is re-run and its existing output
+#                          overwritten, including ones that had completed.
 #
 # PREREQUISITE: HeFESTo env active in this shell, as for the old script itself.
 #
-# USAGE:  bash resume_old_pipeline.sh OLD_PIPELINE_SCRIPT STAGE [--prune|--force]
+# USAGE:  bash resume_old_pipeline.sh OLD_PIPELINE_SCRIPT STAGE \
+#             [--skip-incomplete|--resubmit-incomplete]
 #   e.g.  bash resume_old_pipeline.sh \
-#           /resnick/.../CMBPipeline/run_CMB_pipeline.sh stage2b --prune
+#           /resnick/.../CMBPipeline/run_CMB_pipeline.sh stage2b
 
 set -euo pipefail
 
@@ -34,7 +39,7 @@ usage() { sed -n '2,/^$/s/^# \{0,1\}//p' "$0" >&2; exit "${1:-1}"; }
 
 [ $# -ge 2 ] || usage
 OLD="$1"; START="$2"; MODE="${3:-check}"
-case "$MODE" in check|--prune|--force) ;; *) usage ;; esac
+case "$MODE" in check|--skip-incomplete|--resubmit-incomplete) ;; *) usage ;; esac
 case "$START" in stage1b|stage1c|stage2b|stage2c) ;; *)
   echo "ERROR: STAGE must be one of stage1b stage1c stage2b stage2c" >&2; exit 1 ;;
 esac
@@ -101,17 +106,18 @@ check_tree() {
   echo "[check] $tree: $n submitted director(y/ies) with unrun simulations:"
   printf '  %s\n' $bad
   case "$MODE" in
-    --prune)
+    --resubmit-incomplete)
       local log="$tree/submitted_jobs.log" bak
       bak="$log.bak.$(date +%Y%m%d_%H%M%S)"
       cp "$log" "$bak"
       awk 'NR==FNR { bad[$1] = 1; next } !($1 in bad)' \
           <(printf '%s\n' $bad) "$bak" > "$log"
-      echo "[check] pruned them from $log (backup: $bak) -> will be resubmitted" ;;
-    --force)
-      echo "[check] --force: leaving them skipped" ;;
+      echo "[check] removed them from $log (backup: $bak) -> will be resubmitted and their existing output overwritten" ;;
+    --skip-incomplete)
+      echo "[check] --skip-incomplete: leaving them skipped" ;;
     *)
-      echo "ERROR: re-run with --prune to resubmit them, or --force to skip them" >&2
+      echo "ERROR: re-run with --skip-incomplete to leave them as they are, or" >&2
+      echo "  --resubmit-incomplete to re-run them (overwrites their existing output)" >&2
       exit 1 ;;
   esac
 }

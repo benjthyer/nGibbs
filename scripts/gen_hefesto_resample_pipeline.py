@@ -63,6 +63,15 @@ skips simulations that already have output. So an interrupted run stage is
 resumed by re-invoking that stage. `stage1` / `stage2` are accepted as
 shorthand for stage1a / stage2a.
 
+An optional second argument stops the run after that stage instead of going
+on to stage4, e.g. to only import a workspace on one machine and continue the
+pipeline on another:
+
+  bash /scratch/hefesto/run_earthadiabats_pipeline.sh stage0 stage0
+
+As an end stage, `stage1` / `stage2` mean stage1c / stage2c (the whole of
+stage 1 / 2).
+
 Usage:
   python scripts/gen_hefesto_resample_pipeline.py \
       --workspace /path/to/OriginalWorkspace \
@@ -96,6 +105,8 @@ STAGES = ("stage0", "stage1a", "stage1b", "stage1c",
           "stage2a", "stage2b", "stage2c", "stage3", "stage4")
 # Pre-split stage names, kept so old resume commands still work
 STAGE_ALIASES = {"stage1": "stage1a", "stage2": "stage2a"}
+# ...and as an end stage, where they mean the whole of stage 1 / 2
+END_STAGE_ALIASES = {"stage1": "stage1c", "stage2": "stage2c"}
 
 
 def count_simulation_dirs(root: Path) -> int:
@@ -226,6 +237,14 @@ def parse_args() -> argparse.Namespace:
                          "--print-only; pass it directly to the saved script "
                          "instead, e.g. `bash run_x_pipeline.sh stage1b`. "
                          "stage1/stage2 mean stage1a/stage2a.")
+    g.add_argument("--end-stage", default="stage4",
+                    choices=STAGES + tuple(END_STAGE_ALIASES),
+                    help="Last stage to run when executing the script (default: "
+                         "stage4, i.e. run to the end). E.g. --start-stage stage0 "
+                         "--end-stage stage0 only imports the original workspace. "
+                         "Ignored with --print-only; pass it as the saved script's "
+                         "second argument instead, e.g. `bash run_x_pipeline.sh "
+                         "stage0 stage0`. stage1/stage2 mean stage1c/stage2c.")
     a = p.parse_args()
     if a.derivatives and a.affinity:
         p.error("--derivatives and --affinity are mutually exclusive")
@@ -307,10 +326,12 @@ def main() -> None:
     w("# scripts/ClusterHeFESTo.sh). The prepare/import/merge steps only need the")
     w("# nGibbs Python env; the run steps need HeFESTo itself.")
     w("#")
-    w("# USAGE:  bash $0 [STAGE]")
+    w("# USAGE:  bash $0 [STAGE [END_STAGE]]")
     w(f"#   STAGE in {{{','.join(STAGES)}}}")
     w("#   (stage1 / stage2 = stage1a / stage2a). Runs STAGE and everything after")
-    w("#   it (default: stage0, i.e. everything).")
+    w("#   it (default: stage0, i.e. everything), stopping after END_STAGE if")
+    w("#   given (default: stage4; as an end, stage1 / stage2 = stage1c / stage2c).")
+    w("#   E.g. only import the original workspace:  bash $0 stage0 stage0")
     w("#   If a run gets interrupted partway, resume it -- without rebuilding")
     w("#   earlier, possibly expensive, stages -- by re-running with the stage")
     w("#   name it stopped in, e.g.:")
@@ -632,32 +653,57 @@ def main() -> None:
     w("}")
     w("")
 
-    # ---- dispatch: run STAGE (arg 1, default stage0) through stage4 -------
+    # ---- dispatch: run STAGE (arg 1, default stage0) through END_STAGE ----
+    # (arg 2, default stage4)
     w("# ------------------------------------------------------------- DISPATCH")
     w(f'STAGES=({" ".join(STAGES)})')
     w('START_STAGE="${1:-stage0}"')
-    w("# pre-split stage names")
+    w('END_STAGE="${2:-stage4}"')
+    w("# pre-split stage names: the first sub-stage as a start, the last as an end")
     for old, new in STAGE_ALIASES.items():
         w(f'[ "$START_STAGE" = {old} ] && START_STAGE={new}')
+    for old, new in END_STAGE_ALIASES.items():
+        w(f'[ "$END_STAGE" = {old} ] && END_STAGE={new}')
     w("")
     w('if [ "$START_STAGE" = "-h" ] || [ "$START_STAGE" = "--help" ]; then')
-    w('  echo "Usage: $0 [STAGE]" >&2')
-    w('  echo "  STAGE: one of ${STAGES[*]} (default: stage0)." >&2')
-    w('  echo "  stage1 / stage2 are shorthand for stage1a / stage2a." >&2')
-    w('  echo "  Runs STAGE and every stage after it -- pass the stage where a" >&2')
-    w('  echo "  previous run was interrupted to resume without redoing earlier," >&2')
-    w('  echo "  possibly expensive, stages." >&2')
+    w('  echo "Usage: $0 [STAGE [END_STAGE]]" >&2')
+    w('  echo "  STAGE, END_STAGE: one of ${STAGES[*]}" >&2')
+    w('  echo "  (defaults: stage0, stage4)." >&2')
+    w('  echo "  Runs STAGE through END_STAGE -- pass the stage where a previous" >&2')
+    w('  echo "  run was interrupted to resume without redoing earlier, possibly" >&2')
+    w('  echo "  expensive, stages; pass END_STAGE to stop early (e.g. stage0" >&2')
+    w('  echo "  stage0 only imports the original workspace)." >&2')
+    w('  echo "  stage1 / stage2 mean stage1a / stage2a as STAGE and" >&2')
+    w('  echo "  stage1c / stage2c as END_STAGE." >&2')
     w('  exit 0')
     w('fi')
     w("")
-    w('found=false')
-    w('for s in "${STAGES[@]}"; do')
-    w('  [ "$s" = "$START_STAGE" ] && found=true')
-    w('  if $found; then "$s"; fi')
-    w('done')
-    w('if ! $found; then')
+    w("stage_index() {")
+    w('  local i')
+    w('  for i in "${!STAGES[@]}"; do')
+    w('    [ "${STAGES[$i]}" = "$1" ] && { echo "$i"; return; }')
+    w('  done')
+    w('  echo -1')
+    w("}")
+    w('START_I=$(stage_index "$START_STAGE")')
+    w('END_I=$(stage_index "$END_STAGE")')
+    w('if [ "$START_I" -lt 0 ]; then')
     w('  echo "ERROR: unknown stage \'$START_STAGE\' (expected one of ${STAGES[*]})" >&2')
     w('  exit 1')
+    w('fi')
+    w('if [ "$END_I" -lt 0 ]; then')
+    w('  echo "ERROR: unknown end stage \'$END_STAGE\' (expected one of ${STAGES[*]})" >&2')
+    w('  exit 1')
+    w('fi')
+    w('if [ "$END_I" -lt "$START_I" ]; then')
+    w('  echo "ERROR: end stage $END_STAGE comes before start stage $START_STAGE" >&2')
+    w('  exit 1')
+    w('fi')
+    w("")
+    w('for s in "${STAGES[@]:START_I:END_I-START_I+1}"; do "$s"; done')
+    w('if [ "$END_I" -lt $(( ${#STAGES[@]} - 1 )) ]; then')
+    w('  banner "stopped after $END_STAGE"')
+    w('  echo "continue with: bash $0 ${STAGES[END_I+1]}"')
     w('fi')
     w("")
 
@@ -671,14 +717,14 @@ def main() -> None:
 
     print(f"Wrote pipeline script to {script_path}", file=sys.stderr)
     print(f"Resume (or re-run from a given stage) with: "
-          f"bash {q(script_path)} <stage>  ({', '.join(STAGES)})",
+          f"bash {q(script_path)} <stage> [<end stage>]  ({', '.join(STAGES)})",
           file=sys.stderr)
 
     if a.print_only:
         print(script_text)
         return
 
-    result = subprocess.run(["bash", str(script_path), a.start_stage])
+    result = subprocess.run(["bash", str(script_path), a.start_stage, a.end_stage])
     sys.exit(result.returncode)
 
 
