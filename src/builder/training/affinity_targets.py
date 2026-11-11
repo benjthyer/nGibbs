@@ -24,6 +24,15 @@ for the statistics to mean anything (`min_crossings`) get a fallback c (the log-
 the reliable phases' c) and all their absent cells are untrusted -- they are still pushed
 below zero by the one-sided term, they just are not regressed onto a slope estimated from
 a handful of crossings.
+
+Floor on c (`c_floor_frac`, off by default): c_j = max(c_j, c_floor_frac * m_j) with m_j the
+phase's median abundance where present (cStats.json `present_median`, written at
+processing). Slope-based c sits near m_j for most phases (MELTS 120: median c/m 1.3), but
+phases whose boundaries are compositional rather than P-T (HeFESTo ferropericlase,
+ca-ferrite: c/m ~ 0.002-0.005) get a c far below their typical abundance, which saturates
+their absent labels almost at once and inflates their loss weight by 1/c^2. 0.1 changes only
+those outliers. The floor moves the activation plateau and the loss units; it does not
+change g, s or which cells are trusted.
 """
 from __future__ import annotations
 
@@ -41,6 +50,7 @@ DEFAULT_AFFINITY_PARAMS = dict(
     k=2.0,               # low-side filter width in sigmas
     sigma_floor=0.25,    # dex; floor on the trimmed std of log10 s
     min_crossings=20,    # below this, a phase's cStats are not trusted
+    c_floor_frac=0.0,    # c >= c_floor_frac * median(n | present); 0 disables
 )
 
 
@@ -91,7 +101,8 @@ def bundle_has_affinity_labels(bundle_path):
 class AffinityTargets:
     """Per-phase constants derived once from cStats + params, and the row transform."""
 
-    def __init__(self, cstats, params=None, crossings_per_phase=None, phases=None):
+    def __init__(self, cstats, params=None, crossings_per_phase=None, phases=None,
+                 present_median=None):
         self.params = normalize_affinity_params(params)
         self.cstats = np.asarray(cstats, dtype=np.float64)
         self.phases = list(phases) if phases is not None else None
@@ -107,6 +118,20 @@ class AffinityTargets:
         c_fallback = float(10 ** np.median(np.log10(c_raw[reliable])))
         self.reliable = reliable
         self.c = np.where(reliable, c_raw, c_fallback).astype(np.float64)
+        self.c_unfloored = self.c.copy()
+        self.c_floored = np.zeros(P, dtype=bool)
+        frac = self.params['c_floor_frac']
+        if frac > 0:
+            if present_median is None:
+                raise ValueError("c_floor_frac > 0 needs per-phase present_median in "
+                                 "cStats.json; reprocess the bundles with the current "
+                                 "prepareML_affinity.py.")
+            med = np.asarray(present_median, dtype=np.float64)
+            if med.shape != (P,):
+                raise ValueError(f"present_median has shape {med.shape}; expected ({P},)")
+            floor = np.where(np.isfinite(med) & (med > 0), frac * med, 0.0)
+            self.c_floored = floor > self.c
+            self.c = np.maximum(self.c, floor)
         sigma = np.maximum(np.nan_to_num(std, nan=0.0), self.params['sigma_floor'])
         # Unreliable phases: threshold +inf, so every absent cell is untrusted.
         self.s_min = np.where(reliable, 10 ** (mean - self.params['k'] * sigma), np.inf)
@@ -136,15 +161,19 @@ class AffinityTargets:
     def fingerprint(self):
         h = hashlib.sha1(np.ascontiguousarray(self.cstats).tobytes()).hexdigest()
         return {'cstats_sha1': h, 'params': self.params,
-                'reliable': self.reliable.astype(int).tolist()}
+                'reliable': self.reliable.astype(int).tolist(),
+                'c': [float(v) for v in self.c]}
 
     def summary(self, phase_names=None):
         names = phase_names or self.phases or [str(i) for i in range(len(self.c))]
         lines = [f"[affinity] eps={self.params['eps']} clip={self.params['clip']} "
                  f"k={self.params['k']} sigma_floor={self.params['sigma_floor']} "
-                 f"min_crossings={self.params['min_crossings']}"]
+                 f"min_crossings={self.params['min_crossings']} "
+                 f"c_floor_frac={self.params['c_floor_frac']}"]
         for j, n in enumerate(names):
             tag = '' if self.reliable[j] else f'  UNRELIABLE -> c fallback {self.c_fallback:.3g}, absent cells untrusted'
+            if self.c_floored[j]:
+                tag += f'  FLOORED (from {self.c_unfloored[j]:.3g})'
             lines.append(f"  {n:<14} c={self.c[j]:.4g}  s_min={self.s_min[j]:.3g}{tag}")
         return '\n'.join(lines)
 
@@ -155,7 +184,8 @@ class AffinityTargets:
         cpp = info.get('crossings_per_phase')
         if isinstance(cpp, dict) and phases:
             cpp = [cpp.get(p, 0) for p in phases]
-        return cls(cstats, params=params, crossings_per_phase=cpp, phases=phases)
+        return cls(cstats, params=params, crossings_per_phase=cpp, phases=phases,
+                   present_median=info.get('present_median'))
 
 
 def check_phase_order(targets, ml_indexer):

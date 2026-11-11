@@ -40,7 +40,7 @@ import sys
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -243,9 +243,35 @@ def _parse_adiabat_coefs(path: Path) -> Dict[str, float]:
     return coefs
 
 
-def _make_loader(x: np.ndarray, y: np.ndarray, batch_size: int, shuffle: bool) -> DataLoader:
-    ds = TensorDataset(torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32))
-    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle)
+class DeviceTensorLoader:
+    """Minibatch iterator over (x, y) tensors that live entirely on `device`.
+
+    The whole split is uploaded once; each epoch draws one on-device
+    permutation and yields batches by a single gather (`x[idx]`), so there is
+    no per-sample Python indexing, no collation and no host->device copy in
+    the training loop. Unshuffled iteration yields contiguous slices (views).
+    """
+
+    def __init__(self, x: np.ndarray, y: np.ndarray, batch_size: int, shuffle: bool, device: torch.device):
+        self.x = torch.from_numpy(np.ascontiguousarray(x, dtype=np.float32)).to(device)
+        self.y = torch.from_numpy(np.ascontiguousarray(y, dtype=np.float32)).to(device)
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.n = self.x.shape[0]
+
+    def __len__(self) -> int:
+        return -(-self.n // self.batch_size)
+
+    def __iter__(self):
+        bs = self.batch_size
+        if self.shuffle:
+            perm = torch.randperm(self.n, device=self.x.device)
+            for start in range(0, self.n, bs):
+                idx = perm[start:start + bs]
+                yield self.x[idx], self.y[idx]
+        else:
+            for start in range(0, self.n, bs):
+                yield self.x[start:start + bs], self.y[start:start + bs]
 
 
 def _materialize_full(workspace: ResidualWorkspaceHandle, kind: str) -> Tuple[np.ndarray, np.ndarray]:
@@ -262,10 +288,12 @@ def _make_loader_for_split(
     batch_size: int,
     ram_threshold_bytes: float,
     chunk_rows: int,
+    device: torch.device,
+    shuffle: bool = True,
 ):
-    """Full in-RAM DataLoader when this split fits under the RAM threshold
-    (today's fast path); an async chunked memmap loader above it, so training
-    scales to datasets much larger than available RAM.
+    """Whole split resident on `device` (GPU) when it fits under the RAM
+    threshold; an async chunked memmap loader above it, so training scales to
+    datasets much larger than available RAM.
 
     Gated on `workspace.total_bytes()` (both "emulator" and "gt" arrays
     combined), not just this `kind`'s own arrays: both loaders for a split are
@@ -276,10 +304,21 @@ def _make_loader_for_split(
     total_bytes = workspace.total_bytes()
     if total_bytes <= ram_threshold_bytes:
         x, y = _materialize_full(workspace, kind)
-        return _make_loader(x, y, batch_size, shuffle=True)
+        data_gib = (x.nbytes + y.nbytes) / 1024**3
+        print(
+            f"[{kind}] split total (emulator+gt combined) {total_bytes / 1024**3:.2f} GiB <= --ram-threshold-gb "
+            f"({ram_threshold_bytes / 1024**3:.2f} GiB); loading ENTIRE split onto {device} "
+            f"({x.shape[0]:,} rows x {x.shape[1]} features, {data_gib:.2f} GiB)"
+        )
+        if device.type == "cuda":
+            free_b, total_b = torch.cuda.mem_get_info(device)
+            print(f"[{kind}]   GPU memory before upload: {free_b / 1024**3:.2f} / {total_b / 1024**3:.2f} GiB free")
+        loader = DeviceTensorLoader(x, y, batch_size, shuffle=shuffle, device=device)
+        del x, y
+        return loader
     print(
         f"[{kind}] split total (emulator+gt combined) {total_bytes / 1024**3:.2f} GiB > --ram-threshold-gb "
-        f"({ram_threshold_bytes / 1024**3:.2f} GiB); using chunked memmap loader"
+        f"({ram_threshold_bytes / 1024**3:.2f} GiB); using STREAMED chunked memmap loader (chunk_rows={chunk_rows:,})"
     )
     return ResidualChunkedLoader(workspace, kind, batch_size, chunk_rows=chunk_rows)
 
@@ -553,6 +592,15 @@ def main() -> None:
             "Pass --no-skip-2 to train it anyway."
         ),
     )
+    parser.add_argument(
+        "--warm-start",
+        type=Path,
+        default=None,
+        metavar="CHECKPOINT",
+        help="Initialize weights from this checkpoint before training. The checkpoint's "
+             "'input_kind' (emulator_path / gt_path) selects which model it is loaded into; "
+             "bare state_dicts without input_kind are loaded into model 1 (emulator path).",
+    )
     parser.add_argument("--isMELTS", action="store_true", help="Bundle uses MELTS units (P in bars, T in Celsius). Converts P bars→GPa before the reference adiabat call and converts the reference result K→Celsius so residuals and targets are in Celsius.")
     parser.add_argument(
         "--out-dir",
@@ -659,6 +707,21 @@ def main() -> None:
     if args.emulator_batch_size <= 0:
         raise ValueError(f"--emulator-batch-size must be > 0, got {args.emulator_batch_size}")
 
+    warm_start_kind: Optional[str] = None
+    if args.warm_start is not None:
+        if not args.warm_start.exists():
+            raise FileNotFoundError(f"--warm-start checkpoint not found: {args.warm_start}")
+        _ws_ckpt = torch.load(args.warm_start, map_location="cpu", weights_only=False)
+        warm_start_kind = (_ws_ckpt.get("input_kind") if isinstance(_ws_ckpt, dict) else None) or "emulator_path"
+        del _ws_ckpt
+        if warm_start_kind not in ("emulator_path", "gt_path"):
+            raise ValueError(f"Unrecognized input_kind '{warm_start_kind}' in {args.warm_start}")
+        skipped = args.skip_1 if warm_start_kind == "emulator_path" else args.skip_2
+        if skipped:
+            raise ValueError(
+                f"--warm-start checkpoint is for the {warm_start_kind} model, but that model is skipped"
+            )
+
     set_seed(args.seed)
     hidden_dims = _parse_hidden_dims(args.hidden_dims)
 
@@ -761,12 +824,12 @@ def main() -> None:
 
     train_loader_x1 = valid_loader_x1 = None
     if not args.skip_1:
-        train_loader_x1 = _make_loader_for_split(train_ws, "emulator", args.batch_size, ram_threshold_bytes, args.loader_chunk_rows)
-        valid_loader_x1 = _make_loader_for_split(test_ws, "emulator", args.batch_size, ram_threshold_bytes, args.loader_chunk_rows)
+        train_loader_x1 = _make_loader_for_split(train_ws, "emulator", args.batch_size, ram_threshold_bytes, args.loader_chunk_rows, device, shuffle=True)
+        valid_loader_x1 = _make_loader_for_split(test_ws, "emulator", args.batch_size, ram_threshold_bytes, args.loader_chunk_rows, device, shuffle=False)
     train_loader_x2 = valid_loader_x2 = None
     if not args.skip_2:
-        train_loader_x2 = _make_loader_for_split(train_ws, "gt", args.batch_size, ram_threshold_bytes, args.loader_chunk_rows)
-        valid_loader_x2 = _make_loader_for_split(test_ws, "gt", args.batch_size, ram_threshold_bytes, args.loader_chunk_rows)
+        train_loader_x2 = _make_loader_for_split(train_ws, "gt", args.batch_size, ram_threshold_bytes, args.loader_chunk_rows, device, shuffle=True)
+        valid_loader_x2 = _make_loader_for_split(test_ws, "gt", args.batch_size, ram_threshold_bytes, args.loader_chunk_rows, device, shuffle=False)
 
     metrics: Dict[str, Dict] = {"emulator_path": {}, "gt_path": {}}
     bundle_basename = args.bundle_stem.name
@@ -778,6 +841,12 @@ def main() -> None:
             _save_checkpoint(out_path, m, args.temperature_label, p_idx, s_idx, x_min_, x_range_, y_min, y_range, kind, metrics_ref, hist, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices)
         return saver
 
+    def _maybe_warm_start(model, kind):
+        if warm_start_kind != kind:
+            return
+        model.load_state_dict(_load_checkpoint_state_dict(args.warm_start, device))
+        print(f"Warm start ({kind}): loaded weights from {args.warm_start}")
+
     # Train model 1 (emulator-predicted path)
     model_emulator = VariableGeometryFCNNRegressor(
         input_dim=x1_dim, output_dim=1,
@@ -786,6 +855,7 @@ def main() -> None:
     history_emulator = None
     if not args.skip_1:
         print("\nTraining model 1/2: [features, emul-predicted moles+intensive] -> T_residual")
+        _maybe_warm_start(model_emulator, "emulator_path")
         history_emulator = _train_model(
             model_emulator, train_loader_x1, valid_loader_x1,
             args.epochs, args.lr, args.weight_decay, device, args.patience,
@@ -802,6 +872,7 @@ def main() -> None:
     history_gt = None
     if not args.skip_2:
         print("\nTraining model 2/2: [features, GT moles+intensive] -> T_residual")
+        _maybe_warm_start(model_gt, "gt_path")
         history_gt = _train_model(
             model_gt, train_loader_x2, valid_loader_x2,
             args.epochs, args.lr, args.weight_decay, device, args.patience,
@@ -818,13 +889,13 @@ def main() -> None:
 
     # Evaluate in temperature space (K)
     if not args.skip_1:
-        metrics["emulator_path"]["train"] = _evaluate_temperature_from_workspace(model_emulator, train_ws, "emulator", y_min, y_range, device)
-        metrics["emulator_path"]["test"] = _evaluate_temperature_from_workspace(model_emulator, test_ws, "emulator", y_min, y_range, device)
-        metrics["emulator_path"]["valid"] = _evaluate_temperature_from_workspace(model_emulator, valid_ws, "emulator", y_min, y_range, device)
+        metrics["emulator_path"]["train"] = _evaluate_temperature_from_workspace(model_emulator, train_ws, "emulator", y_min, y_range, device, batch_size=args.batch_size)
+        metrics["emulator_path"]["test"] = _evaluate_temperature_from_workspace(model_emulator, test_ws, "emulator", y_min, y_range, device, batch_size=args.batch_size)
+        metrics["emulator_path"]["valid"] = _evaluate_temperature_from_workspace(model_emulator, valid_ws, "emulator", y_min, y_range, device, batch_size=args.batch_size)
     if not args.skip_2:
-        metrics["gt_path"]["train"] = _evaluate_temperature_from_workspace(model_gt, train_ws, "gt", y_min, y_range, device)
-        metrics["gt_path"]["test"] = _evaluate_temperature_from_workspace(model_gt, test_ws, "gt", y_min, y_range, device)
-        metrics["gt_path"]["valid"] = _evaluate_temperature_from_workspace(model_gt, valid_ws, "gt", y_min, y_range, device)
+        metrics["gt_path"]["train"] = _evaluate_temperature_from_workspace(model_gt, train_ws, "gt", y_min, y_range, device, batch_size=args.batch_size)
+        metrics["gt_path"]["test"] = _evaluate_temperature_from_workspace(model_gt, test_ws, "gt", y_min, y_range, device, batch_size=args.batch_size)
+        metrics["gt_path"]["valid"] = _evaluate_temperature_from_workspace(model_gt, valid_ws, "gt", y_min, y_range, device, batch_size=args.batch_size)
 
     # Save final checkpoints
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -837,7 +908,7 @@ def main() -> None:
     model2_out_str = "Not Trained!"
     if not args.skip_2 and history_gt is not None:
         model2_out = args.out_dir / f"temperature_residual_gt_path_{bundle_basename}.pt"
-        _save_checkpoint(model2_out, model_gt, args.temperature_label, p_idx, s_idx, x2_min, x2_range, y_min, y_range, "gt_path", metrics["gt_path"], history_gt, is_melts=args.isMELTS, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices)
+        _save_checkpoint(model2_out, model_gt, args.temperature_label, p_idx, s_idx, x2_min, x2_range, y_min, y_range, "gt_path", metrics["gt_path"], history_gt, adiabat_coefs=adiabat_coefs, comp_indices=comp_indices)
         model2_out_str = str(model2_out)
 
     metrics_path = args.out_dir / f"temperature_residual_metrics_{bundle_basename}.json"

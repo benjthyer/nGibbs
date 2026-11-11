@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-Submit import_hefesto_subdirs.py as a single-node SLURM job from a login node.
+Submit a HeFESTo import script as a single-node SLURM job from a login node.
 
-Any switch not consumed here is forwarded verbatim to import_hefesto_subdirs.py
-(--root, --dataname, --phase-change-dataname, --phase-change-offset-only,
---deep-phase-change-dataname, --deep-axis). They are validated against that
-script's parser before submission, so a typo fails here rather than after the
-job has waited in the queue.
+--importer picks which import script the job runs:
+  plain     import_hefesto_subdirs.py          (default)
+  derivs    import_hefesto_subdirs_derivs.py   (+ dn/dP, dn/dT shadows)
+  affinity  import_hefesto_subdirs_affinity.py (+ qout affinity shadow)
+
+Any switch not consumed here is forwarded verbatim to that script (--root,
+--dataname, --phase-change-dataname, ...). They are validated against the
+chosen script's parser before submission, so a typo fails here rather than
+after the job has waited in the queue.
 
 The job runs from the directory you submit from, so relative paths (including
 the defaults --root . and --dataname DefaultHeFESTostorage.csv) resolve exactly
@@ -24,6 +28,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import importlib
 import shlex
 import subprocess
 import sys
@@ -31,12 +36,18 @@ from datetime import datetime
 from pathlib import Path
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
-IMPORT_SCRIPT = SCRIPTS_DIR / "import_hefesto_subdirs.py"
+IMPORTERS = {
+    "plain": "import_hefesto_subdirs",
+    "derivs": "import_hefesto_subdirs_derivs",
+    "affinity": "import_hefesto_subdirs_affinity",
+}
 
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from import_hefesto_subdirs import build_parser as build_import_parser  # noqa: E402
+
+def build_import_parser(importer: str) -> argparse.ArgumentParser:
+    return importlib.import_module(IMPORTERS[importer]).build_parser()
 
 
 def _quote_args(argv: list[str]) -> str:
@@ -46,6 +57,7 @@ def _quote_args(argv: list[str]) -> str:
 
 def create_slurm_script(
     submit_dir: Path,
+    import_script: Path,
     import_args: list[str],
     hours: int,
     mem: str,
@@ -63,7 +75,7 @@ def create_slurm_script(
     slurm_script = logs_dir / f"{job_name}_{stamp}.slurm"
 
     partition_line = f"#SBATCH --partition={partition}\n" if partition else ""
-    command = _quote_args(["python", "-u", str(IMPORT_SCRIPT), *import_args])
+    command = _quote_args(["python", "-u", str(import_script), *import_args])
 
     script_content = f"""#!/bin/bash
 #SBATCH --job-name={job_name}
@@ -96,6 +108,7 @@ def submit_job(args: argparse.Namespace, import_args: list[str]):
 
     slurm_script = create_slurm_script(
         submit_dir,
+        SCRIPTS_DIR / f"{IMPORTERS[args.importer]}.py",
         import_args,
         hours=args.hours,
         mem=args.mem,
@@ -105,6 +118,7 @@ def submit_job(args: argparse.Namespace, import_args: list[str]):
         partition=args.partition,
     )
     print(f"Created: {slurm_script}")
+    print(f"Importer: {IMPORTERS[args.importer]}.py")
     print(f"Forwarded import args: {_quote_args(import_args) or '(defaults)'}")
 
     # Logs share the script's timestamped stem, so --wait can find them afterwards
@@ -156,15 +170,27 @@ def submit_job(args: argparse.Namespace, import_args: list[str]):
 
 
 if __name__ == "__main__":
+    # Pick the importer first so --help can show that script's options
+    pre = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    pre.add_argument("--importer", choices=sorted(IMPORTERS), default="plain")
+    importer = pre.parse_known_args()[0].importer
+
     parser = argparse.ArgumentParser(
         description=(
-            "Submit import_hefesto_subdirs.py as a single-node SLURM job. "
+            "Submit a HeFESTo import script as a single-node SLURM job. "
             "Unrecognised switches are forwarded to the import script."
         ),
-        epilog="Import script options:\n" + build_import_parser().format_help(),
+        epilog=(f"Import script options ({IMPORTERS[importer]}.py):\n"
+                + build_import_parser(importer).format_help()),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         # Prefix matching could swallow a forwarded switch (e.g. --d -> --dry-run)
         allow_abbrev=False,
+    )
+    parser.add_argument(
+        "--importer",
+        choices=sorted(IMPORTERS),
+        default="plain",
+        help="Import script the job runs (default: plain = import_hefesto_subdirs.py)"
     )
     parser.add_argument(
         "--hours",
@@ -216,6 +242,6 @@ if __name__ == "__main__":
     args, import_args = parser.parse_known_args()
 
     # Fail on the login node, not after queueing, if the forwarded args are bad
-    build_import_parser().parse_args(import_args)
+    build_import_parser(args.importer).parse_args(import_args)
 
     submit_job(args, import_args)

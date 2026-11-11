@@ -12,11 +12,22 @@ Flow:
   Train: table filters -> resampling_to_datasets(run_ids, no T0) -> finalize_bundle(shuffle)
   Test : table filters -> resampling_to_datasets(run_ids, no T0) -> finalize_bundle(cStats)
 
+HeFESTo (MELTSModel contains 'hefesto'): absent-phase labels come from HeFESTo's own
+affinities (<table>_affinity.csv, from scripts/import_hefesto_subdirs_affinity.py) via
+builder/processing/hefesto_affinity_labels.py instead of path projection:
+  Train: disequilibrium filter -> table filters -> export (run_ids + source_rows)
+         -> finalize_bundle(calibrate lambda on this bundle, label, shuffle)
+  Test : disequilibrium filter -> table filters -> export
+         -> finalize_bundle(label with the TRAIN lambda, cStats, held-out crossing check)
+The train calibration is also written to <bundle stem>_lambda.json in the MLready
+directory so --skip-train can reuse it.
+
 --test-only processes only the validation table and builds its ml_indexer from it (for
 pipeline testing where the training table is not available).
 """
 
 from copy import deepcopy
+import json
 import os
 import gc
 import shutil
@@ -54,6 +65,7 @@ from ngibbs.utils.file_utils import delete_files_with_keyword, move_files_with_e
 # Exporter functions
 from builder.processing.MLexporter import resampling_to_datasets, make_harkers, make_Tplots
 from builder.processing.affinity_labels import finalize_bundle
+from builder.processing import hefesto_affinity_labels as hal
 from builder.processing.guardrails import check_resampling_config
 
 # Perhaps migrate the chemistry filters to their own module?
@@ -184,8 +196,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, outn
     check_resampling_config(upsample, upsample_cfg, resampling_cfg, feature_names_cfg, free_outputs_cfg)
 
     # Affinity labels need intact, ordered simulations: forbid row duplication/perturbation.
-    if MODEL != 'MELTS':
-        raise NotImplementedError('prepareML_affinity supports MELTS datasets only (HeFESTo deferred).')
+    hefesto_prm = hal.hefesto_params(affinity_params) if MODEL == 'HeFESTo' else None
     if upsample:
         raise ValueError('prepareML_affinity forbids rare-phase upsampling (upsampling.enabled / --upsample).')
     for _k in ('train_bounds', 'test_bounds'):
@@ -317,6 +328,18 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, outn
             f"Bundle not found at expected locations: {bundle_path} or {target_path}"
         )
 
+    lambda_path = train_dir / f"{bundle_stem}_lambda.json"
+
+    def load_hefesto_affinities(table, table_name, override_key):
+        """Affinity table for `table`, aligned and with disequilibrium rows dropped."""
+        csv = hal.find_affinity_csv(table_name, read_dir=read_dir,
+                                    override=affinity_params.get(override_key))
+        print(f"[HeFESTo affinity] {csv}")
+        aff = hal.load_affinity_table(csv)
+        hal.check_alignment(table, aff)
+        hal.filter_disequilibrium_rows(table, aff, float(hefesto_prm['drop_threshold']))
+        return aff
+
     gc.collect()
 
     # Capture baseline files for cleanup on exit
@@ -338,6 +361,8 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, outn
                 print(f"Applying configured oxide exclusions at table load: {excluded_oxides_cfg}")
                 TrainMELTS.exclude_oxides(excluded_oxides_cfg)
             header = TrainMELTS.header  # Capture header for indexer construction
+            if MODEL == 'HeFESTo':
+                train_aff = load_hefesto_affinities(TrainMELTS, TrainName, 'train_affinity_csv')
             pre_filter = TrainMELTS.table.shape[0]
 
             # Raw phase abundances before any row filtering, so surprising abundances
@@ -464,8 +489,25 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, outn
             print("Shuffling training row order (one-time, out-of-core, post-packaging)...")
             # Label every simulation path (g, s) while rows are still in table order, then
             # shuffle - one extract and one repack (see affinity_labels.finalize_bundle).
-            finalize_bundle(train_bundle_path, shuffle=True, compute_cstats_flag=False,
-                            params=affinity_params, chunk_size=chunk_size)
+            if MODEL == 'HeFESTo':
+                # Calibrate lambda on the unshuffled train bundle, label it, then shuffle.
+                cal_holder = {}
+
+                def _calibrate(npy_dir, ml_indexer):
+                    cal_holder['cal'] = hal.calibrate_lambda(npy_dir, ml_indexer, train_aff, hefesto_prm)
+
+                finalize_bundle(train_bundle_path, shuffle=True, compute_cstats_flag=False,
+                                params=affinity_params, chunk_size=chunk_size,
+                                labeller=hal.make_labeller(train_aff, lambda: cal_holder['cal'], hefesto_prm),
+                                before_label=_calibrate)
+                train_calibration = cal_holder['cal']
+                lambda_path.write_text(json.dumps(train_calibration, indent=1))
+                print(f"[HeFESTo affinity] train lambda calibration -> {lambda_path}")
+                del train_aff
+                gc.collect()
+            else:
+                finalize_bundle(train_bundle_path, shuffle=True, compute_cstats_flag=False,
+                                params=affinity_params, chunk_size=chunk_size)
 
         else:
             # Load pre-built training artifacts; skip the full training pipeline.
@@ -479,6 +521,12 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, outn
             TrainIndexer = None
             print(f"[SKIP-TRAIN] Loaded header ({len(header)} cols) and ml_indexer "
                   f"from {TrainName}ml_indexer/")
+            if MODEL == 'HeFESTo':
+                if not lambda_path.exists():
+                    raise FileNotFoundError(f"--skip-train on HeFESTo needs the train lambda "
+                                            f"calibration at {lambda_path}")
+                train_calibration = json.loads(lambda_path.read_text())
+                print(f"[SKIP-TRAIN] Loaded train lambda calibration from {lambda_path}")
 
 
         # Process test data - the entire validation dataset is used as the test
@@ -503,6 +551,9 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, outn
             TestMELTS.indexer.ml_indexer = TrainIndexer.ml_indexer
 
 
+
+        if MODEL == 'HeFESTo':
+            test_aff = load_hefesto_affinities(TestMELTS, ValidName, 'valid_affinity_csv')
 
         pre_filter = TestMELTS.table.shape[0]
 
@@ -558,7 +609,10 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, outn
             #TestMELTS.save(name=f"{TestName}Filtered", save_csv=False)
 
         if test_only:
-            # No training table: build the ml_indexer from this table, as the train branch does.
+            # No training table: build the ml_indexer from this table, as the train branch
+            # does (including its rare-phase filter, which is what drops empty phases).
+            if min_phase_cfg != 0:
+                TestMELTS.filter_min_phase_proportion(min_proportion=min_phase_cfg)
             TestMELTS.indexer.table_update(
                 TestMELTS.table,
                 excluded_oxides=excluded_oxides_cfg,
@@ -575,6 +629,7 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, outn
             bundle_name=test_bundle,
             deep_filter_kwargs=deep_filter_kwargs,
             insanity_filter_kwargs=insanity_filter_kwargs,
+            require_all_phases=test_only,   # a held-out set may lack a train phase
             **resampling_kwargs,
         )
 
@@ -595,8 +650,19 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, outn
 
         # Label the validation ("Test") bundle and build cStats from its crossings. Not
         # shuffled (the trainer does not need it shuffled), so rows stay in table order.
-        finalize_bundle(test_bundle_path, shuffle=False, compute_cstats_flag=True,
-                        params=affinity_params, chunk_size=chunk_size)
+        if MODEL == 'HeFESTo':
+            if test_only:
+                print('[TEST-ONLY] Calibrating lambda on the validation bundle itself.')
+                test_cal = 'self'
+            else:
+                test_cal = train_calibration
+            finalize_bundle(test_bundle_path, shuffle=False, compute_cstats_flag=True,
+                            params=affinity_params, chunk_size=chunk_size,
+                            labeller=hal.make_labeller(test_aff, test_cal, hefesto_prm))
+            del test_aff
+        else:
+            finalize_bundle(test_bundle_path, shuffle=False, compute_cstats_flag=True,
+                            params=affinity_params, chunk_size=chunk_size)
         #sanity_check_bundle(test_bundle)  # Verify test bundle integrity before proceeding
 
         # Move ALL files to external directory if requested

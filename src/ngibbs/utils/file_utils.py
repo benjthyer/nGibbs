@@ -494,8 +494,11 @@ ROW_ALIGNED_BUNDLE_ARRAYS = (
     'dnds_labels.npy',
     # Signed-abundance labels (builder/processing/affinity_labels.py). run_ids.npy is the
     # per-row simulation id written by resampling_to_datasets(); g/s are added afterwards
-    # by finalize_bundle(). All optional: absent from older bundles.
+    # by finalize_bundle(). source_rows.npy is each row's index in the table as loaded
+    # (BigMetaTable.source_rows), used to join per-row side tables such as the HeFESTo
+    # affinity CSV. All optional: absent from older bundles.
     'run_ids.npy',
+    'source_rows.npy',
     'g_labels.npy',
     's_labels.npy',
 )

@@ -45,6 +45,7 @@ Legacy/
 temp_models/
 src/builder/training/dataset_workspace/
 src/builder/training/residual_workspace/
+src/builder/training/bundle_metadata_cache.json
 
 # Plots and Figures
 *hist/

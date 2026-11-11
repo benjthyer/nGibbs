@@ -1618,9 +1618,9 @@ class EmulatorAPI:
 
     # Batches smaller than this threshold are forwarded to the CPU API (when
     # one exists) to avoid the GPU kernel-launch overhead that dominates for
-    # tiny inputs.  8 192 rows is a conservative crossover empirically valid
+    # tiny inputs.  2 048 rows (2**11) is the crossover empirically valid
     # for both NN forward passes and the HeFESTo EOS kernel.
-    _CPU_BATCH_THRESHOLD: int = 8_192
+    _CPU_BATCH_THRESHOLD: int = 2 ** 11
 
     # Fallback GPU chunk sizes when no tuned profile exists for this GPU
     # (see tune_batch_size / ngibbs.utils.batch_tuning).

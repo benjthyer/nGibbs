@@ -31,7 +31,7 @@
 #       --config recipes/training/HeFESTotuneyContinuousLight.yaml
 ####################################################################################
 
-tarname: 120OpenFxBatch_Cr_NPT  # loads <tarname>_Train.tar.gz / _Test.tar.gz
+tarname: 102OpenFxBatch_Cr_NPT  # loads <tarname>_Train.tar.gz / _Test.tar.gz
 warm_start: None # 120SedIgClosed_Cr_NPT_train1e
 
 encoderLayerUp: 3
@@ -44,7 +44,7 @@ chemBranchBase: 64
 
 
 
-dropout: 0.0dropout0.3            # shared: initial rate, max. Encoder + mole heads.
+dropout: 0.0dropout0.1           # shared: initial rate, max. Encoder + mole heads.
 encoder_regularization: layernorm # normalization only: none | layernorm | batchnorm
 mole_regularization: none
 lowWD: 0.001
@@ -58,6 +58,7 @@ val_checks_per_epoch: 4
 overfit_ratio: 1.05
 underfit_ratio: 0.95
 fit_train_mode: train
+history_every_n_batches: 50
 
 model_class: AffinityModel
 
@@ -73,9 +74,9 @@ affinity:
                              # Proceed with caution:such rare phases shouldn't be in the training set anyway!
 
 # Loss shape for untrusted cells (model config, saved with the checkpoint)
-affinity_margin: 0.5         # hinge: penalize y_hat/c > -margin
+affinity_margin: 0.2         # hinge: penalize y_hat/c > -margin
 affinity_hinge_weight: 0.25
-affinity_pull_weight: 0.05   # weak pull toward the -c placeholder
+affinity_pull_weight: 0.02  # weak pull toward the -c placeholder
 affinity_present_margin: 0.03  # present-side hinge: penalize y_hat/c < min(y/c, margin)
 affinity_present_weight: 3.0   # 0 = off; counters the present->absent offset near u = 0
 
@@ -127,12 +128,14 @@ phase_weights:                 # one weight per phase, applied to binary + mole 
   spinel: 2
   graphite: 2
   calcite: 5
+  alloy-solid: 5
 
 
 train1: #encoder geometry, base width, norm choice. dropout stays off.
   strategy: full
   which_heads_to_freeze: ['chem_heads']
   epochs: 20
+  early_stopping_patience: 20
   max_N: 1.5e7
   scheduler:
     type: OneCycleLR
@@ -195,7 +198,7 @@ train3:
   dropout_step_up: 0.001
   dropout_step_down: 0.0002
   learning_rate: 1e-4
-  early_stopping_patience: 15
+  early_stopping_patience: 10
   max_N: null
   boundary_temperature:
     enabled: False
@@ -209,6 +212,7 @@ train3:
 
 train4:
   strategy: full
+  dropout: 0.0dropout0.0
   which_heads_to_freeze: []
   # batch_size: 16384
   epochs: 120
@@ -219,7 +223,7 @@ train4:
   dropout_step_up: 0.001
   dropout_step_down: 0.0002
   learning_rate: 1e-4
-  early_stopping_patience: 15
+  early_stopping_patience: 10
   max_N: null
   boundary_temperature:
     enabled: False

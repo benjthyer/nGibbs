@@ -31,8 +31,8 @@
 #       --config recipes/training/HeFESTotuneyContinuousLight.yaml
 ####################################################################################
 
-tarname: HeFESTo_Earth_NPT   # loads <tarname>_Train.tar.gz / _Test.tar.gz
-warm_start: HeFESTo_Earth_NPT_train5 # 120SedIgClosed_Cr_NPT_train1e
+tarname: HeFESTo_EarthReSamp_NPT   # loads <tarname>_Train.tar.gz / _Test.tar.gz
+warm_start: HeFESTo_EarthReSamp_NPT_train7  # 120SedIgClosed_Cr_NPT_train1e
 
 encoderLayerUp: 3
 encoderLayerDown: 2
@@ -104,7 +104,7 @@ device: cuda
 ######### shared loss defaults (every episode needs a complete loss_config) #######
 loss_config:
   binary:
-    weight: 0.01                 
+    weight: 0.03                 
   chemistry:
     type: symmetric_rel_l2
     weight: 10
@@ -119,10 +119,10 @@ phase_weights:                 # one weight per phase, applied to binary + mole 
                                 # carried over from HeFESToTuney.yaml's binweights
 
   akimotoite: 10
-  hp-clinopyroxene: 4
-  plagioclase: 10
-  spinel: 4
-  stishovite: 5
+  #hp-clinopyroxene: 4
+  #plagioclase: 10
+  #spinel: 4
+  #stishovite: 5
 
 
     
@@ -137,8 +137,9 @@ phase_weights:                 # one weight per phase, applied to binary + mole 
 ####################################################################################
 
 
-train4:
+train8:
   strategy: full
+  dropout: 0.0dropout0.0
   which_heads_to_freeze: []
   epochs: 60
   # Fit checks: validate + step adaptive dropout 4x per epoch (3 in-epoch, 1 at the end),
@@ -156,17 +157,18 @@ train4:
       T_max: 5
   boundary_temperature: # MUST KEEP THIS ON
     enabled: true
-    a_start: 0.4
-    a_end: 5.0e-2
+    a_start: 5.0e-4
+    a_end: 1.0e-5
   loss_config:
     bulk:
       weight: 1
 
-train5:
+train9:
   strategy: full
+  dropout: 0.0dropout0.0
   which_heads_to_freeze: []
   # batch_size: 16384
-  epochs: 120
+  epochs: 60
   # Fit checks: validate + step adaptive dropout 4x per epoch (3 in-epoch, 1 at the end),
   # on Test / eval-mode-Train. Dead band [0.97, 1.05] is the code default. Steps are per
   # check; recovering (down) is 5x slower than the overfitting penalty (up).
@@ -176,9 +178,11 @@ train5:
   learning_rate: 1e-4
   early_stopping_patience: 15
   max_N: null
+  phase_weights:
+    akimotoite: 2
   boundary_temperature: # MUST KEEP THIS ON 
     enabled: True
-    a_start: 5.0e-2
+    a_start: 1.0e-5
     a_end: 1.0e-5
   scheduler:
     type: CosineAnnealingLR

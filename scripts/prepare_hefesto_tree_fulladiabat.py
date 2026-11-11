@@ -41,6 +41,12 @@ def parse_args() -> argparse.Namespace:
 		help='Path to the GEOROC CSV file used to sample compositions.',
 	)
 	parser.add_argument(
+		'--gard-dir',
+		type=Path,
+		required=True,
+		help='Path to the Gard et al. (2019) sediment CSV file used to sample compositions.',
+	)
+	parser.add_argument(
 		'--control-path',
 		type=Path,
 		required=True,
@@ -79,6 +85,7 @@ def main() -> None:
 	prepare_HeFESTo_tree_fulladiabat(
 		directory=args.directory,
 		GEOROC_DIR=args.georoc_dir,
+		GARD_DIR=args.gard_dir,
 		control_path=args.control_path,
 		N=args.n,
 		real_rocks=args.real_rocks,

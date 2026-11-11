@@ -31,8 +31,8 @@
 #       --config recipes/training/HeFESTotuneyContinuousLight.yaml
 ####################################################################################
 
-tarname: HeFESTo_Mars_NPT   # loads <tarname>_Train.tar.gz / _Test.tar.gz
-warm_start: hingesearch_HeFESTo_Mars_NPT_train5_m4 # 120SedIgClosed_Cr_NPT_train1e
+tarname: HeFESTo_Earth_NPT   # loads <tarname>_Train.tar.gz / _Test.tar.gz
+warm_start: HeFESTo_Earth_NPT_train7 # 120SedIgClosed_Cr_NPT_train1e
 
 encoderLayerUp: 3
 encoderLayerDown: 2
@@ -59,7 +59,7 @@ fit_train_mode: train
 
 model_class: ContinuousModel
 
-absent_hinge_weight: 0.01
+absent_hinge_weight: 0.02
 absent_hinge_margin: 4.0
 
 affinity:
@@ -121,11 +121,14 @@ phase_weights:                 # one weight per phase, applied to binary + mole 
                                 # loss alike (never bulk, which has no per-phase concept) --
                                 # carried over from HeFESToTuney.yaml's binweights
 
-  akimotoite: 2
+  akimotoite: 4
   hp-clinopyroxene: 2
   plagioclase: 2
   spinel: 2
   stishovite: 2
+  alpha-iron: 2
+  gamma-iron: 2
+  epsilon-iron: 2
 
 
     
@@ -139,9 +142,10 @@ phase_weights:                 # one weight per phase, applied to binary + mole 
 # so it stays inert everywhere it is left at 0.
 ####################################################################################
 
-train6:
+train8:
   strategy: full
   which_heads_to_freeze: []
+  dropout: 0.0dropout0.0
   # batch_size: 16384
   epochs: 120
   # Fit checks: validate + step adaptive dropout 4x per epoch (3 in-epoch, 1 at the end),
@@ -151,12 +155,12 @@ train6:
   dropout_step_up: 0.001
   dropout_step_down: 0.0002
   learning_rate: 1e-4
-  early_stopping_patience: 25
+  early_stopping_patience: 10
   max_N: null
   boundary_temperature: # MUST KEEP THIS ON 
     enabled: True
     a_start: 5.0e-2
-    a_end: 5.0e-2
+    a_end: 5.0e-4
   scheduler:
     type: CosineAnnealingLR
     args:
@@ -164,3 +168,4 @@ train6:
   loss_config:
     bulk:
       weight: 1
+  

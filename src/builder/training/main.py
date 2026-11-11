@@ -34,7 +34,8 @@ from builder.training.affinity_targets import AffinityTargets, check_phase_order
 from builder.training.optimizer_factory import normalize_scheduler_name
 from builder.training.trainer import (train_Lower_MELTS, train_Upper_MELTS, symmetric_rel_l1,
                                       symmetric_rel_l2, TRAIN_PARAM_DEFAULTS,
-                                      BOUNDARY_TEMPERATURE_DEFAULTS, mean_modal_wtpct)
+                                      BOUNDARY_TEMPERATURE_DEFAULTS, mean_modal_wtpct,
+                                      model_takes_boundary_temperature)
 from builder.training.sobolev import train_Upper_Sobolev
 from builder.training.tuners import tune_Lower_MELTS, tune_Upper_MELTS
 from builder.training.logger import setup_training_logger, redirect_output, restore_output
@@ -794,7 +795,17 @@ def main() -> None:
 
     if affinity_on:
         _reconcile_affinity_model(best_model, affinity_targets)
-    if getattr(best_model, 'requires_boundary_temperature', False):
+    # Discover episodes (tune1, train1, ...) in order; executed below.
+    episodes = _discover_episodes(config)
+
+    # Check up front, not deep in the trainer: T0 is needed when the model requires
+    # boundary temperature, or when it takes T and any episode's recipe turns it on.
+    # A model that takes no T (AffinityModel) never needs T0, whatever the recipe says.
+    _needs_T0 = getattr(best_model, 'requires_boundary_temperature', False) or (
+        model_takes_boundary_temperature(best_model) and any(
+            _boundary_temperature_settings(_deep_update(deepcopy(config), ep_cfg))
+            for _, _, ep_cfg in episodes if ep_cfg is not None))
+    if _needs_T0:
         if getattr(ml_indexer, 'T0', None) is None:
             raise ValueError(f"{type(best_model).__name__} trains with boundary temperature T = a*T0, "
                              f"but neither {train_bundle} nor {test_bundle} yields a T0.")
@@ -806,8 +817,6 @@ def main() -> None:
     if warm_start.lower() != 'none':
         last_best_model_path = Path(__file__).parent / config['checkpoints']['load_dir'] / (warm_start + '.tar')
 
-    # Discover and execute episodes in order
-    episodes = _discover_episodes(config)
 
     # Training-curve history: LR, adaptive dropout/noise and window-mean weighted losses
     # every `history_every_n_batches` batches of every train episode, on one epoch axis
@@ -1174,6 +1183,10 @@ def main() -> None:
                     _dkw.update(fit_check_kw)
                     if _train_fn is train_Upper_MELTS:
                         _dkw['history'] = history
+                        # Checkpoint selection: 'loss' (default) or 'f1' -- see train_Upper_MELTS.
+                        _dkw['select_metric'] = episode_cfg.get('select_metric', 'loss')
+                        _dkw['select_phase_weights'] = episode_cfg.get('select_phase_weights')
+                        _dkw['ema_decay'] = float(episode_cfg.get('ema_decay', 0.0) or 0.0)
                     elif history is not None:
                         print("[history] not recorded for derivative (Sobolev) episodes; "
                               "the epoch axis does not advance over this episode.")

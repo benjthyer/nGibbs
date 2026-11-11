@@ -392,11 +392,27 @@ def _anneal_a(epoch, epochs, a_start=1.0, a_end=1e-4):
 BOUNDARY_TEMPERATURE_DEFAULTS = {'a_start': 1.0, 'a_end': 1e-4}
 
 
+def model_takes_boundary_temperature(model):
+    """Whether `model.upper_forward` accepts `T` -- the same test `_upper_forward` uses
+    to decide whether to pass it. AffinityModel does not (no T, no T0)."""
+    fn = getattr(model, 'upper_forward', None)
+    return fn is not None and 'T' in inspect.signature(fn).parameters
+
+
 def _required_boundary_temperature(model, boundary_temperature):
     """A model that declares `requires_boundary_temperature` (ContinuousModel) has no
     un-annealed training path: when the recipe gives no schedule (block absent or
     `enabled: false`), use the default one rather than fail or silently train another
-    way."""
+    way.
+
+    Conversely, a model whose `upper_forward` takes no `T` (AffinityModel) never uses a
+    schedule, so an enabled `boundary_temperature:` block is ignored for it: T would be
+    discarded by `_upper_forward` anyway, and building it would demand a T0 the model
+    has no use for."""
+    if boundary_temperature and not model_takes_boundary_temperature(model):
+        print(f"[boundary_temperature] {type(model).__name__} does not use a boundary "
+              f"temperature; ignoring the recipe's schedule (no T0 needed).")
+        return None
     if boundary_temperature or not getattr(model, 'requires_boundary_temperature', False):
         return boundary_temperature
     print(f"[boundary_temperature] {type(model).__name__} always trains with annealed boundary "
@@ -750,6 +766,25 @@ def mean_modal_wtpct(bundle_path, n_phases=None):
     return mass[:, :n_phases].mean(0) if n_phases else mass.mean(0)
 
 
+def presence_selection_score(acc, names, phase_weights=None, min_present=100):
+    """Checkpoint-selection score for `select_metric: f1`, lower is better:
+    `1000 * (1 - weighted mean of per-phase presence F1)` over phases with at least
+    `min_present` ground-truth-present validation rows. `phase_weights` ({phase: w},
+    default 1 each) lets an important phase (e.g. akimotoite) count more. A macro mean,
+    not a pooled F1, so a rare phase's F1 counts as much as a dominant phase's."""
+    tp, fp, fn = (v.numpy() for v in acc)
+    phase_weights = phase_weights or {}
+    num = den = 0.0
+    for j, n in enumerate(names):
+        if tp[j] + fn[j] < min_present:
+            continue
+        f1 = 2 * float(tp[j]) / max(float(2 * tp[j] + fp[j] + fn[j]), 1)
+        w = float(phase_weights.get(n, 1.0))
+        num += w * f1
+        den += w
+    return 1000.0 * (1.0 - num / max(den, 1e-12))
+
+
 def _print_presence_precision_recall(acc, model):
     tp, fp, fn = (v.numpy() for v in acc)
     names = list(model.label_indices.keys())
@@ -772,8 +807,13 @@ def _print_presence_precision_recall(acc, model):
 def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, criterion_chem, criterion_mole,
                            criterion_bulk, compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha,
                            device, max_N=np.inf, T=None, amp_dtype=torch.float32, use_amp=False,
-                           verbose=True, affinity_params=None, act_params=None, hinge_params=None):
-    """`verbose=False` skips the per-term prints and the affinity/boundary diagnostics
+                           verbose=True, affinity_params=None, act_params=None, hinge_params=None,
+                           collect_presence=False):
+    """`collect_presence=True` also returns the per-phase presence counts (see
+    `_accumulate_presence_counts`) as `(loss, counts)`, verbose or not -- used by
+    `select_metric: f1` checkpoint selection.
+
+    `verbose=False` skips the per-term prints and the affinity/boundary diagnostics
     (and the work of collecting them) -- used for in-epoch fit checks and the train
     reference, where only the scalar loss is needed."""
     model.eval()
@@ -810,7 +850,7 @@ def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, cri
                 )
             if verbose and mask_batch is not None:
                 aff_diag = _accumulate_affinity_diagnostics(aff_diag, model, out.mole, m_batch, mask_batch)
-            elif verbose and out.g_phi is not None:
+            elif (verbose or collect_presence) and out.g_phi is not None:
                 presence = _accumulate_presence_counts(presence, out.g_phi, b_batch)
 
             batch_size_curr = x_batch.size(0)
@@ -849,7 +889,7 @@ def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, cri
 
     avg_test_loss = running_test_loss / N
     if not verbose:
-        return avg_test_loss
+        return (avg_test_loss, presence) if collect_presence else avg_test_loss
     sat_str = 'n/a (no saturation head)' if (out is None or out.logits is None) else f'{running_sat_loss/N:.3e}'
     print(f"[TEST] Running Saturation Loss: {sat_str}\tRunning Chem Loss: {running_chem_loss/N:.3e}")
     print(f"[TEST] Running Molar Loss: {running_mole_loss/N:.3e}\tRunning Bulk Loss: {running_bulk_loss/N:.3e}")
@@ -874,7 +914,7 @@ def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, cri
         print("\n[boundary residual] skipped: ml_indexer.T0 not available "
               "(re-export the bundle or run scripts/compute_T0.py)")
 
-    return avg_test_loss
+    return (avg_test_loss, presence) if collect_presence else avg_test_loss
 
 
 
@@ -1099,8 +1139,21 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
                       val_checks_per_epoch = 1, fit_train_mode = 'train', fit_ref_rows = None,
                       overfit_ratio = 1.02, underfit_ratio = 1.0,
                       config_yaml = None, training_yaml = None, processing_yaml = None, stats = None, log_path = None, amsgrad=True, eps = 1E-4,
-                      train_params = None, carry_state = None, history = None):
-    """`val_checks_per_epoch`: how many fit checks per epoch, evenly spaced, the last at the
+                      train_params = None, carry_state = None, history = None,
+                      select_metric = 'loss', select_phase_weights = None, ema_decay = 0.0):
+    """`ema_decay` (0 = off): keep an exponential moving average of the weights, updated
+    every optimizer step, and validate/checkpoint the AVERAGED weights at each fit check
+    (training itself continues on the raw weights). Presence calls (`g_phi > 0`) on rare
+    phases flip between neighbouring checkpoints, so per-check validation F1 jitters by
+    ~0.5% macro-F1; averaging removes most of that jitter.
+
+    `select_metric`: 'loss' (default) checkpoints/early-stops on the total validation
+    loss; 'f1' instead on `presence_selection_score` (weighted macro presence F1 on the
+    validation set, `select_phase_weights` {phase: w}) -- useful when a loss term such as
+    the absent hinge shifts the precision/recall balance, so total loss stops tracking
+    what the model is judged on. Loss is still printed and recorded either way.
+
+    `val_checks_per_epoch`: how many fit checks per epoch, evenly spaced, the last at the
     end of the epoch. Each check evaluates the validation set, saves a new best checkpoint,
     and steps adaptive dropout on Test/Train against the dead band [underfit_ratio,
     overfit_ratio]. `fit_train_mode` picks the Train side (see _check_fit_train_mode); in
@@ -1208,20 +1261,47 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
 
     # --- Baseline: evaluate the incoming (pre-training) model first, so a training run that
     # never beats its own starting point cannot overwrite a superior saved checkpoint. ---
+    _select_f1 = str(select_metric).lower() == 'f1'
+    if str(select_metric).lower() not in ('loss', 'f1'):
+        raise ValueError(f"select_metric must be 'loss' or 'f1', got {select_metric!r}")
+    _phase_names = list(model.label_indices.keys())
+
+    def _score(presence):
+        if presence is None:
+            raise ValueError("select_metric: f1 needs a model exposing g_phi (ContinuousModel).")
+        return presence_selection_score(presence, _phase_names, select_phase_weights)
+
     print("Evaluating baseline (pre-training) model on validation set...")
     baseline_test_loss = _evaluate_upper_model(
         model, test_loader, feature_offset, criterion_sat, criterion_chem, criterion_mole, criterion_bulk,
         compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha, bulk_alpha, device, max_N,
         T=_epoch_T(0), amp_dtype=amp_dtype, use_amp=use_amp, affinity_params=affinity_params,
         act_params=act_params, hinge_params=hinge_params,
+        collect_presence=_select_f1,
     )
-    print(f"Baseline Test Loss: {baseline_test_loss:.5f}")
+    if _select_f1:
+        baseline_test_loss, _pres = baseline_test_loss
+        print(f"Baseline Test Loss: {baseline_test_loss:.5f}")
+        baseline_test_loss = _score(_pres)
+        print(f"Baseline selection score (1000*(1-macro F1)): {baseline_test_loss:.5f}")
+    else:
+        print(f"Baseline Test Loss: {baseline_test_loss:.5f}")
 
     best_test_loss = baseline_test_loss
     best_epoch = 0  # 0 = the pre-training baseline model
     torch.save(model.state_dict(), str(TEMP_MODELS_DIR / 'temp_upper_train.pt'))
     if history is not None:  # builder.training.history: training-curve CSV
         history.add_val(optimizer.param_groups[0]['lr'], dropout_rate, noise, baseline_test_loss)
+
+    # --- Weight EMA (see `ema_decay` in the docstring) ---
+    ema_state = None
+    if float(ema_decay) > 0:
+        ema_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+        _live = model.state_dict()  # tensors share storage with the live parameters/buffers
+        _keys = [k for k, v in _live.items() if torch.is_floating_point(v)]
+        _ema_float = [ema_state[k] for k in _keys]
+        _live_float = [_live[k] for k in _keys]
+        print(f"[ema] weight EMA on: decay {ema_decay}, {len(_keys)} float tensors")
 
     train_losses, test_losses = [], []
     early_stopping_counter = 0
@@ -1244,11 +1324,31 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
         )
 
     def _fit_check(label, T, verbose, running_train_loss):
+        if ema_state is None:
+            return _fit_check_inner(label, T, verbose, running_train_loss)
+        raw = {k: v.detach().clone() for k, v in model.state_dict().items()}
+        model.load_state_dict(ema_state)
+        try:
+            print(f"[ema] validating EMA weights (decay {ema_decay})")
+            return _fit_check_inner(label, T, verbose, running_train_loss)
+        finally:
+            model.load_state_dict(raw)
+            del raw
+
+    def _fit_check_inner(label, T, verbose, running_train_loss):
         """Validate, checkpoint, and step adaptive dropout. `running_train_loss` is the
         train-mode loss since the previous check, used when fit_train_mode == 'train'.
         Returns (test_loss, stop)."""
         nonlocal best_test_loss, best_epoch, early_stopping_counter, dropout_rate, noise
-        avg_test_loss = _eval(test_loader, T, verbose)
+        if _select_f1:
+            avg_test_loss, _pres = _evaluate_upper_model(
+                model, test_loader, feature_offset, criterion_sat, criterion_chem, criterion_mole,
+                criterion_bulk, compWeights, binWeights, sat_alpha, chem_alpha, mole_alpha,
+                bulk_alpha, device, max_N, T=T, amp_dtype=amp_dtype, use_amp=use_amp,
+                verbose=verbose, affinity_params=affinity_params, act_params=act_params,
+                hinge_params=hinge_params, collect_presence=True)
+        else:
+            avg_test_loss = _eval(test_loader, T, verbose)
         if fit_train_mode == 'eval':
             ref_loss, ref_desc = _eval(ref_loader, T, False), 'eval mode'
         else:
@@ -1258,10 +1358,14 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
             history.add_val(optimizer.param_groups[0]['lr'], dropout_rate, noise, avg_test_loss)
         print(f"Check {label}: Test {avg_test_loss:.5f} | Train ({ref_desc}) {ref_loss:.5f} | "
               f"Test/Train {avg_test_loss/max(ref_loss, 1e-30):.3f}")
+        _sel = avg_test_loss
+        if _select_f1:
+            _sel = _score(_pres)
+            print(f"Selection score (1000*(1-macro F1)): {_sel:.5f} (best {best_test_loss:.5f})")
 
-        if avg_test_loss < best_test_loss:
-            print(f"New best test loss: {avg_test_loss:.5f} (improvement of {(best_test_loss-avg_test_loss)/best_test_loss*100:.2f}%) Saving model.")
-            best_test_loss = avg_test_loss
+        if _sel < best_test_loss:
+            print(f"New best {'selection score' if _select_f1 else 'test loss'}: {_sel:.5f} (improvement of {(best_test_loss-_sel)/best_test_loss*100:.2f}%) Saving model.")
+            best_test_loss = _sel
             best_epoch = label
             _record_dropout_state(model, 'upper', dropout_rate, noise, train_params, carry_state)
             torch.save(model.state_dict(), str(TEMP_MODELS_DIR / 'temp_upper_train.pt'))
@@ -1363,6 +1467,9 @@ def train_Upper_MELTS(model, trainData, testData, scheduler, scheduler_kwargs = 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
+            if ema_state is not None:
+                with torch.no_grad():
+                    torch._foreach_lerp_(_ema_float, _live_float, 1.0 - float(ema_decay))
 
             if _bench_timing:
                 if device == 'cuda' and torch.cuda.is_available():
