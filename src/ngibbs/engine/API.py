@@ -3113,6 +3113,17 @@ class MELTSAPI:
 
     def parse_input(self, table, headers=None, **kwargs):
         return self._route(table, headers).parse_input(table, headers=headers, **kwargs)
+   
+    def tune_batch_size(self, composition, workloads=('nn',), **kwargs):
+            """Tune GPU batch sizes for the Cr or NoCr sub-API.
+
+            ``composition`` ({oxide header: value}, as you would pass to
+            ForwardMB) is required and picks the variant the same way ForwardMB
+            routes: include 'Cr2O3' to tune the Cr model, omit it for NoCr. Call
+            once per variant you use. The MELTS EOS is not batch-tuned.
+            """
+            sub = self._route(headers=list(composition))
+            return sub.tune_batch_size(workloads=workloads, composition=composition, **kwargs)
     
     def divide_ptt_tables(self, ptt_out, tableIDX):
         return self.cr.divide_ptt_tables(ptt_out, tableIDX) # Function is agnostic of model.

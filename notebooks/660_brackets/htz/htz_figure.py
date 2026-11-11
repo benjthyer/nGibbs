@@ -1,4 +1,4 @@
-import numpy as np, matplotlib; matplotlib.use('Agg')
+import numpy as np, matplotlib  # matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from pathlib import Path
 HERE = Path(__file__).resolve().parent
