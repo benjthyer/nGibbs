@@ -433,7 +433,10 @@ def main() -> None:
     if not a.no_clean:
         w("# Remove any table (and, with --derivatives, sidecar/manifest) from a")
         w("# previous run of this base so the importer starts from empty rather")
-        w("# than appending onto stale rows.")
+        w("# than appending onto stale rows. Also removes the importer's resume")
+        w("# checkpoint -- left behind by an interrupted import, it would make the")
+        w("# fresh import skip every simulation up to it -- and any extra files")
+        w("# given (the phase-boundary CSV the import appends to).")
         w("clean_table() {")
         w('  local base="${1%.csv}"')
         if a.derivatives:
@@ -448,6 +451,7 @@ def main() -> None:
             w('        "${base}blurredbinaries".npy')
         else:
             w('  rm -f "$base".csv "$base".npy "$base".txt "${base}blurredbinaries".npy')
+        w('  rm -f "$base".csv.checkpoint.txt "${@:2}"')
         w("}")
         w("")
 
@@ -512,7 +516,7 @@ def main() -> None:
     w("stage0() {")
     w('  banner "stage 0 -- import original workspace + export phase boundaries"')
     if not a.no_clean:
-        w('  clean_table "$T0"')
+        w('  clean_table "$T0" "$PC1"')
     w(f'  run_import --root "$WORKSPACE" --dataname "$T0" \\')
     w(f'      --phase-change-dataname "$PC1"{verify}{extra}')
     w("}")
@@ -536,7 +540,7 @@ def main() -> None:
     w("stage1c() {")
     w('  banner "stage 1c -- re-import RS1 + export DEEP phase boundaries"')
     if not a.no_clean:
-        w('  clean_table "$T1"')
+        w('  clean_table "$T1" "$PC2"')
     w(f'  run_import --root "$RS1" --dataname "$T1" \\')
     w(f'      --deep-phase-change-dataname "$PC2" --deep-axis {q(a.deep_axis)}{verify}{extra}')
     w("}")

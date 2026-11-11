@@ -163,7 +163,8 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
                             free_outputs=None, indexer=None, config_path=None, bundle_name=None, chunk_size=None,
                             deep_filter_kwargs=None, insanity_filter_kwargs=None,
                             alias_table1='auto', isentropic_derivatives='auto',
-                            export_run_ids='auto', compute_T0_scale=True):
+                            export_run_ids='auto', compute_T0_scale=True,
+                            require_all_phases=True):
 
     """Builds features and labels for training. Converts MELTS tables to .npy files fit for ML work.
     Self: BigMetaTable Instance.
@@ -176,7 +177,15 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
         shuffle permutes it. Needed by builder.processing.affinity_labels, which labels
         each simulation path before the training shuffle. 'auto' exports it when the
         table carries row-aligned run_indices; True requires them.
+    require_all_phases : bool, default True
+        Raise when a phase of the ml_indexer has no rows in the export. Held-out bundles
+        exported with a training indexer may legitimately lack a phase; pass False to
+        warn instead.
     compute_T0_scale : bool, default True
+        Also exported with run_ids: source_rows.npy (int64), each output row's index in the
+        table as originally loaded (`self.source_rows`), so per-row side tables keyed by
+        source row (e.g. the HeFESTo affinity CSV) can be joined to the bundle after the
+        table filters and the post-export row filters.
         Compute and bundle T0.npy (ContinuousModel's boundary-annealing scale). Pipelines
         that do not train ContinuousModel can skip this distribution-aware pass.
     isentropic_derivatives : {'auto', True, False}, default 'auto'
@@ -475,6 +484,15 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
                 dtype=np.int32,
                 shape=(num_rows*len(resample_bounds),)
         )
+    export_source_rows = (export_run_ids and hasattr(self, 'source_rows')
+                          and len(self.source_rows) == num_rows)
+    if export_source_rows:
+        self.source_rows_out = np.lib.format.open_memmap( # Original table row per output row
+                self.filename + 'source_rows.npy',
+                mode='w+',
+                dtype=np.int64,
+                shape=(num_rows*len(resample_bounds),)
+        )
 
     self.labels = np.lib.format.open_memmap( # Components in moles, intensive only
             self.filename + 'labels.npy',
@@ -621,6 +639,8 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
                 # --- Simulation ids (row-aligned; same for every resample of a row)
                 if export_run_ids:
                     self.run_ids_out[out_start:out_end] = self.run_indices[start:end]
+                if export_source_rows:
+                    self.source_rows_out[out_start:out_end] = self.source_rows[start:end]
 
                 # --- Molar labels
                 #print(f"Building molar labels for rows {start}:{end} (sample {i})")
@@ -687,6 +707,8 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             self.labels.flush()
             if export_run_ids:
                 self.run_ids_out.flush()
+            if export_source_rows:
+                self.source_rows_out.flush()
 
             # Explicitly collect to close lingering references
             del self.molar #  Delete memmap reference!
@@ -740,6 +762,8 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
             del self.free_outputs
         if hasattr(self, 'run_ids_out'):
             del self.run_ids_out
+        if hasattr(self, 'source_rows_out'):
+            del self.source_rows_out
         gc.collect()
 
     indexer_dir = self.filename + 'ml_indexer'
@@ -819,6 +843,8 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     }
     if export_run_ids:
         file_mappings[self.filename + 'run_ids.npy'] = 'run_ids.npy'
+    if export_source_rows:
+        file_mappings[self.filename + 'source_rows.npy'] = 'source_rows.npy'
     if config_path:
         config_basename = Path(config_path).name
         file_mappings[str(config_path)] = config_basename
@@ -857,7 +883,10 @@ def resampling_to_datasets(self, resample_bounds = [[1,1]], clear_old_tables=Fal
     del _binary
     _empty = [p for p in indexer.ml_indexer.all_phases if not _seen[indexer.ml_indexer.mass_phasedict[p]]]
     if _empty:
-        raise ValueError(f"The exported dataset contains empty phase column(s): {_empty}")
+        if require_all_phases:
+            raise ValueError(f"The exported dataset contains empty phase column(s): {_empty}")
+        print(f"WARNING: The exported dataset contains empty phase column(s): {_empty} "
+              f"(allowed for this held-out bundle)")
 
     # Per-phase vanishing-abundance scale (5th percentile of nonzero training-label
     # molar abundance), for ContinuousModel's annealed complementarity-smoothing

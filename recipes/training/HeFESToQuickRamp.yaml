@@ -31,7 +31,7 @@
 #       --config recipes/training/HeFESTotuneyContinuousLight.yaml
 ####################################################################################
 
-tarname: HeFESTo_Mars_NPS   # loads <tarname>_Train.tar.gz / _Test.tar.gz
+tarname: HeFESTo_EarthAffinityReSamp_NPT   # loads <tarname>_Train.tar.gz / _Test.tar.gz
 warm_start: None # 120SedIgClosed_Cr_NPT_train1e
 
 encoderLayerUp: 3
@@ -98,7 +98,7 @@ description: "102 Continuous, closed+FXtal, parallel"
 
 ######### data ####################################################################
 batch_size: 32768
-ram_threshold_gb: 26
+ram_threshold_gb: 20
 device: cuda
 
 ######### shared loss defaults (every episode needs a complete loss_config) #######

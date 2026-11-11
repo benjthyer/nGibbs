@@ -19,6 +19,13 @@ same table order). A table lacking a given sidecar is NaN-filled for its rows,
 matching the importer's convention for unavailable derivatives. A column-count
 mismatch between any two tables' sidecars is an error.
 
+The HeFESTo affinity shadow (`<base>_affinity.csv`, written by
+import_hefesto_subdirs_affinity.py) is treated the same way: picked up for any
+input that has it, checked for row parity against its main table at load time,
+and concatenated in table order into `<output>_affinity.csv`. Being CSV-only, it
+is streamed line by line rather than loaded. A table lacking it gets blank
+(NaN-on-read) rows; a header mismatch between any two tables' shadows is an error.
+
 Usage:
     python scripts/merge_bigmetatables.py --tables <base_1> <base_2> [<base_3> ...] --output <merged_base>
 
@@ -182,6 +189,83 @@ def _check_sidecar_row_parity(table: BigMetaTable, label: str) -> None:
         print(f"[INFO] {label}: sidecar '{attr}' row count matches main table ({arr.shape[0]} rows).")
 
 
+AFFINITY_SUFFIX = "_affinity"
+
+
+def _affinity_path(name: str) -> str:
+    return f"{name}{AFFINITY_SUFFIX}.csv"
+
+
+def _scan_affinity_sidecar(name: str, n_main: int, label: str):
+    """
+    If `<name>_affinity.csv` exists, return (path, header_line), after checking
+    that its data-row count matches the main table's `n_main`. Returns None if
+    the table has no affinity shadow.
+
+    Rows are counted as lines: the shadow is written by pandas with numeric and
+    plain-identifier fields only, so no field holds an embedded newline.
+    """
+    path = _affinity_path(name)
+    if not os.path.exists(path):
+        return None
+    with open(path, "r", newline="") as f:
+        header_line = f.readline()
+        if not header_line.strip():
+            raise ValueError(f"{label}: affinity sidecar '{path}' is empty (no header).")
+        n_rows = sum(1 for line in f if line.strip())
+    if n_rows != n_main:
+        raise ValueError(
+            f"{label}: affinity sidecar '{path}' has {n_rows} rows, main table has "
+            f"{n_main}. The affinity shadow must be row-parallel."
+        )
+    print(f"[INFO] {label}: affinity sidecar row count matches main table ({n_rows} rows).")
+    return path, header_line.rstrip("\r\n")
+
+
+def _merge_affinity_sidecars(affinity, rows: list[int], labels: list[str], output_name: str):
+    """
+    Concatenate the per-table affinity shadows (from _scan_affinity_sidecar) in
+    table order into `<output_name>_affinity.csv`, row-parallel to the merged
+    table. A table with no shadow contributes blank rows (NaN when read back).
+    Returns the output path, or None if no input had a shadow.
+    """
+    present = [(a, label) for a, label in zip(affinity, labels) if a is not None]
+    if not present:
+        return None
+    header_line = present[0][0][1]
+    for (path, hdr), label in present[1:]:
+        if hdr != header_line:
+            raise ValueError(
+                f"Affinity sidecar header mismatch: {label} ('{path}') vs {present[0][1]}."
+            )
+    missing_labels = [label for a, label in zip(affinity, labels) if a is None]
+    if missing_labels:
+        print(f"Merging affinity sidecar ({', '.join(missing_labels)} lack it - NaN-filled)...")
+    else:
+        print("Merging affinity sidecar...")
+
+    blank_row = "," * (len(next(csv.reader([header_line]))) - 1) + "\n"
+    out_path = _affinity_path(output_name)
+    written = 0
+    with open(out_path, "w", newline="") as out:
+        out.write(header_line + "\n")
+        for a, n, label in zip(affinity, rows, labels):
+            if a is None:
+                out.writelines(blank_row for _ in range(n))
+                written += n
+                continue
+            with open(a[0], "r", newline="") as f:
+                f.readline()  # header, already checked
+                for line in tqdm(f, total=n, desc=f"Affinity {label}"):
+                    if not line.strip():
+                        continue
+                    out.write(line if line.endswith("\n") else line + "\n")
+                    written += 1
+    if written != sum(rows):
+        raise ValueError(f"Merged affinity sidecar has {written} rows, merged table has {sum(rows)}.")
+    return out_path
+
+
 def _warn_dropped(dropped, label: str, when: str) -> None:
     if dropped:
         print(
@@ -338,11 +422,25 @@ def main() -> None:
         _require_table_files(name, label)
 
     tables: list[BigMetaTable] = []
+    affinity = []
     for name, label in zip(table_names, labels):
         print(f"Loading {label}")
         table = BigMetaTable(name)
         _check_sidecar_row_parity(table, label)
+        try:
+            affinity.append(_scan_affinity_sidecar(name, table.table.shape[0], label))
+        except ValueError as exc:
+            print(f"ERROR: {exc}")
+            sys.exit(1)
         tables.append(table)
+    rows = [t.table.shape[0] for t in tables]
+
+    # Fail on an affinity header mismatch now, before the (long) main merge.
+    aff_headers = {a[1] for a in affinity if a is not None}
+    if len(aff_headers) > 1:
+        print("ERROR: affinity sidecar headers differ between tables: "
+              + ", ".join(f"{label}" for a, label in zip(affinity, labels) if a is not None))
+        sys.exit(1)
 
     try:
         output_header, dropped_by_label = _resolve_columns(tables, labels)
@@ -370,6 +468,12 @@ def main() -> None:
 
     sidecar_paths = [f"{output_name}{suffix}.npy" for _, suffix in sidecar.SIDECAR_SPECS
                       if os.path.exists(f"{output_name}{suffix}.npy")]
+    aff_out = _merge_affinity_sidecars(affinity, rows, labels, output_name)
+    if aff_out:
+        sidecar_paths.append(aff_out)
+    elif os.path.exists(_affinity_path(output_name)):
+        print(f"[WARNING] No input has an affinity sidecar, but {_affinity_path(output_name)} "
+              f"already exists from an earlier run - it is NOT row-aligned with this merge.")
     if sidecar_paths:
         print(f"Saved sidecars: {', '.join(sidecar_paths)}")
 

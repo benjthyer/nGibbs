@@ -1,0 +1,198 @@
+# Configuration for MELTS data processing and ML dataset generation
+# This file controls all aspects of the process_for_ML() workflow
+#data/MELTStables/HeFESTo/HeFESTo_Trainset101926EarthRealSimulatedConductiveAdiabat.
+# ============================================================================
+# DATASET SELECTION
+# ============================================================================
+dataset: #EXPECTED FILENAME: "nMELTS/data/MELTStables/{MELTSModel}/{'MELTS' if MELTSModel in ['102', '110', '120', 'p'] else ''}{MELTSModel}_<Train/Valid>set{Date}{Mode}"
+  MELTSModel: 'HeFESTo'          # MELTS model version: '102', '110', '120', 'p'. Affects which directory dataproducts are read from and written to
+  Date: '110626'               # Date identifier for dataset naming
+  Mode: 'EarthAffinity'     # Calculation mode: FxCrystCooling, BatchCooling, etc.
+  subset: false              # Whether to use subset versions of datasets
+  use_external: false        # Whether to use external storage directory (specified in settings.py)
+
+outname: HeFESTo_EarthAffinity_NPT            # Base name for output folder (without extension). Auto-Generated if blank
+
+
+# ============================================================================
+# NON-CHEMICAL FEATURE AND LABEL CONFIGURATION (format: attribute(phase): e.g. 'Pressure(System_main)')
+# ============================================================================
+featureNames: # Non-chemical features to include in the dataset
+  - 'P(GPa)(System_main)'
+  - 'T(K)(System_main)'
+  #- 'S(J/g/K)(System_main)'
+  #- 'S(System_main)' # Isentropic 
+  
+
+free_outputs: # Non-chemical labels to predict. These are used for training the saturation predictor and as auxiliary outputs for the encoder.
+  #- 'Temperature(System_main)' 
+  - 'S(J/g/K)(System_main)'
+  #- 'T(K)(System_main)'
+  #- 'VS(km/s)(System_main)'
+  #- 'VP(km/s)(System_main)'
+  #- 'dVdP*10^6(System_main)' # COMPRESSIBILITY
+  #- 'dVdT*10^6(System_main)' # THERMAL EXPANSION
+  #- 'H(System_main)'
+  #- 'viscosity(System_main)' # 
+  #- 'Cp(System_main)' #
+  #- 'rhos(System_main)' # Solid Density g/cc
+  #- 'rhol(System_main)' # Liquid density g/cc
+  #- 'logfO2-QFM(System_main)'
+
+# ============================================================================
+# PREPROCESSING OPTIONS
+# ============================================================================
+preprocessing:
+  preprocessed: false        # Skip preprocessing if data already preprocessed
+  filter_full_metadata: false # Filter by persence of notes in metadata, corresponding to phases that are not recognized.
+  filter_legal: false        # Deprecated 
+  separate_analcime: false    # Separate analcime phase during preprocessing 
+  separate_feldspar: false    # Separate k-feldspar and plagioclase during preprocessing (Generally do this, MELTS sometimes classifies K-rich feldspar as plagioclase)
+  excluded_oxides: []         # Explicitly exclude oxides from indexer basis (e.g., ['H2O', 'NiO'])
+  #(Generally do this, Analcime in MELTS has two distinct compositional fields)
+  require_derivatives: false # Require dn/dP, dn/dT sidecars to be attached and delete rows where either is NaN/inf
+
+min_phase_proportion: 0.002    # Minimum phase proportion (0-1) for a sample to be included in training set. Applied after upsampling.
+
+# ============================================================================
+# RARE PHASE UPSAMPLING
+# ============================================================================
+# Users can add or remove phases by editing the 'phases' section below.
+# For each phase, provide 'n_resamples' (number of resampling iterations)
+# and 'multiplier_bounds' ([lower, upper] bounds for perturbation).
+# Examples of additional phases: alloy-solid, apatite, cristobalite, etc.
+
+
+upsampling:
+  enabled: false            # Enable rare phase upsampling
+  phases:
+    nepheline:
+      n_resamples: 10
+      multiplier_bounds: [0.9, 1.1]
+    leucite:
+      n_resamples: 2
+      multiplier_bounds: [0.9, 1.1]
+    analcime:
+      n_resamples: 3
+      multiplier_bounds: [0.9, 1.1]
+    olivine:
+      n_resamples: 1
+      multiplier_bounds: [0.9, 1.1]
+    muscovite:
+      n_resamples: 3
+      multiplier_bounds: [0.9, 1.1]
+    biotite:
+      n_resamples: 1
+      multiplier_bounds: [0.9, 1.1]
+    k-feldspar:
+      n_resamples: 1
+      multiplier_bounds: [0.9, 1.1]
+    # For test set - tighter bounds (no/ weak resampling suggested, just augmentation)
+    # Use same phase names as above with tighter multiplier_bounds
+    test_set_phases:
+      nepheline:
+        n_resamples: 10
+        multiplier_bounds: [0.99, 1.01]
+      leucite:
+        n_resamples: 2
+        multiplier_bounds: [0.99, 1.01]
+      analcime:
+        n_resamples: 3
+        multiplier_bounds: [0.99, 1.01]
+      olivine:
+        n_resamples: 1
+        multiplier_bounds: [0.99, 1.01]
+      muscovite:
+        n_resamples: 3
+        multiplier_bounds: [0.99, 1.01]
+      biotite:
+        n_resamples: 1
+        multiplier_bounds: [0.99, 1.01]
+      k-feldspar:
+        n_resamples: 1
+        multiplier_bounds: [0.99, 1.01]
+
+# ============================================================================
+# RESAMPLING TO DATASETS - Feature/Label Generation
+# ============================================================================
+resampling:
+  # Resampling bounds for training set. These are used to generate random multipliers to phase masses.
+  # Intensive properties are constant, but with different phase proportions.
+  # Multiple entries = multiple resampled versions of the dataset
+  train_bounds:
+    - [1, 1]          # Identity
+    #- [0.95, 1]        # Shift phase proportions by ~5%
+    #- [0.9, 1]        # Shift phase proportions by ~10%
+  
+  # Resampling bounds for test/validation sets (typically just full dataset)
+  test_bounds:
+    - [1, 1]          # Identity (no resampling)
+
+# ============================================================================
+# PLOTTING
+# ============================================================================
+plot:
+  enabled: False        # If false or missing, plots are not generated #ONLY SUPPORTED FOR MELTS FOR NOW, NOT HeFESTo
+
+# ============================================================================
+# BALANCING FUNCTION
+# ============================================================================
+balancing:                    # Selectively "culling" dataset to balance liquid fractions
+  function: null  #balance_lowF            # Options: null = no balancing applied 
+                              # 'balance_lowF' = Weigh all liquid fractions ~equalLy. Removes subsolidus bias  
+                              # 'balance_superliquidus' = Favor subliquidus over superliquidus for Frac. Xtal. 
+                              # 'balance_geodynamics' = Keep only 10% liq fraction and less. Used for geodynamics
+                            
+# ============================================================================
+# DEEP FILTERING - Oxide and Component Composition Bounds
+# ============================================================================
+deep_filter:
+  enabled: false           # Enable "deep" filtering, which targets .npy data products. Applies compositional bounds to filter out samples with unphysical compositions.
+  # Oxide lower bounds: [phase, oxide, minimum_wt%]
+#  oxide_lower_bounds:
+#    - ['k-feldspar', 'K2O', 6]
+#    - ['clinopyroxene', 'CaO', 6]
+#    - ['melts-liquid', 'SiO2', 30]
+  
+  # Oxide upper bounds: [phase, oxide, maximum_wt%]
+#  oxide_upper_bounds:
+#    - ['k-feldspar', 'CaO', 4] #1
+    #- ['plagioclase', 'K2O', 12] #8
+#    - ['clinopyroxene', 'TiO2', 9] # 6
+#    - ['clinopyroxene', 'Al2O3', 12] #8
+#    - ['orthopyroxene', 'TiO2', 5] #2
+#    - ['orthopyroxene', 'Al2O3', 10] #8
+#    - ['orthopyroxene', 'CaO', 6] #4
+#    - ['melts-liquid', 'TiO2', 13]
+#    - ['melts-liquid', 'P2O5', 10]
+  
+  # Component upper bounds: [phase, component, maximum_wt%]
+  # Example: [['plagioclase', 'sanidine', 0.1]]
+#  component_upper_bounds: [['plagioclase', 'sanidine', 0.2]] # 0.1
+  # Whole-assemblage bulk oxide bounds: oxide: [min_wt%, max_wt%] 
+  # Example: 
+  # bulk_oxide_bounds: 
+  #   SiO2: [35, 80] 
+  #   MgO: [0, 50] 
+  bulk_oxide_bounds: {} 
+  
+  # Processing batch size for "deep" filtering, which targets .npy data products. 
+#  batch_size: 200000
+
+# ============================================================================
+# AFFINITY LABELS (prepareML_affinity.py, HeFESTo branch)
+# ============================================================================
+# Absent-phase labels g = -lambda * A from HeFESTo's affinities. See
+# src/builder/processing/hefesto_affinity_labels.py. Requires <table>_affinity.csv next
+# to each table (scripts/import_hefesto_subdirs_affinity.py), row-aligned with it.
+affinity:
+  # train_affinity_csv: /path/to/HeFESTo_Trainset..._affinity.csv   # default: <TrainName>_affinity.csv
+  # valid_affinity_csv: /path/to/HeFESTo_Validset..._affinity.csv   # default: <ValidName>_affinity.csv
+  A_window: 0.025          # kJ/mol-atom; c = lambda * A_window (~25 K along CMB isobars)
+  drop_threshold: 1.0      # kJ/mol-atom; rows with any absent phase at A < -drop_threshold are dropped
+  trust_upper_bound: true  # A > alarge (flag 2) cells labelled -lambda*A (far below the -clip*c floor)
+  min_crossings: 20        # fewer usable crossings -> pooled fallback lambda
+  jump_ratio: 2.0          # crossing is a discontinuous jump when n_p > jump_ratio * slope * step
+  polymorph_fraction: 0.5  # phase treated as a polymorph when this fraction of its crossings jump
+  polymorph_phases: []     # force e.g. [stishovite, alpha-pbo-type-sio2, gamma-iron, epsilon-iron]
+  present_tol: 0.0

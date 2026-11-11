@@ -57,6 +57,22 @@ CSTATS_NAME = 'cStats.npy'
 CSTATS_JSON = 'cStats.json'
 REPORT_JSON = 'affinity_labels.json'
 CSTATS_ROWS = ('c', 'median_log10_s', 'mean_log10_s_trimmed', 'std_log10_s_trimmed')
+PRESENT_MEDIAN_KEY = 'present_median'   # cStats.json: per-phase median n where present
+
+
+def present_medians(M, present_tol=0.0, max_rows=2_000_000):
+    """Per-phase median of n over present cells, from an evenly strided subsample of
+    up to max_rows rows of an (N, P) array (memmap fine). NaN for never-present phases.
+    Used for the training-side floor on c (AffinityTargets c_floor_frac)."""
+    N = M.shape[0]
+    idx = np.unique(np.linspace(0, N - 1, min(N, max_rows)).astype(np.int64)) if N else []
+    sub = np.asarray(M[idx], dtype=np.float64) if N else np.zeros((0, M.shape[1]))
+    out = []
+    for j in range(sub.shape[1]):
+        v = sub[:, j]
+        v = v[v > present_tol]
+        out.append(float(np.median(v)) if v.size else float('nan'))
+    return out
 
 DEFAULT_PARAMS = dict(
     path_feature='Temperature(System_main)',  # path coordinate x (isobaric cooling runs)
@@ -312,6 +328,7 @@ def add_affinity_labels(npy_dir, ml_indexer=None, compute_cstats_flag=False, par
         np.save(npy_dir / CSTATS_NAME, cs)
         (npy_dir / CSTATS_JSON).write_text(json.dumps(dict(
             rows=list(CSTATS_ROWS), phases=phases, crossings_per_phase=counts.tolist(),
+            **{PRESENT_MEDIAN_KEY: present_medians(M, prm['present_tol'])},
             path_feature=prm['path_feature'], dT_window=prm['dT_window'], trim=prm['trim'],
             note='c = dT_window * 10**median(log10 s); rows 2-3 from the trimmed set; '
                  'apply the sigma floor and k at use'), indent=1))
@@ -331,9 +348,16 @@ def add_affinity_labels(npy_dir, ml_indexer=None, compute_cstats_flag=False, par
 # Bundle wrapper: extract once, label, optionally shuffle, repack once
 # --------------------------------------------------------------------------------------
 def finalize_bundle(bundle_path, shuffle=False, compute_cstats_flag=False, params=None,
-                    seed=None, chunk_size=1_000_000, compresslevel=1):
+                    seed=None, chunk_size=1_000_000, compresslevel=1, labeller=None,
+                    before_label=None):
     """Add g/s (and cStats) to a packaged bundle; optionally shuffle all row-aligned arrays.
     Replaces the shuffle_bundle_rows() call for bundles produced by prepareML_affinity.
+
+    labeller: callable with add_affinity_labels' signature (default add_affinity_labels);
+    the HeFESTo pipeline passes hefesto_affinity_labels.make_labeller(...). Files it lists
+    in report['extra_files'] are packed too.
+    before_label: optional callable(extract_dir, ml_indexer) run on the unpacked,
+    unshuffled bundle before labelling (e.g. lambda calibration).
 
     compresslevel: gzip level for the repack. tarfile's default (9) dominates the run time
     (2M-row validation bundle: 144 s at level 9 vs 12 s at level 1, for a 7% larger file;
@@ -356,8 +380,11 @@ def finalize_bundle(bundle_path, shuffle=False, compute_cstats_flag=False, param
             raise RuntimeError(f'{bundle_path.name} was already labelled and shuffled; its rows are no '
                                f'longer in simulation order, so g/s cannot be recomputed from it.')
         ml_indexer = load_ml_indexer_from_state(str(extract_dir / 'ml_indexer'))
+        if before_label is not None:
+            before_label(extract_dir, ml_indexer)
         t = time.time()
-        report = add_affinity_labels(extract_dir, ml_indexer, compute_cstats_flag, params, chunk_size)
+        report = (labeller or add_affinity_labels)(extract_dir, ml_indexer, compute_cstats_flag,
+                                                   params, chunk_size)
         timings['affinity_labels'] = time.time() - t
 
         present = [nm for nm in ROW_ALIGNED_BUNDLE_ARRAYS if (extract_dir / nm).exists()]
@@ -385,6 +412,7 @@ def finalize_bundle(bundle_path, shuffle=False, compute_cstats_flag=False, param
 
         t = time.time()
         extra = [REPORT_JSON] + ([CSTATS_NAME, CSTATS_JSON] if compute_cstats_flag else [])
+        extra += [nm for nm in report.get('extra_files', []) if nm not in extra]
         handled = set(present) | set(extra)
         with tarfile.open(bundle_path, 'w:gz', compresslevel=compresslevel) as tar:
             for nm in present + extra:

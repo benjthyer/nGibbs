@@ -26,7 +26,7 @@ if repo_src not in sys.path:
 
 from ngibbs.utils.file_utils import load_ml_bundle
 
-KEEP_RANGE = [1.75, 3.5] #[0,2000] #
+KEEP_RANGE = [0,2000] #[0,2000] #keep all
 P_MAX_DEFAULT = None
 
 

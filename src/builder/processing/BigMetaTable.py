@@ -310,6 +310,11 @@ class BigMetaTable():
         self._metadata_codes = np.array(metadata_codes, dtype=np.int32)
         self._metadata_vocab = _vocab_array(metadata_vocab)
         del run_group_codes, value_codes, run_id_codes, version_codes, metadata_codes
+        # Row provenance: index of each row in the table as loaded. Carried through every
+        # row filter/append by the _*_metadata_rows helpers and exported as
+        # source_rows.npy, so per-row side tables (e.g. the HeFESTo affinity CSV) can be
+        # joined to the ML bundle.
+        self.source_rows = np.arange(len(self.run_indices), dtype=np.int64)
         gc.collect()
         print(f"[TIMER] Metadata Lists to arrays: completed in {time.time() - t_start:.2f} seconds")
         _log_mem("After metadata vocab-coding, before phase-abundance reporting")
@@ -423,6 +428,8 @@ class BigMetaTable():
         """Restrict every metadata field to the rows selected by `keep` (a
         boolean mask or integer index array)."""
         self.run_indices = self.run_indices[keep]
+        if hasattr(self, 'source_rows'):
+            self.source_rows = self.source_rows[keep]
         self.MELTSversion = self.MELTSversion[keep]
         self._metadata_codes = self._metadata_codes[keep]
         self._value_codes = self._value_codes[keep]
@@ -430,12 +437,16 @@ class BigMetaTable():
 
     def _clear_metadata_rows(self):
         del self.run_indices, self.MELTSversion, self._metadata_codes, self._value_codes, self._run_id_codes
+        if hasattr(self, 'source_rows'):
+            del self.source_rows
         gc.collect()
 
     def _append_metadata_rows(self, source_selector, n_repeats=1):
         """Append `n_repeats` copies of the rows selected by `source_selector`
         (a boolean mask or integer index array) to every metadata field."""
         self.run_indices = np.append(self.run_indices, np.repeat(self.run_indices[source_selector], n_repeats))
+        if hasattr(self, 'source_rows'):
+            self.source_rows = np.append(self.source_rows, np.repeat(self.source_rows[source_selector], n_repeats))
         self.MELTSversion = np.append(self.MELTSversion, np.repeat(self.MELTSversion[source_selector], n_repeats))
         # Repeated rows reference the same vocab entries as their source rows, so
         # only the (small) int32 code array needs to grow - the vocab itself is
