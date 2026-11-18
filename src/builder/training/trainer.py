@@ -850,7 +850,9 @@ def _evaluate_upper_model(model, test_loader, feature_offset, criterion_sat, cri
                 )
             if verbose and mask_batch is not None:
                 aff_diag = _accumulate_affinity_diagnostics(aff_diag, model, out.mole, m_batch, mask_batch)
-            elif (verbose or collect_presence) and out.g_phi is not None:
+            # Affinity models expose g_phi = y_hat/c, whose sign is their presence call,
+            # so F1 selection (collect_presence) works for them too, verbose or not.
+            if (collect_presence or (verbose and mask_batch is None)) and out.g_phi is not None:
                 presence = _accumulate_presence_counts(presence, out.g_phi, b_batch)
 
             batch_size_curr = x_batch.size(0)
