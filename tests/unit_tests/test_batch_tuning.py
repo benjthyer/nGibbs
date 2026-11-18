@@ -318,3 +318,84 @@ def test_get_T_uses_its_own_workload_key(monkeypatch):
     api.get_T(torch.rand(9000, 6))
     assert seen == {"keys": "nn/get_T/temperature/temperature_fcnn.pt/mb=None",
                     "default": API.EmulatorAPI._T_BATCH_SIZE}
+
+
+# ------------------------------------------------------ package entry points
+def test_top_level_wrappers_stay_light(fake_cuda):
+    import sys
+    import ngibbs
+    bt.profile("cuda", create=True)["workloads"]["nn/x"] = _entry()
+    assert ngibbs.batch_tuning_summary("cuda")["nn/x"]["plateau_rows"] == 2 ** 16
+    ngibbs.clear_batch_tuning("cuda", workloads=["nn/x"])
+    assert ngibbs.batch_tuning_summary("cuda") == {}
+    assert "ngibbs.engine.models" not in sys.modules  # no checkpoints loaded
+
+
+def test_top_level_tune_forwards_to_api():
+    import ngibbs
+    calls = {}
+
+    class FakeAPI:
+        def tune_batch_size(self, **kw):
+            calls.update(kw)
+            return {"k": {}}
+    assert ngibbs.tune_batch_size(api=FakeAPI(), workloads=("nn",), safety=0.7) == {"k": {}}
+    assert calls == {"workloads": ("nn",), "safety": 0.7}
+
+
+def test_cli_dispatch(monkeypatch, capsys):
+    from ngibbs.__main__ import main
+    assert main([]) == 2
+    assert "tune" in capsys.readouterr().out
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    assert main(["tune", "--show"]) == 1
+    with pytest.raises(SystemExit):
+        main(["tune", "--workloads", "bogus"])
+
+
+def test_cli_passes_options(monkeypatch):
+    from ngibbs.__main__ import main
+    seen = {}
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(bt, "tune", lambda **kw: seen.update(kw))
+    monkeypatch.setattr(bt, "show", lambda *a, **k: None)
+    assert main(["tune", "--model", "MELTS120Emulator", "--workloads", "nn",
+                 "--composition", '{"SiO2": 50.0}', "--verify"]) == 0
+    assert seen["model"] == "MELTS120Emulator"
+    assert seen["workloads"] == ["nn"] and seen["composition"] == {"SiO2": 50.0}
+    assert seen["verify_rows"] == 2 ** 18
+
+
+# ------------------------------------- mass-balance projector: singular rows
+def _degenerate_case():
+    # e0 and e1 coincide on the support {0, 2}: a row without component 1 has two
+    # identical element rows in A_w, so M is singular once tikhonov < ULP(M).
+    compToEl = torch.tensor([[1., 1., 0.], [1., 0., 0.], [0., 0., 1.], [0., 1., 1.]])
+    g = torch.Generator().manual_seed(0)
+    healthy = 300.0 * (0.5 + torch.rand(6, 4, generator=g))
+    bad = healthy[:2].clone()
+    bad[:, 1] = 0.0
+    bad[:, 3] = 0.0
+    n = torch.cat([healthy[:3], bad, healthy[3:]])
+    b_dir = torch.tensor([[0.4, 0.35, 0.25]]).expand(n.shape[0], -1).contiguous()
+    return n, compToEl, b_dir
+
+
+def test_projector_survives_singular_rows():
+    from ngibbs.engine.mass_balance import MassBalanceProjector
+    n, compToEl, b_dir = _degenerate_case()
+    # sanity: the constructed rows really are singular for a plain solve
+    w = torch.clamp(n, min=1e-9) * (n > 0)
+    A_w = compToEl.T.unsqueeze(0) * w.unsqueeze(1)
+    M = (A_w @ A_w.transpose(1, 2)).double() + 1e-12 * torch.eye(3, dtype=torch.float64)
+    with pytest.raises(RuntimeError):
+        torch.linalg.solve(M, torch.ones(n.shape[0], 3, 1, dtype=torch.float64))
+
+    proj = MassBalanceProjector()
+    out, resid = proj(n, compToEl, b_dir)
+    assert torch.isfinite(out).all() and torch.isfinite(resid).all()
+    assert (out >= 0).all()
+    # healthy rows are bit-identical to running them without the singular rows
+    healthy_idx = [0, 1, 2, 5, 6, 7]
+    ref, _ = proj(n[healthy_idx], compToEl, b_dir[healthy_idx])
+    assert torch.equal(out[healthy_idx], ref)

@@ -17,7 +17,7 @@ import numpy as np, sys
 from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-import matplotlib; matplotlib.use('Agg')
+import matplotlib  # matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 import bracket_lib as B

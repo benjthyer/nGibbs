@@ -524,3 +524,153 @@ def tune_batch_size(api, workloads: Sequence[str] = ('nn', 'eos_isomorphic'), *,
         path = save()
         say(f"[nGibbs] Saved batch tuning profile to {path}")
     return results
+
+
+# --------------------------------------------------------------------------- #
+# Package-level convenience: named models, reporting, verification, CLI
+# --------------------------------------------------------------------------- #
+DEFAULT_MODEL = 'HeFESToEmulator'
+
+
+def get_gpu_model(name: str = DEFAULT_MODEL):
+    """The ready-made GPU singleton ``name`` from ``ngibbs.engine.models``.
+
+    Importing that module loads every packaged checkpoint, so it is only
+    imported here, on demand.
+    """
+    if not torch.cuda.is_available():
+        raise RuntimeError("No CUDA device visible; batch tuning only applies to GPUs.")
+    from ..engine import models  # heavy: loads checkpoints
+    if name not in models.GPU_MODELS:
+        raise KeyError(f"Unknown model {name!r}; available: {sorted(models.GPU_MODELS)}")
+    return models.GPU_MODELS[name]
+
+
+def tune(api=None, model: str = DEFAULT_MODEL, *, verify_rows: Optional[int] = None,
+         **kwargs) -> Dict[str, dict]:
+    """Tune ``api`` (default: the packaged GPU model ``model``) and persist.
+
+    Accepts every :func:`tune_batch_size` option. MELTS models (MELTSAPI) need
+    ``composition=``; the Cr or NoCr sub-API is chosen from its headers, so
+    call once per variant. ``verify_rows`` (e.g. 2**18) additionally times
+    built-in defaults vs tuned sizes afterwards (HeFESTo models).
+    """
+    if api is None:
+        api = get_gpu_model(model)
+    results = api.tune_batch_size(**kwargs)
+    if verify_rows:
+        verify(api, verify_rows, verbose=kwargs.get('verbose', True))
+    return results
+
+
+def show(device='cuda', file=None) -> None:
+    """Print the saved profile for ``device`` and the batch each workload would get now."""
+    out = file or sys.stdout
+    print(f"profile file: {config_path()}", file=out)
+    print(f"fingerprint:  {fingerprint(device)}", file=out)
+    print(f"tuning {'enabled' if enabled() else 'DISABLED (NGIBBS_BATCH_TUNING=0)'}", file=out)
+    entries = summary(device)
+    if not entries:
+        print("  (no tuned workloads for this GPU)", file=out)
+        return
+    avail = available_bytes(device)
+    for key, e in sorted(entries.items()):
+        print(f"  {key:<60} plateau {e['plateau_rows']:>8d}  {e['bytes_per_row']:>9.0f} B/row  "
+              f"-> {rows_from_entry(e, avail):>8d} rows now  (stop: {e['stop_reason']}, {e['tuned_at']})",
+              file=out)
+
+
+def verify(api, n: int = 2 ** 18, verbose: bool = True) -> Dict[str, Dict[str, float]]:
+    """Wall time of forwardMB, get_T and the isomorphic EOS on ``n`` synthetic
+    rows with tuning disabled (built-in defaults) vs enabled. HeFESTo only."""
+    say = (lambda *a: print(*a, flush=True)) if verbose else (lambda *a: None)
+    if getattr(api, 'isothermal_emulator', None) is None or getattr(api, '_composition_space', None) != 'elements':
+        raise ValueError("verify() needs a HeFESTo API with an isothermal emulator.")
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        emulator = api.isothermal_emulator
+        names = list(emulator.ml_indexer.featureNames)
+        feats = _synthetic_features(api, emulator, n, None, seed=1)
+        p_idx = names.index('P(GPa)(System_main)')
+        t_idx = next(i for i, c in enumerate(names) if c.startswith('T('))
+        PT = torch.stack([feats[:, p_idx], feats[:, t_idx]], 1).double()
+        iso = EOS_TIER_PROPERTIES['isomorphic']
+
+        def nn():
+            return api._staged_forward(emulator.forwardMB, feats, None, Normalize=True,
+                                       outputs=['component_moles', 'phase_moles', 'chem_out'])
+        cm = nn()['component_moles'].to(api.device, torch.float64)
+        cases = [('forwardMB (isothermal)', nn),
+                 ('EOS isomorphic', lambda: api._compute_bulk_EOS_properties(cm, PT, property_names=iso))]
+        if getattr(api, 'temperature_model', None) is not None and api.isentropic_emulator is not None:
+            ifeats = _synthetic_features(api, api.isentropic_emulator, n, None, seed=2)
+            o = api._staged_forward(api.isentropic_emulator.forwardMB, ifeats, None, Normalize=True,
+                                    outputs=['phase_moles', 'chem_out'])
+            t_in = torch.cat([ifeats, o['phase_moles'].to(api.device), o['chem_out'].to(api.device)], 1)
+            cases.insert(1, ('get_T', lambda: api.get_T(t_in)))
+
+        previous = os.environ.get('NGIBBS_BATCH_TUNING')
+        results = {}
+        try:
+            for label, fn in cases:
+                times = {}
+                for mode, flag in (('default', '0'), ('tuned', '1')):
+                    os.environ['NGIBBS_BATCH_TUNING'] = flag
+                    torch.cuda.synchronize()
+                    t0 = time.perf_counter()
+                    fn()
+                    torch.cuda.synchronize()
+                    times[mode] = time.perf_counter() - t0
+                results[label] = times
+                say(f"  {label:<24} N={n}: default {times['default']:7.2f} s   tuned {times['tuned']:7.2f} s"
+                    f"   speed-up x{times['default'] / times['tuned']:.2f}")
+        finally:
+            if previous is None:
+                os.environ.pop('NGIBBS_BATCH_TUNING', None)
+            else:
+                os.environ['NGIBBS_BATCH_TUNING'] = previous
+    return results
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Command line: ``python -m ngibbs tune [...]`` (or ``python -m ngibbs.utils.batch_tuning``)."""
+    import argparse
+    ap = argparse.ArgumentParser(
+        prog='python -m ngibbs tune',
+        description="Tune and persist VRAM-aware batch sizes for an nGibbs GPU model.")
+    ap.add_argument('--model', default=DEFAULT_MODEL,
+                    help=f"packaged model name (default {DEFAULT_MODEL}; HeFESTo models need no composition)")
+    ap.add_argument('--workloads', nargs='+', default=['nn', 'eos_isomorphic'],
+                    choices=['nn'] + [f'eos_{t}' for t in EOS_TIER_PROPERTIES])
+    ap.add_argument('--composition', default=None,
+                    help="JSON {header: value} bulk for the synthetic inputs (required for MELTS models)")
+    ap.add_argument('--safety', type=float, default=DEFAULT_SAFETY)
+    ap.add_argument('--repeats', type=int, default=2)
+    ap.add_argument('--verify', action='store_true', help="time defaults vs tuned afterwards (HeFESTo)")
+    ap.add_argument('--verify-rows', type=int, default=2 ** 18)
+    ap.add_argument('--show', action='store_true', help="print the saved profile and exit")
+    ap.add_argument('--clear', action='store_true', help="delete this GPU's saved profile and exit")
+    a = ap.parse_args(argv)
+
+    if not torch.cuda.is_available():
+        print("No CUDA device visible; nothing to tune.", file=sys.stderr)
+        return 1
+    if a.show:
+        show()
+        return 0
+    if a.clear:
+        clear('cuda')
+        print(f"Cleared the profile for {fingerprint('cuda')} in {config_path()}")
+        return 0
+    composition = json.loads(a.composition) if a.composition else None
+    kwargs = dict(workloads=a.workloads, safety=a.safety, repeats=a.repeats)
+    if composition is not None:
+        kwargs['composition'] = composition
+    tune(model=a.model, verify_rows=a.verify_rows if a.verify else None, **kwargs)
+    print()
+    show()
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

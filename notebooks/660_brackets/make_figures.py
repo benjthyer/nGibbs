@@ -1,6 +1,6 @@
 import numpy as np, json, sys
 sys.path.insert(0,'/home/claude/bracket')
-import matplotlib; matplotlib.use('Agg')
+import matplotlib  # matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import bracket_lib as B
 
