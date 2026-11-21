@@ -17,7 +17,8 @@ dependencies = [
     "numpy>=1.20.0",
     "torch>=1.9.0",
     "pandas>=1.3.0",
-    "tqdm>=4.67.3"
+    "tqdm>=4.67.3",
+    "matplotlib>=3.5"   # emulator self-tests and benchmarks (api.test(), api.benchmark())
 ]
 
 [tool.setuptools]
@@ -35,6 +36,11 @@ ngibbs = [
     "**/*:Zone.Identifier",
     "**/plots/**",
     "**/deployment_test/**",
+    # Bytecode caches and local shell helpers (runall*.sh hard-code this
+    # machine's alphaMELTS paths) are not package data.
+    "**/__pycache__/**",
+    "**/*.pyc",
+    "**/*.sh",
 ]
 
 [tool.setuptools.packages.find]

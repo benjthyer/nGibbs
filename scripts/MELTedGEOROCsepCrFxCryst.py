@@ -53,10 +53,10 @@ import time
 time.sleep(sleepytime)"""
 
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-input_date = 'October21Closed'
+input_date = 'Nov29FxCrystClosed232'
 
 input_ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
-MELTSmodels = ['120']#, '120']#, '102'] # MELTS models to run. To add: MAGEmin
+MELTSmodels = ['120', '102'] # MELTS models to run. To add: MAGEmin
 FXes = ['FxCryst']#, 'FxCryst']
 Prange = None # Auto if None, for lithosphere/aesthenospere (p)
 

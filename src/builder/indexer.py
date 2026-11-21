@@ -79,6 +79,11 @@ def generate_column_headers(phases: List[str], mode: str = 'None', zeroOxides: L
     if 'leucite' in phases and 'analcime' not in phases:
         phases.append('analcime')
 
+    # Automatically add 'clinopyroxene2' (2nd coexisting cpx; the batch files allow two)
+    # right after 'clinopyroxene'. The importer routes the second cpx row per step here.
+    if 'clinopyroxene' in phases and 'clinopyroxene2' not in phases:
+        phases.insert(phases.index('clinopyroxene') + 1, 'clinopyroxene2')
+
     is_liquid = False # Flag to handle special case for melts-liquid
 
     # We are going to sort the phases by the order in COMPONENTS_IN_PHASES

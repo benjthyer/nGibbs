@@ -8,6 +8,7 @@ import os
 import shutil
 import gc
 import warnings
+import logging
 from pathlib import Path
 import json
 import tarfile
@@ -904,6 +905,8 @@ COMPONENT_ABBREVIATION_OVERRIDES: Dict[str, str] = {
 # report how many simulations were affected without re-walking the tree.
 _DROPPED_ROWS: Dict[str, int] = {}
 
+_log = logging.getLogger(__name__)
+
 
 def reset_dropped_rows() -> None:
     """Clear the dropped-row tally (call before a batch to get per-batch counts)."""
@@ -936,7 +939,9 @@ def _safe_read_ws_table(path: str, skiprows: int = 0) -> pd.DataFrame:
     line appears mid-file are worse still, since only part of the profile shifts.
 
     Rows whose first field is not numeric are therefore dropped, and the index
-    is reset so positional slicing stays aligned with fort.56.
+    is reset so positional slicing stays aligned with fort.56. This is routine,
+    so it is only logged at DEBUG level (``logging.getLogger('ngibbs.utils.file_utils')``);
+    :func:`get_dropped_rows` returns the per-file tally.
     """
     df = pd.read_csv(path, sep=r'\s+', engine='python', skiprows=skiprows)
     if df.shape[1] == 0:
@@ -945,12 +950,8 @@ def _safe_read_ws_table(path: str, skiprows: int = 0) -> pd.DataFrame:
     n_bad = int((~first_numeric).sum())
     if n_bad:
         _DROPPED_ROWS[str(path)] = n_bad
-        warnings.warn(
-            f'{path}: dropped {n_bad} non-numeric row(s) (HeFESTo diagnostic '
-            f'lines such as "WARNING: Phase Rule"). Left in place these shift '
-            f'the table against the fort.56 P-T grid.',
-            RuntimeWarning, stacklevel=2,
-        )
+        _log.debug('%s: dropped %d non-numeric row(s) (HeFESTo diagnostic lines '
+                   'such as "WARNING: Phase Rule")', path, n_bad)
         df = df.loc[first_numeric].reset_index(drop=True)
     return df
 

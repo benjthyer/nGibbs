@@ -1,855 +1,461 @@
 # nGibbs: Neural Network Emulators for Free Energy Minimizing Silicate Phase Equilibria
 
-A collection of fast neural network emulators for MELTS, HeFESTo, and related free-energy codes for silicate multi-component systems. nGibbs substitutes for computationally expensive thermodynamic simulations with GPU-accelerated neural network predictions that are orders of magnitude faster.
+nGibbs provides fast neural-network emulators of MELTS (rhyolite-MELTS 1.0.2 and 1.2.0) and HeFESTo for silicate multi-component systems. Given pressure, temperature (or entropy) and a bulk composition, an emulator predicts the equilibrium phase assemblage, phase abundances and phase compositions roughly 1000× faster than running the simulator. Bundled, vectorized equations of state then turn those assemblages into thermodynamic and seismic properties.
+
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20766922.svg)](https://doi.org/10.5281/zenodo.20766922)
 
 ---
 
-## Quick Install
+## Contents
 
-The core inference package is available on PyPI. This is the recommended starting point for most users — it includes pre-trained models and the full inference API, but not the data-generation or training machinery.
-
-```bash
-pip install nGibbs
-```
-
-```python
-from ngibbs import MELTS102EmulatorCPU, HeFESToEmulatorCPU
-```
-
-**PyPI package vs. this repository.** The `pip install` package (`src/ngibbs/`) is a lightweight, stable distribution containing trained model weights, the inference engine, and user-facing APIs. This GitHub repository is the full development environment: it adds `src/builder/` for data generation (running MELTS/alphaMELTS/HeFESTo at scale), data processing pipelines, and PyTorch training infrastructure. If you only want to *use* the emulators, `pip install nGibbs` is all you need. If you want to generate new training data or retrain models, you need the full repository and its extended dependencies.
-
----
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Project Status](#project-status)
-- [Architecture](#architecture)
-- [Dependencies](#dependencies)
-- [Workflow](#workflow)
-  - [1. Data Generation — MELTS](#1-data-generation--melts)
-  - [2. Data Generation — HeFESTo on the HPC Cluster](#2-data-generation--hefesto-on-the-hpc-cluster)
-  - [3. Data Processing](#3-data-processing)
-  - [4. Model Training](#4-model-training)
-  - [5. Emulator Usage](#5-emulator-usage)
-    - [HeFESTo Emulator API](#hefesto-emulator-api)
-    - [MELTS Emulator API](#melts-emulator-api)
-    - [Vectorized HeFESTo Bulk Property Calculator](#vectorized-hefesto-bulk-property-calculator)
-- [Module Structure](#module-structure)
-- [Configuration](#configuration)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Shipped models](#shipped-models)
+- [Input format](#input-format)
+- [Automatic model selection](#automatic-model-selection)
+- [HeFESTo emulators](#hefesto-emulators)
+- [MELTS emulators](#melts-emulators)
+- [Equation-of-state property calculators](#equation-of-state-property-calculators)
+- [Performance: GPU, batch sizes and the CPU fallback](#performance-gpu-batch-sizes-and-the-cpu-fallback)
+- [Training range warnings](#training-range-warnings)
+- [Validating the models](#validating-the-models)
+- [Tutorials](#tutorials)
+- [Package layout](#package-layout)
+- [Roadmap](#roadmap)
+- [Citing nGibbs](#citing-ngibbs)
 - [License](#license)
 
 ---
 
-## Overview
-
-**nGibbs** provides ~1000× faster predictions of phase equilibria and thermodynamic properties compared to running MELTS or HeFESTo directly. The emulators predict:
-
-- Phase assemblages at equilibrium
-- Phase compositions in a reduced component space
-- Phase masses and mole fractions
-- Molar abundances of phases
-
-From these quanitites, key thermodynamic properties can be directly computed:
-- temperature (estimated for isentropic models using a neural network)
-- entropy (directly calculated for isothermal models)
-- density
-- seismic velocities
-- elastic moduli
-- heat capacities
-- seismic attenuation quality factors
-
-**Key Features:**
-
-- Flexible training pipelines produce datasets for different models covering different use cases and composition spaces, optimizing accuracy where it matters.
-  - Dynamic indexers: `DatasetIndexer` class in `indexer.py`. Builds indexers from table values and column names.
-    - Fundamental object: `Elkeys` is controlled by the oxides present in `Bulk_comp` columns of MELTS/HeFESTo tables.
-    - Spawns `ml_indexer` class, which is embedded in each trained model.
-
-- Training datasets are well-documented: configuration files and statistics files are carried alongside each dataset.
-- Training data for MELTS is generated with alphaMELTS 2.0.3 running on GNU parallel in WSL. Native Python parallelism is also supported on macOS.
-- Training data for HeFESTo is generated on the Caltech HPC cluster using SLURM array jobs.
-- Large datasets can be manipulated; `.csv` files up to ~10 GB work on standard hardware.
-
----
-
-## Project Status
-
-### ✅ Completed
-
-- **Data Processing Pipeline** ([src/builder/processing/](src/builder/processing/))
-  - MELTS CSV parsing with memory-mapped arrays and assemblage metadata ([BigMetaTable.py](src/builder/processing/BigMetaTable.py))
-  - Data filtering and quality checks ([filters.py](src/builder/processing/filters.py))
-  - Upsampling of assemblages containing rare phases, or by perturbing modal abundances within an equilibrium assemblage
-  - Export to ML-ready tar.gz bundles ([MLexporter.py](src/builder/processing/MLexporter.py))
-  - Configuration-driven processing workflow ([prepareML.py](src/builder/processing/prepareML.py))
-
-- **Feature/Label Generation**
-  - Dynamic indexing from dataset headers ([src/builder/indexer.py](src/builder/indexer.py))
-    - `ml_indexer` built from the larger `DatasetIndexer`. Contains the information necessary to interface with neural network models.
-    - Transformation/projection matrices for oxide ↔ element ↔ component conversions
-  - Molar abundance, normalized so the total sum of system elements = 1 (excluding oxygen)
-  - Mass proportion of each phase, normalized so total system oxide mass = 100 (all iron as FeO)
-  - Binary (present/absent) phase assemblage labels
-
-- **Model Infrastructure**
-  - PyTorch Dataset and DataLoader integration ([src/builder/training/torchDataClass.py](src/builder/training/torchDataClass.py))
-  - Neural network architecture ([src/ngibbs/engine/NN.py](src/ngibbs/engine/NN.py))
-  - Emulator inference with mass-balance enforcement ([src/ngibbs/engine/emulator.py](src/ngibbs/engine/emulator.py))
-  - HeFESTo and MELTS high-level emulator APIs ([src/ngibbs/engine/API.py](src/ngibbs/engine/API.py))
-
-- **Model Training**
-  - Training loop implementation ([src/builder/training/trainer.py](src/builder/training/trainer.py))
-  - Hyperparameter optimization ([src/builder/training/tuners.py](src/builder/training/tuners.py))
-  - YAML-driven sequential train/tune episodes ([src/builder/training/main.py](src/builder/training/main.py))
-      - Tune with OneCycleLR episodes often used to get quality models: injects stochasity to escape local minima
-
-- **HeFESTo EOS Arithmetic Engine** ([src/ngibbs/engine/EOS_arithmetic/](src/ngibbs/engine/EOS_arithmetic/))
-  - Full Python translation of HeFESTo's physub thermodynamic routines
-  - Vectorized batch API: compute bulk properties for N assemblages simultaneously
-  - Returns density, Vp, Vs, Cp, Cv, α, K, G, entropy, and more from component mole arrays
-
-- **HeFESTo HPC Data Generation Workflow** ([src/builder/HeFESTo/](src/builder/HeFESTo/))
-  - Composition sampling from GEOROC/PetDB databases
-  - Automated SimulationN directory tree generation with per-simulation control files and P–T paths
-  - SLURM array job submission scripts with queue-size monitoring
-  - Batch import of fort.56/61/68/99 output files into training CSV tables
-
-- **MELTS and HeFESTo Inference APIs** with automatic model selection (see [Emulator Usage](#5-emulator-usage))
-
-- **Testing & Validation**
-  - Unit tests for processing pipeline
-  - Benchmark harnesses comparing EOS outputs against HeFESTo ground truth (fort.56)
-
-### 🟡 In Progress
-
-- **Trained Models**
-  - Geodynamically-relevant isentropic low-melt-fraction pMELTS emulator (w/ and w/o Cr)
-  - General (any melt fraction) emulators for MELTS 1.0, 1.2, and pMELTS
-  - phMELTS (Will require some handling of water in NAMs...)
-  - HeFESTo models for Earth and Mars
-
-- **fO2-Buffered MELTS Emulator**
-  - Infrastructure for open-oxygen (buffered fO2) emulators is already in place (the `OXYGEN='open'` flag in `DatasetIndexer` and the model-selection routing in the API)
-  - Training data generation for buffered runs is underway; buffered models will be available in an upcoming release
-
-- **Deployment Packaging and Notebooks**
-  - Tutorial notebooks for HeFESTo and MELTS emulators
-  - Integration tests for end-to-end workflows
-
-### 🔵 Planned
-
-- Vectorized MELTS bulk property calculator (equivalent to the existing HeFESTo version — see [below](#vectorized-hefesto-bulk-property-calculator))
-- Integration into PetThermoTools
-- Support for Apple's Neural Engine
-- User-side automated performance testing against representative datasets
-
----
-
-## Architecture
-
-```
-Raw MELTS (or HeFESTo) Simulations
-  (alphaMELTS .tbl files  /  HeFESTo fort.* files)
-
-    ↓ Compiled and reduced into
-
-Annotated CSV + TXT files
-  (data/MELTStables  /  data/HeFESToWorkspace)
-
-    ↓
-┌──────────────────────────────────────────┐
-│  Data Processing & Filtering             │
-│  (BigMetaTable, filters, MLexporter)     │
-└──────────────────────────────────────────┘
-    ↓
-ML-Ready Dataset Bundle (tar.gz : data/MLready)
-  ├─ features.npy          (P, T/S, fO2, element fractions)
-  ├─ molar_labels.npy      (phase mole fractions)
-  ├─ binary_labels.npy     (present/absent phases)
-  ├─ mass_labels.npy       (wt% phase masses)
-  ├─ labels.npy            (intensive component fractions)
-  ├─ ml_indexer/           (dataset/model indexer)
-  │   ├─ indexer_metadata.json
-  │   ├─ indexer_structure.json
-  │   └─ indexer_arrays.npz  (projection matrices, normalizer state)
-  ├─ free_outputs.npy      (OPTIONAL: non-chemical outputs)
-  ├─ stats.txt             (composition range, phase abundances)
-  └─ processing.yaml       (config used for generation)
-    ↓
-┌──────────────────────────────────────────┐
-│  PyTorch Training Pipeline               │
-│  (loadTrainData, torchDataClass, tuners) │
-└──────────────────────────────────────────┘
-    ↓
-Trained Neural Network Model (.tar)
-  └─ model_name.pt  (zip package)
-      ├─ state_dict.pt
-      ├─ config.json
-      ├─ metadata.json
-      ├─ ml_indexer/
-      ├─ model.yaml  (optional)
-      ├─ training.yaml  (optional)
-      ├─ stats.txt  (optional)
-      └─ log.txt  (optional)
-    ↓
-┌──────────────────────────────────────────┐
-│  Emulator Inference (pip package)        │
-│  (API.py, emulator.py, NN.py)            │
-└──────────────────────────────────────────┘
-    ↓
-Phase Predictions + Thermodynamic Properties (fast!)
-```
-
----
-
-## Dependencies
-
-### Python Version
-- Python 3.9+ (built and tested on 3.10.16)
-
-### Core (pip package)
-```
-numpy>=1.20
-torch>=1.9
-pandas>=1.3
-tqdm>=4.67
-```
-
-### Development / Training (full repo)
-```
-scikit-learn>=0.24
-matplotlib>=3.3
-PyYAML>=5.4
-optuna>=3.0
-```
-
-### Installation
+## Installation
 
 ```bash
-# End-user: install the inference package from PyPI
 pip install nGibbs
+```
 
-# Developer: install from source in editable mode
-git clone https://github.com/...
+This installs the inference package (`ngibbs`): trained model weights, the emulator APIs, the EOS property calculators and the self-tests. Requirements: Python ≥ 3.9 (developed and tested on 3.11), PyTorch, NumPy, pandas, tqdm and matplotlib. A CUDA GPU is optional; every model also runs on CPU.
+
+> **PyTorch:** install the build that matches your hardware (CPU-only or a CUDA version) by following [pytorch.org](https://pytorch.org/get-started/locally/) *before* `pip install nGibbs`. Otherwise pip installs its default build.
+
+To work from source, or to generate data and train models (see [DEVELOPMENT.md](DEVELOPMENT.md)):
+
+```bash
+git clone https://github.com/benjthyer/nGibbs.git
 cd nGibbs
+pip install -e .                    # inference package, editable
+pip install -r requirements.txt     # plus the data-generation / training dependencies
 ```
+
+**PyPI package vs. this repository.** The PyPI package contains only `src/ngibbs/`. The repository adds `src/builder/` (running alphaMELTS/HeFESTo at scale, data processing and PyTorch training), `scripts/`, `recipes/`, and `notebooks/`.
 
 ---
 
-## Workflow
-
-### 1. Data Generation — MELTS
-
-MELTS simulations are orchestrated through alphaMELTS by parallelized (GNU parallel) terminal calls in WSL. Bulk compositions are sampled from the GEOROC and PetDB databases.
-
-Raw MELTS data comes from MELTS/alphaMELTS simulations of natural bulk compositions. Each simulation produces text files within the alphaMELTS working directory. These are compiled/reduced into:
-- **CSV file**: numerical data (temperatures, pressures, phase masses, thermodynamic state variables, compositions, etc.)
-- **TXT file**: metadata (run IDs, MELTS version, simulation parameters)
-
-Training data generation scripts live in `scripts/MELTedGEOROC*.py`. The key control parameters are:
-
-```python
-MELTSmodels = ['102']  # MELTS version: '102', '110', '120', or 'p' for pMELTS
-calctype    = 'Cooling'  # 'Cooling' (isobaric) or 'Compression'
-FXes        = ['Batch']  # 'Batch' (equilibrium) or 'FxCryst' (fractional crystallization)
-ZeroOxides  = ['MnO', 'NiO']  # oxides set to zero in all runs
-```
-
-Separate datasets are generated for Cr-bearing and Cr-free compositions (see [Automatic Model Selection](#automatic-model-selection) below).
-
----
-
-### 2. Data Generation — HeFESTo on the HPC Cluster
-
-HeFESTo training data is generated on the Caltech HPC cluster using SLURM. The workflow has three stages: **Preparation → Execution → Import**.
-
-```
-GEOROC/PetDB Database
-   (natural rock compositions)
-         │
-         ▼ scripts/prepare_hefesto_tree_fulladiabat.py
-         │    - Sample N compositions (mafic/ultramafic filter)
-         │    - Speciate iron across a Fe³⁺/Fetotal grid (0–10%)
-         │    - Convert oxide wt% → element moles
-         │    - Compute isentropic P–T path for each composition
-         │      using get_S(T=Tp, Ca) → get_T(S, P)
-         │
-         ▼
-BatchNNNN/
-  ├── Simulation1/
-  │     ├── control   ← HeFESTo input: element amounts + run parameters
-  │     └── ad.in     ← P–T path file: (P, _, T) rows along isentrope
-  ├── Simulation2/
-  │     ├── control
-  │     └── ad.in
-  ├── ...
-  └── Simulation1000/
-        ├── control
-        └── ad.in
-         │
-         ▼ scripts/run_sbatches.py  (or run_many_sbatches.py for large jobs)
-         │    - Creates a SLURM array job for each BatchNNNN/
-         │    - Each task: cd SimulationN && $HOME/HeFESTo/HeFESToRepository/main
-         │    - run_many_sbatches.py monitors queue size (max ~9500 jobs)
-         │      and staggers submission as the queue drains
-         │
-         ▼  [SLURM runs HeFESTo on the cluster]
-         │
-BatchNNNN/
-  ├── Simulation1/
-  │     ├── control, ad.in
-  │     ├── fort.56   ← bulk system properties (P, T, S, rho, Vp, Vs, …)
-  │     ├── fort.61   ← phase densities
-  │     ├── fort.68   ← phase volumes
-  │     └── fort.99   ← phase-component molar abundances
-  │
-         ▼ scripts/import_hefesto_subdirs.py
-         │    - Recursively finds all workspace directories
-         │    - Cleans up control-only (failed) simulation dirs
-         │    - Calls import_HeFESTo_components() on each workspace:
-         │        * Parses control + fort.56/61/68/99 for each simulation
-         │        * Appends rows to a master CSV matching DatasetIndexer layout
-         │        * Optionally writes a separate CSV of phase-boundary rows
-         │
-         ▼
-HeFESTo_TrainsetXXX.csv
-  (training-ready table with P, T, S, bulk composition,
-   phase assemblage, component moles, bulk properties)
-```
-
-#### Preparation in Detail
-
-The preparation script `prepare_HeFESTo_tree_fulladiabat()` (and variants for Martian conditions) does the following for each of N simulations:
-
-1. Samples a rock composition from GEOROC, filtering for MgO > 20 wt% to target mantle-relevant rocks.
-2. Speciates iron: distributes total iron between Fe²⁺ (FeO) and Fe³⁺ (Fe₂O₃) across a grid from Fe³⁺/Fetotal = 0.0 to 0.10.
-3. Converts the oxide weight-percent composition to element molar abundances, normalized to a target of 24 total moles.
-4. Writes a HeFESTo `control` file into each `SimulationN/` directory, substituting the sampled element values and run parameters (pressure range, number of steps).
-5. Computes an isentropic P–T path using the mantle potential-temperature regression (`get_S`, `get_T`) and writes it to `ad.in` with small random noise to improve coverage.
-
-Each batch contains at most 1000 simulations. If more are requested, additional `Batch0002/`, `Batch0003/`, … directories are created automatically.
-
-#### Job Submission
-
-`run_sbatches.py` creates one SLURM array job per batch directory and submits them all:
-
-```bash
-python scripts/run_sbatches.py \
-    --base-dir $HOME/HeFESTo/Simulations \
-    --minutes 10
-```
-
-For very large runs (tens of thousands of simulations), `run_many_sbatches.py` monitors the queue and submits new jobs as capacity becomes available:
-
-```bash
-python scripts/run_many_sbatches.py \
-    --base-dir $HOME/HeFESTo/Simulations \
-    --max-queued 9500 \
-    --check-interval 60 \
-    --minutes 10
-```
-
-Each SLURM task `cd`s into its `SimulationN/` directory and runs `$HOME/HeFESTo/HeFESToRepository/main`. The full environment setup (Python virtual environment, library paths) is written into the SLURM script at submission time.
-
-A worked end-to-end example for the Caltech cluster:
-
-```bash
-# 1. Prepare the directory tree from the login node
-python $HOME/HeFESTo/nGibbs/scripts/prepare_hefesto_tree_fulladiabat.py \
-    --directory    $HOME/HeFESTo/DemoSimulations \
-    --georoc-dir   $HOME/HeFESTo/nGibbs/data/GEOROC_PETDB_UNFILTERED_WHOLEROCK_TRAIN.csv \
-    --control-path $HOME/HeFESTo/nGibbs/src/builder/alphamelts/batch/shallowHeFESTo \
-    --n 5000
-
-# 2. Submit array jobs (staggers if queue is large)
-python $HOME/HeFESTo/nGibbs/scripts/run_many_sbatches.py \
-    --base-dir $HOME/HeFESTo/DemoSimulations \
-    --max-queued 9500 --minutes 10
-
-# 3. After jobs complete, import results into a training CSV
-python $HOME/HeFESTo/nGibbs/scripts/import_hefesto_subdirs.py \
-    --root     $HOME/HeFESTo/DemoSimulations \
-    --dataname $HOME/HeFESTo/data/HeFESTo_TrainsetDemo.csv
-```
-
----
-
-### 3. Data Processing
-
-Converts raw MELTS/HeFESTo CSV tables into ML-ready bundles.
-
-**Pipeline Steps:**
-
-1. **Load & Index** ([BigMetaTable.py](src/builder/processing/BigMetaTable.py))
-   - Parse CSV into memory-mapped arrays for memory efficiency on large datasets
-   - Build dynamic indexers from column headers
-   - Associate metadata from TXT files
-
-2. **Filter & Clean** ([filters.py](src/builder/processing/filters.py))
-   - Remove rows with unsupported phases
-   - Apply oxide composition bounds
-   - Filter physically invalid assemblages
-
-3. **Balance Dataset** ([filters.py](src/builder/processing/filters.py))
-   - Upsample rare phase assemblages
-   - Apply liquid fraction balancing
-   - Ensure diverse phase stability fields are represented
-
-4. **Generate Features & Labels** ([MLexporter.py](src/builder/processing/MLexporter.py))
-   - Extract P, T, fO2 as input features
-   - Transform oxide compositions to element molar fractions
-   - Calculate phase molar abundances
-   - Generate binary phase presence/absence labels
-
-5. **Export Bundle** ([MLexporter.py](src/builder/processing/MLexporter.py))
-   - Save all `.npy` arrays to memory-mapped files
-   - Archive with transformation matrices and indexer
-   - Include configuration used
-
-**Usage:**
-
-```python
-from src.builder.processing.prepareML import process_for_ML
-
-process_for_ML(
-    MELTSModel='102',
-    Date='Jun10',
-    Mode='BatchCooling',
-    upsample=True,
-)
-```
-
----
-
-### 4. Model Training
-
-Trains neural networks on ML-ready bundles.
-
-Training is controlled by YAML files that execute a sequence of train/tune episodes. Configuration is merged in layered precedence:
-
-1. Per-episode overrides (e.g. `train1`, `tune1`, `train2`, …) OVERRIDES
-2. Global values in the selected training YAML… OVERRIDES
-3. Defaults YAML in code (no episodes in default, only globals)
-
-Per-episode overrides can update both optimization hyperparameters and model architecture. Architecture changes between episodes are supported via warm-start loading of compatible weights.
-
-**Pipeline Steps:**
-
-1. **Load Data** ([loadTrainData.py](src/builder/training/loadTrainData.py)) — extract bundles, split train/val/test
-2. **Create Datasets** ([torchDataClass.py](src/builder/training/torchDataClass.py)) — wrap `.npy` arrays in PyTorch Dataset classes
-3. **Train Model** ([tuners.py](src/builder/training/tuners.py)) — forward pass, backpropagation, mass-balance penalty terms
-4. **Evaluate** — 1/2/3-stage residual relaxation to enforce mass conservation; comparison to validation set
-
----
-
-### 5. Emulator Usage
-
----
-
-#### HeFESTo Emulator API
-
-The HeFESTo emulator models isentropic mantle adiabats from surface to the core–mantle boundary. Two singleton instances are available after `pip install nGibbs`:
-
-```python
-from ngibbs.engine.API import HeFESToEmulatorCPU   # always available
-from ngibbs.engine.API import HeFESToEmulatorGPU   # available if CUDA detected
-```
-
-The emulator manages a *pair* of neural networks — an isothermal model and an isentropic model — along with a temperature prediction FCNN. These work together to map a composition and thermodynamic state onto a full adiabatic profile.
-
-##### Input Format
-
-The emulator accepts a 2D numpy array of features and a matching list of header strings. Headers follow the `'quantity(phase)'` convention used throughout nGibbs tables:
-
-| Header | Description |
-|---|---|
-| `'P(GPa)(System_main)'` | Pressure in GPa |
-| `'T(K)(System_main)'` | Temperature in K (isothermal mode) |
-| `'S(J/g/K)(System_main)'` | Specific entropy in J/g/K (isentropic mode) |
-| `'SiO2'`, `'MgO'`, `'FeO'`, `'Fe2O3'`, `'CaO'`, `'Al2O3'`, `'Na2O'`, `'Cr2O3'` | Oxide weight percents |
-| `'Si'`, `'Mg'`, `'Fe'`, `'Ca'`, `'Al'`, `'Na'`, `'Cr'`, `'O'` | Alternative: element mole fractions |
-
-Oxide and element inputs are both supported. When both `'FeO'` and `'Fe2O3'` are supplied, iron speciation is used directly. If only `'FeO'` is given, all iron is treated as ferrous.
-
-##### `get_isentrope()` — Compute Mantle Adiabats
-
-The primary high-level method. Given a composition and a set of potential temperatures, it computes full isentropic P–T profiles and the corresponding aggregate physical properties.
+## Quick start
 
 ```python
 import numpy as np
-from ngibbs.engine.API import HeFESToEmulatorCPU
+from ngibbs import MELTS120EmulatorCPU   # or ...GPU when CUDA is available
+
+MORB = {'SiO2': 48.68, 'TiO2': 1.01, 'Al2O3': 17.64, 'FeO': 7.59, 'Fe2O3': 0.89,
+        'MgO': 9.10, 'CaO': 12.45, 'Na2O': 2.65, 'K2O': 0.03, 'P2O5': 0.08, 'H2O': 0.20}
+
+T_C     = np.linspace(1250, 1000, 100)                       # °C
+table   = np.column_stack([np.full_like(T_C, 2000), T_C,     # 2 kbar isobaric cooling path
+                           np.tile(list(MORB.values()), (len(T_C), 1))])
+headers = ['P(bar)', 'T(C)'] + list(MORB)            # same as 'Pressure(System_main)', ...
+
+out = MELTS120EmulatorCPU.ForwardMB(table, headers=headers, outputs=['ptt_out'])
+out['ptt_out']['Conditions']        # P, T, mass, ... per row
+out['ptt_out']['liquid1']           # liquid composition and mass per row, PetThermoTools-style
+```
+
+`import ngibbs` by itself loads no models. Importing the first model loads all of them, which takes a few seconds; after that, every import returns the same objects.
+
+---
+
+## Shipped models
+
+Import model objects directly from `ngibbs` (e.g. `from ngibbs import MELTS120EmulatorCPU`); `ngibbs.engine.models` exposes the same objects. Each model has a `...CPU` object and a `...GPU` object; the `...GPU` object is `None` when CUDA is unavailable. The same objects are also available as dictionaries, `ngibbs.CPU_MODELS` and `ngibbs.GPU_MODELS`.
+
+| Object | Simulator | Pathways (inputs) | Oxides |
+|---|---|---|---|
+| `HeFESToEmulatorCPU/GPU` | HeFESTo, Earth mantle | isothermal (P, T); isentropic (P, S) with a temperature model | SiO2, Al2O3, FeO, Fe2O3, MgO, CaO, Na2O, Cr2O3 |
+| `HeFESToMarsEmulatorCPU/GPU` | HeFESTo, Martian mantle | isothermal (P, T); isentropic (P, S) with a temperature model | same as Earth |
+| `MELTS102EmulatorCPU/GPU` | rhyolite-MELTS 1.0.2 | closed-system isothermal (P, T); fO2-buffered (P, T, ΔQFM); each in Cr and NoCr variants | SiO2, TiO2, Al2O3, FeO, Fe2O3, MgO, CaO, Na2O, K2O, P2O5, H2O, (Cr2O3) |
+| `MELTS120EmulatorCPU/GPU` | rhyolite-MELTS 1.2.0 | closed-system isothermal (P, T), Cr and NoCr variants | as 1.0.2, plus CO2 |
+
+A missing column for an oxide the model knows is treated as zero. The HeFESTo models cover about 0–141 GPa, and `api.training_pressure_bounds()` returns the exact range. MELTS training data were generated with alphaMELTS 2.3.1.
+
+Each model predicts:
+
+- phase presence (the stable assemblage)
+- the mass of each phase (wt% of the system)
+- phase compositions (oxide wt%), and component moles in the reduced component space
+- a temperature, from the temperature network (isentropic HeFESTo models only)
+
+Mass balance is enforced after the network runs (`ForwardMB`), so the phases always add back to the input bulk composition. `ForwardNN` takes the same arguments and returns the raw network output without that correction. It is faster but does not conserve mass.
+
+---
+
+## Input format
+
+Inputs are a 2-D array plus a list of headers, a pandas DataFrame (its column names are the headers), or a `{header: column}` dict. The condition headers select the pathway.
+
+Condition headers are written `<quantity>(<unit>)`, and the trailing `(System_main)` is optional. The unit must be the one the model was trained in. Nothing is converted, so a wrong or missing unit is an error rather than a silent rescale.
+
+| Quantity | Accepted names | HeFESTo unit | MELTS unit |
+|---|---|---|---|
+| pressure | `P`, `Pressure` | `GPa` | `bar` (or `bars`) |
+| temperature (isothermal) | `T`, `Temp`, `Temperature` | `K` | `C` (or `°C`, `degC`, `Celsius`) |
+| specific entropy (isentropic) | `S`, `Entropy` | `J/g/K` | — |
+| log fO2 relative to QFM (selects the buffered model) | `logfO2(QFM)`, `fO2(QFM)`, `logfO2-QFM`, `ΔQFM`, `dQFM` (FMQ also accepted) | — | QFM offset (MELTS 1.0.2 only) |
+| composition | `'SiO2'`, `'MgO'`, … | oxide wt% | oxide wt% |
+
+So `'T(K)'`, `'Temperature(K)'` and `'T(K)(System_main)'` all work for HeFESTo, and `'T(C)'`, `'Temperature(°C)'` and `'P(bar)'` work for MELTS. `'T(C)'` is an error for HeFESTo, and `'T(K)'` is an error for MELTS.
+
+The full canonical names still work, including MELTS's unitless `'Pressure(System_main)'` and `'Temperature(System_main)'`. Other headers without a unit, such as `'Temperature'` or `'logfO2'`, are rejected.
+
+- **Iron (HeFESTo):** if you give only `'FeO'`, all iron is treated as ferrous. If you give both `'FeO'` and `'Fe2O3'`, that speciation is used.
+- **Elements:** HeFESTo models also accept element amounts (`'Si'`, `'Mg'`, …) in place of oxides. Pass `composition_space='elements'` to force this; by default it is detected from the headers.
+- **Buffered MELTS runs:** oxygen is open, so the buffer fixes Fe³⁺/Fe²⁺. Give total iron as `'FeO'`.
+
+---
+
+## Automatic model selection
+
+You never pick a sub-model by hand. Each call is routed using the headers and data you pass:
+
+```
+Input features + headers
+        │
+        ├─ (MELTS) any nonzero Cr2O3 (or Cr) value?  ── yes → Cr model
+        │                                             └─ no  → NoCr model  (missing or all-zero column)
+        │
+        ├─ entropy header (e.g. 'S(J/g/K)')?          ── yes → isentropic model (+ temperature model)
+        │                                              └─ no  → isothermal model
+        │
+        └─ (MELTS) a log fO2 (QFM) header?          ── yes → fO2-buffered model
+                                                       └─ no  → closed-oxygen model (Fe2O3 conserved)
+```
+
+- **Cr routing applies to the whole table at once.** One row with Cr2O3 > 0 sends every row to the Cr model. To use the NoCr model for Cr-free rows, split the table yourself.
+- **Separate training data:** the Cr and NoCr models were trained on separate datasets. Each model therefore only sees compositions from its own training distribution.
+
+---
+
+## HeFESTo emulators
+
+### `get_isentrope()` — mantle adiabats
+
+```python
+import numpy as np
+from ngibbs import HeFESToEmulatorCPU
 
 # Bulk Silicate Earth (McDonough & Sun, 1995)
-BSE = {
-    'SiO2': 45.0, 'Al2O3': 4.45, 'FeO': 7.75, 'Fe2O3': 0.35,
-    'MgO': 37.8,  'CaO': 3.55,   'Na2O': 0.36, 'Cr2O3': 0.38
-}
+BSE = {'SiO2': 45.0, 'Al2O3': 4.45, 'FeO': 7.75, 'Fe2O3': 0.35,
+       'MgO': 37.8, 'CaO': 3.55, 'Na2O': 0.36, 'Cr2O3': 0.38}
 
-headers     = ['P(GPa)(System_main)', 'T(K)(System_main)'] + list(BSE.keys())
-comp_array  = np.array([0, 0] + list(BSE.values()), dtype=np.float32).reshape(1, -1)
-pressures   = np.linspace(0, 140, 300)   # GPa
-Tpotentials = np.array([1500, 1600, 1700, 1800])  # K
+headers    = ['P(GPa)', 'T(K)'] + list(BSE)
+comp_array = np.array([0, 0] + list(BSE.values()), dtype=np.float32).reshape(1, -1)
 
 T_grid, P_grid, props = HeFESToEmulatorCPU.get_isentrope(
     features               = comp_array,
     headers                = headers,
-    pressures              = pressures,
-    potential_temperatures = Tpotentials,
-    properties             = ['S', 'rho', 'Vp', 'Vs', 'Kh'],
+    pressures              = np.linspace(0, 140, 300),           # GPa
+    potential_temperatures = np.array([1500, 1600, 1700, 1800]), # K
+    properties             = ['S', 'rho', 'Vp_fast', 'Vs', 'Kh'],
 )
-
-# T_grid  : shape (4, 300) — temperature (K) along each isentrope
-# P_grid  : shape (4, 300) — pressure (GPa) along each isentrope
-# props   : dict with keys 'S', 'rho', 'Vp', 'Vs', 'Kh', each shape (4, 300)
+# T_grid, P_grid: torch tensors, shape (4, 300); props[key]: numpy arrays, shape (4, 300)
 ```
 
-Multiple distinct compositions can be evaluated simultaneously by providing one row per composition in `comp_array`. If `potential_temperatures` is omitted, the temperature column in `features` is used directly as the surface condition for each row:
+`get_isentrope` has two modes:
+
+- **Potential temperatures given** (shown above): `features` must be a single row.
+- **No potential temperatures:** `features` may have many rows, and each row's temperature column is its own potential temperature. Rows may have different compositions:
 
 ```python
-# Two compositions, each with their own starting temperature
-comp_array = np.zeros((2, len(headers)), dtype=np.float32)
-comp_array[0, 1] = 1800   # Tp for first composition
-comp_array[1, 1] = 1500   # Tp for second composition
-comp_array[0, 2:] = list(BSE.values())
-comp_array[1, 2:] = list(BSMars.values())
+# An approximate depleted-MORB-mantle composition for comparison
+DMM = {'SiO2': 44.7, 'Al2O3': 3.98, 'FeO': 7.9, 'Fe2O3': 0.3,
+       'MgO': 38.7, 'CaO': 3.17, 'Na2O': 0.13, 'Cr2O3': 0.57}
+
+comp_array = np.array([[0, 1800] + list(BSE.values()),
+                       [0, 1500] + list(DMM.values())], dtype=np.float32)
 
 T_grid, P_grid, props = HeFESToEmulatorCPU.get_isentrope(
-    features   = comp_array,
-    headers    = headers,
-    pressures  = pressures,
-    properties = ['rho', 'Vp', 'Vs'],
-)
-# T_grid, P_grid, and each property have shape (2, 300)
+    features=comp_array, headers=headers,
+    pressures=np.linspace(0, 140, 300), properties=['rho', 'Vs'],
+)   # shapes (2, 300)
 ```
 
-Available output properties: `'S'` (entropy, J/g/K), `'rho'` (density, g/cm³), `'Vp'` (P-wave velocity, km/s), `'Vs'` (S-wave velocity, km/s), `'Kh'` (Hill adiabatic bulk modulus, GPa), `'Gh'` (Hill shear modulus, GPa).
+`properties` accepts any key of the HeFESTo EOS calculator (see [below](#hefesto-get_property_hefesto_vectorized_from_assemblage)). Omit it to get only `(T_grid, P_grid)`. The Martian model, `HeFESToMarsEmulatorCPU`, has the same API.
 
-##### `ForwardMB()` — Low-Level Forward Pass
-
-For more direct control, `ForwardMB` runs the neural network(s) on an arbitrary input grid and returns component-level outputs:
+### `ForwardMB()` — direct forward pass
 
 ```python
-output = HeFESToEmulatorCPU.ForwardMB(
-    features,
+out = HeFESToEmulatorCPU.ForwardMB(
+    features,                       # (N, F) array with an entropy column → isentropic model
     headers = headers,
-    outputs = ['component_moles', 'temperature'],
+    outputs = ['component_moles', 'phase_tables', 'temperature'],
 )
-
-component_moles = output['component_moles']   # torch.Tensor (N, n_components)
-temperature     = output['temperature']        # torch.Tensor (N,)
+out['component_moles']              # (N, n_components) torch tensor
+comp_wtpct, mass_wtpct = out['phase_tables']   # phase compositions and phase masses (wt%)
+out['temperature']                  # (N,) temperature in K; isentropic models only
 ```
 
-This is used internally by `get_isentrope` and is also useful when you need the raw mineral assemblage — for example, to pass directly into the vectorized bulk property calculator (see below).
+Available `outputs`:
+
+| Output | Contents |
+|---|---|
+| `'component_moles'` | component moles in the reduced component space (the default) |
+| `'phase_moles'` | moles of each phase |
+| `'phase_tables'` | `(phase composition wt%, phase mass wt%)` |
+| `'phase_present'` | predicted phase presence |
+| `'temperature'` | temperature in K (isentropic models only) |
+| `'ptt_out'` | PetThermoTools-style tables (see [MELTS](#melts-emulators)) |
 
 ---
 
-#### MELTS Emulator API
+## MELTS emulators
 
-The MELTS emulator targets crustal and lithospheric processes: isobaric crystallization, polybaric fractionation, and related workflows. Emulators are available for MELTS 1.0.2 and are being trained for MELTS 1.2 and pMELTS.
-
-```python
-from ngibbs import MELTS102EmulatorCPU   # always available
-from ngibbs import MELTS102EmulatorGPU   # available if CUDA detected
-```
-
-##### Input Format
-
-Inputs are a 2D array of (pressure, temperature, oxide wt%) rows, with matching headers:
-
-| Header | Description |
-|---|---|
-| `'Pressure(System_main)'` | Pressure in bar, MELTS | 
-| `'Temperature(System_main)'` | Temperature in °C, MELTS | 
-| `'S(System_main)'` | Entropy in , MELTS | 
-| `'logfO2-QFM(System_main)'` | Oxygen fugacity in log offset from FMQ buffer. Only FMQ accepted. Optional: triggers open-system mode 
-| `'SiO2'`, `'TiO2'`, `'Al2O3'`, `'FeO'`, `'Fe2O3'`, `'MgO'`, `'CaO'`, `'Na2O'`, `'K2O'`, `'P2O5'`, `'H2O'` | Oxide weight percents (sum to 100) |
-| `'Cr2O3'` | Optional; triggers Cr-bearing model (see below) |
-
-
-##### `ForwardMB()` — Predict Phase Assemblages with "Mass Balance": Mass is forced to be conserved in post processing. 
-*For (the significantly faster) Neural Network alone without forced mass balance, use ForwardNN with the same arguments and structure.*
+### `ForwardMB()` — phase assemblages along P–T paths
 
 ```python
 import numpy as np
 from ngibbs import MELTS102EmulatorCPU
 
-MORB = {
-    'SiO2': 48.68, 'TiO2': 1.01,  'Al2O3': 17.64, 'Cr2O3': 0.03,
-    'FeO':   7.59, 'Fe2O3': 0.89, 'MgO':    9.10,  'CaO':  12.45,
-    'Na2O':  2.65, 'K2O':   0.03, 'P2O5':   0.08,  'H2O':   0.20,
-}
+MORB = {'SiO2': 48.68, 'TiO2': 1.01, 'Al2O3': 17.64, 'Cr2O3': 0.03,
+        'FeO': 7.59, 'Fe2O3': 0.89, 'MgO': 9.10, 'CaO': 12.45,
+        'Na2O': 2.65, 'K2O': 0.03, 'P2O5': 0.08, 'H2O': 0.20}
 
-# Evaluate at a grid of P–T conditions
-P_bar = np.repeat([2000, 5000, 10000], 250)        # 3 pressures × 250 temperatures
-T_C   = np.tile(np.linspace(900, 1400, 250), 3)    # °C
+P_bar = np.repeat([2000, 5000, 10000], 250)          # 3 isobars ...
+T_C   = np.tile(np.linspace(1400, 900, 250), 3)      # ... × 250 temperatures
+grid  = np.column_stack([P_bar, T_C, np.tile(list(MORB.values()), (len(P_bar), 1))])
+headers = ['P(bar)', 'T(C)'] + list(MORB)
 
-comp_cols   = np.tile(list(MORB.values()), (len(P_bar), 1))
-input_grid  = np.hstack([P_bar.reshape(-1, 1), T_C.reshape(-1, 1), comp_cols])
-headers     = ['Pressure(System_main)', 'Temperature(System_main)'] + list(MORB.keys())
+out = MELTS102EmulatorCPU.ForwardMB(grid, headers=headers, outputs=['ptt_out'])
+ptt = out['ptt_out']   # {'Conditions': DataFrame, 'liquid1': DataFrame, 'olivine1': ..., ...}
 
-output = MELTS102EmulatorCPU.ForwardMB(
-    input_grid,
-    headers = headers,
-    outputs = ['ptt_out'],   # PetThermoTools-compatible output format
-)
-ptt_result = output['ptt_out']
+# Split into one set of tables per isobar
+_, table_id = np.unique(grid[:, 0], return_inverse=True)
+per_isobar = MELTS102EmulatorCPU.divide_ptt_tables(ptt, table_id)
 ```
 
-The `'ptt_out'` output format matches the table structure returned by PetThermoTools, making it easy to substitute nGibbs for direct MELTS calls in existing PTT workflows. Separate isobaric tables can be recovered with:
+`'ptt_out'` uses the table layout of [PetThermoTools](https://github.com/gleesonm1/PetThermoTools), so nGibbs can stand in for alphaMELTS calls in existing PetThermoTools workflows.
+
+### Thermodynamic properties: `outputs=['ptt_props']`
+
+Ask for `'ptt_props'` instead of `'ptt_out'` to also run the built-in vectorized MELTS EOS on the predicted assemblage. It adds bulk columns to `ptt['Conditions']`: `H_J`, `S_J/K`, `V_cm^3`, `rho_kg/m^3`, `Cp_J/K`, `dVdP_cm^3/bar`, `log10(fO2)`. It also adds a `<phase>_prop` table per phase, in the layout of PetThermoTools' `calc_phase_props_MELTS_parallel`:
 
 ```python
-P_bar_unique, tableNo = np.unique(input_grid[:, 0], return_inverse=True)
-ptt_tables = MELTS102EmulatorCPU.divide_ptt_tables(ptt_result, tableNo)
-# ptt_tables : list of DataFrames, one per unique pressure
+out = MELTS102EmulatorCPU.ForwardMB(grid, headers=headers, outputs=['ptt_props'])
+out['ptt_out']['Conditions'][['T_C', 'P_bar', 'rho_kg/m^3', 'S_J/K']]
 ```
 
-##### Automatic Model Selection
+### fO2-buffered runs (MELTS 1.0.2)
 
-The MELTS emulator automatically selects the appropriate trained model for each call based on three criteria:
+Add a log fO2 column, given as an offset from QFM (e.g. `'logfO2(QFM)'`), and give total iron as `FeO`:
 
-**1. Chromium content.** If `Cr2O3 > 0` in the input, the Cr-bearing model is selected; otherwise the Cr-free (NoCr) model is used. The Cr and NoCr models are trained on separate datasets to ensure each model only encounters compositions within its training distribution.
-
-**2. Temperature vs. entropy input.** The header names determine which model type is used:
-- `'Temperature(System_main)'` (MELTS) or `'T(K)(System_main)'` (HeFESTo) → isothermal (T-input) model
-- `'S(System_main)'` (MELTS) or `'S(J/g/K)(System_main)'` (HeFESTo) → isentropic (S-input) model
-
-**3. Oxygen fugacity buffering (coming soon).** The infrastructure for open-oxygen (fO2-buffered) emulators is already in place. When released, specifying a log oxygen fugacity (in terms of an fO2 buffer with offsets) will route the call to a model trained on buffered runs, where oxygen fugacity is held constant rather than Fe₂O₃ being conserved.
-
-```
-Input features + headers
-        │
-        ├─ Cr2O3 > 0 ?─── YES ──→ Cr model family
-        │                 NO  ──→ NoCr model family
-        │
-        ├─ Header contains 'S(J/g/K)' ?─── YES ──→ Isentropic model
-        │                                   NO  ──→ Isothermal model
-        │
-        └─ fO2_buffer specified ?─── YES ──→ Buffered model (coming soon)
-                                      NO  ──→ Closed-oxygen model (Fe₂O₃ conserved)
+```python
+oxides  = {k: v for k, v in MORB.items() if k != 'Fe2O3'}
+grid_fo2 = np.column_stack([P_bar, T_C, np.full_like(T_C, 0.0),          # QFM+0
+                            np.tile(list(oxides.values()), (len(P_bar), 1))])
+headers_fo2 = ['P(bar)', 'T(C)', 'logfO2(QFM)'] + list(oxides)
+out = MELTS102EmulatorCPU.ForwardMB(grid_fo2, headers=headers_fo2, outputs=['ptt_out'])
 ```
 
 ---
 
-#### Vectorized HeFESTo Bulk Property Calculator
+## Equation-of-state property calculators
 
-This is a separate, deterministic component — not a neural network, but a Python translation of HeFESTo's own `physub` thermodynamic routines. Given a mineral assemblage expressed as component moles and a set of (P, T) conditions, it computes aggregate physical properties by applying Voigt–Reuss–Hill averaging over all phases.
+Both calculators are deterministic Python ports of the simulators' own thermodynamics; they are not neural networks. You can feed them assemblages predicted by an emulator, or ground-truth assemblages read from simulator output.
+
+### HeFESTo: `get_property_hefesto_vectorized_from_assemblage`
+
+This is a vectorized translation of HeFESTo's `physub` routines. Aggregate properties are Voigt–Reuss–Hill averages over the phases.
 
 ```python
-from ngibbs.engine.API import HeFESToEmulatorCPU
-import torch
-import numpy as np
+import numpy as np, torch
+from ngibbs import HeFESToEmulatorCPU as H
 
-# component_moles : (N, n_components) — moles of each mineral component
-# PT              : (N, 2)            — [P in GPa, T in K] for each row
+# Emulate an assemblage on a (P, S) grid, then evaluate the EOS at the emulated T
+P = np.linspace(1, 135, 300); S = np.full_like(P, 2.2)                # GPa, J/g/K
+feats = np.column_stack([P, S, np.tile(list(BSE.values()), (len(P), 1))])
+hdrs  = ['P(GPa)', 'S(J/g/K)'] + list(BSE)
 
-component_moles = torch.tensor(my_assemblage, dtype=torch.float64)
-PT              = torch.tensor(np.stack([P_gpa, T_kelvin], axis=1), dtype=torch.float64)
-
-props = HeFESToEmulatorCPU.get_property_hefesto_vectorized_from_assemblage(
-    component_moles,
-    PT,
-    property_names = ['S', 'rho', 'Vp', 'Vs', 'Kh', 'Gh'],
-)
-
-# props['rho']  : (N,) array — density in g/cm³
-# props['Vp']   : (N,) array — P-wave velocity in km/s
-# props['Vs']   : (N,) array — S-wave velocity in km/s
-# props['S']    : (N,) array — entropy in J/g/K
-# props['Kh']   : (N,) array — Hill adiabatic bulk modulus in GPa
-# props['Gh']   : (N,) array — Hill shear modulus in GPa
+out = H.ForwardMB(feats, headers=hdrs, outputs=['component_moles', 'temperature'])
+PT  = torch.tensor(np.column_stack([P, out['temperature'].cpu().numpy()]), dtype=torch.float64)
+props = H.get_property_hefesto_vectorized_from_assemblage(
+    out['component_moles'].double(), PT, property_names=['rho', 'Vp_fast', 'Vs', 'cptot'])
 ```
 
-The component moles can come from two sources: (1) imported directly from HeFESTo's `fort.99` output files via `load_fort99_componentMoles()`, or (2) predicted by the isentropic neural network emulator via `ForwardMB(..., outputs=['component_moles'])`. The second path lets you chain the emulator and the EOS calculator to go from a composition + entropy to a full suite of physical properties without running HeFESTo directly.
+You can also read component moles straight from HeFESTo's `fort.99` files (`ngibbs.utils.file_utils.load_fort99_componentMoles`).
 
-Full list of available properties:
-
-| Property | Key | Units |
+| Key | Quantity | Units |
 |---|---|---|
-| Density | `'rho'` | g/cm³ |
-| P-wave velocity | `'Vp'` | km/s |
-| S-wave velocity | `'Vs'` | km/s |
-| Bulk velocity | `'Vb'` | km/s |
-| Entropy | `'S'` | J/g/K |
-| Specific heat (isobaric) | `'Cp'` | J/g/K |
-| Specific heat (isochoric) | `'Cv'` | J/g/K |
-| Thermal expansivity | `'alpha'` | 1/K |
-| Grüneisen parameter | `'gamma'` | — |
-| Hill bulk modulus | `'Kh'` | GPa |
-| Hill shear modulus | `'Gh'` | GPa |
-| Voigt bulk modulus | `'Kv'` | GPa |
-| Reuss bulk modulus | `'Kr'` | GPa |
-| Enthalpy | `'H'` | kJ/g |
-| Debye temperature | `'theta_D'` | K |
+| `rho` | density | g/cm³ |
+| `Vp`, `Vs`, `Vb` | P, S and bulk-sound velocity (isomorphic, VRH) | km/s |
+| `Vp_fast`, `Vb_fast` | velocities including order–disorder relaxation; **compare these to HeFESTo's fort.56 VP/VB** | km/s |
+| `S` | entropy | J/g/K |
+| `Kh`, `Gh` | Hill adiabatic bulk and shear moduli | GPa |
+| `Kv`, `Kr`, `Gv`, `Gr` | Voigt / Reuss bounds | GPa |
+| `Kh_fast`, `Kv_fast`, `Kr_fast` | relaxed bulk moduli | GPa |
+| `cptot`, `cvtot` | isobaric / isochoric heat capacity, including phase-change terms | J/g/K |
+| `alptot` | thermal expansivity, including phase-change terms | 1/K |
+| `gamtot` | Grüneisen parameter | — |
+| `KStot`, `KTtot` | adiabatic / isothermal bulk modulus, including phase-change terms | GPa |
+| `cpiso`, `alpiso`, … (`*iso`) | the same, without the phase-change term | |
+| `ClapeyronSlope`, `deltaent`, `deltavol`, `dndt`, `dndp` | phase-change diagnostics | |
 
-For a full mantle column (~60 000 rows), typical CPU wall-clock times are 10's of seconds; GPU acceleration reduces this by another factor of 2-5. **An equivalent vectorized bulk property calculator for MELTS is planned but not yet implemented.**
+`Vp` without `_fast` is slightly faster to compute but up to ~0.26% high in the lower mantle relative to HeFESTo. The `*tot`/`*iso`/phase-change keys and the `_fast` keys each require an extra linear solve, so they are computed only when requested. The method's docstring lists per-species outputs as well.
 
-##### End-to-End Example: Emulator → EOS
+### MELTS: `get_property_melts_vectorized_from_assemblage`
+
+This is a vectorized port of the MELTS liquid and solid-solution thermodynamics. The simplest route is `ForwardMB(..., outputs=['ptt_props'])` (above). To call it directly, pass a per-phase composition dict, a per-phase moles dict and `PT` (P in GPa, T in K). It returns bulk (whole-assemblage) values of `V`, `Cp`, `K`, `alpha`, `G`, `H` and `S` by default; `rho` and `melts_coverage_fraction` (the share of the assemblage the EOS could evaluate) are also available. Use `property_names=('bulk', 'per_phase')` to get every bulk value plus a phase-by-phase breakdown.
+
+Some predicted liquids cannot be represented in MELTS's liquid basis. For example, a slightly peralkaline residual melt with K > Al gives a negative component. For those rows the EOS raises an error rather than extrapolating.
+
+---
+
+## Performance: GPU, batch sizes and the CPU fallback
+
+- **GPU objects** (`...GPU`) process inputs in chunks, and on GPU objects small inputs are automatically sent to the matching CPU model, because transfer overhead dominates for small inputs.
+- **Batch sizes** default to conservative values. Tune them once per GPU; the result is saved and reused in later sessions:
 
 ```python
-import numpy as np
-import torch
-from ngibbs.engine.API import HeFESToEmulatorCPU
+import ngibbs
+ngibbs.tune_batch_size()                       # tunes the packaged HeFESTo GPU model
+ngibbs.tune_batch_size(model='MELTS120Emulator')
+ngibbs.show_batch_tuning()                     # inspect the saved profile
+ngibbs.clear_batch_tuning()                    # forget it
+```
 
-BSE_oxides = {
-    'SiO2': 45.0, 'Al2O3': 4.45, 'FeO': 7.75, 'Fe2O3': 0.35,
-    'MgO': 37.8,  'CaO': 3.55,   'Na2O': 0.36, 'Cr2O3': 0.38
-}
+Set `NGIBBS_BATCH_TUNING=0` to ignore tuned values, or `NGIBBS_CONFIG_DIR` to change where they are stored. Any call also accepts an explicit `batch_size=`.
 
-# 1. Build a grid of (P, S) conditions for one composition
-P_values  = np.linspace(0, 135, 300)
-S_values  = np.linspace(1.9, 2.5, 200)
-P_grid    = np.repeat(P_values, len(S_values))
-S_grid    = np.tile(S_values, len(P_values))
-comp_cols = np.tile(list(BSE_oxides.values()), (len(P_grid), 1))
-features  = np.hstack([P_grid.reshape(-1, 1), S_grid.reshape(-1, 1), comp_cols])
+---
 
-headers = (
-    ['P(GPa)(System_main)', 'S(J/g/K)(System_main)']
-    + list(BSE_oxides.keys())
-)
+## Training range warnings
 
-# 2. Run the isentropic emulator → component moles + temperature
-output = HeFESToEmulatorCPU.ForwardMB(
-    features, headers=headers,
-    outputs=['component_moles', 'temperature'],
-)
-comp_moles = output['component_moles']             # (N, n_components)
-T_emul     = output['temperature'].cpu().numpy()   # (N,)
+Rows outside a model's training range (pressure, temperature/entropy, or composition) still get predictions, but these are extrapolations. A `TrainingRangeWarning` lists the offending rows. To make it an error:
 
-# 3. Compute EOS properties on the emulated assemblage
-PT = torch.tensor(
-    np.stack([P_grid, T_emul], axis=1), dtype=torch.float64
-)
-props = HeFESToEmulatorCPU.get_property_hefesto_vectorized_from_assemblage(
-    comp_moles.double(), PT,
-    property_names=['rho', 'Vp', 'Vs', 'S'],
-)
-# props['rho'] etc. are (N,) numpy arrays in native HeFESTo units
+```python
+import warnings
+from ngibbs.engine.emulator import TrainingRangeWarning
+warnings.simplefilter('error', TrainingRangeWarning)
+```
+
+If a model file is missing from your installation, the error message also reports whether a newer nGibbs is available on PyPI.
+
+---
+
+## Validating the models
+
+Every model object can check itself against ground truth that ships with the package. These checks need matplotlib, which is a core dependency.
+
+```python
+from ngibbs import HeFESToEmulatorCPU as api
+
+report = api.test()          # metrics tables + figures
+api.assert_quality()         # raises EmulatorQualityError below the shipped thresholds
+```
+
+`test()` scores the model on two datasets that ship with it:
+
+- **`validationDataset/`:** held-out samples from the model's preprocessed test set: per-phase precision and recall, abundance and composition errors, mass-balance residuals, training-coverage plots and phase-abundance parity plots.
+- **`standardWorkspace/`:** the raw simulator runs shipped for the model (standard rocks along a HeFESTo adiabat or a MELTS isobaric cooling path), scored exactly as a custom workspace is (below).
+
+By default everything is written to `./ngibbs_deployment_test/<model name>/` in the current directory; pass `output_dir=` to choose another location.
+
+### Testing your own simulations (custom workspaces)
+
+`evaluate_workspace(path)` scores the model against a directory of your own raw simulator output, without rerunning anything else. It only measures: it never fails on accuracy thresholds. It searches the directory recursively for runs:
+
+- **MELTS:** any folder with a `*.melts` input file and its alphaMELTS `*_tbl.txt` / `*.tbl` outputs. Each run is routed to the Cr or NoCr model (an all-zero Cr2O3 column selects NoCr).
+- **HeFESTo:** any folder with a `control` file and its `fort.56` and `fort.99` outputs.
+
+```python
+from ngibbs import MELTS120EmulatorCPU as api
+
+res = api.evaluate_workspace('path/to/alphamelts_runs')
+# -> ./ngibbs_deployment_test/MELTS120Emulator/customWorkspace/alphamelts_runs/
+
+api.evaluate_workspace()     # no path: the model's standard workspace -> .../standardWorkspace/
+```
+
+The standard and custom workspaces go through the same code and produce the same files:
+
+| Output | What it covers |
+|---|---|
+| `emulator_quality_<key>.csv`, `plots/abundance_parity_<key>.png` | Every assemblage of every run, each scored on its own |
+| `property_errors.csv`, `plots/property_parity_<key>.png` | Bulk properties for every run. Red is the built-in EOS on the emulated assemblage, blue is the same EOS on the simulator's assemblage, both against the simulator's own value, with R² for each |
+| `phase_errors.csv` | Phase-fraction errors for every run |
+| `plots/phase_section_<key>.png`, `plots/property_section_<key>.png` | The first three runs (`section_runs=`) along their own path |
+| `benchmark_manifest.json` | Which runs were used, rows dropped (unmodelled phase, out of pressure range, invalid), runs skipped or failed, and why |
+
+`<key>` is the pathway (`isothermal`, `isentropic`, and for buffered MELTS runs `openox`), prefixed with `nocr_`/`cr_` for MELTS.
+
+Section plots need a 1-D path. A run whose pressure never changes is drawn as an isobar against temperature. A run whose pressure never repeats is drawn as a depth transect against pressure. A run with repeated but varying pressures is listed in the manifest and left out of the sections. Its assemblages still count in every table and parity plot.
+
+The phase and property comparison is fault-tolerant. If it fails for a run, or the model has no EOS parameters, you get a warning naming the run and the reason, and every other output is still written.
+
+### Benchmarks and regression checks
+
+`benchmark()` writes the validation-dataset and standard-workspace results as one indexed set. `check_benchmark()` reruns them and compares with a stored baseline. It fails if any metric is worse than the baseline by more than the allowed tolerance, or if the underlying data changed:
+
+```python
+api.check_benchmark()                            # against the baseline shipped with the package
+api.benchmark('my_benchmark')                    # write your own
+api.check_benchmark(baseline_dir='my_benchmark') # raises BenchmarkRegressionError on a regression
+```
+
+Baselines ship inside the package next to each model's checkpoints, in `ngibbs/engine/TrainedModels/<family>/benchmark_baseline/<cpu|cuda>/`, so an installed copy can check itself. They are kept per device because CPU and GPU float32 arithmetic round differently. Custom workspaces are never part of a benchmark. In the repository, `python scripts/run_benchmarks.py [--device cuda]` checks every shipped model, and the PyPI release workflow runs it on CPU before publishing.
+
+---
+
+## Tutorials
+
+Jupyter notebooks in [`notebooks/`](notebooks/):
+
+- [`HeFESTo_tutorial.ipynb`](notebooks/HeFESTo_tutorial.ipynb): inputs, `ForwardMB`, and EOS properties for the HeFESTo emulators
+- [`HeFESTo_EarthAdiabatTutorial.ipynb`](notebooks/HeFESTo_EarthAdiabatTutorial.ipynb): mantle adiabats with `get_isentrope`
+- [`MELTS_tutorial.ipynb`](notebooks/MELTS_tutorial.ipynb): MELTS emulators, PetThermoTools-style output, and buffered runs
+
+---
+
+## Package layout
+
+```
+src/ngibbs/                         # the pip-installable package
+├── __init__.py                     # model objects (lazy), tune_batch_size, show/clear_batch_tuning
+├── engine/
+│   ├── models.py                   # model objects (also importable from ngibbs directly)
+│   ├── API.py                      # EmulatorAPI, HeFESToAPI, MELTSAPI (routing, ForwardMB, get_isentrope, ...)
+│   ├── emulator.py                 # NN_MELTS inference wrapper, TrainingRangeWarning
+│   ├── mass_balance.py             # mass-balance projection
+│   ├── melts_assemblage.py         # emulator output → MELTS EOS assemblage / ptt_props
+│   ├── NN.py, NN_continuous.py     # network architectures
+│   ├── EOS_arithmetic/hefesto_vec/ # vectorized HeFESTo EOS
+│   ├── EOS_arithmetic_MELTS/melts_vec/  # vectorized MELTS EOS
+│   └── TrainedModels/              # HeFESToEarth/, HeFESToMars/, 102/, 120/ checkpoints + test subsets
+├── deployment_tests/               # test(), evaluate_workspace(), benchmark(), standard workspaces, baselines
+├── config/                         # constants, ml_indexer, projection tables
+└── utils/                          # file parsing (fort.*), math helpers, batch_tuning
 ```
 
 ---
 
-## Module Structure
+## Roadmap
 
-```
-src/
-├── builder/                     # Dev-only: data generation, processing, training
-│   ├── HeFESTo/
-│   │   └── HeFESTo_functions.py # HPC tree preparation, simulation import, bulk
-│   │                            #   property extraction from fort.* files
-│   ├── alphamelts/              # MELTS/alphaMELTS interfacing scripts
-│   ├── alphameltsMAC/           # macOS variant
-│   ├── indexer.py               # Dynamic dataset indexing from table headers
-│   ├── plotting.py              # Diagnostic plots
-│   ├── processing/              # MELTS data processing pipeline
-│   │   ├── BigMetaTable.py      # Parse and manage large MELTS datasets
-│   │   ├── filters.py           # Data quality and balancing filters
-│   │   ├── MLexporter.py        # Feature/label generation and bundle export
-│   │   ├── export_only.py       # Direct CSV → ML bundle workflow
-│   │   └── prepareML.py         # Main processing orchestration
-│   └── training/                # YAML-driven training and tuning infrastructure
-│       ├── main.py              # CLI orchestration for sequential episodes
-│       ├── trainer.py           # Core training loops
-│       ├── tuners.py            # Hyperparameter tuning loops (Optuna)
-│       ├── optimizer_factory.py # Optimizer and scheduler construction
-│       ├── loadTrainData.py     # Load ML bundles into PyTorch DataLoaders
-│       ├── torchDataClass.py    # Dataset wrappers
-│       ├── logger.py            # Training log utilities
-│       └── validation/          # Validation and diagnostic utilities
-│
-└── ngibbs/                      # ← pip-installable package (pip install nGibbs)
-    ├── __init__.py              # Exports: MELTS102EmulatorCPU/GPU,
-    │                            #          HeFESToEmulatorCPU/GPU
-    ├── config/
-    │   ├── constants.py         # Phase–component mappings, oxide lists,
-    │   │                        #   molar masses, abbreviation tables
-    │   ├── ml_indexer.py        # ML transformation matrices
-    │   ├── projections/         # Oxide ↔ element ↔ component projection CSVs
-    │   └── README_MLIndexer.md  # Detailed ml_indexer structure and usage
-    ├── engine/
-    │   ├── NN.py                # Neural network architecture (multi-head MLP)
-    │   ├── emulator.py          # NN_MELTS: inference wrapper with mass balance
-    │   ├── API.py               # High-level APIs: HeFESToAdiabatAPI,
-    │   │                        #   HeFESToEmulatorCPU/GPU, MELTS*EmulatorCPU/GPU
-    │   ├── EOS_arithmetic/      # Python translation of HeFESTo physub routines
-    │   │   ├── hefesto_vec.py   # Vectorized batch EOS calculator
-    │   │   ├── physub.py        # Core thermodynamic subroutine
-    │   │   ├── gspec.py         # Species-level free energy
-    │   │   ├── volume.py        # Equation-of-state volume solver
-    │   │   ├── therm.py         # Thermal properties (Debye/Einstein)
-    │   │   ├── Ftotsub.py       # Solid-phase free energy
-    │   │   └── ...              # Additional EOS helpers
-    │   └── TrainedModel/        # Bundled pre-trained .tar model files
-    └── utils/
-        ├── math_utils.py        # Grid sampling, composition mixing,
-        │                        #   adiabat regression, QFM buffer
-        ├── file_utils.py        # HeFESTo fort.* file parsing, fixed-width I/O
-        └── string_utils.py      # String parsing utilities
-```
+- **In progress:** isentropic MELTS emulators; pMELTS emulators (including an isentropic, low-melt-fraction model with and without Cr); phMELTS.
+- **Planned:** native integration into PetThermoTools; Apple Neural Engine support.
+
+Data generation, processing and training are documented in [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ---
 
-## Configuration
+## Citing nGibbs
 
-### Processing Configuration
-
-Configure the data processing pipeline via YAML:
-
-```yaml
-dataset:
-  MELTSModel: '102'          # MELTS version (102, 110, 120, p)
-  Date: 'Jun10'              # Dataset date identifier
-  Mode: 'BatchCooling'       # Simulation mode
-  subset: false
-
-preprocessing:
-  preprocessed: false
-  filter_full_metadata: true
-  separate_analcime: true
-
-upsampling:
-  enabled: true
-  phases:
-    nepheline:
-      n_resamples: 10
-      multiplier_bounds: [0.8, 1.1]
-
-resampling:
-  train_bounds:
-    - [1, 1]
-    - [0.8, 1]
-    - [0.5, 1]
-  test_bounds:
-    - [1, 1]
-
-deep_filter:
-  oxide_lower_bounds: [...]
-  oxide_upper_bounds: [...]
-```
-
-### Training Configuration
-
-Training is controlled by YAML files in `recipes/training/`. Episodes are discovered automatically from keys like `train1`, `tune1`, `train2`:
-
-```yaml
-# recipes/training/HeFESToIsentropic.yaml
-model:
-  hidden_size: 512
-  n_layers: 6
-  activation: gelu
-
-train1:
-  epochs: 200
-  lr: 1e-3
-  batch_size: 4096
-
-tune1:
-  epochs: 100
-  lr: 1e-4
-  n_trials: 50   # Optuna trials
-```
+If you use nGibbs in your research, please cite it with the metadata in [`CITATION.cff`](CITATION.cff). The concept DOI [10.5281/zenodo.20766922](https://doi.org/10.5281/zenodo.20766922) always resolves to the latest version. Please also cite MELTS or HeFESTo as appropriate.
 
 ## License
 
-See [LICENSE](LICENSE).
+AGPL-3.0. See [LICENSE](LICENSE).

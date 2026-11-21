@@ -1,0 +1,122 @@
+{
+  "format_version": 2,
+  "created_utc": "2026-11-21T00:36:01+00:00",
+  "model": {
+    "api": "MELTSAPI",
+    "name": "MELTS120Emulator",
+    "model_dir": "/home/bthyer/nGibbs/src/ngibbs/engine/TrainedModels/120",
+    "checkpoints": {
+      "120Closed_Cr_NPT.tar": "e2d83751ac04a3b2543fcffea0942f67e71ff458a5e11ff0f2fd777be3ac98a9",
+      "120Closed_NoCr_NPT.tar": "5c142d790cc39c9341774b5e0d16175ef7f1fa6322efdc4fb85619d4d57dda9f"
+    }
+  },
+  "environment": {
+    "ngibbs_version": "0.1.0b5.dev72+g9e9fe72da.d20261025",
+    "git_commit": "3301474d65bcd152ecb74d5bb5d0e9355fd96ae3",
+    "torch": "2.12.1+cu130",
+    "python": "3.11.15",
+    "device": "cpu"
+  },
+  "settings": {
+    "pathways": null,
+    "include_validation_dataset": true,
+    "include_standard_workspace": true,
+    "max_samples": null,
+    "seed": 1337,
+    "plots": true,
+    "allow_missing_models": false
+  },
+  "components": {
+    "validationDataset/nocr": {
+      "status": "ok",
+      "skipped_bundles": []
+    },
+    "validationDataset/cr": {
+      "status": "ok",
+      "skipped_bundles": []
+    },
+    "standardWorkspace": {
+      "status": "ok",
+      "path": "/home/bthyer/nGibbs/src/ngibbs/deployment_tests/MELTSIsobaricStandards231/120",
+      "n_simulations_found": 6,
+      "n_simulations_benchmarked": 6,
+      "n_assemblages": {
+        "nocr_isothermal": 2186,
+        "cr_isothermal": 1171
+      },
+      "n_skipped_simulations": 0,
+      "comparison_failed": {},
+      "without_properties": {}
+    }
+  },
+  "tables": [
+    {
+      "id": "validationDataset/nocr/isothermal",
+      "component": "validationDataset/nocr",
+      "kind": "phase_quality",
+      "file": "validationDataset/nocr/emulator_quality_isothermal.csv",
+      "index_levels": 1,
+      "dataset": {
+        "bundle": "120Closed_NoCr_NPT_Test_subset15000.tar.gz",
+        "bundle_sha256": "25f6259407ee6c6de203bde907f80cfe9c0db3547d89795bb7ae2c7c47f95971",
+        "n_samples": 15000
+      }
+    },
+    {
+      "id": "validationDataset/cr/isothermal",
+      "component": "validationDataset/cr",
+      "kind": "phase_quality",
+      "file": "validationDataset/cr/emulator_quality_isothermal.csv",
+      "index_levels": 1,
+      "dataset": {
+        "bundle": "120Closed_Cr_NPT_Test_subset15000.tar.gz",
+        "bundle_sha256": "0a8bd31c1bdad53010082876bdc1876d65ba61bb78d3fcaa7d7d19445ae773be",
+        "n_samples": 15000
+      }
+    },
+    {
+      "id": "standardWorkspace/nocr_isothermal",
+      "component": "standardWorkspace",
+      "kind": "phase_quality",
+      "file": "standardWorkspace/emulator_quality_nocr_isothermal.csv",
+      "index_levels": 1,
+      "dataset": {
+        "n_simulations": 4,
+        "n_assemblages": 2186,
+        "signature": "93d090e312421d9a80d33e171182b2019cc7abe3"
+      }
+    },
+    {
+      "id": "standardWorkspace/cr_isothermal",
+      "component": "standardWorkspace",
+      "kind": "phase_quality",
+      "file": "standardWorkspace/emulator_quality_cr_isothermal.csv",
+      "index_levels": 1,
+      "dataset": {
+        "n_simulations": 2,
+        "n_assemblages": 1171,
+        "signature": "fc0b08863a910836b15384f9273e80f3d43587a9"
+      }
+    },
+    {
+      "id": "standardWorkspace/property_errors",
+      "component": "standardWorkspace",
+      "kind": "property_errors",
+      "file": "standardWorkspace/property_errors.csv",
+      "index_levels": 2,
+      "dataset": {
+        "signature": "565c48b1823cfba9719415e6108c37d84e15abe5"
+      }
+    },
+    {
+      "id": "standardWorkspace/phase_errors",
+      "component": "standardWorkspace",
+      "kind": "phase_errors",
+      "file": "standardWorkspace/phase_errors.csv",
+      "index_levels": 3,
+      "dataset": {
+        "signature": "f584ba9435304b0e23cd38466f75ae81c2a73372"
+      }
+    }
+  ]
+}

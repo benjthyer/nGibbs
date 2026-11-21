@@ -30,15 +30,12 @@ at. ``_load_cation_fractions`` applies the same conversion for consumers that
 need the emulator's own composition space without calling the API (the
 training-coverage Harker overlay in ``training_coverage.py``).
 
-Two entry points, both taking an already-constructed ``HeFESToAPI``:
-
-* ``run_meltstable_property_comparison`` — rho / VP / VS / S / Cp / KS / alpha
-  from three sources (isentropic emulation, isothermal emulation, real assemblage
-  through the internal vectorised EOS) against fort.56's own bulk columns;
-  writes the two comparison figures and a wide error-stats table with three
-  rows per standard rock.
-* ``run_meltstable_phase_comparison`` — stacked phase-abundance diagrams
-  (GT vs emulator, both pathways) plus a per-phase phase-fraction error table.
+``hefesto_run_comparison(api, sim_dir)`` compares one simulation row by row
+(phase mole fractions; with the EOS parameters, rho / VP / VS / S / Cp / KS /
+alpha from fort.56, the built-in EOS on the fort.99 assemblage, and the
+built-in EOS on each emulated assemblage). ``workspace_benchmark.
+evaluate_workspace`` runs it over every simulation of a workspace and builds
+the tables and plots.
 """
 
 from __future__ import annotations
@@ -49,9 +46,6 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 import torch
-import matplotlib
-# matplotlib.use('Agg')  # disabled: a global backend switch breaks interactive plotting (e.g. PetThermoTools)
-import matplotlib.pyplot as plt
 
 from ngibbs.engine.EOS_arithmetic.hefesto_vec import compute_within_phase_frac
 from ngibbs.utils.file_utils import (
@@ -64,7 +58,7 @@ from ngibbs.utils.file_utils import (
     _build_reverse_component_phase_map,
 )
 from ._phase_plotting import (
-    phase_colors, build_ordered_phases, draw_phase_stack, flagged_pressure_spans,
+    phase_colors, build_ordered_phases,
 )
 
 ELEMENT_KEYS = ['Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O']
@@ -234,6 +228,9 @@ def _read_conditions(sim_dir: Path):
 
 
 def _restrict_to_training_pressure_range(api, df, P, T, S):
+    """Drop rows outside the model's training pressure range. Returns
+    (df, P, T, S, keep); apply ``keep`` to any other per-row ground truth
+    (fort.99 component moles / phase totals) so it stays row-aligned."""
     lower, upper = api.training_pressure_bounds('both')
     keep = np.isfinite(P) & (P >= lower) & (P <= upper)
     if not np.any(keep):
@@ -246,7 +243,7 @@ def _restrict_to_training_pressure_range(api, df, P, T, S):
             f'[MELTStable] restricting pressure range to [{lower:g}, {upper:g}] '
             f'GPa: keeping {int(keep.sum())}/{len(keep)} rows'
         )
-    return df.loc[keep].reset_index(drop=True), P[keep], T[keep], S[keep]
+    return df.loc[keep].reset_index(drop=True), P[keep], T[keep], S[keep], keep
 
 
 def _feature_block(P, second, composition):
@@ -307,128 +304,6 @@ def _rel_stats(gt: np.ndarray, pred: np.ndarray) -> Dict[str, float]:
     }
 
 
-def run_meltstable_property_comparison(
-    api,
-    table_dir=None,
-    out_dir='.',
-    *,
-    tables: List[str] = None,
-    stats_name: str = 'meltstable_property_errors.csv',
-    fig_prefix: str = 'meltstable_property_comparison',
-) -> Dict[str, object]:
-    """Compare bulk EOS properties (incl. thermal expansivity) against the
-    raw HeFESTo standard-rock simulations.  Writes two figures and one wide
-    stats table (three rows per rock: isentropic emulation, isothermal
-    emulation, real assemblage through the internal EOS).
-    """
-    table_dir = Path(table_dir) if table_dir is not None else DEFAULT_TABLE_DIR
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    chosen = find_tables(table_dir, tables)
-    indexer = api.isothermal_emulator.ml_indexer
-
-    results = []
-    stat_rows = []
-    for sim_dir in chosen:
-        df, P, T, S = _read_conditions(sim_dir)
-        df, P, T, S = _restrict_to_training_pressure_range(api, df, P, T, S)
-        composition = _load_composition(sim_dir)
-        name = sim_dir.name
-
-        gt_cm = _load_component_moles(sim_dir, indexer)
-        gt_wpf = compute_within_phase_frac(gt_cm, list(indexer.label_indices.values()))
-        gt_props = _eval_assemblage(api, gt_cm, P, T, gt_wpf)
-
-        iso_cm, iso_wpf, _ = _emulator_assemblage(api, P, T, composition, 'T(K)(System_main)', False)
-        iso_props = _eval_assemblage(api, iso_cm, P, T, iso_wpf)
-
-        isen_cm, isen_wpf, T_em = _emulator_assemblage(
-            api, P, S, composition, 'S(J/g/K)(System_main)', True)
-        isen_props = _eval_assemblage(api, isen_cm, P, T_em, isen_wpf)
-
-        table_vals = {}
-        for key, (tok, short, scale) in PROPERTY_MAP.items():
-            table_vals[key] = pd.to_numeric(df[tok], errors='coerce').to_numpy(dtype=np.float64)
-
-        sources = {
-            'emulation_isentropic': isen_props,
-            'emulation_isothermal': iso_props,
-            'gt_assemblage_internal_eos': gt_props,
-        }
-        for src_name, props in sources.items():
-            row = {'table': name, 'source': src_name, 'n': int(len(P))}
-            for key, (tok, short, scale) in PROPERTY_MAP.items():
-                s = _rel_stats(table_vals[key],
-                               np.asarray(props[key], dtype=np.float64) * scale)
-                for stat, val in s.items():
-                    row[f'{short} {stat}'] = val
-            if src_name == 'emulation_isentropic':
-                for stat, val in _rel_stats(T, T_em).items():
-                    row[f'T {stat}'] = val
-            stat_rows.append(row)
-
-        results.append({
-            'name': name, 'P': P, 'T': T, 'T_em': T_em, 'df': df,
-            'table_vals': table_vals,
-            'gt': gt_props, 'iso': iso_props, 'isen': isen_props,
-        })
-
-    stats = pd.DataFrame(stat_rows).set_index(['table', 'source'])
-    stats_path = out_dir / stats_name
-    stats.to_csv(stats_path, na_rep='--')
-
-    figs = {
-        'isothermal': _plot_properties(results, 'isothermal', out_dir / f'{fig_prefix}_isothermal.png'),
-        'isentropic': _plot_properties(results, 'isentropic', out_dir / f'{fig_prefix}_isentropic.png'),
-    }
-    return {'property_errors': stats, 'stats_path': stats_path, 'figures': figs}
-
-
-def _plot_properties(results, mode, save_path):
-    prop_keys = list(PROPERTY_MAP.keys())
-    show_T = mode == 'isentropic'
-    n_cols = len(prop_keys) + (1 if show_T else 0)
-    n_rows = len(results)
-    col_w = 3.0
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(col_w * n_cols, 3.2 * n_rows), squeeze=False)
-    src_key = 'isen' if mode == 'isentropic' else 'iso'
-
-    for r, res in enumerate(results):
-        P = res['P']
-        for c, key in enumerate(prop_keys):
-            ax = axes[r][c]
-            _, short, scale = PROPERTY_MAP[key]
-            ax.plot(P, res['table_vals'][key], 'k-', lw=1.5, label='MELTStable (GT)')
-            ax.plot(P, np.asarray(res[src_key][key]) * scale, 'r--', lw=1.4,
-                    label='Emulator (pred. assemblage)')
-            ax.plot(P, np.asarray(res['gt'][key]) * scale, 'b:', lw=1.6,
-                    label='GT assemblage + internal EOS')
-            ax.set_xlabel('P (GPa)')
-            ax.set_ylabel(short if c > 0 else f"{res['name']}\n{short}", fontsize=9)
-            ax.grid(True, alpha=0.25)
-            if r == 0:
-                ax.set_title(short, fontsize=10)
-            if r == 0 and c == len(prop_keys) - 1:
-                ax.legend(fontsize=7, loc='best')
-        if show_T:
-            ax = axes[r][-1]
-            ax.plot(P, res['T'], 'k-', lw=1.5, label='MELTStable (GT)')
-            ax.plot(P, res['T_em'], 'r--', lw=1.4, label='Emulator T(P,S)')
-            ax.set_xlabel('P (GPa)')
-            ax.set_ylabel('T (K)')
-            ax.grid(True, alpha=0.25)
-            if r == 0:
-                ax.set_title('T (K)', fontsize=10)
-                ax.legend(fontsize=7, loc='best')
-
-    lbl = 'Isothermal (P, T)' if mode == 'isothermal' else 'Isentropic (P, S)'
-    fig.suptitle(f'{lbl} pathway: emulator vs MELTStable ground truth', fontsize=12)
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
-    fig.savefig(save_path, dpi=150, facecolor='white')
-    plt.close(fig)
-    return Path(save_path)
-
-
 # --------------------------------------------------------------------------- #
 # phase comparison
 # --------------------------------------------------------------------------- #
@@ -476,105 +351,90 @@ def _emulator_phase_fractions(api, P, second, composition, second_header):
     return _normalize_phase_moles(_to_numpy(out['phase_moles']).astype(np.float64))
 
 
-def run_meltstable_phase_comparison(
-    api,
-    table_dir=None,
-    out_dir='.',
-    *,
-    tables: List[str] = None,
-    stats_name: str = 'meltstable_phase_errors.csv',
-    fig_prefix: str = 'meltstable_phase_comparison',
-) -> Dict[str, object]:
-    table_dir = Path(table_dir) if table_dir is not None else DEFAULT_TABLE_DIR
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    chosen = find_tables(table_dir, tables)
+HEFESTO_PROPERTY_UNITS = {'rho': 'g/cm³', 'VP': 'km/s', 'VS': 'km/s', 'S': 'J/g/K', 'Cp': 'J/g/K',
+                          'KS': 'GPa', 'alpha': '1e-5/K'}
 
+
+def hefesto_run_comparison(api, sim_dir, *, pathways=('isothermal', 'isentropic'),
+                           properties: bool = True) -> Dict[str, object]:
+    """Compare one raw HeFESTo simulation folder (``control`` + ``fort.56`` +
+    ``fort.99``) against the emulator, row by row, over the rows inside the
+    model's training pressure range.
+
+    * Phase mole fractions: fort.99's phase totals (every phase, so an
+      unrepresented one still counts in the total) vs the emulator's
+      ``phase_moles`` for each pathway.
+    * With ``properties`` (needs the HeFESTo EOS parameters): fort.56's bulk
+      rho / VP / VS / S / Cp / KS / alpha, the built-in EOS on the fort.99
+      assemblage, and the built-in EOS on each emulated assemblage (the
+      isentropic one at the temperature model's T). A property failure is
+      recorded in ``'property_error'`` and does not stop the phase comparison.
+
+    Returns the per-run comparison dict consumed by
+    ``workspace_benchmark.evaluate_workspace`` (see
+    ``melts_comparison._new_run_result``).
+    """
+    from .melts_comparison import _new_run_result
+
+    sim_dir = Path(sim_dir)
+    df, P, T, S = _read_conditions(sim_dir)
+    df, P, T, S, keep = _restrict_to_training_pressure_range(api, df, P, T, S)
+    composition = _load_composition(sim_dir)
     indexer = api.isothermal_emulator.ml_indexer
     mass_phasedict = indexer.mass_phasedict
-    ordered_phases = build_ordered_phases(mass_phasedict)
-    colors = phase_colors()
 
-    results = []
-    stat_rows = []
-    for sim_dir in chosen:
-        df, P, T, S = _read_conditions(sim_dir)
-        df, P, T, S = _restrict_to_training_pressure_range(api, df, P, T, S)
-        composition = _load_composition(sim_dir)
-        name = sim_dir.name
-        phase_totals = _load_fort99_phase_totals(sim_dir)
-        gt_pf = _gt_phase_fractions(phase_totals, mass_phasedict, len(P))
-        iso_pf = _emulator_phase_fractions(api, P, T, composition, 'T(K)(System_main)')
-        isen_pf = _emulator_phase_fractions(api, P, S, composition, 'S(J/g/K)(System_main)')
-        coverage = _check_missing_phases(phase_totals, mass_phasedict, P)
+    result = _new_run_result(variant='', P=P, P_label='P (GPa)', T=T, T_label='T (K)',
+                             phase_basis='mole fraction', units=HEFESTO_PROPERTY_UNITS)
+    active = [p for p in pathways
+              if getattr(api, {'isothermal': 'isothermal_emulator',
+                               'isentropic': 'isentropic_emulator'}.get(p, ''), None) is not None]
+    result['pathways'] = active
+    second = {'isothermal': (T, 'T(K)(System_main)'), 'isentropic': (S, 'S(J/g/K)(System_main)')}
 
-        inv = {v: k for k, v in mass_phasedict.items()}
-        for pathway, pred in (('isothermal', iso_pf), ('isentropic', isen_pf)):
-            abs_err = np.abs(pred - gt_pf)
-            for col in range(gt_pf.shape[1]):
-                if gt_pf[:, col].max() <= 0 and pred[:, col].max() <= 0:
-                    continue
-                stat_rows.append({
-                    'table': name, 'pathway': pathway, 'phase': inv.get(col, f'col{col}'),
-                    'gt_peak_fraction': float(gt_pf[:, col].max()),
-                    'mean_abs_err': float(abs_err[:, col].mean()),
-                    'max_abs_err': float(abs_err[:, col].max()),
-                })
-            stat_rows.append({
-                'table': name, 'pathway': pathway, 'phase': '__assemblage_L1__',
-                'gt_peak_fraction': np.nan,
-                'mean_abs_err': float(abs_err.sum(axis=1).mean()),
-                'max_abs_err': float(abs_err.sum(axis=1).max()),
-            })
+    # --- phases (mole fraction of the system), keyed by HeFESTo abbreviation ---
+    ordered = build_ordered_phases(mass_phasedict)          # [(long_name, abbrev)]
+    phase_totals = {k: v[keep] for k, v in _load_fort99_phase_totals(sim_dir).items()}
+    gt_pf = _gt_phase_fractions(phase_totals, mass_phasedict, len(P))
 
-        results.append({
-            'name': name, 'P': P, 'gt': gt_pf, 'isothermal': iso_pf, 'isentropic': isen_pf,
-            'coverage': coverage, 'mass_phasedict': mass_phasedict,
-            'ordered_phases': ordered_phases, 'colors': colors,
-        })
+    def by_abbrev(frac):
+        return {abbrev: frac[:, mass_phasedict[name]] for name, abbrev in ordered}
 
-    stats = pd.DataFrame(stat_rows).set_index(['table', 'pathway', 'phase'])
-    stats_path = out_dir / stats_name
-    stats.to_csv(stats_path, na_rep='--')
+    result['phases_gt'] = by_abbrev(gt_pf)
+    unrepresented = _check_missing_phases(phase_totals, mass_phasedict, P)['missing_fraction']
+    if np.any(unrepresented > 0):
+        result['phases_gt']['unrepresented'] = unrepresented
+    for pathway in active:
+        x, header = second[pathway]
+        result['phases_emulated'][pathway] = by_abbrev(
+            _emulator_phase_fractions(api, P, x, composition, header))
+    result['phase_order'] = [abbrev for _, abbrev in ordered] + (
+        ['unrepresented'] if 'unrepresented' in result['phases_gt'] else [])
+    result['phase_colors'] = {**phase_colors(), 'unrepresented': 'white'}
 
-    figs = {
-        'isothermal': _plot_phases(results, 'isothermal', out_dir / f'{fig_prefix}_isothermal.png'),
-        'isentropic': _plot_phases(results, 'isentropic', out_dir / f'{fig_prefix}_isentropic.png'),
-    }
-    unresolved = {r['name']: r['coverage']['unresolved'] for r in results if r['coverage']['unresolved']}
-    return {'phase_errors': stats, 'stats_path': stats_path, 'figures': figs,
-            'unrepresented_phases': unresolved}
+    if not properties:
+        return result
+    if api.hefesto_params is None:
+        result['property_error'] = 'HeFESTo EOS parameters not loaded (no control file)'
+        return result
+    try:
+        result['properties'] = {short: pd.to_numeric(df[tok], errors='coerce').to_numpy(np.float64)
+                                for tok, short, _ in PROPERTY_MAP.values()}
 
+        def scaled(props):
+            return {short: np.asarray(_to_numpy(props[key]), dtype=np.float64) * scale
+                    for key, (_, short, scale) in PROPERTY_MAP.items()}
 
-def _plot_phases(results, mode, save_path):
-    n_rows = len(results)
-    fig, axes = plt.subplots(n_rows, 2, figsize=(11, 3.4 * n_rows), squeeze=False)
-    for r, res in enumerate(results):
-        pressures = res['P']
-        row_idx = np.argsort(pressures)
-        cov = res['coverage']
-        gt_title = f"{res['name']} -- HeFESTo (GT)"
-        if cov['unresolved']:
-            gt_title += '  [UNREPRESENTED PHASE]'
-        draw_phase_stack(axes[r][0], res['gt'], row_idx, pressures,
-                         res['ordered_phases'], res['mass_phasedict'], res['colors'], gt_title)
-        draw_phase_stack(axes[r][1], res[mode], row_idx, pressures,
-                         res['ordered_phases'], res['mass_phasedict'], res['colors'],
-                         f"{res['name']} -- Emulator ({mode})")
-        flagged = cov['missing_fraction'][row_idx] > MISSING_PHASE_FRACTION_THRESHOLD
-        if flagged.any():
-            ps = pressures[row_idx]
-            pad = 0.15 * (ps[-1] - ps[0]) / max(len(ps) - 1, 1)
-            for a, b in flagged_pressure_spans(ps, flagged):
-                if a == b:
-                    a, b = a - pad, b + pad
-                axes[r][0].axvspan(a, b, facecolor='none', edgecolor='black',
-                                   hatch='//', alpha=0.6, zorder=5)
-        for ax in axes[r]:
-            ax.set_xlabel('P (GPa)')
-    lbl = 'Isothermal (P, T)' if mode == 'isothermal' else 'Isentropic (P, S)'
-    fig.suptitle(f'Phase abundances -- {lbl} pathway: GT vs emulator', fontsize=12)
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
-    fig.savefig(save_path, dpi=150, facecolor='white')
-    plt.close(fig)
-    return Path(save_path)
+        gt_cm = _load_component_moles(sim_dir, indexer)[keep]
+        gt_wpf = compute_within_phase_frac(gt_cm, list(indexer.label_indices.values()))
+        result['eos_gt'] = scaled(_eval_assemblage(api, gt_cm, P, T, gt_wpf))
+        for pathway in active:
+            x, header = second[pathway]
+            isen = pathway == 'isentropic'
+            cm, wpf, T_em = _emulator_assemblage(api, P, x, composition, header, isen)
+            result['eos_emulated'][pathway] = scaled(_eval_assemblage(api, cm, P, T_em if isen else T, wpf))
+            if isen:
+                result['T_pred'][pathway] = T_em
+    except Exception as e:  # noqa: BLE001 -- recorded, phases still usable
+        result['property_error'] = f'{type(e).__name__}: {e}'
+        result['eos_emulated'] = {}
+    return result

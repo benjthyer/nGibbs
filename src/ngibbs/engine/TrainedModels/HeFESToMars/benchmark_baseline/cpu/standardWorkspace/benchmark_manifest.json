@@ -1,0 +1,152 @@
+{
+  "created_utc": "2026-11-21T01:46:35+00:00",
+  "api": "HeFESToAPI",
+  "model": "HeFESToMarsEmulator",
+  "model_dir": "/home/bthyer/nGibbs/src/ngibbs/engine/TrainedModels/HeFESToMars",
+  "workspace_dir": "/home/bthyer/nGibbs/src/ngibbs/deployment_tests/HeFESToAdiabatStandards/Mars",
+  "workspace_kind": "standard",
+  "simulator": "hefesto",
+  "pathways": [
+    "isothermal",
+    "isentropic"
+  ],
+  "n_simulations_found": 3,
+  "n_simulations_benchmarked": 3,
+  "n_assemblages": {
+    "isothermal": 153,
+    "isentropic": 153
+  },
+  "groups": {
+    "isothermal": {
+      "variant": null,
+      "pathway": "isothermal",
+      "n_rows_parsed": 153,
+      "n_rows_dropped_unmodelled_phase": 0,
+      "n_rows_dropped_out_of_pressure_range": 0,
+      "n_rows_dropped_invalid": 0,
+      "unmodelled_phases": {},
+      "simulations": {
+        "BASALTmars": 51,
+        "HTZmars": 51,
+        "SHERGmars": 51
+      },
+      "n_simulations": 3,
+      "n_assemblages": 153,
+      "dataset_signature": "676f4a795e0dff7a92a360c9a813eab4810b489b",
+      "mass_balance": "iterative"
+    },
+    "isentropic": {
+      "variant": null,
+      "pathway": "isentropic",
+      "n_rows_parsed": 153,
+      "n_rows_dropped_unmodelled_phase": 0,
+      "n_rows_dropped_out_of_pressure_range": 0,
+      "n_rows_dropped_invalid": 0,
+      "unmodelled_phases": {},
+      "simulations": {
+        "BASALTmars": 51,
+        "HTZmars": 51,
+        "SHERGmars": 51
+      },
+      "n_simulations": 3,
+      "n_assemblages": 153,
+      "dataset_signature": "676f4a795e0dff7a92a360c9a813eab4810b489b",
+      "mass_balance": "iterative"
+    }
+  },
+  "skipped_simulations": {},
+  "comparison": {
+    "n_simulations_compared": 3,
+    "failed": {},
+    "without_properties": {},
+    "sections": {
+      "isothermal": {
+        "drawn": [
+          "BASALTmars",
+          "HTZmars",
+          "SHERGmars"
+        ],
+        "path_kind": {
+          "BASALTmars": "transect",
+          "HTZmars": "transect",
+          "SHERGmars": "transect"
+        },
+        "unplottable": {},
+        "property_r2": {
+          "rho": {
+            "gt_assemblage": 0.9999703492398072,
+            "emulated": 0.9998550159679115
+          },
+          "VP": {
+            "gt_assemblage": 0.9999786782768232,
+            "emulated": 0.9997842194084091
+          },
+          "VS": {
+            "gt_assemblage": 0.9999764891664266,
+            "emulated": 0.9996890143094845
+          },
+          "S": {
+            "gt_assemblage": 0.9999999400093643,
+            "emulated": 0.9999955595432032
+          },
+          "Cp": {
+            "gt_assemblage": 0.9993914463236899,
+            "emulated": -6.6519480030049225
+          },
+          "KS": {
+            "gt_assemblage": 0.9730324812960366,
+            "emulated": -1.1286272991275852
+          },
+          "alpha": {
+            "gt_assemblage": 0.9986385254114347,
+            "emulated": -146.3211955358383
+          }
+        }
+      },
+      "isentropic": {
+        "drawn": [
+          "BASALTmars",
+          "HTZmars",
+          "SHERGmars"
+        ],
+        "path_kind": {
+          "BASALTmars": "transect",
+          "HTZmars": "transect",
+          "SHERGmars": "transect"
+        },
+        "unplottable": {},
+        "property_r2": {
+          "rho": {
+            "gt_assemblage": 0.9999703492398072,
+            "emulated": 0.9999075789382996
+          },
+          "VP": {
+            "gt_assemblage": 0.9999786782768232,
+            "emulated": 0.9998698799187851
+          },
+          "VS": {
+            "gt_assemblage": 0.9999764891664266,
+            "emulated": 0.9998287976844522
+          },
+          "S": {
+            "gt_assemblage": 0.9999999400093643,
+            "emulated": 0.9999931728959179
+          },
+          "Cp": {
+            "gt_assemblage": 0.9993914463236899,
+            "emulated": 0.899371561415335
+          },
+          "KS": {
+            "gt_assemblage": 0.9730324812960366,
+            "emulated": 0.7104576647090282
+          },
+          "alpha": {
+            "gt_assemblage": 0.9986385254114347,
+            "emulated": 0.674078098544681
+          }
+        }
+      }
+    },
+    "plot_failures": {}
+  }
+}

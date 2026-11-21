@@ -328,7 +328,18 @@ def test_top_level_wrappers_stay_light(fake_cuda):
     assert ngibbs.batch_tuning_summary("cuda")["nn/x"]["plateau_rows"] == 2 ** 16
     ngibbs.clear_batch_tuning("cuda", workloads=["nn/x"])
     assert ngibbs.batch_tuning_summary("cuda") == {}
-    assert "ngibbs.engine.models" not in sys.modules  # no checkpoints loaded
+    # "No checkpoints loaded" must be checked in a fresh interpreter: any earlier
+    # test in this session that touched a model has already imported
+    # ngibbs.engine.models, which would make an in-process check order-dependent.
+    import subprocess
+    probe = (
+        "import sys, ngibbs\n"
+        "ngibbs.batch_tuning_summary('cpu'); ngibbs.clear_batch_tuning('cpu')\n"
+        "dir(ngibbs)\n"
+        "sys.exit('ngibbs.engine.models' in sys.modules)\n"
+    )
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
+    assert result.returncode == 0, "top-level wrappers imported ngibbs.engine.models\n" + result.stderr
 
 
 def test_top_level_tune_forwards_to_api():

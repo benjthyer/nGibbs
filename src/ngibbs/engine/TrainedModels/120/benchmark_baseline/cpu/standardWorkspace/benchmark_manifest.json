@@ -1,0 +1,134 @@
+{
+  "created_utc": "2026-11-21T00:35:56+00:00",
+  "api": "MELTSAPI",
+  "model": "MELTS120Emulator",
+  "model_dir": "/home/bthyer/nGibbs/src/ngibbs/engine/TrainedModels/120",
+  "workspace_dir": "/home/bthyer/nGibbs/src/ngibbs/deployment_tests/MELTSIsobaricStandards231/120",
+  "workspace_kind": "standard",
+  "simulator": "melts",
+  "pathways": [
+    "isothermal"
+  ],
+  "n_simulations_found": 6,
+  "n_simulations_benchmarked": 6,
+  "n_assemblages": {
+    "nocr_isothermal": 2186,
+    "cr_isothermal": 1171
+  },
+  "groups": {
+    "nocr_isothermal": {
+      "variant": "nocr",
+      "pathway": "isothermal",
+      "n_rows_parsed": 2186,
+      "n_rows_dropped_unmodelled_phase": 0,
+      "n_rows_dropped_out_of_pressure_range": 0,
+      "n_rows_dropped_invalid": 0,
+      "unmodelled_phases": {},
+      "simulations": {
+        "Cr/BishopTuff": 501,
+        "NoCr/BishopTuff": 501,
+        "NoCr/Lherzolite": 483,
+        "NoCr/MORB": 701
+      },
+      "n_simulations": 4,
+      "n_assemblages": 2186,
+      "dataset_signature": "93d090e312421d9a80d33e171182b2019cc7abe3",
+      "mass_balance": "iterative"
+    },
+    "cr_isothermal": {
+      "variant": "cr",
+      "pathway": "isothermal",
+      "n_rows_parsed": 1171,
+      "n_rows_dropped_unmodelled_phase": 0,
+      "n_rows_dropped_out_of_pressure_range": 0,
+      "n_rows_dropped_invalid": 0,
+      "unmodelled_phases": {},
+      "simulations": {
+        "Cr/Lherzolite": 470,
+        "Cr/MORB": 701
+      },
+      "n_simulations": 2,
+      "n_assemblages": 1171,
+      "dataset_signature": "fc0b08863a910836b15384f9273e80f3d43587a9",
+      "mass_balance": "iterative"
+    }
+  },
+  "skipped_simulations": {},
+  "comparison": {
+    "n_simulations_compared": 6,
+    "failed": {},
+    "without_properties": {},
+    "sections": {
+      "nocr_isothermal": {
+        "drawn": [
+          "Cr/BishopTuff",
+          "NoCr/BishopTuff",
+          "NoCr/Lherzolite"
+        ],
+        "path_kind": {
+          "Cr/BishopTuff": "isobar",
+          "NoCr/BishopTuff": "isobar",
+          "NoCr/Lherzolite": "isobar",
+          "NoCr/MORB": "isobar"
+        },
+        "unplottable": {},
+        "property_r2": {
+          "S": {
+            "gt_assemblage": 0.9999995271756487,
+            "emulated": 0.9999569191369888
+          },
+          "Cp": {
+            "gt_assemblage": 0.9999698076222364,
+            "emulated": 0.9996973003504807
+          },
+          "V": {
+            "gt_assemblage": 0.999999996937583,
+            "emulated": 0.9998387045077015
+          },
+          "H": {
+            "gt_assemblage": 0.9999997207467368,
+            "emulated": 0.9999760597766343
+          },
+          "rho": {
+            "gt_assemblage": 0.9999999965653831,
+            "emulated": 0.9998396847353218
+          }
+        }
+      },
+      "cr_isothermal": {
+        "drawn": [
+          "Cr/Lherzolite",
+          "Cr/MORB"
+        ],
+        "path_kind": {
+          "Cr/Lherzolite": "isobar",
+          "Cr/MORB": "isobar"
+        },
+        "unplottable": {},
+        "property_r2": {
+          "S": {
+            "gt_assemblage": 0.9999999419779647,
+            "emulated": 0.9999742506833678
+          },
+          "Cp": {
+            "gt_assemblage": 0.999974415189312,
+            "emulated": 0.9997526855978557
+          },
+          "V": {
+            "gt_assemblage": 0.9999999693806505,
+            "emulated": 0.9984657301721486
+          },
+          "H": {
+            "gt_assemblage": 0.9999998398753799,
+            "emulated": 0.9999720251355716
+          },
+          "rho": {
+            "gt_assemblage": 0.9999999724412288,
+            "emulated": 0.998516269057187
+          }
+        }
+      }
+    },
+    "plot_failures": {}
+  }
+}

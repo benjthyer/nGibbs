@@ -1,0 +1,119 @@
+{
+  "format_version": 2,
+  "created_utc": "2026-11-20T02:41:31+00:00",
+  "model": {
+    "api": "HeFESToAPI",
+    "name": "HeFESToMarsEmulator",
+    "model_dir": "/home/bthyer/nGibbs/src/ngibbs/engine/TrainedModels/HeFESToMars",
+    "checkpoints": {
+      "HeFESToMars_NPS.tar": "86e80e54a5a38cdc07f21356b26e493155d9ebe21464a33caaf6e8be04219933",
+      "HeFESToMars_NPT.tar": "985c7840f03f6468b2b7f1013b3c5fb8ccbca9f82ebc3c191263263952e159c5",
+      "HeFESToMars_Temperature.pt": "a3aab23d6f85be41968b4e2f5e851b9f41c8c70c11a1a95f138c7d86ccbbc899"
+    }
+  },
+  "environment": {
+    "ngibbs_version": "0.1.0b5.dev72+g9e9fe72da.d20261025",
+    "git_commit": "0b584f24a3352a062e710bbc7d3bfba3bf7e54b4",
+    "torch": "2.12.1+cu130",
+    "python": "3.11.15",
+    "device": "cuda"
+  },
+  "settings": {
+    "pathways": null,
+    "include_validation_dataset": true,
+    "include_standard_workspace": true,
+    "max_samples": null,
+    "seed": 1337,
+    "plots": false,
+    "allow_missing_models": false
+  },
+  "components": {
+    "validationDataset": {
+      "status": "ok",
+      "skipped_bundles": []
+    },
+    "standardWorkspace": {
+      "status": "ok",
+      "path": "/home/bthyer/nGibbs/src/ngibbs/deployment_tests/HeFESToAdiabatStandards/Mars",
+      "n_simulations_found": 3,
+      "n_simulations_benchmarked": 3,
+      "n_assemblages": {
+        "isothermal": 153,
+        "isentropic": 153
+      },
+      "n_skipped_simulations": 0,
+      "comparison_failed": {},
+      "without_properties": {}
+    }
+  },
+  "tables": [
+    {
+      "id": "validationDataset/isothermal",
+      "component": "validationDataset",
+      "kind": "phase_quality",
+      "file": "validationDataset/emulator_quality_isothermal.csv",
+      "index_levels": 1,
+      "dataset": {
+        "bundle": "HeFESToMars_NPT_Test_subset15000.tar.gz",
+        "bundle_sha256": "6757475559c790f11bc03574b814742788f174e08062c4e302731e8e6701deee",
+        "n_samples": 15000
+      }
+    },
+    {
+      "id": "validationDataset/isentropic",
+      "component": "validationDataset",
+      "kind": "phase_quality",
+      "file": "validationDataset/emulator_quality_isentropic.csv",
+      "index_levels": 1,
+      "dataset": {
+        "bundle": "HeFESToMars_NPS_Test_subset15000.tar.gz",
+        "bundle_sha256": "0b45b3b05f664e4c0a42c511af70e718bc003807c9142a643f40e48701029edc",
+        "n_samples": 15000
+      }
+    },
+    {
+      "id": "standardWorkspace/isothermal",
+      "component": "standardWorkspace",
+      "kind": "phase_quality",
+      "file": "standardWorkspace/emulator_quality_isothermal.csv",
+      "index_levels": 1,
+      "dataset": {
+        "n_simulations": 3,
+        "n_assemblages": 153,
+        "signature": "676f4a795e0dff7a92a360c9a813eab4810b489b"
+      }
+    },
+    {
+      "id": "standardWorkspace/isentropic",
+      "component": "standardWorkspace",
+      "kind": "phase_quality",
+      "file": "standardWorkspace/emulator_quality_isentropic.csv",
+      "index_levels": 1,
+      "dataset": {
+        "n_simulations": 3,
+        "n_assemblages": 153,
+        "signature": "676f4a795e0dff7a92a360c9a813eab4810b489b"
+      }
+    },
+    {
+      "id": "standardWorkspace/property_errors",
+      "component": "standardWorkspace",
+      "kind": "property_errors",
+      "file": "standardWorkspace/property_errors.csv",
+      "index_levels": 2,
+      "dataset": {
+        "signature": "b2696c7c53a3a58b1ba02d1cf7c610a67257c26c"
+      }
+    },
+    {
+      "id": "standardWorkspace/phase_errors",
+      "component": "standardWorkspace",
+      "kind": "phase_errors",
+      "file": "standardWorkspace/phase_errors.csv",
+      "index_levels": 3,
+      "dataset": {
+        "signature": "8e0d607c8a5878a437cc5f1d2bd8815afabc0b82"
+      }
+    }
+  ]
+}

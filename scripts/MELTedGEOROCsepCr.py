@@ -53,14 +53,14 @@ import time
 time.sleep(sleepytime)"""
 
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-input_date = 'July9open'
+input_date = 'Nov19BatchClosed232'
 
 input_ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
-MELTSmodels = ['p']#, '120']#, '102'] # MELTS models to run. To add: MAGEmin
+MELTSmodels = ['120', '102'] # MELTS models to run. To add: MAGEmin
 FXes = ['Batch']#, 'FxCryst']
 Prange = None # Auto if None, for lithosphere/aesthenospere (p)
 
-Oxygen = 'Open' # 'Closed' or 'Open' system with respect to oxygen. Buffered or constant oxygen?
+Oxygen = 'Closed' # 'Closed' or 'Open' system with respect to oxygen. Buffered or constant oxygen?
 
 total_to_run = int(300) # How many total simulations to run. Now 
 
@@ -77,8 +77,7 @@ simcycle = 50 # How many simulations to run per iteration
 target_rows_train = 50_000_000
 target_rows_valid = 2_000_000 # Change pipeline later to keep all this as test, no 3rd valid split. Existing set is fine
 #batch_file = MELTSModel + 'batch'
-target_rows_train = 20
-target_rows_valid = 0
+
 for N, MELTSModel in enumerate(MELTSmodels): 
 
     if MELTSModel == 'p':
@@ -86,9 +85,9 @@ for N, MELTSModel in enumerate(MELTSmodels):
         mafics_to_run = int(total_to_run * 0.4)
         full_to_run = int(total_to_run * 0.2)
     else:
-        ultramafics_to_run = int(total_to_run * 0.2) #0.15)
-        mafics_to_run = int(total_to_run * 0.3)
-        full_to_run = int(total_to_run * 0.5) #0.55)
+        ultramafics_to_run = int(total_to_run * 0.25) #0.15)
+        mafics_to_run = int(total_to_run * 0.4)
+        full_to_run = int(total_to_run * 0.35) #0.55)
 
     for C, Tag in enumerate(['Cr']): ###################################################################
         ZeroOxides = input_ZeroOxides.copy()

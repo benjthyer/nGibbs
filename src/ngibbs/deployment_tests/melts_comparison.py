@@ -9,43 +9,29 @@ already-speciated FeO/Fe2O3 split -- these are fO2-buffered runs), and one
 fractions for solution phases, already in melts_vec's own column order --
 verified against real .tbl headers, see ``_GT_SOLUTION_ENDMEMBERS``).
 
-Independent "sources" of bulk properties/phase proportions are compared
-against this ground truth, mirroring HeFESTo's three-source structure plus
-one MELTS-specific fourth source (an open/fO2-buffered emulator pathway
-HeFESTo has no analogue of):
+``melts_run_comparison(api, run_dir)`` compares one run row by row against
+the emulator, which is fed each row's conditions and evolving bulk:
   - ``gt_assemblage_internal_eos``: the REAL alphaMELTS phase assemblage
     (composition + molar abundance, read straight from the .tbl files) fed
     through melts_vec's internal EOS via
     ``MELTSAPI.get_property_melts_vectorized_from_assemblage``. Liquid goes
     through the oxide->component bridge (``oxides_to_liquid_components``)
-    using the GT's own real (already fO2-buffered) oxide wt%, no
-    speciation approximation needed. The fluid (fluid.tbl: h2oduan/co2duan
-    mole fractions for 1.1/1.2, pure H2O for 1.0.2) uses the version's own
-    fluid model (``api.melts_version``).
-  - ``emulation_isothermal`` / ``emulation_isentropic``: the trained MELTS120
-    emulator's OWN predicted assemblage (fed the row's real, evolving bulk
-    oxide composition -- including the real Fe2O3/FeO split, which is what
-    "provide the evolving Fe3/FeT ratio" means in practice for a closed-model
-    forward pass) run through the *same* internal EOS, via the
-    ml_indexer -> melts_vec bridge in ``_ml_indexer_to_melts_vec_assemblage``.
-    The isentropic pathway evaluates the internal EOS at the temperature
-    predicted by that variant's temperature model (ForwardMB's 'temperature'
-    output, i.e. ``EmulatorAPI.get_T``) -- exactly what inference does, and
-    what HeFESTo's ``meltstable_comparison`` does -- never at the GT T.
-  - ``emulation_openox``: the trained MELTS120 OPEN (fO2-buffered) emulator's
-    own predicted assemblage, fed (P, T, logfO2-QFM). This is only valid
-    for fO2-buffered MELTSIsobaricStandards runs, where each rock has its own
-    buffer offset (e.g. MORB FMQ+0, Lherzolite FMQ-2, BishopTuff FMQ+2;
-    see ``input.melts``). The QFM-relative value comes from
-    System_main_tbl.txt's ``fO2-(QFM[+/-offset])`` column, adjusted by the
-    offset encoded in the column name (see ``_fO2_qfm``), so it is a
-    genuine input here, not an approximation. This model derives its own FeO/Fe2O3 split
-    internally rather than taking one as input, so its single 'FeO'
-    composition column is fed the GT's total iron (FeO + Fe2O3 collapsed to
-    one FeO-equivalent value -- see ``_bulk_total_feo``), not the GT's
-    already-speciated ferrous-only FeO. NoCr only -- no Cr openox checkpoint
-    was ever trained -- and only present in the results/figures/stats when
-    ``api.nocr.open_emulator`` is loaded.
+    using the GT's own (already fO2-buffered) oxide wt%. The fluid uses the
+    version's own fluid model (``api.melts_version``).
+  - ``emulation_isothermal`` / ``emulation_isentropic``: the emulator's OWN
+    predicted assemblage (fed the row's real, evolving bulk oxide composition,
+    including the real Fe2O3/FeO split) run through the same internal EOS via
+    ``ml_indexer_to_melts_vec_assemblage``. The isentropic pathway evaluates
+    the EOS at the temperature predicted by the variant's temperature model,
+    never at the GT T, and is skipped when there is none.
+  - ``emulation_openox``: the OPEN (fO2-buffered) NoCr emulator's predicted
+    assemblage, fed (P, T, logfO2-QFM), for fO2-buffered runs only. The
+    QFM-relative value comes from System_main_tbl.txt's ``fO2-(QFM[+/-offset])``
+    column plus the offset in its name (see ``_fO2_qfm``). This model derives
+    its own FeO/Fe2O3 split, so its single 'FeO' input is the GT's total iron
+    (``_bulk_total_feo``).
+``workspace_benchmark.evaluate_workspace`` runs it over every run of a
+workspace and builds the tables and plots.
 
 Phase-proportion ground truth and comparisons are on a MASS basis throughout
 (matching Phase_mass_tbl.txt and the isentropic model's own gram-mass
@@ -62,9 +48,6 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 import torch
-import matplotlib
-# matplotlib.use('Agg')  # disabled: a global backend switch breaks interactive plotting (e.g. PetThermoTools)
-import matplotlib.pyplot as plt
 
 from ngibbs.config.constants import OXIDE_MOLAR_MASSES, get_oxide_molar_mass
 from ngibbs.engine.EOS_arithmetic_MELTS.melts_vec import molar_masses as _melts_molar_masses
@@ -72,12 +55,7 @@ from ngibbs.engine.EOS_arithmetic_MELTS.melts_vec import oxides_to_liquid_compon
 from ngibbs.engine.EOS_arithmetic_MELTS.melts_vec import molar_mass_from_formula as _melts_molar_mass_from_formula
 from ngibbs.engine.EOS_arithmetic_MELTS.melts_vec import MELTS_CARBON_PHASES as _MELTS_CARBON_PHASES
 
-from ._melts_phase_plotting import (
-    MELTS_PHASE_STACK_ORDER,
-    build_ordered_melts_phases,
-    draw_melts_phase_stack,
-    melts_phase_colors,
-)
+from ._melts_phase_plotting import build_ordered_melts_phases, melts_phase_colors
 
 ROCKS = ('BishopTuff', 'Lherzolite', 'MORB')
 VARIANTS = ('Cr', 'NoCr')
@@ -577,14 +555,52 @@ def _bulk_props_and_coverage(api, phase_composition, phase_moles, PT, system_mas
 
     Returns (props, coverage) -- ``props`` has S/Cp/V/H/rho, matching
     _MELTS_PLOT_PROPERTY_KEYS.
+
+    Rows whose liquid oxides cannot be expressed in MELTS's liquid basis
+    (a negative basis component, e.g. a predicted peralkaline liquid with
+    K > Al) are rejected by the EOS. They are left out of the EOS call and
+    returned as NaN in every property AND in coverage, so callers can count
+    them via ``np.isnan(coverage)`` instead of the whole comparison failing.
     """
+    def _np(x):
+        return x.detach().cpu().numpy().astype(np.float64) if torch.is_tensor(x) \
+            else np.asarray(x, dtype=np.float64)
+
+    PT = _np(PT)
+    B = PT.shape[0]
+    keep = np.ones(B, dtype=bool)
+    if liquid_oxides is not None and liquid_oxide_labels is not None:
+        labels = list(liquid_oxide_labels)
+        lo = _np(liquid_oxides)
+        comp = _oxides_to_liquid_components({l: lo[:, i] for i, l in enumerate(labels)},
+                                            api.melts_liquid_params)
+        keep = ~(comp < 0.0).any(axis=1)
+    if not keep.any():
+        nan = np.full(B, np.nan)
+        return {k: nan.copy() for k in _MELTS_PLOT_PROPERTY_KEYS}, nan.copy()
+
+    def _sub(x):
+        return x if keep.all() else _np(x)[keep]
+
+    sm = system_mass if np.ndim(system_mass) == 0 else _sub(system_mass)
+    pm = {k: _sub(v) for k, v in phase_moles.items()}
     bulk = api.get_property_melts_vectorized_from_assemblage(
-        phase_composition, phase_moles, PT, property_names=('bulk',),
-        liquid_oxides=liquid_oxides, liquid_oxide_labels=liquid_oxide_labels,
+        {k: _sub(v) for k, v in phase_composition.items()}, pm, _sub(PT),
+        property_names=('bulk',),
+        liquid_oxides=None if liquid_oxides is None else _sub(liquid_oxides),
+        liquid_oxide_labels=liquid_oxide_labels,
     )['bulk']
-    props = _specific_properties(bulk, phase_moles, system_mass)
+    props = _specific_properties(bulk, pm, sm)
     props['rho'] = bulk['rho']
-    return props, bulk['melts_coverage_fraction']
+    cov = bulk['melts_coverage_fraction']
+    if keep.all():
+        return props, cov
+
+    def _scatter(v):
+        out = np.full(B, np.nan)
+        out[keep] = np.asarray(v, dtype=np.float64)
+        return out
+    return {k: _scatter(v) for k, v in props.items()}, _scatter(cov)
 
 
 def _gt_property_table(sysmain: pd.DataFrame, mass_g: np.ndarray) -> Dict[str, np.ndarray]:
@@ -695,223 +711,28 @@ def _emulator_forward_openox(api, emulator, P_bar, T_C, fO2_QFM, bulk):
     return out['component_moles'], comp_wtpct, mass_wtpct
 
 
-def run_melts_property_comparison(
-    api,
-    standards_dir=None,
-    out_dir='.',
-    *,
-    rocks: Sequence[str] = ROCKS,
-    variants: Sequence[str] = VARIANTS,
-    stats_name: str = 'melts_property_errors.csv',
-    fig_prefix: str = 'melts_property_comparison',
-) -> Dict[str, object]:
-    """Compare bulk specific properties (S, Cp, V, H; J or cc per gram) across
-    the 6 rock x Cr/NoCr rows against the raw alphaMELTS ground truth. Writes
-    two figures (isothermal-pathway, isentropic-pathway; one row per rock x
-    Cr/NoCr combination, matching HeFESTo's run_meltstable_property_comparison
-    layout) and one wide stats table (three rows per rock x Cr/NoCr: the
-    'emulation_isentropic' / 'emulation_isothermal' / 'gt_assemblage_internal_eos'
-    sources described in the module docstring).
-    """
-    standards_dir = Path(standards_dir) if standards_dir is not None else DEFAULT_STANDARDS_DIR
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    _ensure_alkali_feldspar_alias(api)
-
-    results = []
-    stat_rows = []
-    for variant in variants:
-        api_sub = api.cr if variant == 'Cr' else api.nocr
-        for rock in rocks:
-            rock_dir = standards_dir / variant / rock
-            if not rock_dir.exists():
-                warnings.warn(f"No standards directory for {rock}/{variant}: {rock_dir}")
-                continue
-            name = f'{rock}_{variant}'
-
-            sysmain = read_system_main(rock_dir)
-            bulk = read_bulk_comp(rock_dir)
-            # T_C: alphaMELTS's own native Celsius value, straight from
-            # System_main_tbl.txt -- this is what the isothermal/openox
-            # emulator's 'Temperature(System_main)' feature actually expects
-            # (confirmed against API.py's make_ptt_out, which reads that same
-            # feature back directly as T_C with no offset). T_K is Kelvin,
-            # needed ONLY for melts_vec's internal Berman-EOS PT tuple (via
-            # get_property_melts_vectorized_from_assemblage) -- NEVER pass T_K
-            # to the emulator under the 'Temperature(System_main)' header, or
-            # every isothermal-pathway forward pass silently runs ~273 degrees
-            # too hot (this was a real bug here previously -- see §15 update).
-            T_C = sysmain['Temperature'].values
-            T_K = T_C + 273.15
-            P_bar = sysmain['Pressure'].values
-            P_GPa = P_bar / _BARS_PER_GPA
-            mass_g = sysmain['mass'].values
-            # Isentropic emulator input: total S (J/K) / system mass (g), built by
-            # the recipe in its feature name (see _ENTROPY_FEATURE).
-            S_specific_gt = _system_main_feature(sysmain, _ENTROPY_FEATURE)
-
-            gt_table = _gt_property_table(sysmain, mass_g)
-
-            # source 1: real GT assemblage through the internal vectorized EOS
-            gt_asm = load_gt_assemblage(rock_dir, api)
-            gt_props, gt_cov = _bulk_props_and_coverage(
-                api, gt_asm['phase_composition'], gt_asm['phase_moles'], gt_asm['PT'], mass_g,
-                liquid_oxides=gt_asm['liquid_oxides'], liquid_oxide_labels=gt_asm['liquid_oxide_labels'],
-            )
-
-            # source 2: emulator-predicted assemblage, isothermal (P, T) pathway.
-            # Feed T_C (Celsius, alphaMELTS's own native units), NOT T_K --
-            # the emulator's 'Temperature(System_main)' feature is Celsius.
-            cm_iso, comp_iso, mass_iso, _ = _emulator_forward(
-                api, _emulator_input_oxides(api_sub.isothermal_emulator),
-                P_bar, T_C, 'Temperature(System_main)', bulk)
-            bridged_iso = ml_indexer_to_melts_vec_assemblage(
-                api_sub, api, api_sub.isothermal_emulator, cm_iso, mass_iso, comp_iso)
-            PT_iso = np.column_stack([P_GPa, T_K])
-            props_iso, cov_iso = _bulk_props_and_coverage(
-                api, bridged_iso['phase_composition'], bridged_iso['phase_moles'], PT_iso, 100.0,
-                liquid_oxides=bridged_iso['liquid_oxides'], liquid_oxide_labels=bridged_iso['liquid_oxide_labels'],
-            )
-
-            # source 3: emulator-predicted assemblage, isentropic (P, S) pathway.
-            # As in inference, T comes from the variant's temperature model
-            # (get_T on P, S and the predicted assemblage), not from the GT.
-            if getattr(api_sub, 'temperature_model', None) is None:
-                raise RuntimeError(
-                    f"No temperature model loaded for the {variant} sub-API; the "
-                    "isentropic property comparison needs one to predict T from (P, S).")
-            cm_isen, comp_isen, mass_isen, T_C_isen = _emulator_forward(
-                api, _emulator_input_oxides(api_sub.isentropic_emulator),
-                P_bar, S_specific_gt, _ENTROPY_FEATURE, bulk, temperature=True)
-            bridged_isen = ml_indexer_to_melts_vec_assemblage(
-                api_sub, api, api_sub.isentropic_emulator, cm_isen, mass_isen, comp_isen)
-            PT_isen = np.column_stack([P_GPa, T_C_isen + 273.15])
-            props_isen, cov_isen = _bulk_props_and_coverage(
-                api, bridged_isen['phase_composition'], bridged_isen['phase_moles'], PT_isen, 100.0,
-                liquid_oxides=bridged_isen['liquid_oxides'], liquid_oxide_labels=bridged_isen['liquid_oxide_labels'],
-            )
-
-            # source 4: emulator-predicted assemblage, open/fO2-buffered
-            # (P, T, logfO2-QFM) pathway. NoCr only (no Cr openox
-            # checkpoint exists); guarded on an fO2-(QFM[+/-offset]) column
-            # existing, which only buffered runs have. Rocks use different
-            # buffer offsets (MORB FMQ+0, Lherzolite FMQ-2, BishopTuff FMQ+2);
-            # _fO2_qfm adds the offset back.
-            props_open = cov_open = None
-            fO2_QFM = _fO2_qfm(sysmain)
-            if variant == 'NoCr' and api.nocr.open_emulator is not None and fO2_QFM is not None:
-                cm_open, comp_open, mass_open = _emulator_forward_openox(
-                    api, api.nocr.open_emulator, P_bar, T_C, fO2_QFM, bulk)
-                bridged_open = ml_indexer_to_melts_vec_assemblage(
-                    api.nocr, api, api.nocr.open_emulator, cm_open, mass_open, comp_open)
-                PT_open = np.column_stack([P_GPa, T_K])
-                props_open, cov_open = _bulk_props_and_coverage(
-                    api, bridged_open['phase_composition'], bridged_open['phase_moles'], PT_open, 100.0,
-                    liquid_oxides=bridged_open['liquid_oxides'],
-                    liquid_oxide_labels=bridged_open['liquid_oxide_labels'],
-                )
-
-            sources = {
-                'emulation_isentropic': (props_isen, cov_isen),
-                'emulation_isothermal': (props_iso, cov_iso),
-                'gt_assemblage_internal_eos': (gt_props, gt_cov),
-            }
-            if props_open is not None:
-                sources['emulation_openox'] = (props_open, cov_open)
-            for src_name, (props, cov) in sources.items():
-                row = {
-                    'rock': rock, 'variant': variant, 'source': src_name, 'n': int(len(P_bar)),
-                    'coverage_min': float(np.nanmin(cov)), 'coverage_mean': float(np.nanmean(cov)),
-                }
-                for key in _MELTS_PLOT_PROPERTY_KEYS:
-                    s = _rel_stats(gt_table[key], props.get(key, np.full(len(P_bar), np.nan)))
-                    for stat, val in s.items():
-                        row[f'{key} {stat}'] = val
-                if src_name == 'emulation_isentropic':
-                    # Relative errors in Kelvin (Celsius makes them scale-dependent).
-                    for stat, val in _rel_stats(T_K, T_C_isen + 273.15).items():
-                        row[f'T(K) {stat}'] = val
-                stat_rows.append(row)
-
-            results.append({
-                # These are isobaric-COOLING runs (fixed P, varying T within a
-                # rock's own run -- confirmed against System_main_tbl.txt/
-                # Phase_mass_tbl.txt: P is constant per rock, T decreases
-                # monotonically with row index), so T (not P, which is a
-                # single value here) is the meaningful x-axis for plotting.
-                'name': name, 'rock': rock, 'variant': variant,
-                'T_C': sysmain['Temperature'].values, 'P_GPa': P_GPa,
-                'gt_table': gt_table, 'gt': gt_props, 'iso': props_iso, 'isen': props_isen,
-                'openox': props_open, 'T_C_isen': T_C_isen,
-            })
-
-    stats = pd.DataFrame(stat_rows).set_index(['rock', 'variant', 'source'])
-    stats_path = out_dir / stats_name
-    stats.to_csv(stats_path, na_rep='--')
-
-    figs = {
-        'isothermal': _plot_melts_properties(results, 'isothermal', out_dir / f'{fig_prefix}_isothermal.png'),
-        'isentropic': _plot_melts_properties(results, 'isentropic', out_dir / f'{fig_prefix}_isentropic.png'),
-    }
-    open_results = [r for r in results if r.get('openox') is not None]
-    if open_results:
-        figs['openox'] = _plot_melts_properties(
-            open_results, 'openox', out_dir / f'{fig_prefix}_openox.png')
-    return {'property_errors': stats, 'stats_path': stats_path, 'figures': figs}
+def _shipped_sub_api(api, variant):
+    """The Cr/NoCr sub-API for ``variant``, or None (with a warning) when the
+    model doesn't ship that variant's isothermal emulator."""
+    api_sub = getattr(api, 'cr' if variant == 'Cr' else 'nocr', None)
+    if api_sub is None or getattr(api_sub, 'isothermal_emulator', None) is None:
+        warnings.warn(f"Warning, no {variant} isothermal model available; skipping the {variant} standards.")
+        return None
+    return api_sub
 
 
-_MELTS_PATHWAY_SRC_KEY = {'isentropic': 'isen', 'isothermal': 'iso', 'openox': 'openox'}
-_MELTS_PATHWAY_LABEL = {
-    'isothermal': 'Isothermal (P, T)',
-    'isentropic': 'Isentropic (P, S)',
-    'openox': 'Open/fO2-buffered (P, T, logfO2-QFM)',
-}
-
-
-def _plot_melts_properties(results, mode, save_path):
-    prop_keys = _MELTS_PLOT_PROPERTY_KEYS
-    show_T = mode == 'isentropic'  # extra column: temperature-model T vs GT T
-    n_cols = len(prop_keys) + (1 if show_T else 0)
-    n_rows = len(results)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.0 * n_cols, 3.2 * n_rows), squeeze=False)
-    src_key = _MELTS_PATHWAY_SRC_KEY[mode]
-
-    for r, res in enumerate(results):
-        T = res['T_C']
-        for c, key in enumerate(prop_keys):
-            ax = axes[r][c]
-            ax.plot(T, res['gt_table'][key], 'k-', lw=1.5, label='Raw alphaMELTS (GT)')
-            ax.plot(T, res[src_key].get(key, np.full_like(T, np.nan)), 'r--', lw=1.4,
-                    label='Emulator (pred. assemblage)')
-            ax.plot(T, res['gt'].get(key, np.full_like(T, np.nan)), 'b:', lw=1.6,
-                    label='GT assemblage + internal EOS')
-            ax.set_xlabel('T (°C)')
-            if c == 0:
-                ax.set_ylabel(f"{res['name']} (P={res['P_GPa'][0]:.3g} GPa)\n{key}", fontsize=9)
-            else:
-                ax.set_ylabel(key, fontsize=9)
-            ax.grid(True, alpha=0.25)
-            if r == 0:
-                ax.set_title(key, fontsize=10)
-            if r == 0 and c == len(prop_keys) - 1:
-                ax.legend(fontsize=7, loc='best')
-        if show_T:
-            ax = axes[r][-1]
-            ax.plot(T, T, 'k-', lw=1.5, label='Raw alphaMELTS (GT)')
-            ax.plot(T, res['T_C_isen'], 'r--', lw=1.4, label='Temperature model T(P, S)')
-            ax.set_xlabel('T (°C)')
-            ax.set_ylabel('T (°C)', fontsize=9)
-            ax.grid(True, alpha=0.25)
-            if r == 0:
-                ax.set_title('T (°C)', fontsize=10)
-                ax.legend(fontsize=7, loc='best')
-
-    lbl = _MELTS_PATHWAY_LABEL[mode] + (' -- T from temperature model' if show_T else '')
-    fig.suptitle(f'{lbl} pathway: MELTS120 emulator vs raw alphaMELTS ground truth', fontsize=12)
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
-    fig.savefig(save_path, dpi=150, facecolor='white')
-    plt.close(fig)
-    return Path(save_path)
+def _has_isentropic(api_sub, variant, need_temperature_model=False):
+    """True if ``api_sub`` ships an isentropic emulator (and, if asked, a
+    temperature model); otherwise warn and return False so the isentropic
+    pathway is skipped rather than failing the comparison."""
+    if getattr(api_sub, 'isentropic_emulator', None) is None:
+        warnings.warn(f"Warning, no isentropic model available for {variant}; skipping the isentropic pathway.")
+        return False
+    if need_temperature_model and getattr(api_sub, 'temperature_model', None) is None:
+        warnings.warn(f"Warning, no temperature model available for {variant}; "
+                      "skipping the isentropic property comparison.")
+        return False
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -972,135 +793,143 @@ def _emulator_phase_mass_fractions_openox(api, emulator, P_bar, T_C, fO2_QFM,
     return result
 
 
-def run_melts_phase_comparison(
-    api,
-    standards_dir=None,
-    out_dir='.',
-    *,
-    rocks: Sequence[str] = ROCKS,
-    variants: Sequence[str] = VARIANTS,
-    stats_name: str = 'melts_phase_errors.csv',
-    fig_prefix: str = 'melts_phase_comparison',
-) -> Dict[str, object]:
-    """Stacked phase-mass-fraction diagrams (GT vs emulator-predicted
-    assemblage, both isothermal and isentropic pathways) across the 6 rock x
-    Cr/NoCr rows, plus a per-phase mass-fraction error table. Mirrors
-    HeFESTo's run_meltstable_phase_comparison layout: two figures (one row
-    per rock x Cr/NoCr combination), one stats table.
+MELTS_PROPERTY_UNITS = {'S': 'J/g/K', 'Cp': 'J/g/K', 'V': 'cm³/g', 'H': 'J/g', 'rho': 'g/cm³'}
+
+
+def melts_run_comparison(api, run_dir, *, pathways: Sequence[str] = ('isothermal', 'isentropic', 'openox'),
+                         properties: bool = True) -> Dict[str, object]:
+    """Compare one raw alphaMELTS run folder against the emulator, row by row.
+
+    The run is routed to the Cr or NoCr model the way ``ForwardMB`` routes (an
+    all-zero Cr2O3 bulk column selects NoCr). For every requested pathway the
+    model ships, the emulator is fed each row's conditions and evolving bulk
+    composition and its predicted assemblage is compared with the run's:
+
+    * phase mass fractions (``Phase_mass_tbl.txt`` over system mass), and
+    * with ``properties`` (needs the MELTS EOS parameters), bulk specific
+      properties: alphaMELTS's own values (``System_main_tbl.txt``), the
+      built-in EOS on the GT assemblage, and the built-in EOS on each emulated
+      assemblage. A property failure is recorded in ``'property_error'`` and
+      does not stop the phase comparison.
+
+    Pathways: 'isothermal' (P, T), 'isentropic' (P, S; T from the temperature
+    model for the EOS, skipped without one), and 'openox' (P, T, logfO2-QFM;
+    NoCr open model, only for fO2-buffered runs whose System_main table has an
+    ``fO2-(QFM...)`` column).
+
+    Returns the per-run comparison dict consumed by
+    ``workspace_benchmark.evaluate_workspace`` (see ``_new_run_result``).
     """
-    standards_dir = Path(standards_dir) if standards_dir is not None else DEFAULT_STANDARDS_DIR
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = Path(run_dir)
     _ensure_alkali_feldspar_alias(api)
+    sysmain = read_system_main(run_dir)
+    if sysmain.empty:
+        raise ValueError('System_main_tbl.txt has no rows')
+    full_index = sysmain['index'].values.astype(int)
+    bulk = _reindex_to(full_index, read_bulk_comp(run_dir), index_col='index')
+    cr = bulk['Cr2O3'].fillna(0.0).to_numpy() if 'Cr2O3' in bulk.columns else np.zeros(len(bulk))
+    api_sub = api._route(cr[:, None], ['Cr2O3'])
+    variant = 'cr' if api_sub is api.cr else 'nocr'
 
-    ordered_phases = build_ordered_melts_phases(MELTS_PHASE_STACK_ORDER)
-    colors = melts_phase_colors()
+    T_C = sysmain['Temperature'].values.astype(np.float64)
+    T_K = T_C + 273.15
+    P_bar = sysmain['Pressure'].values.astype(np.float64)
+    P_GPa = P_bar / _BARS_PER_GPA
+    mass_g = sysmain['mass'].values.astype(np.float64)
+    fO2_QFM = _fO2_qfm(sysmain)
 
-    results = []
-    stat_rows = []
-    for variant in variants:
-        api_sub = api.cr if variant == 'Cr' else api.nocr
-        for rock in rocks:
-            rock_dir = standards_dir / variant / rock
-            if not rock_dir.exists():
-                warnings.warn(f"No standards directory for {rock}/{variant}: {rock_dir}")
-                continue
-            name = f'{rock}_{variant}'
-
-            sysmain = read_system_main(rock_dir)
-            bulk = read_bulk_comp(rock_dir)
-            full_index = sysmain['index'].values.astype(int)
-            # T_C (Celsius, alphaMELTS's own native units) -- NOT T_K -- is
-            # what the emulator's 'Temperature(System_main)' feature expects;
-            # see the matching comment in run_melts_property_comparison.
-            T_C = sysmain['Temperature'].values
-            P_bar = sysmain['Pressure'].values
-            P_GPa = P_bar / _BARS_PER_GPA
-            mass_g = sysmain['mass'].values
-            # Isentropic emulator input: total S (J/K) / system mass (g), built by
-            # the recipe in its feature name (see _ENTROPY_FEATURE).
-            S_specific_gt = _system_main_feature(sysmain, _ENTROPY_FEATURE)
-
-            gt_mf = _gt_phase_mass_fractions(rock_dir, full_index, mass_g)
-            iso_mf = _emulator_phase_mass_fractions(
-                api, api_sub.isothermal_emulator, P_bar, T_C,
-                'Temperature(System_main)', bulk)
-            isen_mf = _emulator_phase_mass_fractions(
-                api, api_sub.isentropic_emulator, P_bar, S_specific_gt,
-                _ENTROPY_FEATURE, bulk)
-
-            open_mf = None
-            fO2_QFM = _fO2_qfm(sysmain)
-            if variant == 'NoCr' and api.nocr.open_emulator is not None and fO2_QFM is not None:
-                open_mf = _emulator_phase_mass_fractions_openox(
-                    api, api.nocr.open_emulator, P_bar, T_C, fO2_QFM, bulk)
-
-            zeros = np.zeros_like(P_bar)
-            pathways = [('isothermal', iso_mf), ('isentropic', isen_mf)]
-            if open_mf is not None:
-                pathways.append(('openox', open_mf))
-            for pathway, pred in pathways:
-                assemblage_abs_err = np.zeros_like(P_bar)
-                for phase in ordered_phases:
-                    gt_v = gt_mf.get(phase, zeros)
-                    pr_v = pred.get(phase, zeros)
-                    if gt_v.max() <= 0 and pr_v.max() <= 0:
-                        continue
-                    abs_err = np.abs(pr_v - gt_v)
-                    assemblage_abs_err = assemblage_abs_err + abs_err
-                    stat_rows.append({
-                        'rock': rock, 'variant': variant, 'pathway': pathway, 'phase': phase,
-                        'gt_peak_fraction': float(gt_v.max()),
-                        'mean_abs_err': float(abs_err.mean()), 'max_abs_err': float(abs_err.max()),
-                    })
-                stat_rows.append({
-                    'rock': rock, 'variant': variant, 'pathway': pathway, 'phase': '__assemblage_L1__',
-                    'gt_peak_fraction': np.nan,
-                    'mean_abs_err': float(assemblage_abs_err.mean()),
-                    'max_abs_err': float(assemblage_abs_err.max()),
-                })
-
-            results.append({
-                # Isobaric-cooling runs (fixed P, varying T) -- see the T_C
-                # comment in run_melts_property_comparison; T is the x-axis.
-                'name': name, 'rock': rock, 'variant': variant,
-                'T_C': sysmain['Temperature'].values, 'P_GPa': P_GPa,
-                'gt': gt_mf, 'isothermal': iso_mf, 'isentropic': isen_mf,
-                'openox': open_mf,
-            })
-
-    stats = pd.DataFrame(stat_rows).set_index(['rock', 'variant', 'pathway', 'phase'])
-    stats_path = out_dir / stats_name
-    stats.to_csv(stats_path, na_rep='--')
-
-    figs = {
-        'isothermal': _plot_melts_phases(results, 'isothermal', ordered_phases, colors,
-                                          out_dir / f'{fig_prefix}_isothermal.png'),
-        'isentropic': _plot_melts_phases(results, 'isentropic', ordered_phases, colors,
-                                          out_dir / f'{fig_prefix}_isentropic.png'),
+    emulators = {
+        'isothermal': api_sub.isothermal_emulator,
+        'isentropic': getattr(api_sub, 'isentropic_emulator', None),
+        'openox': (api.nocr.open_emulator if variant == 'nocr' and fO2_QFM is not None else None),
     }
-    open_results = [r for r in results if r.get('openox') is not None]
-    if open_results:
-        figs['openox'] = _plot_melts_phases(
-            open_results, 'openox', ordered_phases, colors, out_dir / f'{fig_prefix}_openox.png')
-    return {'phase_errors': stats, 'stats_path': stats_path, 'figures': figs}
+    active = [p for p in pathways if emulators.get(p) is not None]
+    S_specific = None
+    if 'isentropic' in active:
+        try:
+            S_specific = _system_main_feature(sysmain, _ENTROPY_FEATURE)
+        except (KeyError, ValueError):
+            active.remove('isentropic')
+
+    result = _new_run_result(
+        variant=variant, P=P_bar, P_label='P (bar)', T=T_C, T_label='T (°C)', T_K_offset=273.15,
+        phase_basis='mass fraction', units=MELTS_PROPERTY_UNITS)
+    result['pathways'] = active
+
+    # --- phases (mass fraction of the system) ---------------------------------
+    result['phases_gt'] = _gt_phase_mass_fractions(run_dir, full_index, mass_g)
+    for pathway in active:
+        emu = emulators[pathway]
+        if pathway == 'openox':
+            mf = _emulator_phase_mass_fractions_openox(api.nocr, emu, P_bar, T_C, fO2_QFM, bulk)
+        elif pathway == 'isentropic':
+            mf = _emulator_phase_mass_fractions(api_sub, emu, P_bar, S_specific, _ENTROPY_FEATURE, bulk)
+        else:
+            mf = _emulator_phase_mass_fractions(api_sub, emu, P_bar, T_C, 'Temperature(System_main)', bulk)
+        result['phases_emulated'][pathway] = mf
+    present = set(result['phases_gt']) | {p for mf in result['phases_emulated'].values() for p in mf}
+    result['phase_order'] = build_ordered_melts_phases(present)
+    result['phase_colors'] = melts_phase_colors()
+
+    if not properties:
+        return result
+    if api.melts_solid_params is None or api.melts_liquid_params is None:
+        result['property_error'] = 'MELTS EOS parameters not loaded (load_melts_eos=False)'
+        return result
+    try:
+        result['properties'] = _gt_property_table(sysmain, mass_g)
+        gt_asm = load_gt_assemblage(run_dir, api)
+        props, cov = _bulk_props_and_coverage(
+            api, gt_asm['phase_composition'], gt_asm['phase_moles'], gt_asm['PT'], mass_g,
+            liquid_oxides=gt_asm['liquid_oxides'], liquid_oxide_labels=gt_asm['liquid_oxide_labels'])
+        result['eos_gt'], result['coverage']['gt_assemblage_internal_eos'] = props, cov
+        for pathway in active:
+            emu = emulators[pathway]
+            if pathway == 'openox':
+                cm, comp, mass = _emulator_forward_openox(api.nocr, emu, P_bar, T_C, fO2_QFM, bulk)
+                owner, T_eos = api.nocr, T_K
+            elif pathway == 'isentropic':
+                if getattr(api_sub, 'temperature_model', None) is None:
+                    continue    # no temperature model: no T to evaluate the EOS at
+                cm, comp, mass, T_pred_C = _emulator_forward(
+                    api_sub, _emulator_input_oxides(emu), P_bar, S_specific, _ENTROPY_FEATURE, bulk,
+                    temperature=True)
+                owner, T_eos = api_sub, T_pred_C + 273.15
+                result['T_pred'][pathway] = T_pred_C
+            else:
+                cm, comp, mass, _ = _emulator_forward(
+                    api_sub, _emulator_input_oxides(emu), P_bar, T_C, 'Temperature(System_main)', bulk)
+                owner, T_eos = api_sub, T_K
+            bridged = ml_indexer_to_melts_vec_assemblage(owner, api, emu, cm, mass, comp)
+            props, cov = _bulk_props_and_coverage(
+                api, bridged['phase_composition'], bridged['phase_moles'], np.column_stack([P_GPa, T_eos]),
+                100.0, liquid_oxides=bridged['liquid_oxides'],
+                liquid_oxide_labels=bridged['liquid_oxide_labels'])
+            result['eos_emulated'][pathway] = props
+            result['coverage'][f'emulation_{pathway}'] = cov
+    except Exception as e:  # noqa: BLE001 -- recorded, phases still usable
+        result['property_error'] = f'{type(e).__name__}: {e}'
+        result['eos_emulated'] = {}
+    return result
 
 
-def _plot_melts_phases(results, mode, ordered_phases, colors, save_path):
-    n_rows = len(results)
-    fig, axes = plt.subplots(n_rows, 2, figsize=(11, 3.4 * n_rows), squeeze=False)
-    for r, res in enumerate(results):
-        T = res['T_C']
-        p_lbl = f"(P={res['P_GPa'][0]:.3g} GPa)"
-        draw_melts_phase_stack(axes[r][0], res['gt'], T, ordered_phases, colors,
-                                f"{res['name']} {p_lbl} -- Raw alphaMELTS (GT)")
-        draw_melts_phase_stack(axes[r][1], res[mode], T, ordered_phases, colors,
-                                f"{res['name']} {p_lbl} -- Emulator ({mode})")
-        for ax in axes[r]:
-            ax.set_xlabel('T (°C)')
-    lbl = _MELTS_PATHWAY_LABEL[mode]
-    fig.suptitle(f'Phase mass fractions -- {lbl} pathway: GT vs emulator', fontsize=12)
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
-    fig.savefig(save_path, dpi=150, facecolor='white')
-    plt.close(fig)
-    return Path(save_path)
+def _new_run_result(*, variant, P, P_label, T, T_label, phase_basis, units,
+                    T_K_offset: float = 0.0) -> Dict[str, object]:
+    """Empty per-run comparison record shared by the MELTS and HeFESTo adapters.
+
+    Keys: 'variant' ('', 'nocr' or 'cr'); 'P', 'T' (GT conditions, display
+    units given by 'P_label'/'T_label'; T + 'T_K_offset' is Kelvin); 'pathways'; 'phases_gt' and
+    'phases_emulated' ({pathway: {phase: (n,) fraction}}, basis 'phase_basis'),
+    'phase_order', 'phase_colors'; 'properties' (simulator-reported values),
+    'eos_gt' (built-in EOS on the GT assemblage), 'eos_emulated'
+    ({pathway: {...}}), all {property: (n,) array} in 'units'; 'T_pred'
+    ({pathway: (n,)} temperature-model T, isentropic only); 'coverage'
+    ({source: (n,)} MELTS EOS coverage, NaN where the liquid is infeasible);
+    'property_error' (str, if the property comparison failed).
+    """
+    return {'variant': variant, 'P': np.asarray(P, dtype=np.float64), 'P_label': P_label,
+            'T': np.asarray(T, dtype=np.float64), 'T_label': T_label, 'T_K_offset': float(T_K_offset),
+            'pathways': [],
+            'phases_gt': {}, 'phases_emulated': {}, 'phase_order': [], 'phase_colors': {},
+            'phase_basis': phase_basis, 'properties': {}, 'eos_gt': {}, 'eos_emulated': {},
+            'units': dict(units), 'T_pred': {}, 'coverage': {}, 'property_error': None}

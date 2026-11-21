@@ -42,6 +42,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -63,7 +65,7 @@ MAJOR_OXIDE_RELERR_MAX_PCT = 5.0
 # HeFESTo MELTStable EOS thresholds
 # --------------------------------------------------------------------------- #
 MELTSTABLE_TABLES = ('HTZadiabat', 'DMMadiabat')
-MELTSTABLE_TIGHT_PROPS = ('rho', 'VP', 'VS', 'S', 'T')
+MELTSTABLE_TIGHT_PROPS = ('rho', 'VP', 'VS', 'S', 'T(K)')
 MELTSTABLE_TIGHT_MAX_PCT = 0.1
 MELTSTABLE_LOOSE_PROPS = ('alpha', 'Cp', 'KS')
 MELTSTABLE_LOOSE_MAX_PCT = 10.0
@@ -170,10 +172,10 @@ def check_phase_quality(
 
 
 def check_meltstable_quality(property_errors: pd.DataFrame) -> List[QualityFailure]:
-    """Check the HTZ/DMM rows of a ``run_meltstable_property_comparison()``
-    ``property_errors`` table (index: ``(table, source)``) against the EOS
-    property thresholds. Tables outside ``MELTSTABLE_TABLES`` (currently just
-    ``BASALTadiabat``) are not gated.
+    """Check the HTZ/DMM rows of a HeFESTo standard-workspace
+    ``property_errors`` table (index: ``(simulation, source)``, from
+    ``evaluate_workspace``) against the EOS property thresholds. Simulations
+    outside ``MELTSTABLE_TABLES`` are not gated.
     """
     failures: List[QualityFailure] = []
     thresholds = (
@@ -181,7 +183,7 @@ def check_meltstable_quality(property_errors: pd.DataFrame) -> List[QualityFailu
         + [(p, MELTSTABLE_LOOSE_MAX_PCT) for p in MELTSTABLE_LOOSE_PROPS]
     )
     for (table, source), row in property_errors.iterrows():
-        if table not in MELTSTABLE_TABLES:
+        if Path(str(table)).name not in MELTSTABLE_TABLES:
             continue
         where = f'{table}/{source}'
         for prop, limit in thresholds:
@@ -217,21 +219,20 @@ def check_fort99_import_quality(
 
 
 def check_melts_quality(property_errors: pd.DataFrame) -> List[QualityFailure]:
-    """Check every (rock, variant, source) row of a
-    ``run_melts_property_comparison()`` ``property_errors`` table against
-    the MELTS EOS property thresholds (see ``MELTS_TIGHT_PROPS`` /
-    ``MELTS_LOOSE_PROPS`` above) -- the MELTS analogue of
-    ``check_meltstable_quality``. Every rock x Cr/NoCr row and every source
-    is gated, including the open/fO2-buffered ``emulation_openox`` pathway
-    (present only for NoCr rows, since no Cr openox checkpoint exists).
+    """Check every (simulation, source) row of a MELTS standard-workspace
+    ``property_errors`` table (from ``evaluate_workspace``) against the MELTS
+    EOS property thresholds (see ``MELTS_TIGHT_PROPS`` / ``MELTS_LOOSE_PROPS``
+    above) -- the MELTS analogue of ``check_meltstable_quality``. Every
+    simulation and every source is gated, including the open/fO2-buffered
+    ``emulation_openox`` pathway (NoCr runs only; no Cr openox model exists).
     """
     failures: List[QualityFailure] = []
     thresholds = (
         [(p, MELTSTABLE_TIGHT_MAX_PCT) for p in MELTS_TIGHT_PROPS]
         + [(p, MELTSTABLE_LOOSE_MAX_PCT) for p in MELTS_LOOSE_PROPS]
     )
-    for (rock, variant, source), row in property_errors.iterrows():
-        where = f'{rock}/{variant}/{source}'
+    for (simulation, source), row in property_errors.iterrows():
+        where = f'{simulation}/{source}'
         for prop, limit in thresholds:
             col = f'{prop} mean_rel%'
             if col not in row.index:

@@ -43,7 +43,7 @@ else:
 
 DATA_DIR = REPO_ROOT / 'data'
 
-alphaMELTSLocation = os.path.join(REPO_ROOT, 'src', 'builder', 'alphamelts', 'engine', 'alphamelts-app-2.3.1-linux', 'alphamelts_linux')
+alphaMELTSLocation = os.path.join(REPO_ROOT, 'src', 'builder', 'alphamelts', 'engine', 'alphamelts-app-2.3.2-linux', 'alphamelts_linux')
 # Location to where to put the computed files.
 EnsembleLocation = str(internal_scratch_dir())
 
@@ -58,11 +58,11 @@ import time
 time.sleep(sleepytime)"""
 
 calctype = 'Cooling' # Isobaric: 'Cooling', 'Compression'. To add: Isentropic, Isochoric, Isenthalpic  # 'FxCryst', 'FxMelt', 'Batch'
-input_date = 'July8SedimentsOpen'
+input_date = 'Nov19SedimentsClosed232'
 
 input_ZeroOxides = ['MnO', 'NiO'] # List of oxides to set to zero
-MELTSmodels = ['120']#, '120']#, '102'] # MELTS models to run. To add: MAGEmin
-FXes = ['FxCryst']#, 'FxCryst']
+MELTSmodels = ['120'] # MELTS models to run. To add: MAGEmin
+FXes = ['Batch']#, 'FxCryst']
 Prange = None # Auto if None, for lithosphere/aesthenospere (p)
 
 Oxygen = 'Closed' # 'Closed' or 'Open' system with respect to oxygen. Buffered or constant oxygen?
@@ -71,7 +71,7 @@ total_to_run = int(300) # How many total simulations to run
 
 startTs = [1800, 1800]#, 1800]
 delta = -1
-input_liquid_fractions = [102, 102]#, 100] # Make above 100 to allow for superliquidus
+input_liquid_fractions = [120, 120]#, 100] # Make above 100 to allow for superliquidus
 simcycle = 50 # How many simulations to run per iteration
 
 # Tunable: final table row count for each memmap (~30x scale-up target).

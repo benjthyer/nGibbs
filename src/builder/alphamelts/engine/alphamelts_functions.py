@@ -232,6 +232,43 @@ def forward_ensemble(input_array, keys, batchname, only_phases=None, end=0, Ense
 
 
 ################ Data Import Functions ####################
+# Phases that MELTS may report as two coexisting instances in one .tbl file, and the
+# indexer phase that holds the second instance.
+SECOND_INSTANCE_PHASES = {'clinopyroxene': 'clinopyroxene2'}
+
+
+def _split_phase_instances(phasename, table, rowsfill, known_phases):
+    """Split a phase table whose step index repeats into one table per instance.
+
+    alphaMELTS writes coexisting instances of a phase (e.g. clinopyroxene1 and
+    clinopyroxene2) into the same <phase>.tbl, one row per instance, under a shared
+    step index and in instance order (verified against Phase_main_tbl.txt). The
+    first occurrence of each step index goes to `phasename`, the second to
+    SECOND_INSTANCE_PHASES[phasename]. A step with a single instance always lands in
+    `phasename`, even if MELTS called it instance 2 (e.g. cpx1 resorbed, cpx2 left);
+    slot identity is arbitrary for the label-order-invariant training loss.
+
+    Returns a list of (phasename, table, rowsfill) tuples, or None when the step
+    index repeats but the indexer has no slot for the extra instance(s).
+    """
+    if phasename not in known_phases:  # unregistered phase -> metadata path, repeats are harmless
+        return [(phasename, table, rowsfill)]
+    n = len(rowsfill)
+    order = np.argsort(rowsfill, kind='stable')
+    sorted_rows = rowsfill[order]
+    starts = np.r_[0, np.flatnonzero(np.diff(sorted_rows)) + 1]
+    occurrence = np.empty(n, dtype=int)
+    occurrence[order] = np.arange(n) - np.repeat(starts, np.diff(np.r_[starts, n]))
+    if occurrence.max(initial=0) == 0:
+        return [(phasename, table, rowsfill)]
+    second = SECOND_INSTANCE_PHASES.get(phasename)
+    if occurrence.max() > 1 or second is None or second not in known_phases:
+        return None
+    first = occurrence == 0
+    return [(phasename, table[first], rowsfill[first]),
+            (second, table[~first], rowsfill[~first])]
+
+
 # Parsing MELTS output to .csv database
 def import_MELTS_components(EnsembleLocation, batchname, indexer, fO2Arr=None,
                             dataname='DefaultMELTSstorage.csv', max_liquid_fraction=100,
@@ -353,70 +390,80 @@ def import_MELTS_components(EnsembleLocation, batchname, indexer, fO2Arr=None,
                         fault = True
                         faultIDs.append(folderNo)
                         break
-                    if phasename in list(indexer.MELTS_indices.keys()):
-                        compnames = list(indexer.MELTS_indices[phasename].keys())
-                        for fillname in compnames:
-                            if fillname == 'corundum' and 'pBatch' in batchname[folderNo]:
-                                # pMELTS does not have corundum component in rhm-oxides as of alphamelts 2.3.1
-                                continue
-                            if fillname == 'logfO2-QFM':  # Handle MELTS variable column name for the buffered fO2
-                                if fO2Arr is None:
-                                    for key in list(melt_dict.keys()):
-                                        if 'QFM' in key:
-                                            fO2key = key
-                                            print(fO2key)
-                                            delta = pull_number(key[4:])
-                                            print(delta)
-                                            if np.isnan(delta):
-                                                delta = 0
+                    # Repeated step indices = coexisting instances of one phase (e.g. two cpx).
+                    # Without this split, fancy assignment would silently keep only the last row.
+                    parts = _split_phase_instances(phasename, table, rowsfill, indexer.MELTS_indices)
+                    if parts is None:
+                        print(f"Simulation{folderNo}: {phasename} has repeated step indices (coexisting "
+                              f"instances) but no slot to hold them in this indexer. Skipping simulation.")
+                        fault = True
+                        faultIDs.append(folderNo)
+                        break
+                    for phasename, table, rowsfill in parts:
+                        if phasename in list(indexer.MELTS_indices.keys()):
+                            compnames = list(indexer.MELTS_indices[phasename].keys())
+                            for fillname in compnames:
+                                if fillname == 'corundum' and 'pBatch' in batchname[folderNo]:
+                                    # pMELTS does not have corundum component in rhm-oxides as of alphamelts 2.3.1
+                                    continue
+                                if fillname == 'logfO2-QFM':  # Handle MELTS variable column name for the buffered fO2
+                                    if fO2Arr is None:
+                                        for key in list(melt_dict.keys()):
+                                            if 'QFM' in key:
+                                                fO2key = key
+                                                print(fO2key)
+                                                delta = pull_number(key[4:])
+                                                print(delta)
+                                                if np.isnan(delta):
+                                                    delta = 0
+                                    else:
+                                        delta = fO2Arr[folderNo]
+                                    try:
+                                        meltsobj[rowsfill, indexer.MELTS_indices[phasename][fillname]] = delta
+                                    except Exception as e:
+                                        print(f"Simulation{folderNo}: Failed to populate logfO2-QFM for {phasename}. "
+                                              f"rowsfill shape: {np.shape(rowsfill)}, meltsobj shape: {np.shape(meltsobj)}, "
+                                              f"delta value: {delta}. Error: {type(e).__name__}: {e}")
+                                        fault = True
+                                        faultIDs.append(folderNo)
+                                    """elif phasename == 'amphibole':
+                                    try:
+                                        meltsobj[rowsfill, indexer.MELTS_indices[phasename][fillname]] += table[:, melt_dict[fillname]]
+                                    except:
+                                        fault = True
+                                        faultIDs.append(folderNo)"""
+                                elif (phasename == 'fluid') and (fillname in indexer.Oxides):
+                                    # Handle fluid components which are reported as wt% in the fluid phase: Will need to be renormed to 1
+                                    try:
+                                        meltsobj[rowsfill, indexer.MELTS_indices[phasename][fillname]] = table[:, melt_dict[f"wt% {fillname}"]]/OXIDE_MOLAR_MASSES[fillname]
+                                    except Exception as e:
+                                        print(f"Simulation{folderNo}: Failed to populate fluid component '{fillname}'. "
+                                              f"rowsfill shape: {np.shape(rowsfill)}, meltsobj shape: {np.shape(meltsobj)}, "
+                                              f"table shape: {np.shape(table)}. "
+                                              f"Error: {type(e).__name__}: {e}")
+                                        fault = True
+                                        faultIDs.append(folderNo)
                                 else:
-                                    delta = fO2Arr[folderNo]
+                                    try:
+                                        meltsobj[rowsfill, indexer.MELTS_indices[phasename][fillname]] = table[:, melt_dict[fillname]]
+                                    except Exception as e:
+                                        print(f"Simulation{folderNo}: Failed to populate component '{fillname}' for {phasename}. "
+                                              f"rowsfill shape: {np.shape(rowsfill)}, meltsobj shape: {np.shape(meltsobj)}, "
+                                              f"table column shape: {np.shape(table[:, melt_dict[fillname]])}. "
+                                              f"Error: {type(e).__name__}: {e}")
+                                        fault = True
+                                        faultIDs.append(folderNo)
+                        else:
+                            # If a phase comes up that is not recorded in the table, put its mass and name in the metadata
+                            for i, row in enumerate(rowsfill):
                                 try:
-                                    meltsobj[rowsfill, indexer.MELTS_indices[phasename][fillname]] = delta
+                                    working_database_rows[row] += f" {phasename}:{table[i, melt_dict['mass (gm)']]}"
                                 except Exception as e:
-                                    print(f"Simulation{folderNo}: Failed to populate logfO2-QFM for {phasename}. "
-                                          f"rowsfill shape: {np.shape(rowsfill)}, meltsobj shape: {np.shape(meltsobj)}, "
-                                          f"delta value: {delta}. Error: {type(e).__name__}: {e}")
-                                    fault = True
-                                    faultIDs.append(folderNo)
-                                """elif phasename == 'amphibole':
-                                try:
-                                    meltsobj[rowsfill, indexer.MELTS_indices[phasename][fillname]] += table[:, melt_dict[fillname]]
-                                except:
-                                    fault = True
-                                    faultIDs.append(folderNo)"""
-                            elif (phasename == 'fluid') and (fillname in indexer.Oxides):
-                                # Handle fluid components which are reported as wt% in the fluid phase: Will need to be renormed to 1
-                                try:
-                                    meltsobj[rowsfill, indexer.MELTS_indices[phasename][fillname]] = table[:, melt_dict[f"wt% {fillname}"]]/OXIDE_MOLAR_MASSES[fillname]
-                                except Exception as e:
-                                    print(f"Simulation{folderNo}: Failed to populate fluid component '{fillname}'. "
-                                          f"rowsfill shape: {np.shape(rowsfill)}, meltsobj shape: {np.shape(meltsobj)}, "
-                                          f"table shape: {np.shape(table)}. "
+                                    print(f"Simulation{folderNo}: Failed to add unregistered phase '{phasename}' to metadata. "
+                                          f"Row index: {row}, phase mass key present: {'mass (gm)' in melt_dict}. "
                                           f"Error: {type(e).__name__}: {e}")
                                     fault = True
                                     faultIDs.append(folderNo)
-                            else:
-                                try:
-                                    meltsobj[rowsfill, indexer.MELTS_indices[phasename][fillname]] = table[:, melt_dict[fillname]]
-                                except Exception as e:
-                                    print(f"Simulation{folderNo}: Failed to populate component '{fillname}' for {phasename}. "
-                                          f"rowsfill shape: {np.shape(rowsfill)}, meltsobj shape: {np.shape(meltsobj)}, "
-                                          f"table column shape: {np.shape(table[:, melt_dict[fillname]])}. "
-                                          f"Error: {type(e).__name__}: {e}")
-                                    fault = True
-                                    faultIDs.append(folderNo)
-                    else:
-                        # If a phase comes up that is not recorded in the table, put its mass and name in the metadata
-                        for i, row in enumerate(rowsfill):
-                            try:
-                                working_database_rows[row] += f" {phasename}:{table[i, melt_dict['mass (gm)']]}"
-                            except Exception as e:
-                                print(f"Simulation{folderNo}: Failed to add unregistered phase '{phasename}' to metadata. "
-                                      f"Row index: {row}, phase mass key present: {'mass (gm)' in melt_dict}. "
-                                      f"Error: {type(e).__name__}: {e}")
-                                fault = True
-                                faultIDs.append(folderNo)
             
             assert len(working_database_rows) == meltsobj.shape[0], f'Unequal Length run metadata and meltobj rows sim: {folderNo}'
 

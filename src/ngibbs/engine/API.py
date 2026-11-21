@@ -12,6 +12,7 @@ Subclass:   HeFESToAPI  — add Fortranslation EOS backend for HeFESTo
 """
 
 import functools
+import re
 import gc
 import numpy as np
 import pandas as pd
@@ -128,26 +129,111 @@ def _eval_adiabat_poly(
     return np.asarray(T, dtype=np.float32)
 
 
-aliases = { #
-    'T': 'T(K)(System_main)',
-    'T(K)': 'T(K)(System_main)',
-    'Temperature': 'T(K)(System_main)',
-    'Temperature(K)': 'T(K)(System_main)',
-    'temperature': 'T(K)(System_main)',
-    'temperature(K)': 'T(K)(System_main)',
-    'S': 'S(J/mol/K)(System_main)',
-    'S(J/mol/K)': 'S(J/mol/K)(System_main)',
-    'Entropy': 'S(J/mol/K)(System_main)',
-    'Entropy(J/mol/K)': 'S(J/mol/K)(System_main)',
-    'entropy': 'S(J/mol/K)(System_main)',
-    'entropy(J/mol/K)': 'S(J/mol/K)(System_main)',
-    'P': 'P(GPa)(System_main)',
-    'P(GPa)': 'P(GPa)(System_main)',
-    'Pressure': 'P(GPa)(System_main)',
-    'Pressure(GPa)': 'P(GPa)(System_main)',
-    'pressure': 'P(GPa)(System_main)',
-    'pressure(GPa)': 'P(GPa)(System_main)',
+# --------------------------------------------------------------------------- #
+# Condition-header normalization
+# --------------------------------------------------------------------------- #
+# Each model names its condition inputs one way (its ml_indexer.featureNames,
+# e.g. HeFESTo 'T(K)(System_main)', MELTS 'Temperature(System_main)'). Users may
+# instead write any '<quantity>(<unit>)' form -- 'T(K)', 'Temperature(C)',
+# 'P(bar)', 'logfO2(QFM)', ... -- with or without a trailing '(System_main)'.
+# Rules: the unit must be stated (except for the canonical names themselves,
+# which stay valid), and it must be the unit the target model was trained in.
+# Nothing is converted: a wrong unit is an error, never a silent rescale.
+#
+# canonical feature name -> (quantity, accepted units, normalized)
+_CONDITION_FEATURES = {
+    'T(K)(System_main)':        ('temperature', ('k',)),
+    'Temperature(System_main)': ('temperature', ('c', 'degc', 'celsius')),
+    'P(GPa)(System_main)':      ('pressure', ('gpa',)),
+    'Pressure(System_main)':    ('pressure', ('bar', 'bars')),
+    'S(J/g/K)(System_main)':    ('entropy', ('j/g/k',)),
+    'logfO2-QFM(System_main)':  ('fO2', ('qfm', 'fmq', 'dqfm', 'deltaqfm', 'dfmq', 'deltafmq')),
 }
+_UNIT_LABEL = {'k': 'K', 'c': '°C', 'gpa': 'GPa', 'bar': 'bar', 'j/g/k': 'J/g/K', 'qfm': 'log units relative to QFM'}
+_QUANTITY_LABEL = {'temperature': 'temperature', 'pressure': 'pressure', 'entropy': 'entropy', 'fO2': 'log fO2'}
+_QUANTITY_NAMES = {
+    'temperature': ('t', 'temp', 'temperature'),
+    'pressure': ('p', 'pres', 'press', 'pressure'),
+    'entropy': ('s', 'entropy'),
+    'fO2': ('fo2', 'logfo2', 'log10fo2', 'dlogfo2', 'deltalogfo2'),
+}
+_QUANTITY_OF = {name: q for q, names in _QUANTITY_NAMES.items() for name in names}
+# Bare names that are also element symbols (phosphorus, sulfur) are left alone
+# for the composition parser instead of being rejected for lacking units.
+_ELEMENT_LIKE = frozenset({'p', 's'})
+_HEADER_RE = re.compile(r'^(?P<q>[^()]*?)\s*(?:\((?P<u>[^()]*)\))?$')
+# Buffer named in the quantity itself: 'logfO2-QFM', 'fO2_FMQ', 'dQFM', 'ΔQFM'.
+_FO2_WHOLE_RE = re.compile(r'^(?:(?:log(?:10)?)?fo2[-_]?|d|delta|Δ)(?:qfm|fmq)$', re.IGNORECASE)
+_SYSTEM_MAIN_RE = re.compile(r'\s*\(\s*system_main\s*\)\s*$', re.IGNORECASE)
+
+
+def _norm_unit(u: str) -> str:
+    return re.sub(r'[\s°]|deg(?=c)', '', u.strip().lower()).replace('Δ', 'd').replace('δ', 'd')
+
+
+def _canonicalize_condition_headers(headers, feature_names):
+    """Map user condition headers onto this model's canonical feature names.
+
+    ``feature_names``: the condition features of every emulator the caller can
+    route to. Canonical names (any model's) pass through unchanged, as do
+    headers that are not condition quantities (oxides, elements). Raises
+    ValueError for a condition header without units, in a unit this model was
+    not trained in, or for a quantity this model has no input for.
+    """
+    targets = {}
+    for name in feature_names:
+        if name in _CONDITION_FEATURES:
+            targets.setdefault(_CONDITION_FEATURES[name][0], name)
+    canonical = set(_CONDITION_FEATURES) | set(_ENTROPY_FEATURES)
+
+    out = []
+    for header in headers:
+        h = str(header).strip()
+        if h in canonical:
+            out.append(h)
+            continue
+        base = _SYSTEM_MAIN_RE.sub('', h)
+        compact = re.sub(r'\s+', '', base)
+        if _FO2_WHOLE_RE.match(compact):
+            quantity, unit, raw_unit = 'fO2', 'qfm', 'QFM'
+        else:
+            m = _HEADER_RE.match(base)
+            q = re.sub(r'[\s_]+', '', m.group('q')).lower() if m else ''
+            quantity = _QUANTITY_OF.get(q.replace('Δ', 'd').replace('δ', 'd'))
+            if quantity is None:
+                out.append(h)              # not a condition column
+                continue
+            if m.group('u') is None:
+                if q in _ELEMENT_LIKE and base == h:
+                    out.append(h)          # 'P' / 'S' as an element symbol
+                    continue
+                raise ValueError(
+                    f"Condition header {h!r} has no units. Write the unit in parentheses, "
+                    f"e.g. {_example_header(quantity, targets)}.")
+            raw_unit = m.group('u')
+            unit = _norm_unit(raw_unit)
+        target = targets.get(quantity)
+        if target is None:
+            raise ValueError(
+                f"Header {h!r} gives {_QUANTITY_LABEL[quantity]}, which this model does not "
+                f"take; its condition inputs are {sorted(set(feature_names) & canonical)}.")
+        allowed = _CONDITION_FEATURES[target][1]
+        if unit not in allowed:
+            raise ValueError(
+                f"Header {h!r}: this model takes {_QUANTITY_LABEL[quantity]} in {_UNIT_LABEL[allowed[0]]} "
+                f"(feature {target!r}); got {raw_unit!r}. Units are never converted -- "
+                f"convert the column and use e.g. {_example_header(quantity, targets)}.")
+        out.append(target)
+    return out
+
+
+def _example_header(quantity, targets):
+    target = targets.get(quantity)
+    if target is None:
+        return repr(quantity)
+    unit = {'qfm': 'QFM'}.get(_CONDITION_FEATURES[target][1][0]) or _UNIT_LABEL[_CONDITION_FEATURES[target][1][0]]
+    stem = {'temperature': 'T', 'pressure': 'P', 'entropy': 'S', 'fO2': 'logfO2'}[quantity]
+    return f"'{stem}({unit})'"
 
 
 # Every name an emulator's entropy input feature goes by: HeFESTo (J/g/K),
@@ -926,7 +1012,7 @@ class EmulatorAPI:
         # keyed by {'isothermal', 'isentropic', 'openox'}, auto-discovered
         # under the sibling deployment_tests/ directory. self.test() scores
         # every configured emulator whose bundle file exists and writes the
-        # metrics tables into self.home_dir (== model_dir) / 'deployment_test'.
+        # metrics tables (default: ./ngibbs_deployment_test/<model>/validationDataset).
         _dep_root = _deployment_tests_root()
         self._test_bundles = {}
         for _kind, _path in (('isothermal', isothermal_model_path),
@@ -977,6 +1063,12 @@ class EmulatorAPI:
         # Set by MELTSAPI on its sub-APIs: computes the internal-EOS phase
         # properties behind ForwardMB(..., outputs=['ptt_props']).
         self._ptt_props_fn = None
+        # Set by MELTSAPI on its sub-APIs when constructed with exsolve_cpx=True:
+        # post-processes the mass-balanced forward results (and swaps in an
+        # emulator view whose ml_indexer carries the extra phase) before any
+        # ptt tables / EOS properties are built. None = outputs untouched.
+        self._postprocess_fn = None
+        self._postprocess_outputs = ()  # output keys the post-processor assembles itself
         if type(self) is EmulatorAPI and self.device.type != 'cpu':
             self._cpu_api = self._clone_as_cpu()
 
@@ -1023,9 +1115,7 @@ class EmulatorAPI:
 
     @property
     def home_dir(self) -> Path:
-        """The model_dir this emulator was constructed from. ``test()`` writes
-        its outputs into ``home_dir / 'deployment_test'``.
-        """
+        """The model_dir this emulator was constructed from."""
         return Path(self._model_dir)
 
     def _coverage_standards(self, kind: str):
@@ -1055,6 +1145,7 @@ class EmulatorAPI:
         allow_missing_models: bool = False,
         plot_coverage: bool = True,
         plot_reconstruction: bool = True,
+        plot_parity: bool = True,
     ) -> Dict[str, object]:
         """Run the deployable emulator quality test against the bundled ground truth.
 
@@ -1098,6 +1189,11 @@ class EmulatorAPI:
         entirely when ``write_outputs`` is False. A plotting failure for one
         emulator only warns -- it never fails the test.
 
+        ``plot_parity`` (default True): for each evaluated emulator, also write
+        ``<output_dir>/plots/abundance_parity_<name>.png`` (predicted vs
+        ground-truth abundance per phase; colour = assemblages per bin, log).
+        Skipped when ``write_outputs`` is False; a failure only warns.
+
         ``plot_reconstruction`` (default True): for each evaluated emulator, also
         reconstruct the bulk of every bundle row from the predicted component
         moles, b_hat = normalize(componentMoles @ compToEl), both from the raw
@@ -1132,7 +1228,10 @@ class EmulatorAPI:
                 f"{self.__class__.__name__} has no test bundles configured "
                 "(test_bundles={}). Wire them in the constructor / model spec."
             )
-        out_dir = Path(output_dir) if output_dir is not None else self.home_dir / 'deployment_test'
+        if output_dir is None:
+            from ngibbs.deployment_tests.workspace_benchmark import VALIDATION_DATASET, default_output_root
+            output_dir = default_output_root(self) / VALIDATION_DATASET
+        out_dir = Path(output_dir)
 
         quality: Dict[str, object] = {}
         meta: Dict[str, object] = {}
@@ -1153,6 +1252,17 @@ class EmulatorAPI:
                 out_dir.mkdir(parents=True, exist_ok=True)
                 csv_path = out_dir / f'emulator_quality_{name}.csv'
                 r['phase_quality_metrics'].to_csv(csv_path, na_rep='--')
+                if plot_parity:
+                    from ngibbs.deployment_tests._parity_plots import plot_abundance_parity
+                    a = r['arrays']
+                    try:
+                        plot_abundance_parity(
+                            a['gt_mass_wtpct'], a['pred_mass_wtpct'], a['ml_indexer'], a['phase_order'],
+                            out_dir / 'plots' / f'abundance_parity_{name}.png',
+                            title=f"{self.modelType} [{name}] on {Path(bundle).name}: "
+                                  f"{r['meta']['n_samples']:,} assemblages")
+                    except Exception as e:
+                        _warnings.warn(f"Abundance parity plot failed for '{name}' bundle: {e}")
                 if verbose:
                     print(f"[test]   n={r['meta']['n_samples']:,}  "
                           f"recon_resid_l2_mean={r['meta']['recon_residual_l2_mean']:.4g}  "
@@ -1818,9 +1928,6 @@ class EmulatorAPI:
         torch.Tensor
             Reordered features on correct device
         """
-        """def _canonicalize_header(name: str) -> str:
-            key = str(name).strip()
-            return aliases.get(key, key)"""
 
         if isinstance(table, dict):
             if headers is None:
@@ -1867,7 +1974,15 @@ class EmulatorAPI:
             if headers is not None:
                 headers = [str(h) for h in headers]
 
-        #headers = [_canonicalize_header(header) for header in headers]
+        if headers is None and hasattr(table, 'columns'):
+            headers = [str(c) for c in table.columns]
+        if headers is None:
+            raise ValueError("headers must be provided when the table has no column labels")
+        # 'T(K)', 'Temperature(C)', 'P(bar)', 'logfO2(QFM)', ... -> this model's
+        # canonical condition feature names (unit-checked, never converted).
+        headers = _canonicalize_condition_headers(headers, [
+            name for emu in (self.isothermal_emulator, self.isentropic_emulator, self.open_emulator)
+            if emu is not None for name in emu.ml_indexer.featureNames])
 
         has_temperature = 'T(K)(System_main)' in headers or 'Temperature(System_main)' in headers
         has_entropy = any(name in headers for name in _ENTROPY_FEATURES)
@@ -2036,6 +2151,22 @@ class EmulatorAPI:
         else:
             get_ptt_tables = False
 
+        post_fn = self._postprocess_fn
+        drop_component_moles = False
+        nn_outputs = outputs
+        if post_fn is not None:
+            # The post-processor works from the mass-balanced component moles and
+            # re-assembles the component-derived outputs itself, so the network pass
+            # only builds what get_T needs plus anything not derived from component
+            # moles (e.g. 'likelihoods', 'reconstruction_residual').
+            outputs = [outputs] if isinstance(outputs, str) else list(outputs)
+            if 'component_moles' not in outputs:
+                outputs.append('component_moles')
+                drop_component_moles = True
+            derived = set(getattr(self, '_postprocess_outputs', ()))
+            nn_outputs = [k for k in outputs if k not in derived or k == 'component_moles'
+                          or (get_temp and k in ('phase_moles', 'chem_out'))]
+
         results = self._staged_forward(
             emulator.forwardMB,
             features,
@@ -2043,17 +2174,28 @@ class EmulatorAPI:
             Normalize=normalize_features,
             WtPercent=wt_percent,
             comp_table_out=comp_table_out,
-            outputs=outputs,
+            outputs=nn_outputs,
         )
 
         if get_temp:
             results['temperature'] = self.get_T(torch.concatenate([features, results['phase_moles'].to(self.device), results['chem_out'].to(self.device)], dim=1), normalize_features=normalize_features, batch_size=batch_size)
 
+        if post_fn is not None:
+            # After get_T (which needs the network's own phase layout), before any
+            # ptt table / EOS property is built from the results.
+            results, emulator = post_fn(self, emulator, features, results, modeltype,
+                                        normalize_features=normalize_features,
+                                        wt_percent=wt_percent, comp_table_out=comp_table_out,
+                                        requested=outputs)
+
         if get_ptt_tables:
-            results['ptt_out'] = self.make_ptt_out(features, results['phase_tables'][0], results['phase_tables'][1], isentropic=(modeltype=='isentropic'), openox=(modeltype=='openox'))
+            results['ptt_out'] = self.make_ptt_out(features, results['phase_tables'][0], results['phase_tables'][1], isentropic=(modeltype=='isentropic'), openox=(modeltype=='openox'), indexer=emulator.ml_indexer)
 
         if get_ptt_props:
             results['ptt_out'] = self._ptt_props_fn(self, emulator, results, modeltype)
+
+        if drop_component_moles:
+            results.pop('component_moles', None)
 
         return results
 
@@ -2257,7 +2399,7 @@ class EmulatorAPI:
 
         return output_denorm if T_ref is None else T_ref + output_denorm
     
-    def make_ptt_out(self, features, phaseOxWt, phaseMassNorm, isentropic=None, openox=False):
+    def make_ptt_out(self, features, phaseOxWt, phaseMassNorm, isentropic=None, openox=False, indexer=None):
         """
         Create output in format of ptt pandas tables. This should only be used internally.
         Future dev? Integrate thermodynamic properties calcs already done in ptt. Only once an independent parallel pythonic method implemented
@@ -2274,6 +2416,10 @@ class EmulatorAPI:
             Whether the input features are isentropic
         openox : bool, default=False
             Whether the input features are from an open oxygen (fO2-buffered) model
+        indexer : MLIndexer, optional
+            Phase layout of phaseOxWt / phaseMassNorm. Default: the selected
+            emulator's own ml_indexer. ForwardMB passes the exsolution view's
+            indexer when MELTSAPI(exsolve_cpx=True) has added clinopyroxene2.
 
         Returns
         -------
@@ -2281,7 +2427,9 @@ class EmulatorAPI:
             of pandas DataFrames matching ptt format for each phase
         """
 
-        if openox:
+        if indexer is not None:
+            pass
+        elif openox:
             indexer = self.open_emulator.ml_indexer
         elif isentropic:
             indexer = self.isentropic_emulator.ml_indexer
@@ -2359,6 +2507,8 @@ class EmulatorAPI:
                 internal_name = ptt_longs[ptt_long] # special mappings for K-spar and liquid.
             else:
                 internal_name = ptt_long[:-1] # Exclude number at the end
+            if internal_name not in indexer.mass_phasedict:
+                continue  # ptt names a phase this checkpoint does not track (e.g. clinopyroxene2 without exsolution)
             internalPhaseCol = indexer.mass_phasedict[internal_name]
             if phasePresent[internalPhaseCol]:
                 accountedPhases[internalPhaseCol] = 1
@@ -2551,6 +2701,22 @@ class HeFESToAPI(EmulatorAPI):
             mass_balance=self._mass_balance,
         )
 
+    @property
+    def standard_workspace_dir(self) -> Optional[Path]:
+        """The raw HeFESTo standard-rock runs shipped for this model (its
+        standard workspace): set explicitly (``ngibbs.engine.models`` does),
+        else auto-discovered under ``deployment_tests/`` by name, or None."""
+        pinned = self.__dict__.get('_standard_workspace_dir')
+        if pinned is not None:
+            return Path(pinned)
+        return Path(self._test_meltstable_dir) if self._test_meltstable_dir is not None else None
+
+    @standard_workspace_dir.setter
+    def standard_workspace_dir(self, path) -> None:
+        self._standard_workspace_dir = Path(path) if path is not None else None
+        if path is not None:
+            self._test_meltstable_dir = str(path)   # training-coverage overlay uses the same runs
+
     def test(
         self,
         output_dir: Optional[Union[str, Path]] = None,
@@ -2561,64 +2727,47 @@ class HeFESToAPI(EmulatorAPI):
         verbose: bool = True,
         allow_missing_models: bool = False,
     ) -> Dict[str, object]:
-        """HeFESTo deployable test: the base emulator quality metrics (one table
-        per configured NPT / NPS bundle) plus a MELTStable comparison of bulk EOS
-        properties (rho, VP, VS, S, Cp, KS, thermal expansivity) and phase
-        abundances against the internal vectorised HeFESTo EOS.
+        """HeFESTo deployable test: the validation dataset (the base emulator
+        quality metrics, one table per NPT / NPS bundle) plus the standard
+        workspace (``evaluate_workspace()`` on the shipped standard-rock runs:
+        per-assemblage quality, phase and bulk-property comparisons against
+        the built-in EOS, parity and section plots).
 
-        ``allow_missing_models`` is forwarded to the base ``EmulatorAPI.test()``
-        unchanged -- see its docstring. It does not affect the MELTStable EOS
-        comparison below, which is skipped (not failed) whenever no MELTStable
-        directory is configured, independent of this flag.
-
-        All outputs (a quality-metrics CSV per emulator, two property + two phase
-        figures, a property-error table and a phase-error table) are written to
-        ``self.home_dir / 'deployment_test'``.
+        Writes ``<output_dir>/validationDataset/`` and
+        ``<output_dir>/standardWorkspace/``; ``output_dir`` defaults to
+        ``./ngibbs_deployment_test/<model name>``. ``allow_missing_models`` is
+        forwarded to ``EmulatorAPI.test()`` (see its docstring). The standard
+        workspace is skipped, not failed, when the model ships none.
         """
-        from ngibbs.deployment_tests import (
-            run_meltstable_phase_comparison,
-            run_meltstable_property_comparison,
+        from ngibbs.deployment_tests.workspace_benchmark import (
+            STANDARD_WORKSPACE, VALIDATION_DATASET, default_output_root, evaluate_workspace,
         )
         from ngibbs.utils.file_utils import (
             reset_unmapped_fort99_components,
             get_unmapped_fort99_components,
         )
 
-        # Reset before anything in this test() call touches fort.99, so the tally
-        # captured below reflects only THIS run (the base test() doesn't read
-        # fort.99 today, but scoping the reset here rather than just around the
-        # MELTStable calls below means it stays correct if that ever changes).
+        # Reset before anything in this call touches fort.99, so the tally
+        # captured below reflects only this run.
         reset_unmapped_fort99_components()
 
-        out_dir = Path(output_dir) if output_dir is not None else self.home_dir / 'deployment_test'
+        root = Path(output_dir) if output_dir is not None else default_output_root(self)
         result = super().test(
-            output_dir=out_dir, max_samples=max_samples, seed=seed,
+            output_dir=root / VALIDATION_DATASET, max_samples=max_samples, seed=seed,
             write_outputs=write_outputs, verbose=verbose,
             allow_missing_models=allow_missing_models,
         )
 
-        if self._test_meltstable_dir is None:
+        if self.standard_workspace_dir is None:
             if verbose:
-                print("[test]   no MELTStable directory configured; skipping EOS comparison.")
-            result['fort99_unmapped_components'] = get_unmapped_fort99_components()
-            return result
-
-        if self.hefesto_params is None:
-            raise RuntimeError(
-                "HeFESTo EOS params not loaded; the MELTStable comparison needs a control file."
-            )
-        if verbose:
-            print(f"[test]   MELTStable EOS comparison: {self._test_meltstable_dir}")
-
-        prop = run_meltstable_property_comparison(self, self._test_meltstable_dir, out_dir)
-        phase = run_meltstable_phase_comparison(self, self._test_meltstable_dir, out_dir)
-        result['meltstable_property_errors'] = prop['property_errors']
-        result['meltstable_phase_errors'] = phase['phase_errors']
-        result['meltstable_unrepresented_phases'] = phase['unrepresented_phases']
-        result['figures'] = {**prop['figures'], **phase['figures']}
+                print("[test]   no standard workspace shipped for this model; skipping it.")
+        else:
+            ws = evaluate_workspace(self, None, root / STANDARD_WORKSPACE,
+                                    write_outputs=write_outputs, verbose=verbose)
+            result['standard_workspace'] = ws
+            result['meltstable_property_errors'] = ws['property_errors']
+            result['meltstable_phase_errors'] = ws['phase_errors']
         result['fort99_unmapped_components'] = get_unmapped_fort99_components()
-        if write_outputs and verbose:
-            print(f"[test]   wrote MELTStable tables + figures to {out_dir}")
         return result
 
     # EOS chunks: large enough to amortise Python overhead, small enough to
@@ -2671,6 +2820,40 @@ class HeFESToAPI(EmulatorAPI):
         'dndt_fast', 'dndp_fast',
         'bmet_fast_phases', 'alpmet_fast_phases', 'cpmet_fast_phases',
     })
+
+    def evaluate_workspace(self, workspace_dir=None, output_dir=None, **kwargs) -> dict:
+        """Score this emulator against a directory tree of raw HeFESTo output,
+        measuring only (never fails on accuracy).
+
+        Every folder under ``workspace_dir`` (recursively) holding a ``control``
+        file is one simulation: its element moles plus fort.56 P/T (or S) are fed
+        to the emulator, and fort.99 is the ground truth. With no
+        ``workspace_dir`` the model's own standard workspace is used and the
+        outputs go to ``./ngibbs_deployment_test/<model>/standardWorkspace``;
+        any other workspace goes to ``.../customWorkspace/<folder name>``. See
+        ``ngibbs.deployment_tests.workspace_benchmark.evaluate_workspace`` for
+        the outputs and options.
+        """
+        from ngibbs.deployment_tests.workspace_benchmark import evaluate_workspace
+        return evaluate_workspace(self, workspace_dir, output_dir, **kwargs)
+
+    def benchmark(self, output_dir=None, **kwargs) -> dict:
+        """Generate the full benchmark (validation dataset and standard
+        workspace) with all tables and plots; see
+        ``ngibbs.deployment_tests.benchmark.generate_benchmark``. Default
+        ``output_dir``: ``./ngibbs_deployment_test/<model>/benchmark``."""
+        from ngibbs.deployment_tests.benchmark import generate_benchmark
+        from ngibbs.deployment_tests.workspace_benchmark import default_output_root
+        out = output_dir if output_dir is not None else default_output_root(self) / 'benchmark'
+        return generate_benchmark(self, out, **kwargs)
+
+    def check_benchmark(self, baseline_dir=None, output_dir=None, **kwargs) -> dict:
+        """Regenerate the benchmark and require every gated metric to be similar
+        to or better than ``baseline_dir`` (default: this model's
+        ``benchmark_baseline_dir``); raises ``BenchmarkRegressionError``
+        otherwise. See ``ngibbs.deployment_tests.benchmark.check_benchmark``."""
+        from ngibbs.deployment_tests.benchmark import check_benchmark
+        return check_benchmark(self, baseline_dir, output_dir, **kwargs)
 
     def _compute_bulk_EOS_properties(
         self,
@@ -2906,13 +3089,27 @@ class HeFESToAPI(EmulatorAPI):
         return tables
 
 
+class _CompBinariesProxy:
+    """Stand-in for an emulator's `.model` inside MELTSAPI's exsolution view:
+    serves the augmented phase layout's `comp_binaries` (read by
+    NN_MELTS.make_phase_tables) and forwards everything else to the real model."""
+
+    def __init__(self, model, comp_binaries):
+        self._model = model
+        self.comp_binaries = comp_binaries
+
+    def __getattr__(self, name):
+        return getattr(self._model, name)
+
+
 class MELTSAPI:
     """
     Dispatcher API for MELTS emulators with Cr / NoCr model variants.
 
     Holds two EmulatorAPI sub-instances and routes every call to the
-    correct one by inspecting the input headers: if 'Cr' or 'Cr2O3'
-    appears, the Cr sub-API is used; otherwise the NoCr sub-API is used.
+    correct one by inspecting the input: if a 'Cr' or 'Cr2O3' column
+    appears with any nonzero value, the Cr sub-API is used; otherwise
+    (no Cr column, or an all-zero one) the NoCr sub-API is used.
 
     The public interface mirrors EmulatorAPI (ForwardMB, ForwardNN,
     get_isentrope, parse_input). For methods that don't carry headers
@@ -2930,6 +3127,8 @@ class MELTSAPI:
         melts_solid_params_path: Optional[Union[str, Path]] = None,
         melts_liquid_params_path: Optional[Union[str, Path]] = None,
         melts_version: Optional[str] = None,
+        exsolve_cpx: bool = False,
+        exsolve_cpx_kwargs: Optional[dict] = None,
     ):
         """
         Initialize MELTS API by pointing at a single directory, building the
@@ -2975,6 +3174,19 @@ class MELTSAPI:
             carbon phases). Default: inferred from model_dir's name ('102',
             '110' or '120' token, e.g. TrainedModels/120); a ValueError is
             raised if that is not possible and load_melts_eos is True.
+        exsolve_cpx : bool, default=False
+            Split the network's single (pooled) clinopyroxene into the
+            lowest-Gibbs-energy coexisting pair after mass balance, using the
+            MELTS cpx solution model (EOS_arithmetic_MELTS/cpx_exsolution.py).
+            ForwardMB outputs then carry one more phase, 'clinopyroxene2'
+            (the minor cpx by moles; 'clinopyroxene' is the major one), with
+            its 7 endmember components inserted right after clinopyroxene's.
+            The split conserves the pooled cpx exactly, so bulk mass balance is
+            unchanged. Extra output key 'cpx_exsolved' (B,) bool marks split
+            rows. 'wt_del_component_moles' is not available in this mode.
+        exsolve_cpx_kwargs : dict, optional
+            Passed to cpx_exsolution.exsolve_cpx (device, dtype, batch_size,
+            and CpxTorch.split options such as tpd_iters / split_iters).
         """
         self._model_dir = str(Path(model_dir).resolve())
         if verbose:
@@ -3057,8 +3269,136 @@ class MELTSAPI:
             if getattr(sub, '_cpu_api', None) is not None:
                 sub._cpu_api._ptt_props_fn = self._ptt_props
 
+        # Optional cpx exsolution post-processing (MELTS cpx thermodynamics, so it
+        # lives here rather than in the model-agnostic EmulatorAPI).
+        self.exsolve_cpx = bool(exsolve_cpx)
+        self.exsolve_cpx_kwargs = dict(exsolve_cpx_kwargs or {})
+        self._exsolution_views = {}
+        if self.exsolve_cpx:
+            for sub in (self.nocr, self.cr):
+                for api in (sub, getattr(sub, '_cpu_api', None)):
+                    if api is not None:
+                        api._postprocess_fn = self._exsolve_cpx
+                        api._postprocess_outputs = self._EXSOLVABLE_OUTPUTS
+
         if verbose:
             print("[INFO] MELTSAPI initialized successfully.")
+
+    # ------------------------------------------------------------------ #
+    # Cpx exsolution (exsolve_cpx=True)
+    # ------------------------------------------------------------------ #
+    _EXSOLVABLE_OUTPUTS = ('phase_tables', 'component_moles', 'phase_moles', 'phase_present', 'chem_out')
+
+    def _exsolution_view(self, emulator):
+        """(view, layout) for `emulator`, cached; None if it tracks no clinopyroxene.
+
+        `view` is a shallow copy of the NN_MELTS emulator whose ml_indexer (and the
+        tensors derived from it) carries 'clinopyroxene2' right after
+        'clinopyroxene', built from the same projection CSVs (compToOxV2 /
+        PxSp_Comp_TransformV2 already hold the cpx2 block). It is only used to
+        assemble outputs; the network itself is untouched.
+        """
+        key = id(emulator)
+        if key in self._exsolution_views:
+            return self._exsolution_views[key]
+        mi = emulator.ml_indexer
+        if 'clinopyroxene' not in mi.mass_phasedict or 'clinopyroxene2' in mi.mass_phasedict:
+            self._exsolution_views[key] = None
+            return None
+        import copy
+        from ngibbs.config.ml_indexer import MLIndexer
+
+        cip = {}
+        for phase, comps in mi.components_in_phases.items():
+            cip[phase] = list(comps)
+            if phase == 'clinopyroxene':
+                cip['clinopyroxene2'] = list(comps)
+        aug = MLIndexer(components_in_phases=cip, Elkeys=list(mi.Elkeys), Model=getattr(mi, 'Model', 'MELTS'))
+        for attr in ('featureNames', 'feature_normalizer', 'output_normalizer', 'free_outputs', 'molar_epsilon'):
+            if hasattr(mi, attr):
+                setattr(aug, attr, getattr(mi, attr))
+
+        # Column layout: original component j -> augmented column; cpx / cpx2 columns
+        # in each phase's components_in_phases order (via phaseToCompMap rows, which
+        # follow mass_phasedict -- label_indices_comp is stale on some checkpoints).
+        def phase_cols(ix, phase):
+            return np.nonzero(np.asarray(ix.phaseToCompMap)[ix.mass_phasedict[phase]])[0]
+        cpx2_aug = phase_cols(aug, 'clinopyroxene2')
+        keep = np.setdiff1d(np.arange(aug.ncomps), cpx2_aug)
+        if len(keep) != mi.ncomps or list(np.asarray(aug.label_names)[keep]) != list(mi.label_names):
+            raise RuntimeError("cpx exsolution: augmented ml_indexer does not reproduce the "
+                               "checkpoint's component layout.")
+        orig_T = np.asarray(mi.PxSpTransform, dtype=np.float64)
+        aug_T = np.asarray(aug.PxSpTransform, dtype=np.float64)
+        if not np.allclose(aug_T[np.ix_(keep, keep)], orig_T, atol=1e-12):
+            raise RuntimeError("cpx exsolution: augmented PxSpTransform differs from the checkpoint's.")
+
+        from ngibbs.engine.EOS_arithmetic_MELTS.melts_vec.clinopyroxene import ENDMEMBERS
+        names = list(mi.components_in_phases['clinopyroxene'])
+        if sorted(names) != sorted(ENDMEMBERS):
+            raise RuntimeError(f"cpx exsolution needs all 7 MELTS cpx endmembers; checkpoint has {names}")
+        em_order = [names.index(e) for e in ENDMEMBERS]  # phase-col position of each ENDMEMBERS entry
+
+        view = copy.copy(emulator)
+        view.ml_indexer = aug
+        view._setup_indexer_tensors()
+        comp_binaries = torch.tensor([i for i, inds in enumerate(aug.label_indices.values()) if len(inds) > 1],
+                                     dtype=torch.long)
+        view.model = _CompBinariesProxy(emulator.model, comp_binaries)
+        layout = dict(keep=keep, cpx_orig=phase_cols(mi, 'clinopyroxene'),
+                      cpx_aug=phase_cols(aug, 'clinopyroxene'), cpx2_aug=cpx2_aug,
+                      em_order=np.asarray(em_order), aug_T=aug_T, ncomps_aug=aug.ncomps)
+        self._exsolution_views[key] = (view, layout)
+        return view, layout
+
+    def _exsolve_cpx(self, sub, emulator, features, results, modeltype, *,
+                     normalize_features=True, wt_percent=False, comp_table_out='oxides',
+                     requested=None):
+        """EmulatorAPI._postprocess_fn: split the pooled cpx, rebuild the outputs on
+        the augmented phase layout. Returns (results, emulator_view)."""
+        from ngibbs.engine.EOS_arithmetic_MELTS.cpx_exsolution import exsolve_cpx
+        requested = [k for k in self._EXSOLVABLE_OUTPUTS
+                     if k in (requested if requested is not None else results)]
+
+        def norm_feats(emu):
+            mol = emu.convertOxToMol(features, convert=wt_percent)
+            return (emu.norm_features.norm(mol) if normalize_features else mol).detach().cpu()
+
+        got = self._exsolution_view(emulator)
+        if got is None:  # no clinopyroxene in this checkpoint: assemble as usual
+            results.update(emulator._assemble_component_outputs(
+                results['component_moles'], norm_feats(emulator), requested, comp_table_out))
+            return results, emulator
+        view, L = got
+        if 'wt_del_component_moles' in results:
+            raise ValueError("'wt_del_component_moles' is not available with exsolve_cpx=True.")
+
+        cm = results['component_moles']
+        native = np.asarray(emulator.native_component_moles(cm.detach().cpu().numpy().astype(np.float64)))
+        em = native[:, L['cpx_orig']][:, L['em_order']]                 # (B,7) ENDMEMBERS order
+
+        names = list(emulator.ml_indexer.featureNames)
+        P_bar = features[:, names.index('Pressure(System_main)')].detach().cpu().double()
+        if modeltype == 'isentropic':
+            T_C = results['temperature'].detach().cpu().double().reshape(-1)  # MELTS isentropic T is Celsius
+        else:
+            T_C = features[:, names.index('Temperature(System_main)')].detach().cpu().double()
+
+        kw = dict(self.exsolve_cpx_kwargs)
+        kw.setdefault('device', self.device)
+        major, minor, is_split = exsolve_cpx(torch.as_tensor(em), T_C, P_bar, **kw)
+        major, minor = major.cpu().numpy(), minor.cpu().numpy()
+
+        inv = np.argsort(L['em_order'])                                 # ENDMEMBERS order -> phase-col order
+        native_aug = np.zeros((native.shape[0], L['ncomps_aug']))
+        native_aug[:, L['keep']] = native
+        native_aug[:, L['cpx_aug']] = major[:, inv]
+        native_aug[:, L['cpx2_aug']] = minor[:, inv]
+        cm_aug = torch.as_tensor(native_aug @ L['aug_T'], dtype=cm.dtype)
+
+        results.update(view._assemble_component_outputs(cm_aug, norm_feats(view), requested, comp_table_out))
+        results['cpx_exsolved'] = is_split.cpu()
+        return results, view
 
     def _ptt_props(self, sub, emulator, results, modeltype):
         """Back end of EmulatorAPI.ForwardMB(..., outputs=['ptt_props']):
@@ -3088,19 +3428,54 @@ class MELTSAPI:
         headers: Optional[Sequence[str]] = None,
     ) -> EmulatorAPI:
         """
-        Select NoCr or Cr sub-API from headers.
+        Select NoCr or Cr sub-API from headers and, when available, values.
 
-        Checks `headers` first; if None, falls back to DataFrame column
-        names. Routes to .cr if 'Cr' or 'Cr2O3' is present, else .nocr.
+        Checks `headers` first; if None, falls back to DataFrame column / dict
+        key names. Routes to .cr if a 'Cr' or 'Cr2O3' column is present and
+        carries any nonzero value; a Cr column that is all zero (or NaN) is
+        treated as chromium-free and routed to .nocr, whose input reordering
+        drops the unused column. If `table` is None (headers only), the
+        column's presence alone selects .cr.
         """
         header_list = headers
         if header_list is None and hasattr(table, 'columns'):
             header_list = list(table.columns)
-        if header_list is not None:
-            header_set = {str(h).strip() for h in header_list}
-            if 'Cr' in header_set or 'Cr2O3' in header_set:
+        if header_list is None and isinstance(table, dict):
+            header_list = list(table.keys())
+        if header_list is None:
+            return self.nocr
+        header_list = [str(h).strip() for h in header_list]
+        cr_cols = [h for h in header_list if h in ('Cr', 'Cr2O3')]
+        if not cr_cols:
+            return self.nocr
+        if table is None:
+            return self.cr
+        for name in cr_cols:
+            values = self._column_values(table, header_list, name)
+            if values is None or np.any(np.nan_to_num(values, nan=0.0) != 0.0):
                 return self.cr
         return self.nocr
+
+    @staticmethod
+    def _column_values(table, header_list, name) -> Optional[np.ndarray]:
+        """Values of column `name` from a dict / DataFrame / array / tensor
+        input (columns in `header_list` order), or None if unreadable."""
+        try:
+            if isinstance(table, dict):
+                col = table[name] if name in table else table[header_list.index(name)]
+            elif hasattr(table, 'columns') and name in [str(c).strip() for c in table.columns]:
+                col = table.iloc[:, [str(c).strip() for c in table.columns].index(name)]
+            else:
+                arr = table.detach().cpu().numpy() if torch.is_tensor(table) else np.asarray(table)
+                arr = arr.reshape(1, -1) if arr.ndim == 1 else arr
+                if arr.ndim != 2 or arr.shape[1] != len(header_list):
+                    return None
+                col = arr[:, header_list.index(name)]
+            if torch.is_tensor(col):
+                col = col.detach().cpu().numpy()
+            return np.asarray(col, dtype=np.float64).reshape(-1)
+        except (KeyError, IndexError, TypeError, ValueError):
+            return None
 
     def ForwardMB(self, table, headers=None, **kwargs):
         return self._route(table, headers).ForwardMB(table, headers=headers, **kwargs)
@@ -3109,7 +3484,7 @@ class MELTSAPI:
         return self._route(table, headers).ForwardNN(table, headers=headers, **kwargs)
 
     def get_isentrope(self, features, headers, **kwargs):
-        return self._route(headers=headers).get_isentrope(features, headers, **kwargs)
+        return self._route(features, headers).get_isentrope(features, headers, **kwargs)
 
     def parse_input(self, table, headers=None, **kwargs):
         return self._route(table, headers).parse_input(table, headers=headers, **kwargs)
@@ -3119,88 +3494,72 @@ class MELTSAPI:
 
             ``composition`` ({oxide header: value}, as you would pass to
             ForwardMB) is required and picks the variant the same way ForwardMB
-            routes: include 'Cr2O3' to tune the Cr model, omit it for NoCr. Call
-            once per variant you use. The MELTS EOS is not batch-tuned.
+            routes: include a nonzero 'Cr2O3' to tune the Cr model, omit it (or
+            set it to 0) for NoCr. Call once per variant you use. The MELTS EOS
+            is not batch-tuned.
             """
-            sub = self._route(headers=list(composition))
+            sub = self._route(composition, list(composition))
             return sub.tune_batch_size(workloads=workloads, composition=composition, **kwargs)
     
     def divide_ptt_tables(self, ptt_out, tableIDX):
         return self.cr.divide_ptt_tables(ptt_out, tableIDX) # Function is agnostic of model.
 
-    def test(self, output_dir=None, *, standards_dir=None, allow_missing_models: bool = False,
-             **kwargs) -> dict:
-        """MELTS deployable test: the base per-sub-API (NoCr/Cr) emulator
-        quality metrics, exactly as before, PLUS the MELTSIsobaricStandards
-        property/phase comparison (``run_melts_property_comparison`` /
-        ``run_melts_phase_comparison`` in ``ngibbs.deployment_tests.
-        melts_comparison``) against the internal vectorised MELTS EOS -- the
-        MELTS analogue of ``HeFESToAPI.test()``'s MELTStable comparison.
+    @property
+    def standard_workspace_dir(self) -> Optional[Path]:
+        """The raw alphaMELTS standard-rock runs shipped for this model (its
+        standard workspace): set explicitly (``ngibbs.engine.models`` does),
+        else ``deployment_tests/MELTSIsobaricStandards/<version>`` matched to
+        this model's directory by name, or None."""
+        pinned = self.__dict__.get('_standard_workspace_dir')
+        if pinned is not None:
+            return Path(pinned)
+        from ngibbs.deployment_tests.melts_comparison import DEFAULT_STANDARDS_DIR
+        found = _discover_standards_dir(_deployment_tests_root(), Path(self._model_dir))
+        found = found if found is not None else DEFAULT_STANDARDS_DIR
+        return found if found.is_dir() else None
 
-        Each sub-API scores every configured emulator (isothermal / isentropic /
-        openox) whose bundle file is present — up to six tables in total. The
-        NoCr and Cr outputs are split into ``deployment_test/nocr`` and
-        ``deployment_test/cr`` (the two share a model directory).
+    @standard_workspace_dir.setter
+    def standard_workspace_dir(self, path) -> None:
+        self._standard_workspace_dir = Path(path) if path is not None else None
 
-        ``allow_missing_models`` is forwarded to each sub-API's own
-        ``EmulatorAPI.test()`` unchanged (see its docstring) -- with the
-        default ``False``, a configured-but-absent emulator bundle (for
-        either sub-API) fails the test. MELTS120 has no temperature model at
-        all and no Cr openox checkpoint; as long as those aren't wired into
-        ``test_*_bundles`` in the first place they're never seen as "missing"
-        here, so ``allow_missing_models`` only matters for bundles that ARE
-        configured but whose checkpoint/bundle file happens to be absent.
-        This flag does not gate the MELTSIsobaricStandards comparison below
-        (that comparison reports actual emulator-vs-GT error, not model
-        presence/absence, and is skipped rather than failed when
-        ``standards_dir`` doesn't exist or ``load_melts_eos=False``).
+    def test(self, output_dir=None, *, allow_missing_models: bool = False, **kwargs) -> dict:
+        """MELTS deployable test: the validation dataset (each sub-API's
+        NoCr/Cr emulator quality metrics, one table per configured bundle)
+        plus the standard workspace (``evaluate_workspace()`` on the shipped
+        MELTSIsobaricStandards runs: per-assemblage quality, phase and
+        bulk-property comparisons against the built-in MELTS EOS for every
+        pathway the model ships, parity and section plots).
 
-        ``standards_dir`` : optional override for the auto-discovered
-        standards directory (``_discover_standards_dir``, matched to this
-        MELTSAPI's own ``model_dir`` by name, e.g. 'TrainedModels/120' ->
-        'deployment_tests/MELTSIsobaricStandards/120'), which itself falls
-        back to ``melts_comparison.DEFAULT_STANDARDS_DIR`` if nothing is
-        found.
+        Writes ``<output_dir>/validationDataset/{nocr,cr}/`` and
+        ``<output_dir>/standardWorkspace/``; ``output_dir`` defaults to
+        ``./ngibbs_deployment_test/<model name>``. ``allow_missing_models`` is
+        forwarded to each sub-API's ``EmulatorAPI.test()`` (see its
+        docstring); remaining keyword arguments (``max_samples``, ``seed``,
+        ``write_outputs``, ``verbose``, ...) go to both.
 
-        Returns ``{'nocr': <result dict>, 'cr': <result dict>,
-        'melts_property_errors': DataFrame, 'melts_phase_errors': DataFrame,
-        'figures': {...}}`` (the last three keys omitted if the
-        MELTSIsobaricStandards comparison was skipped).
+        Returns ``{'nocr': ..., 'cr': ..., 'standard_workspace': ...,
+        'melts_property_errors': DataFrame, 'melts_phase_errors': DataFrame}``
+        (the last three omitted when the model ships no standard workspace).
         """
+        from ngibbs.deployment_tests.workspace_benchmark import (
+            STANDARD_WORKSPACE, VALIDATION_DATASET, default_output_root, evaluate_workspace,
+        )
+        root = Path(output_dir) if output_dir is not None else default_output_root(self)
         out = {}
         for tag, sub in (('nocr', self.nocr), ('cr', self.cr)):
-            sub_dir = (Path(output_dir) / tag if output_dir is not None
-                       else sub.home_dir / 'deployment_test' / tag)
-            out[tag] = sub.test(output_dir=sub_dir, allow_missing_models=allow_missing_models, **kwargs)
+            out[tag] = sub.test(output_dir=root / VALIDATION_DATASET / tag,
+                                allow_missing_models=allow_missing_models, **kwargs)
 
-        if self.melts_solid_params is None or self.melts_liquid_params is None:
-            # load_melts_eos=False at construction: the internal-EOS
-            # comparison needs melts_vec's own parameter tables.
+        if self.standard_workspace_dir is None:
+            if kwargs.get('verbose', True):
+                print("[test]   no standard workspace shipped for this model; skipping it.")
             return out
-
-        from ngibbs.deployment_tests.melts_comparison import (
-            DEFAULT_STANDARDS_DIR, run_melts_phase_comparison, run_melts_property_comparison,
-        )
-        if standards_dir is not None:
-            std_dir = Path(standards_dir)
-        else:
-            std_dir = _discover_standards_dir(_deployment_tests_root(), Path(self._model_dir))
-            if std_dir is None:
-                std_dir = DEFAULT_STANDARDS_DIR
-        if not std_dir.exists():
-            return out
-
-        comp_out_dir = Path(output_dir) if output_dir is not None else self.nocr.home_dir / 'deployment_test'
-        prop = run_melts_property_comparison(self, std_dir, comp_out_dir)
-        phase = run_melts_phase_comparison(self, std_dir, comp_out_dir)
-        out['melts_property_errors'] = prop['property_errors']
-        out['melts_phase_errors'] = phase['phase_errors']
-        # prop['figures'] and phase['figures'] both use the keys
-        # 'isothermal'/'isentropic' -- prefix so neither clobbers the other.
-        out['figures'] = {
-            **{f'property_{k}': v for k, v in prop['figures'].items()},
-            **{f'phase_{k}': v for k, v in phase['figures'].items()},
-        }
+        ws = evaluate_workspace(self, None, root / STANDARD_WORKSPACE,
+                                write_outputs=kwargs.get('write_outputs', True),
+                                verbose=kwargs.get('verbose', True))
+        out['standard_workspace'] = ws
+        out['melts_property_errors'] = ws['property_errors']
+        out['melts_phase_errors'] = ws['phase_errors']
         return out
 
     def assert_quality(self, output_dir=None, **kwargs) -> dict:
@@ -3254,6 +3613,43 @@ class MELTSAPI:
             print(f"[test]   {self.__class__.__name__}: all deployment quality checks passed.")
         return result
 
+    def evaluate_workspace(self, workspace_dir=None, output_dir=None, **kwargs) -> dict:
+        """Score this emulator against a directory tree of raw alphaMELTS
+        output, measuring only (never fails on accuracy).
+
+        Every folder under ``workspace_dir`` (recursively) holding a ``*.melts``
+        file is one simulation: each row of its System_main / Bulk_comp tables
+        (P, T or S, and the system bulk at that step) is fed to the emulator, and
+        Phase_mass_tbl.txt plus the per-phase .tbl files are the ground truth.
+        Each simulation is routed to the Cr or NoCr model the same way
+        ``ForwardMB`` routes (an all-zero Cr2O3 column selects NoCr). With no
+        ``workspace_dir`` the model's own standard workspace is used and the
+        outputs go to ``./ngibbs_deployment_test/<model>/standardWorkspace``;
+        any other workspace goes to ``.../customWorkspace/<folder name>``. See
+        ``ngibbs.deployment_tests.workspace_benchmark.evaluate_workspace`` for
+        the outputs and options.
+        """
+        from ngibbs.deployment_tests.workspace_benchmark import evaluate_workspace
+        return evaluate_workspace(self, workspace_dir, output_dir, **kwargs)
+
+    def benchmark(self, output_dir=None, **kwargs) -> dict:
+        """Generate the full benchmark (NoCr + Cr validation dataset and the
+        standard workspace) with all tables and plots; see
+        ``ngibbs.deployment_tests.benchmark.generate_benchmark``. Default
+        ``output_dir``: ``./ngibbs_deployment_test/<model>/benchmark``."""
+        from ngibbs.deployment_tests.benchmark import generate_benchmark
+        from ngibbs.deployment_tests.workspace_benchmark import default_output_root
+        out = output_dir if output_dir is not None else default_output_root(self) / 'benchmark'
+        return generate_benchmark(self, out, **kwargs)
+
+    def check_benchmark(self, baseline_dir=None, output_dir=None, **kwargs) -> dict:
+        """Regenerate the benchmark and require every gated metric to be similar
+        to or better than ``baseline_dir`` (default: this model's
+        ``benchmark_baseline_dir``); raises ``BenchmarkRegressionError``
+        otherwise. See ``ngibbs.deployment_tests.benchmark.check_benchmark``."""
+        from ngibbs.deployment_tests.benchmark import check_benchmark
+        return check_benchmark(self, baseline_dir, output_dir, **kwargs)
+
     # ── Vectorised MELTS EOS (melts_vec) ──────────────────────────────────────
     # Phase-name -> (endmember list, solution-model function) for the phases
     # melts_vec currently implements a real (non-ideal) mixing model for.
@@ -3269,6 +3665,7 @@ class MELTSAPI:
         'k-feldspar':      (_melts_feldspar.ENDMEMBERS, melts_compute_feldspar_solution),
         'olivine':     (_melts_olivine.ENDMEMBERS,  melts_compute_olivine_solution),
         'clinopyroxene': (_melts_clinopyroxene.ENDMEMBERS, melts_compute_clinopyroxene_solution),
+        'clinopyroxene2': (_melts_clinopyroxene.ENDMEMBERS, melts_compute_clinopyroxene_solution),  # exsolved minor cpx
         'cpx':           (_melts_clinopyroxene.ENDMEMBERS, melts_compute_clinopyroxene_solution),
         'orthopyroxene': (_melts_orthopyroxene.ENDMEMBERS, melts_compute_orthopyroxene_solution),
         'opx':           (_melts_orthopyroxene.ENDMEMBERS, melts_compute_orthopyroxene_solution),

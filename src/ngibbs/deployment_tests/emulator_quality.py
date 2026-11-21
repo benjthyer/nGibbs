@@ -183,6 +183,132 @@ def _align_bundle_phases(bundle, ml_indexer):
     return bundle, int(n_rows - keep.sum()), extra
 
 
+def phase_quality_table(
+    ml_indexer,
+    *,
+    gt_present: np.ndarray,
+    pred_present: np.ndarray,
+    gt_mass_wtpct: np.ndarray,
+    pred_mass_wtpct: np.ndarray,
+    gt_comp_wtpct: Dict[str, np.ndarray],
+    pred_comp_wtpct: np.ndarray,
+    recon_residual: np.ndarray,
+):
+    """Build the ``metrics x phases`` quality table from aligned GT/prediction arrays.
+
+    Shared by ``evaluate_emulator_quality`` (ground truth from an ML bundle) and
+    ``workspace_benchmark`` (ground truth parsed from raw MELTS / HeFESTo
+    output), so both score a model with identical metric definitions.
+
+    Parameters
+    ----------
+    ml_indexer
+        The scored emulator's indexer; per-phase arrays are in its
+        ``mass_phasedict`` / ``comp_phasedict`` column order.
+    gt_present, pred_present : (n, n_phases) bool
+        Phase presence.
+    gt_mass_wtpct, pred_mass_wtpct : (n, n_phases)
+        Phase abundance, wt% of the whole system.
+    gt_comp_wtpct : {phase: (n, n_oxides)}
+        Ground-truth within-phase oxide wt% (``ml_indexer.Oxides`` order) for the
+        compositionally variable phases; rows where the phase is absent are ignored.
+    pred_comp_wtpct : (n, n_comp_phases, n_oxides)
+        Predicted within-phase oxide wt%.
+    recon_residual : (n,)
+        Per-row L2 residual of the mass-balanced bulk reconstruction.
+
+    Returns
+    -------
+    (table, phase_order): the DataFrame described in the module docstring, and
+    its phase columns in order (most- to least-abundant in the ground truth).
+    """
+    label_indices = ml_indexer.label_indices
+    label_indices_comp = ml_indexer.label_indices_comp
+    comp_phasedict = ml_indexer.comp_phasedict
+    mass_phasedict = ml_indexer.mass_phasedict
+    Oxides = list(ml_indexer.Oxides)
+    comp_to_ox = ml_indexer.compToOx
+    n = gt_present.shape[0]
+
+    records: Dict[str, dict] = {}
+    phase_abundance: Dict[str, float] = {}
+
+    for phase in label_indices:
+        phase_idx = mass_phasedict[phase]
+        real_pos = gt_present[:, phase_idx]
+        pred_pos = pred_present[:, phase_idx]
+
+        tp = int(np.sum(real_pos & pred_pos))
+        fp = int(np.sum(~real_pos & pred_pos))
+        fn = int(np.sum(real_pos & ~pred_pos))
+        precision = tp / (tp + fp) if (tp + fp) > 0 else np.nan
+        recall = tp / (tp + fn) if (tp + fn) > 0 else np.nan
+
+        phase_abundance[phase] = float(np.mean(np.where(real_pos, gt_mass_wtpct[:, phase_idx], 0.0)))
+
+        if real_pos.any():
+            gt_mass = gt_mass_wtpct[real_pos, phase_idx]
+            pred_mass = pred_mass_wtpct[real_pos, phase_idx]
+            abundance_mae = float(np.mean(np.abs(gt_mass - pred_mass)))
+            abundance_relerr = _safe_mean_abs_rel(gt_mass - pred_mass, gt_mass, threshold=0.01)
+        else:
+            abundance_mae = np.nan
+            abundance_relerr = np.nan
+
+        rec = {
+            'proportion_in_dataset': float(real_pos.mean()),
+            'proportion_predicted': float(pred_pos.mean()),
+            'n_rows_present': int(real_pos.sum()),
+            'precision': precision,
+            'recall': recall,
+            'abundance_gt_mean_wtpct': phase_abundance[phase],
+            'abundance_mae_wtpct': abundance_mae,
+            'abundance_relerr_pct': abundance_relerr * 100 if np.isfinite(abundance_relerr) else np.nan,
+        }
+
+        # ---- per-oxide within-phase composition errors ----
+        if phase in label_indices_comp and phase in gt_comp_wtpct:
+            active_oxides = _compute_active_oxides(comp_to_ox, label_indices[phase])
+            oxides_gt_wt = gt_comp_wtpct[phase]
+            both = real_pos & pred_pos
+            if both.any():
+                both_idx = np.where(both)[0]
+                for ox_i in active_oxides:
+                    ox = Oxides[ox_i]
+                    gt_ox = oxides_gt_wt[both_idx, ox_i]
+                    pred_ox = pred_comp_wtpct[both_idx, comp_phasedict[phase], ox_i]
+                    rec[f'{ox}_comp_mae_wtpct'] = float(np.nanmean(np.abs(gt_ox - pred_ox)))
+                    r = _safe_mean_abs_rel(gt_ox - pred_ox, gt_ox, threshold=0.1)
+                    rec[f'{ox}_comp_relerr_pct'] = r * 100 if np.isfinite(r) else np.nan
+
+        records[phase] = rec
+        gc.collect()
+
+    # ---- assemble metrics x phases table, columns abundance-sorted ----
+    phase_order = sorted(records, key=lambda p: phase_abundance.get(p, 0.0), reverse=True)
+
+    metric_order = list(_FIXED_METRICS)
+    oxide_metrics = []
+    for ox in Oxides:
+        oxide_metrics += [f'{ox}_comp_mae_wtpct', f'{ox}_comp_relerr_pct']
+    metric_order += [m for m in oxide_metrics if any(m in records[p] for p in phase_order)]
+
+    table = pd.DataFrame(
+        {phase: {m: records[phase].get(m, np.nan) for m in metric_order} for phase in phase_order},
+        index=metric_order,
+    )
+    table.index.name = 'metric'
+
+    # global scalars, broadcast across phase columns so the file stays one table
+    for name, val in (
+        ('n_samples', float(n)),
+        ('recon_residual_l2_mean', float(np.mean(recon_residual))),
+        ('recon_residual_l2_p95', float(np.percentile(recon_residual, 95))),
+    ):
+        table.loc[name] = val
+    return table, phase_order
+
+
 def _select_emulator(api, bundle, emulator_name: Optional[str] = None):
     """Return (name, NN_MELTS). Honour ``emulator_name`` if given, else pick the
     wrapped emulator whose training feature space matches the bundle."""
@@ -241,7 +367,9 @@ def evaluate_emulator_quality(
     Returns
     -------
     dict with 'phase_quality_metrics' (DataFrame, metric rows x phase columns,
-    columns abundance-sorted) and 'meta' (dict).
+    columns abundance-sorted), 'meta' (dict) and 'arrays' (per-row GT and
+    predicted phase abundances plus the ml_indexer and phase order, for
+    ``_parity_plots.plot_abundance_parity``).
     """
     bundle_path = Path(bundle_path)
     bundle = load_ml_bundle(bundle_path)
@@ -314,101 +442,34 @@ def evaluate_emulator_quality(
 
     label_indices = ml_indexer.label_indices
     label_indices_comp = ml_indexer.label_indices_comp
-    comp_phasedict = ml_indexer.comp_phasedict
-    mass_phasedict = ml_indexer.mass_phasedict
-    Oxides = list(ml_indexer.Oxides)
     comp_to_ox = ml_indexer.compToOx
     mm = ml_indexer.MM
 
-    # ---- per-phase metric records ----
-    records: Dict[str, dict] = {}
-    phase_abundance: Dict[str, float] = {}
-
+    # ---- ground-truth within-phase oxide wt%, from the bundle's intensive labels ----
+    gt_comp_wt: Dict[str, np.ndarray] = {}
     for phase in label_indices:
-        phase_idx = mass_phasedict[phase]
-        real_pos = validation_binaries[subset, phase_idx] > 0.5
-        pred_pos = binary_hat[:, phase_idx] > 0.5
+        if phase not in label_indices_comp:
+            continue
+        indices = label_indices[phase]
+        oxides_gt = validation_labels_trans[np.ix_(subset, label_indices_comp[phase])] @ comp_to_ox[indices]
+        if phase == "melts-liquid" and "Fe3" not in ml_indexer.Elkeys:
+            oxides_gt = emulator.Iron_Speciator(
+                torch.tensor(oxides_gt, device=device, dtype=torch.float32),
+                features_sub_normed,
+            ).detach().cpu().numpy()
+        oxides_gt = oxides_gt @ mm
+        gt_comp_wt[phase] = oxides_gt * (100.0 / (1e-6 + np.sum(oxides_gt, axis=1, keepdims=True)))
 
-        tp = int(np.sum(real_pos & pred_pos))
-        fp = int(np.sum(~real_pos & pred_pos))
-        fn = int(np.sum(real_pos & ~pred_pos))
-        precision = tp / (tp + fp) if (tp + fp) > 0 else np.nan
-        recall = tp / (tp + fn) if (tp + fn) > 0 else np.nan
-
-        gt_mass_all = gt_masses[:, phase_idx]
-        phase_abundance[phase] = float(np.mean(np.where(real_pos, gt_mass_all, 0.0)))
-
-        if real_pos.any():
-            gt_mass = gt_masses[real_pos, phase_idx]
-            pred_mass = mass_tens[real_pos, phase_idx]
-            abundance_mae = float(np.mean(np.abs(gt_mass - pred_mass)))
-            abundance_relerr = _safe_mean_abs_rel(gt_mass - pred_mass, gt_mass, threshold=0.01)
-        else:
-            abundance_mae = np.nan
-            abundance_relerr = np.nan
-
-        rec = {
-            'proportion_in_dataset': float(real_pos.mean()),
-            'proportion_predicted': float(pred_pos.mean()),
-            'n_rows_present': int(real_pos.sum()),
-            'precision': precision,
-            'recall': recall,
-            'abundance_gt_mean_wtpct': phase_abundance[phase],
-            'abundance_mae_wtpct': abundance_mae,
-            'abundance_relerr_pct': abundance_relerr * 100 if np.isfinite(abundance_relerr) else np.nan,
-        }
-
-        # ---- per-oxide within-phase composition errors ----
-        if phase in label_indices_comp:
-            indices = label_indices[phase]
-            comp_indices = label_indices_comp[phase]
-            active_oxides = _compute_active_oxides(comp_to_ox, indices)
-
-            oxides_gt = validation_labels_trans[np.ix_(subset, comp_indices)] @ comp_to_ox[indices]
-            if phase == "melts-liquid" and "Fe3" not in ml_indexer.Elkeys:
-                oxides_gt = emulator.Iron_Speciator(
-                    torch.tensor(oxides_gt, device=device, dtype=torch.float32),
-                    features_sub_normed,
-                ).detach().cpu().numpy()
-            oxides_gt = oxides_gt @ mm
-            oxides_gt_wt = oxides_gt * (100.0 / (1e-6 + np.sum(oxides_gt, axis=1, keepdims=True)))
-
-            both = real_pos & pred_pos
-            if both.any():
-                both_idx = np.where(both)[0]
-                for ox_i in active_oxides:
-                    ox = Oxides[ox_i]
-                    gt_ox = oxides_gt_wt[both_idx, ox_i]
-                    pred_ox = comp_tens[both_idx, comp_phasedict[phase], ox_i]
-                    rec[f'{ox}_comp_mae_wtpct'] = float(np.nanmean(np.abs(gt_ox - pred_ox)))
-                    r = _safe_mean_abs_rel(gt_ox - pred_ox, gt_ox, threshold=0.1)
-                    rec[f'{ox}_comp_relerr_pct'] = r * 100 if np.isfinite(r) else np.nan
-
-        records[phase] = rec
-        gc.collect()
-
-    # ---- assemble metrics x phases table, columns abundance-sorted ----
-    phase_order = sorted(records, key=lambda p: phase_abundance.get(p, 0.0), reverse=True)
-
-    metric_order = list(_FIXED_METRICS)
-    oxide_metrics = []
-    for ox in Oxides:
-        oxide_metrics += [f'{ox}_comp_mae_wtpct', f'{ox}_comp_relerr_pct']
-    metric_order += [m for m in oxide_metrics if any(m in records[p] for p in phase_order)]
-
-    table = pd.DataFrame(
-        {phase: {m: records[phase].get(m, np.nan) for m in metric_order} for phase in phase_order},
-        index=metric_order,
+    table, phase_order = phase_quality_table(
+        ml_indexer,
+        gt_present=validation_binaries[subset] > 0.5,
+        pred_present=binary_hat > 0.5,
+        gt_mass_wtpct=gt_masses,
+        pred_mass_wtpct=mass_tens,
+        gt_comp_wtpct=gt_comp_wt,
+        pred_comp_wtpct=comp_tens,
+        recon_residual=recon_resid,
     )
-    table.index.name = 'metric'
-
-    # global scalars, broadcast across phase columns so the file stays one table
-    for name, val in (
-        ('n_samples', float(n)),
-        ('recon_residual_l2_mean', float(np.mean(recon_resid))),
-        ('recon_residual_l2_p95', float(np.percentile(recon_resid, 95))),
-    ):
-        table.loc[name] = val
 
     meta = {
         'bundle': str(bundle_path),
@@ -423,4 +484,7 @@ def evaluate_emulator_quality(
         'phase_order': phase_order,
         'metric_descriptions': METRIC_DESCRIPTIONS,
     }
-    return {'phase_quality_metrics': table, 'meta': meta}
+    # Per-row abundances, for the abundance parity plot (not written to disk).
+    arrays = {'gt_mass_wtpct': np.asarray(gt_masses), 'pred_mass_wtpct': np.asarray(mass_tens),
+              'ml_indexer': ml_indexer, 'phase_order': phase_order}
+    return {'phase_quality_metrics': table, 'meta': meta, 'arrays': arrays}

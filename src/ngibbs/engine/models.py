@@ -57,6 +57,32 @@ GPU_MODELS = {
     for name, (cls, kwargs) in _MODEL_SPECS.items()
 } if torch.cuda.is_available() else {}
 
+# Deployment tests (see ngibbs.deployment_tests). Each model's standard
+# workspace is the set of raw simulator runs shipped with the package for it;
+# test(), evaluate_workspace() with no path, and the benchmark all score it.
+# Benchmark baselines live with each model's checkpoints, under
+# TrainedModels/<family>/benchmark_baseline/<cpu|cuda>/, and are packaged so an
+# installed copy can check itself; regenerate with
+# `python scripts/run_benchmarks.py --generate [--device cuda]`. They are kept
+# per device because CPU and GPU float32 kernels round differently, and minor
+# phases' compositions amplify that past any tolerance tight enough to be useful.
+_DEPLOYMENT_TESTS = _this_file_dir.parent / "deployment_tests"
+BENCHMARK_BASELINE_SUBDIR = "benchmark_baseline"
+STANDARD_WORKSPACES = {
+    "HeFESToEmulator": _DEPLOYMENT_TESTS / "HeFESToAdiabatStandards" / "Earth",
+    "HeFESToMarsEmulator": _DEPLOYMENT_TESTS / "HeFESToAdiabatStandards" / "Mars",
+    "MELTS120Emulator": _DEPLOYMENT_TESTS / "MELTSIsobaricStandards231" / "120",
+    "MELTS102Emulator": _DEPLOYMENT_TESTS / "MELTSIsobaricStandards231" / "102",
+}
+for _name in _MODEL_SPECS:
+    for _model, _device in ((CPU_MODELS[_name], "cpu"), (GPU_MODELS.get(_name), "cuda")):
+        if _model is not None:
+            _model.benchmark_name = _name
+            _model.benchmark_baseline_dir = (
+                Path(_MODEL_SPECS[_name][1]['model_dir']) / BENCHMARK_BASELINE_SUBDIR / _device)
+            if _name in STANDARD_WORKSPACES:
+                _model.standard_workspace_dir = STANDARD_WORKSPACES[_name]
+
 # Public module-level singletons, kept under their original names so
 # existing `from ngibbs.engine.models import ...` call sites don't change.
 # GPU names default to None (rather than being absent) when CUDA isn't

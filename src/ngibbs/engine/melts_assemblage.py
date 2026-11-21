@@ -47,9 +47,11 @@ _GT_SOLUTION_ENDMEMBERS: Dict[str, List[str]] = {
     'olivine': ['tephroite', 'fayalite', 'co-olivine', 'ni-olivine', 'monticellite', 'forsterite'],
     'clinopyroxene': ['diopside', 'clinoenstatite', 'hedenbergite', 'alumino-buffonite',
                        'buffonite', 'essenite', 'jadeite'],
+    'clinopyroxene2': ['diopside', 'clinoenstatite', 'hedenbergite', 'alumino-buffonite',
+                        'buffonite', 'essenite', 'jadeite'],  # MELTSAPI(exsolve_cpx=True) minor cpx
     'orthopyroxene': ['diopside', 'clinoenstatite', 'hedenbergite', 'alumino-buffonite',
                        'buffonite', 'essenite', 'jadeite'],
-    'spinel': ['chromite', 'hercynite', 'magnetite', 'spinel', 'ulvospinel'],
+    'spinel':['chromite', 'hercynite', 'magnetite', 'spinel', 'ulvospinel'],
     'plagioclase': ['albite', 'anorthite', 'sanidine'],
     'alkali-feldspar': ['albite', 'anorthite', 'sanidine'],
     'rhm-oxide': ['geikielite', 'hematite', 'ilmenite', 'pyrophanite', 'corundum'],

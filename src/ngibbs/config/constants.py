@@ -121,6 +121,7 @@ COMPOSITIONAL_COMPONENTS_IN_PHASES: Dict[str, List[str]] = { # Will need to be e
     'olivine': ['forsterite', 'fayalite', 'monticellite', 'tephroite', 'ni-olivine'],
     'orthopyroxene': ['diopside', 'clinoenstatite', 'hedenbergite', 'alumino-buffonite', 'buffonite', 'essenite', 'jadeite'],
     'clinopyroxene': ['diopside', 'clinoenstatite', 'hedenbergite', 'alumino-buffonite', 'buffonite', 'essenite', 'jadeite'],
+    'clinopyroxene2': ['diopside', 'clinoenstatite', 'hedenbergite', 'alumino-buffonite', 'buffonite', 'essenite', 'jadeite'],  # 2nd coexisting cpx (same MELTS model)
     'spinel': ['chromite', 'hercynite', 'magnetite', 'spinel', 'ulvospinel'],
     'plagioclase': ['albite', 'anorthite', 'sanidine'],
     'alkali-feldspar': ['albite', 'anorthite', 'sanidine'],
@@ -350,7 +351,8 @@ ptt_order_oxides = ['SiO2', 'TiO2', 'Al2O3', 'Cr2O3', 'Fe2O3', 'FeO', 'FeOt', 'M
                      'Na2O', 'K2O', 'P2O5', 'H2O', 'CO2', 'Fe3Fet']
 
 ptt_longs = { 
-    'liquid1' : 'melts-liquid', 
+    'liquid1' : 'melts-liquid',
+    'clinopyroxene2': 'clinopyroxene2',  # MELTSAPI(exsolve_cpx=True) minor cpx; not 'clinopyroxene' + '2'
     #'alkali-feldspar1': 'k-feldspar'
 }
 
@@ -358,7 +360,7 @@ ptt_to_short = {'liquid1': '_Liq',
         'olivine1': '_Ol',
         'orthopyroxene1': '_Opx',
         'clinopyroxene1': '_Cpx',
-        #'clinopyroxene2': '_Cpx2', Breaks my code for some reason.
+        'clinopyroxene2': '_Cpx2',  # mapped through ptt_longs (stripping the digit gave 'clinopyroxene' twice)
         'garnet1': '_Grt',
         'spinel1': '_Sp',
         'k-feldspar1': '_Kspar',
@@ -438,6 +440,7 @@ active_oxide_lists = {
     'olivine': ['SiO2','MgO', 'FeO', 'CaO'],
     'orthopyroxene': ['SiO2', 'CaO', 'MgO', 'FeO', 'Fe2O3', 'Na2O', 'Al2O3', 'TiO2'],
     'clinopyroxene': ['SiO2', 'CaO', 'MgO', 'FeO', 'Fe2O3', 'Na2O', 'Al2O3', 'TiO2'],
+    'clinopyroxene2': ['SiO2', 'CaO', 'MgO', 'FeO', 'Fe2O3', 'Na2O', 'Al2O3', 'TiO2'],
     'spinel': ['Cr2O3', 'MgO', 'FeO', 'Fe2O3', 'Al2O3', 'TiO2'],
     'plagioclase': ['SiO2', 'Na2O', 'K2O', 'CaO'],
     'k-feldspar': ['SiO2', 'Na2O', 'K2O', 'CaO'],

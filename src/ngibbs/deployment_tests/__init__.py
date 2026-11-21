@@ -14,11 +14,18 @@ from .emulator_quality import (
     legend_text,
     METRIC_DESCRIPTIONS,
 )
-from .meltstable_comparison import (
-    run_meltstable_phase_comparison,
-    run_meltstable_property_comparison,
+from .meltstable_comparison import hefesto_run_comparison
+from .melts_comparison import melts_run_comparison
+from .workspace_benchmark import classify_path, evaluate_workspace
+from .benchmark import (
+    BenchmarkRegressionError,
+    BenchmarkTolerances,
+    check_benchmark,
+    compare_benchmarks,
+    generate_benchmark,
 )
 from .quality_thresholds import (
+    check_melts_quality,
     check_meltstable_quality,
     check_phase_quality,
     EmulatorQualityError,
@@ -29,8 +36,16 @@ __all__ = [
     "evaluate_emulator_quality",
     "legend_text",
     "METRIC_DESCRIPTIONS",
-    "run_meltstable_phase_comparison",
-    "run_meltstable_property_comparison",
+    "hefesto_run_comparison",
+    "melts_run_comparison",
+    "classify_path",
+    "evaluate_workspace",
+    "generate_benchmark",
+    "compare_benchmarks",
+    "check_benchmark",
+    "BenchmarkTolerances",
+    "BenchmarkRegressionError",
+    "check_melts_quality",
     "check_meltstable_quality",
     "check_phase_quality",
     "EmulatorQualityError",

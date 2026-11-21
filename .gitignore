@@ -221,3 +221,6 @@ copilot-instructions.md
 
 # Single-process training lock (builder/training/training_lock.py)
 src/builder/training/training.lock
+
+# deployment-test outputs (api.test(), evaluate_workspace(), benchmarks)
+ngibbs_deployment_test/

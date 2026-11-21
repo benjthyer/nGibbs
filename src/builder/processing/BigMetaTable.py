@@ -1630,6 +1630,100 @@ class BigMetaTable():
             self.delete(np.unique(conflict_rows).astype(int))
 
         
+    # Per-phase columns pool_clinopyroxene knows how to combine. Anything else in the
+    # clinopyroxene/clinopyroxene2 column dicts raises rather than being silently dropped.
+    _CPX_EXTENSIVE_KEYS = ('mass (gm)', 'H (kJ)', 'S (J/K)', 'V (cc)')
+
+    def pool_clinopyroxene(self, chunk_size=None):
+        """Fold the second coexisting clinopyroxene (``clinopyroxene2``) into
+        ``clinopyroxene``, then zero every ``clinopyroxene2`` column.
+
+        The NN is trained on ONE pooled cpx; splitting it back into the coexisting
+        pair is done after inference by ``MELTSAPI`` (cpx exsolution, method A), using
+        the MELTS cpx Gibbs model. The raw MELTStables keep both instances, which is
+        the truth that exsolution step is validated against.
+
+        Pooling is exact mass/composition bookkeeping:
+          - moles   n_k = mass_k / (x_k . M), with M the endmember molar masses
+          - x       mole-weighted mean of the endmember fractions (linear, so the
+                    pooled phase carries exactly the summed oxides)
+          - mass, H, S, V   summed (MELTS reports them per phase, extensive)
+          - rho     total mass / total volume, with each instance's volume taken
+                    as mass/rho (V column as fallback when rho is missing)
+
+        No-op when the table has no ``clinopyroxene2`` columns. Afterwards the
+        clinopyroxene2 columns are all zero, so ``indexer.table_update`` drops the
+        phase from the ml_indexer like any other zero-sum phase. Must run before
+        ``filter_phases_not_in_ml_indexer`` on validation/test tables, which would
+        otherwise delete every row that has a second cpx.
+        """
+        if 'clinopyroxene2' not in self.indexer.MELTS_indices:
+            return
+        assert_no_derivative_sidecars(self, 'pool_clinopyroxene')
+        if 'clinopyroxene' not in self.indexer.MELTS_indices:
+            raise KeyError("Cannot pool clinopyroxene: 'clinopyroxene2' present but 'clinopyroxene' is not.")
+        if chunk_size is None:
+            chunk_size = self.chunk_size or 100_000
+
+        from ngibbs.engine.EOS_arithmetic_MELTS.melts_vec import load_solids, molar_masses
+        from ngibbs.engine.EOS_arithmetic_MELTS.melts_vec.clinopyroxene import ENDMEMBERS
+
+        c1 = self.indexer.MELTS_indices['clinopyroxene']
+        c2 = self.indexer.MELTS_indices['clinopyroxene2']
+        known = set(ENDMEMBERS) | set(self._CPX_EXTENSIVE_KEYS) | {'rho (gm/cc)'}
+        for name, cols in (('clinopyroxene', c1), ('clinopyroxene2', c2)):
+            unknown = set(cols) - known
+            if unknown:
+                raise KeyError(f"pool_clinopyroxene: no pooling rule for {name} columns {sorted(unknown)}")
+        if 'mass (gm)' not in c1 or 'mass (gm)' not in c2:
+            raise KeyError("pool_clinopyroxene: both cpx instances need a 'mass (gm)' column.")
+        em = [k for k in ENDMEMBERS if k in c1 and k in c2]
+        if em != [k for k in ENDMEMBERS if k in c1] or em != [k for k in ENDMEMBERS if k in c2]:
+            raise KeyError("pool_clinopyroxene: clinopyroxene and clinopyroxene2 carry different endmembers.")
+        MM = molar_masses(load_solids(), em)
+        e1 = np.array([c1[k] for k in em]); e2 = np.array([c2[k] for k in em])
+        all_c2 = np.array(sorted(c2.values()))
+
+        n_rows = self.table.shape[0]
+        n_pooled = n_only2 = 0
+        for start in range(0, n_rows, chunk_size):
+            stop = min(start + chunk_size, n_rows)
+            blk = np.asarray(self.table[start:stop], dtype=np.float64)
+            m1 = blk[:, c1['mass (gm)']]
+            m2 = blk[:, c2['mass (gm)']]
+            has2 = m2 > 0
+            if has2.any():
+                b = blk[has2]
+                m1h, m2h = m1[has2], m2[has2]
+                X1, X2 = b[:, e1], b[:, e2]
+                n1 = np.where(m1h > 0, m1h / np.where(m1h > 0, X1 @ MM, 1.0), 0.0)
+                n2 = m2h / (X2 @ MM)
+                X = (n1[:, None] * X1 + n2[:, None] * X2) / (n1 + n2)[:, None]
+                out = b[:, sorted(c1.values())].copy()
+                pos = {col: j for j, col in enumerate(sorted(c1.values()))}
+                for j, k in enumerate(em):
+                    out[:, pos[c1[k]]] = X[:, j]
+                for k in self._CPX_EXTENSIVE_KEYS:
+                    if k in c1 and k in c2:
+                        out[:, pos[c1[k]]] = b[:, c1[k]] + b[:, c2[k]]
+                if 'rho (gm/cc)' in c1 and 'rho (gm/cc)' in c2:
+                    def vol(cols, m):
+                        rho = b[:, cols['rho (gm/cc)']]
+                        vcol = b[:, cols['V (cc)']] if 'V (cc)' in cols else np.zeros_like(m)
+                        return np.where(rho > 0, m / np.where(rho > 0, rho, 1.0), vcol)
+                    vtot = vol(c1, m1h) + vol(c2, m2h)
+                    out[:, pos[c1['rho (gm/cc)']]] = np.where(vtot > 0, (m1h + m2h) / np.where(vtot > 0, vtot, 1.0), 0.0)
+                rows = np.flatnonzero(has2) + start
+                self.table[np.ix_(rows, sorted(c1.values()))] = out
+                n_pooled += int(has2.sum())
+                n_only2 += int((has2 & ~(m1 > 0)).sum())
+            self.table[start:stop, all_c2] = 0
+        if hasattr(self.table, 'flush'):
+            self.table.flush()
+        print(f"Pooled clinopyroxene2 into clinopyroxene in {n_pooled} of {n_rows} rows"
+              + (f" ({n_only2} had cpx2 without cpx1)" if n_only2 else "")
+              + "; clinopyroxene2 columns zeroed.")
+
     def retrieve_component_moles(self, multiplier_bounds=[1, 1], chunk_size=None):
         """
         Convert phase assemblages to molar component form.

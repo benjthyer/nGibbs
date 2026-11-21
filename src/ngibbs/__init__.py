@@ -37,3 +37,28 @@ def clear_batch_tuning(device='cuda', workloads=None):
     """Forget tuned values for ``device``'s GPU (all, or the given workload keys)."""
     from .utils import batch_tuning
     batch_tuning.clear(device, workloads=workloads)
+
+
+# Model objects, importable at package level:
+#     from ngibbs import MELTS120EmulatorCPU, HeFESToEmulatorGPU
+# Resolved lazily (PEP 562) from ngibbs.engine.models, so `import ngibbs` alone
+# loads no checkpoints; the first model access loads all of them, once.
+_MODEL_NAMES = ('HeFESToEmulator', 'HeFESToMarsEmulator', 'MELTS102Emulator', 'MELTS120Emulator')
+_LAZY_MODEL_ATTRS = frozenset(
+    [f'{n}{d}' for n in _MODEL_NAMES for d in ('CPU', 'GPU')] + ['CPU_MODELS', 'GPU_MODELS'])
+
+__all__ = ['tune_batch_size', 'batch_tuning_summary', 'show_batch_tuning',
+           'clear_batch_tuning', *sorted(_LAZY_MODEL_ATTRS)]
+
+
+def __getattr__(name):
+    if name in _LAZY_MODEL_ATTRS:
+        from .engine import models
+        value = getattr(models, name)
+        globals()[name] = value  # cache: later lookups skip __getattr__
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | _LAZY_MODEL_ATTRS)

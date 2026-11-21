@@ -1,0 +1,91 @@
+{
+  "created_utc": "2026-11-20T02:41:31+00:00",
+  "api": "HeFESToAPI",
+  "model": "HeFESToMarsEmulator",
+  "model_dir": "/home/bthyer/nGibbs/src/ngibbs/engine/TrainedModels/HeFESToMars",
+  "workspace_dir": "/home/bthyer/nGibbs/src/ngibbs/deployment_tests/HeFESToAdiabatStandards/Mars",
+  "workspace_kind": "standard",
+  "simulator": "hefesto",
+  "pathways": [
+    "isothermal",
+    "isentropic"
+  ],
+  "n_simulations_found": 3,
+  "n_simulations_benchmarked": 3,
+  "n_assemblages": {
+    "isothermal": 153,
+    "isentropic": 153
+  },
+  "groups": {
+    "isothermal": {
+      "variant": null,
+      "pathway": "isothermal",
+      "n_rows_parsed": 153,
+      "n_rows_dropped_unmodelled_phase": 0,
+      "n_rows_dropped_out_of_pressure_range": 0,
+      "n_rows_dropped_invalid": 0,
+      "unmodelled_phases": {},
+      "simulations": {
+        "BASALTmars": 51,
+        "HTZmars": 51,
+        "SHERGmars": 51
+      },
+      "n_simulations": 3,
+      "n_assemblages": 153,
+      "dataset_signature": "676f4a795e0dff7a92a360c9a813eab4810b489b",
+      "mass_balance": "iterative"
+    },
+    "isentropic": {
+      "variant": null,
+      "pathway": "isentropic",
+      "n_rows_parsed": 153,
+      "n_rows_dropped_unmodelled_phase": 0,
+      "n_rows_dropped_out_of_pressure_range": 0,
+      "n_rows_dropped_invalid": 0,
+      "unmodelled_phases": {},
+      "simulations": {
+        "BASALTmars": 51,
+        "HTZmars": 51,
+        "SHERGmars": 51
+      },
+      "n_simulations": 3,
+      "n_assemblages": 153,
+      "dataset_signature": "676f4a795e0dff7a92a360c9a813eab4810b489b",
+      "mass_balance": "iterative"
+    }
+  },
+  "skipped_simulations": {},
+  "comparison": {
+    "n_simulations_compared": 3,
+    "failed": {},
+    "without_properties": {},
+    "sections": {
+      "isothermal": {
+        "drawn": [
+          "BASALTmars",
+          "HTZmars",
+          "SHERGmars"
+        ],
+        "path_kind": {
+          "BASALTmars": "transect",
+          "HTZmars": "transect",
+          "SHERGmars": "transect"
+        },
+        "unplottable": {}
+      },
+      "isentropic": {
+        "drawn": [
+          "BASALTmars",
+          "HTZmars",
+          "SHERGmars"
+        ],
+        "path_kind": {
+          "BASALTmars": "transect",
+          "HTZmars": "transect",
+          "SHERGmars": "transect"
+        },
+        "unplottable": {}
+      }
+    }
+  }
+}

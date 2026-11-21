@@ -30,7 +30,7 @@ PY
             OLDTEST=src/ngibbs/engine/TrainedModels/HeFESToMars/HeFESToMars_${P}_Test_subset15000.tar.gz
             NEWTEST=data/MLready/HeFESTo/HeFESTo_Mars_${P}_Test.tar.gz ;;
     MELTS_*) N=${MODE#MELTS_}; S=${N:0:3}   # e.g. MELTS_102Closed_Cr_NPT
-            TAR=$(echo $N | sed 's/Closed_/ClosedFxBatch_/'); CFG=recipes/training/MELTSft_${N}.yaml
+            TAR=$(echo $N | sed -E 's/(Closed|Open)_/\1FxBatch_/'); CFG=recipes/training/MELTSft_${N}.yaml
             SHIP=src/ngibbs/engine/TrainedModels/${S}/${N}.tar
             OLDTEST=src/ngibbs/engine/TrainedModels/${S}/${N}_Test_subset15000.tar.gz
             NEWTEST=data/MLready/${S}/${TAR}_Test.tar.gz ;;
@@ -39,6 +39,11 @@ PY
             OLDTEST=src/ngibbs/engine/TrainedModels/HeFESToEarth/HeFESToEarth_${MODE}_Test_subset15000.tar.gz
             NEWTEST=data/MLready/HeFESTo/HeFESTo_EarthAffinity_${MODE}_Test.tar.gz ;;
   esac
+  # pause (don't fail) while / or /tmp is short on space; /tmp is a small RAM tmpfs
+  while [ "$(df --output=avail -BG / | tail -1 | tr -dc 0-9)" -lt 50 ] || \
+        [ "$(df --output=avail -BG /tmp | tail -1 | tr -dc 0-9)" -lt 2 ]; do
+    echo "[queue] $(date) low disk space (/ <50G or /tmp <2G), waiting before $NAME"; sleep 600
+  done
   LOG=$L/${NAME}.log
   echo "[queue] $(date) START $NAME ($TAR from $WARM) $EXTRA"
   if [ "$WARM" != "SKIP" ]; then

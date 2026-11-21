@@ -5,7 +5,13 @@ on:
     types: [published]
 
 jobs:
+  benchmark:
+    # Regression gate: nothing is uploaded to PyPI unless every shipped model
+    # passes against its committed CPU baseline (see benchmark.yml).
+    uses: ./.github/workflows/benchmark.yml
+
   publish:
+    needs: benchmark
     runs-on: ubuntu-latest
 
     steps:

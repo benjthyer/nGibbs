@@ -1,0 +1,91 @@
+{
+  "created_utc": "2026-11-20T02:41:01+00:00",
+  "api": "HeFESToAPI",
+  "model": "HeFESToEmulator",
+  "model_dir": "/home/bthyer/nGibbs/src/ngibbs/engine/TrainedModels/HeFESToEarth",
+  "workspace_dir": "/home/bthyer/nGibbs/src/ngibbs/deployment_tests/HeFESToAdiabatStandards/Earth",
+  "workspace_kind": "standard",
+  "simulator": "hefesto",
+  "pathways": [
+    "isothermal",
+    "isentropic"
+  ],
+  "n_simulations_found": 3,
+  "n_simulations_benchmarked": 3,
+  "n_assemblages": {
+    "isothermal": 420,
+    "isentropic": 420
+  },
+  "groups": {
+    "isothermal": {
+      "variant": null,
+      "pathway": "isothermal",
+      "n_rows_parsed": 423,
+      "n_rows_dropped_unmodelled_phase": 0,
+      "n_rows_dropped_out_of_pressure_range": 3,
+      "n_rows_dropped_invalid": 0,
+      "unmodelled_phases": {},
+      "simulations": {
+        "BASALTadiabat": 140,
+        "DMMadiabat": 140,
+        "SILICAadiabat": 140
+      },
+      "n_simulations": 3,
+      "n_assemblages": 420,
+      "dataset_signature": "dc3a363effad78e6d60cb88029bdd80e6371fb11",
+      "mass_balance": "iterative"
+    },
+    "isentropic": {
+      "variant": null,
+      "pathway": "isentropic",
+      "n_rows_parsed": 423,
+      "n_rows_dropped_unmodelled_phase": 0,
+      "n_rows_dropped_out_of_pressure_range": 3,
+      "n_rows_dropped_invalid": 0,
+      "unmodelled_phases": {},
+      "simulations": {
+        "BASALTadiabat": 140,
+        "DMMadiabat": 140,
+        "SILICAadiabat": 140
+      },
+      "n_simulations": 3,
+      "n_assemblages": 420,
+      "dataset_signature": "dc3a363effad78e6d60cb88029bdd80e6371fb11",
+      "mass_balance": "iterative"
+    }
+  },
+  "skipped_simulations": {},
+  "comparison": {
+    "n_simulations_compared": 3,
+    "failed": {},
+    "without_properties": {},
+    "sections": {
+      "isothermal": {
+        "drawn": [
+          "BASALTadiabat",
+          "DMMadiabat",
+          "SILICAadiabat"
+        ],
+        "path_kind": {
+          "BASALTadiabat": "transect",
+          "DMMadiabat": "transect",
+          "SILICAadiabat": "transect"
+        },
+        "unplottable": {}
+      },
+      "isentropic": {
+        "drawn": [
+          "BASALTadiabat",
+          "DMMadiabat",
+          "SILICAadiabat"
+        ],
+        "path_kind": {
+          "BASALTadiabat": "transect",
+          "DMMadiabat": "transect",
+          "SILICAadiabat": "transect"
+        },
+        "unplottable": {}
+      }
+    }
+  }
+}

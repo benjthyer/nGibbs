@@ -357,6 +357,8 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, outn
             print('[TEST-ONLY] Skipping the training table; the validation table builds its own ml_indexer.')
         elif not skip_train:
             TrainMELTS = BigMetaTable(TrainName, read_dir=read_dir, Model=MODEL, OXYGEN=OXYGEN, chunk_size=chunk_size) # Assume closed system for training data
+            if preproc_cfg.get('pool_clinopyroxene', True):
+                TrainMELTS.pool_clinopyroxene()  # NN learns one pooled cpx; MELTSAPI re-exsolves it
             if excluded_oxides_cfg:
                 print(f"Applying configured oxide exclusions at table load: {excluded_oxides_cfg}")
                 TrainMELTS.exclude_oxides(excluded_oxides_cfg)
@@ -532,6 +534,8 @@ def process_for_ML(config_path=None, MELTSModel=None, Date=None, Mode=None, outn
         # Process test data - the entire validation dataset is used as the test
         # dataset (no split, no separate Valid bundle).
         TestMELTS = BigMetaTable(ValidName, read_dir=read_dir, Model=MODEL, OXYGEN=OXYGEN, chunk_size=chunk_size)
+        if preproc_cfg.get('pool_clinopyroxene', True):
+            TestMELTS.pool_clinopyroxene()  # NN learns one pooled cpx; MELTSAPI re-exsolves it
         if header is not None:
             try:
                 assert TestMELTS.header == header, "Validation dataset header does not match training dataset header! Trying without last training column." #(This is assummed in later steps, but maybe doesn't need to be?)

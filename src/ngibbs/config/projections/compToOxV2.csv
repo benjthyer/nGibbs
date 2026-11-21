@@ -18,6 +18,13 @@ alumino-buffonite : clinopyroxene,1,0.5,0.5,0,0.5,1,0,0,0,0,0,0,0,0,0
 buffonite : clinopyroxene,1,0.5,0,0,0.5,1,0,0,0,0,0,0,0,0,0.5
 essenite : clinopyroxene,1,0,0.5,0,0,1,0,0,0,0,0,0,0,0,0.5
 jadeite : clinopyroxene,2,0,0.5,0,0,0,0.5,0,0,0,0,0,0,0,0
+diopside : clinopyroxene2,2,0,0,0,1,1,0,0,0,0,0,0,0,0,0
+clinoenstatite : clinopyroxene2,2,0,0,0,2,0,0,0,0,0,0,0,0,0,0
+hedenbergite : clinopyroxene2,2,0,0,1,0,1,0,0,0,0,0,0,0,0,0
+alumino-buffonite : clinopyroxene2,1,0.5,0.5,0,0.5,1,0,0,0,0,0,0,0,0,0
+buffonite : clinopyroxene2,1,0.5,0,0,0.5,1,0,0,0,0,0,0,0,0,0.5
+essenite : clinopyroxene2,1,0,0.5,0,0,1,0,0,0,0,0,0,0,0,0.5
+jadeite : clinopyroxene2,2,0,0.5,0,0,0,0.5,0,0,0,0,0,0,0,0
 chromite : spinel,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0
 hercynite : spinel,0,0,1,1,0,0,0,0,0,0,0,0,0,0,0
 magnetite : spinel,0,0,0,1,0,0,0,0,0,0,0,0,0,0,1
