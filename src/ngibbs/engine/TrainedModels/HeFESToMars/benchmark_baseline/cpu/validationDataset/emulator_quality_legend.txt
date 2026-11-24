@@ -1,0 +1,16 @@
+Emulator quality metrics — one row per metric, one column per phase.
+NaN is written as '--'.  Phase columns are ordered most- to least-abundant in the bundle.
+
+proportion_in_dataset    fraction of evaluated rows in which the phase is present (ground truth)
+proportion_predicted     fraction of evaluated rows in which the model predicts the phase present
+n_rows_present           count of evaluated rows in which the phase is present (ground truth)
+precision                phase-presence precision  TP / (TP + FP)
+recall                   phase-presence recall  TP / (TP + FN)
+abundance_gt_mean_wtpct  mean ground-truth phase abundance, wt% of the whole system (rows where the phase is absent count as 0)
+abundance_mae_wtpct      mean |predicted - ground-truth| phase abundance, wt% of system, over rows where the phase is present in the ground truth
+abundance_relerr_pct     mean |predicted - ground-truth| / ground-truth of phase abundance, in percent, over ground-truth-present rows with ground-truth abundance > 0.01 wt%
+<ox>_comp_mae_wtpct      mean |predicted - ground-truth| of that oxide, wt% WITHIN the phase, over rows where the phase is present in both ground truth and prediction
+<ox>_comp_relerr_pct     mean |predicted - ground-truth| / ground-truth of that within-phase oxide wt%, in percent, over both-present rows with ground-truth wt% > 0.1
+n_samples                number of bundle rows evaluated
+recon_residual_l2_mean   mean L2 residual of the mass-balanced bulk reconstruction (normalized units)
+recon_residual_l2_p95    95th percentile of the mass-balanced bulk reconstruction L2 residual

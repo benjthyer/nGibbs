@@ -1,6 +1,6 @@
 {
   "format_version": 2,
-  "created_utc": "2026-11-21T01:46:41+00:00",
+  "created_utc": "2026-11-24T04:55:02+00:00",
   "model": {
     "api": "HeFESToAPI",
     "name": "HeFESToMarsEmulator",
@@ -12,8 +12,8 @@
     }
   },
   "environment": {
-    "ngibbs_version": "0.1.0b5.dev72+g9e9fe72da.d20261025",
-    "git_commit": "3301474d65bcd152ecb74d5bb5d0e9355fd96ae3",
+    "ngibbs_version": "0.1.0b5.dev56+g63896e573.d20261023",
+    "git_commit": "431a672609a2a2b9140c21ce3cb7a4bb353063a0",
     "torch": "2.12.1+cu130",
     "python": "3.11.15",
     "device": "cpu"

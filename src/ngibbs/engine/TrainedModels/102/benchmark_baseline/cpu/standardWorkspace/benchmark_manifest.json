@@ -1,5 +1,5 @@
 {
-  "created_utc": "2026-11-21T00:32:49+00:00",
+  "created_utc": "2026-11-24T04:57:00+00:00",
   "api": "MELTSAPI",
   "model": "MELTS102Emulator",
   "model_dir": "/home/bthyer/nGibbs/src/ngibbs/engine/TrainedModels/102",
@@ -75,23 +75,23 @@
         "property_r2": {
           "S": {
             "gt_assemblage": 0.9999996517131161,
-            "emulated": 0.9999630350834535
+            "emulated": 0.9999630384419886
           },
           "Cp": {
-            "gt_assemblage": 0.9995856149376212,
-            "emulated": 0.9993728495948041
+            "gt_assemblage": 0.9995856149436827,
+            "emulated": 0.9993898478073536
           },
           "V": {
             "gt_assemblage": 0.9999999982851341,
-            "emulated": 0.999891671657264
+            "emulated": 0.9998912967553422
           },
           "H": {
             "gt_assemblage": 0.9999996368269708,
-            "emulated": 0.9999779511154493
+            "emulated": 0.9999782620515222
           },
           "rho": {
             "gt_assemblage": 0.9999999981801918,
-            "emulated": 0.9999086012736705
+            "emulated": 0.9999083858207553
           }
         }
       },
@@ -111,23 +111,23 @@
         "property_r2": {
           "S": {
             "gt_assemblage": 0.9999996517131161,
-            "emulated": 0.9999556763013684
+            "emulated": 0.9999556766156958
           },
           "Cp": {
-            "gt_assemblage": 0.9995856149376212,
-            "emulated": 0.9991823347033907
+            "gt_assemblage": 0.9995856149436827,
+            "emulated": 0.9991983692522386
           },
           "V": {
             "gt_assemblage": 0.9999999982851341,
-            "emulated": 0.9998811007529863
+            "emulated": 0.9998811009170736
           },
           "H": {
             "gt_assemblage": 0.9999996368269708,
-            "emulated": 0.9999798155744215
+            "emulated": 0.9999798152225073
           },
           "rho": {
             "gt_assemblage": 0.9999999981801918,
-            "emulated": 0.9998931505966266
+            "emulated": 0.9998931504903159
           }
         }
       },
@@ -144,23 +144,23 @@
         "property_r2": {
           "S": {
             "gt_assemblage": 0.9999999321960441,
-            "emulated": 0.9999916859718538
+            "emulated": 0.9999916859373784
           },
           "Cp": {
-            "gt_assemblage": 0.9995737368292046,
-            "emulated": 0.9994397284021409
+            "gt_assemblage": 0.9995737368372122,
+            "emulated": 0.9994939010923403
           },
           "V": {
             "gt_assemblage": 0.9999999922756067,
-            "emulated": 0.9993128243167776
+            "emulated": 0.999312818577729
           },
           "H": {
             "gt_assemblage": 0.9999996531517097,
-            "emulated": 0.9999915346543308
+            "emulated": 0.9999915346302617
           },
           "rho": {
             "gt_assemblage": 0.9999999934039314,
-            "emulated": 0.9994538930441793
+            "emulated": 0.9994538882873134
           }
         }
       }

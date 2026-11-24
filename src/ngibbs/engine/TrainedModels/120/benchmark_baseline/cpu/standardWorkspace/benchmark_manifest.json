@@ -1,5 +1,5 @@
 {
-  "created_utc": "2026-11-21T00:35:56+00:00",
+  "created_utc": "2026-11-24T04:58:46+00:00",
   "api": "MELTSAPI",
   "model": "MELTS120Emulator",
   "model_dir": "/home/bthyer/nGibbs/src/ngibbs/engine/TrainedModels/120",
@@ -75,23 +75,23 @@
         "property_r2": {
           "S": {
             "gt_assemblage": 0.9999995271756487,
-            "emulated": 0.9999569191369888
+            "emulated": 0.9999578556408847
           },
           "Cp": {
-            "gt_assemblage": 0.9999698076222364,
-            "emulated": 0.9996973003504807
+            "gt_assemblage": 0.9999698076225836,
+            "emulated": 0.9996995659437725
           },
           "V": {
             "gt_assemblage": 0.999999996937583,
-            "emulated": 0.9998387045077015
+            "emulated": 0.999844820998707
           },
           "H": {
             "gt_assemblage": 0.9999997207467368,
-            "emulated": 0.9999760597766343
+            "emulated": 0.9999758443730045
           },
           "rho": {
             "gt_assemblage": 0.9999999965653831,
-            "emulated": 0.9998396847353218
+            "emulated": 0.999843917644714
           }
         }
       },
@@ -108,23 +108,23 @@
         "property_r2": {
           "S": {
             "gt_assemblage": 0.9999999419779647,
-            "emulated": 0.9999742506833678
+            "emulated": 0.9999742505301817
           },
           "Cp": {
-            "gt_assemblage": 0.999974415189312,
-            "emulated": 0.9997526855978557
+            "gt_assemblage": 0.9999744151896882,
+            "emulated": 0.9997549628294664
           },
           "V": {
             "gt_assemblage": 0.9999999693806505,
-            "emulated": 0.9984657301721486
+            "emulated": 0.9984657342139002
           },
           "H": {
             "gt_assemblage": 0.9999998398753799,
-            "emulated": 0.9999720251355716
+            "emulated": 0.9999720255599773
           },
           "rho": {
             "gt_assemblage": 0.9999999724412288,
-            "emulated": 0.998516269057187
+            "emulated": 0.9985162708238557
           }
         }
       }

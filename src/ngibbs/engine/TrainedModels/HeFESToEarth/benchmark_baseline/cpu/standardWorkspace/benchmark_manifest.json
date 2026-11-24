@@ -1,5 +1,5 @@
 {
-  "created_utc": "2026-11-21T01:44:59+00:00",
+  "created_utc": "2026-11-24T04:54:14+00:00",
   "api": "HeFESToAPI",
   "model": "HeFESToEmulator",
   "model_dir": "/home/bthyer/nGibbs/src/ngibbs/engine/TrainedModels/HeFESToEarth",
@@ -75,31 +75,31 @@
         "property_r2": {
           "rho": {
             "gt_assemblage": 0.9999974609955631,
-            "emulated": 0.9999896302315447
+            "emulated": 0.9999896300690169
           },
           "VP": {
             "gt_assemblage": 0.9999979729153777,
-            "emulated": 0.9999921845513448
+            "emulated": 0.9999921844578765
           },
           "VS": {
             "gt_assemblage": 0.9999974955664062,
-            "emulated": 0.9999775501400985
+            "emulated": 0.9999775499850974
           },
           "S": {
             "gt_assemblage": 0.9999999678803569,
-            "emulated": 0.9999832783371971
+            "emulated": 0.9999832783410871
           },
           "Cp": {
-            "gt_assemblage": 0.9997544261976821,
-            "emulated": 0.028096975155279424
+            "gt_assemblage": 0.9997544261850932,
+            "emulated": 0.02809717273063228
           },
           "KS": {
-            "gt_assemblage": 0.9994827207313288,
-            "emulated": 0.9975515826400193
+            "gt_assemblage": 0.9994827207313125,
+            "emulated": 0.9975515821400689
           },
           "alpha": {
-            "gt_assemblage": 0.9999843409237634,
-            "emulated": 0.010180317089984237
+            "gt_assemblage": 0.9999843409138375,
+            "emulated": 0.010180536994251477
           }
         }
       },
@@ -118,31 +118,31 @@
         "property_r2": {
           "rho": {
             "gt_assemblage": 0.9999974609955631,
-            "emulated": 0.9999655972225059
+            "emulated": 0.9999655974148632
           },
           "VP": {
             "gt_assemblage": 0.9999979729153777,
-            "emulated": 0.9999640598218947
+            "emulated": 0.9999640601086218
           },
           "VS": {
             "gt_assemblage": 0.9999974955664062,
-            "emulated": 0.9999083664487883
+            "emulated": 0.9999083673547376
           },
           "S": {
             "gt_assemblage": 0.9999999678803569,
-            "emulated": 0.9999796438059005
+            "emulated": 0.9999796437795155
           },
           "Cp": {
-            "gt_assemblage": 0.9997544261976821,
-            "emulated": -94.87943620704563
+            "gt_assemblage": 0.9997544261850932,
+            "emulated": -94.86665915220195
           },
           "KS": {
-            "gt_assemblage": 0.9994827207313288,
-            "emulated": 0.9989160543769928
+            "gt_assemblage": 0.9994827207313125,
+            "emulated": 0.9989160530422604
           },
           "alpha": {
-            "gt_assemblage": 0.9999843409237634,
-            "emulated": -81.4522835633015
+            "gt_assemblage": 0.9999843409138375,
+            "emulated": -81.44144088227615
           }
         }
       }
