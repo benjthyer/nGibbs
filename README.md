@@ -10,7 +10,7 @@ nGibbs provides fast neural-network emulators of MELTS (rhyolite-MELTS 1.0.2 and
 
 - [Installation](#installation)
 - [Quick start](#quick-start)
-- [Shipped models](#shipped-models)
+- [Models: versions and downloads](#models-versions-and-downloads)
 - [Input format](#input-format)
 - [Automatic model selection](#automatic-model-selection)
 - [HeFESTo emulators](#hefesto-emulators)
@@ -33,7 +33,7 @@ nGibbs provides fast neural-network emulators of MELTS (rhyolite-MELTS 1.0.2 and
 pip install nGibbs
 ```
 
-This installs the inference package (`ngibbs`): trained model weights, the emulator APIs, the EOS property calculators and the self-tests. Requirements: Python ≥ 3.9 (developed and tested on 3.11), PyTorch, NumPy, pandas, tqdm and matplotlib. A CUDA GPU is optional; every model also runs on CPU.
+This installs the inference package (`ngibbs`): the emulator APIs, the EOS property calculators and the self-tests. Trained models are downloaded from [Hugging Face](https://huggingface.co/benjthyer/nGibbs) the first time you use each one (see [Models](#models-versions-and-downloads)). Requirements: Python ≥ 3.9 (developed and tested on 3.11), PyTorch, NumPy, pandas, tqdm and matplotlib. A CUDA GPU is optional; every model also runs on CPU.
 
 > **PyTorch:** install the build that matches your hardware (CPU-only or a CUDA version) by following [pytorch.org](https://pytorch.org/get-started/locally/) *before* `pip install nGibbs`. Otherwise pip installs its default build.
 
@@ -46,7 +46,7 @@ pip install -e .                    # inference package, editable
 pip install -r requirements.txt     # plus the data-generation / training dependencies
 ```
 
-**PyPI package vs. this repository.** The PyPI package contains only `src/ngibbs/`. The repository adds `src/builder/` (running alphaMELTS/HeFESTo at scale, data processing and PyTorch training), `scripts/`, `recipes/`, and `notebooks/`.
+**PyPI package vs. this repository.** The PyPI package contains `src/ngibbs/` without the trained models. The repository adds the current version of every model (`src/ngibbs/engine/TrainedModels/`), their regression baselines (`benchmarks/`), `src/builder/` (running alphaMELTS/HeFESTo at scale, data processing and PyTorch training), `scripts/`, `recipes/`, and `notebooks/`.
 
 ---
 
@@ -54,7 +54,9 @@ pip install -r requirements.txt     # plus the data-generation / training depend
 
 ```python
 import numpy as np
-from ngibbs import MELTS120EmulatorCPU   # or ...GPU when CUDA is available
+from ngibbs import make_ngibbs
+
+melts = make_ngibbs('MELTS120')          # device='cuda' for the GPU; downloads on first use
 
 MORB = {'SiO2': 48.68, 'TiO2': 1.01, 'Al2O3': 17.64, 'FeO': 7.59, 'Fe2O3': 0.89,
         'MgO': 9.10, 'CaO': 12.45, 'Na2O': 2.65, 'K2O': 0.03, 'P2O5': 0.08, 'H2O': 0.20}
@@ -64,25 +66,51 @@ table   = np.column_stack([np.full_like(T_C, 2000), T_C,     # 2 kbar isobaric c
                            np.tile(list(MORB.values()), (len(T_C), 1))])
 headers = ['P(bar)', 'T(C)'] + list(MORB)            # same as 'Pressure(System_main)', ...
 
-out = MELTS120EmulatorCPU.ForwardMB(table, headers=headers, outputs=['ptt_out'])
+out = melts.ForwardMB(table, headers=headers, outputs=['ptt_out'])
 out['ptt_out']['Conditions']        # P, T, mass, ... per row
 out['ptt_out']['liquid1']           # liquid composition and mass per row, PetThermoTools-style
 ```
 
-`import ngibbs` by itself loads no models. Importing the first model loads all of them, which takes a few seconds; after that, every import returns the same objects.
+`import ngibbs` by itself loads no models. `make_ngibbs` loads one model, downloading it the first time (60-150 MB per model), and returns a new object each call, so keep the object you get.
 
 ---
 
-## Shipped models
+## Models: versions and downloads
 
-Import model objects directly from `ngibbs` (e.g. `from ngibbs import MELTS120EmulatorCPU`); `ngibbs.engine.models` exposes the same objects. Each model has a `...CPU` object and a `...GPU` object; the `...GPU` object is `None` when CUDA is unavailable. The same objects are also available as dictionaries, `ngibbs.CPU_MODELS` and `ngibbs.GPU_MODELS`.
+```python
+import ngibbs
+ngibbs.available_models()              # newest version of each model
+ngibbs.available_models('MELTS120')    # every version of one model
+ngibbs.available_models('all')         # every version of every model
 
-| Object | Simulator | Pathways (inputs) | Oxides |
+api = ngibbs.make_ngibbs('MELTS120')                  # newest version your nGibbs can load
+api = ngibbs.make_ngibbs('MELTS120v1.0')              # a specific version, e.g. to reproduce a result
+api = ngibbs.make_ngibbs('HeFESToEarth', device='cuda')
+api.model_name, api.model_version                     # what was loaded: ('MELTS120', '1.0')
+```
+
+The same table is available from the command line as `ngibbs models [NAME | all]`:
+
+```
+       model version   size local compatible with nGibbs 1.0.0
+HeFESToEarth    v1.0  88 MB   yes                               yes
+    MELTS120    v1.1  78 MB    no needs ngibbs>=1.1; v1.0 available
+```
+
+| Model | Simulator | Pathways (inputs) | Oxides |
 |---|---|---|---|
-| `HeFESToEmulatorCPU/GPU` | HeFESTo, Earth mantle | isothermal (P, T); isentropic (P, S) with a temperature model | SiO2, Al2O3, FeO, Fe2O3, MgO, CaO, Na2O, Cr2O3 |
-| `HeFESToMarsEmulatorCPU/GPU` | HeFESTo, Martian mantle | isothermal (P, T); isentropic (P, S) with a temperature model | same as Earth |
-| `MELTS102EmulatorCPU/GPU` | rhyolite-MELTS 1.0.2 | closed-system isothermal (P, T); fO2-buffered (P, T, ΔQFM); each in Cr and NoCr variants | SiO2, TiO2, Al2O3, FeO, Fe2O3, MgO, CaO, Na2O, K2O, P2O5, H2O, (Cr2O3) |
-| `MELTS120EmulatorCPU/GPU` | rhyolite-MELTS 1.2.0 | closed-system isothermal (P, T), Cr and NoCr variants | as 1.0.2, plus CO2 |
+| `HeFESToEarth` | HeFESTo, Earth mantle | isothermal (P, T); isentropic (P, S) with a temperature model | SiO2, Al2O3, FeO, Fe2O3, MgO, CaO, Na2O, Cr2O3 |
+| `HeFESToMars` | HeFESTo, Martian mantle | isothermal (P, T); isentropic (P, S) with a temperature model | same as Earth |
+| `MELTS102` | rhyolite-MELTS 1.0.2 | closed-system isothermal (P, T); fO2-buffered (P, T, ΔQFM); each in Cr and NoCr variants | SiO2, TiO2, Al2O3, FeO, Fe2O3, MgO, CaO, Na2O, K2O, P2O5, H2O, (Cr2O3) |
+| `MELTS120` | rhyolite-MELTS 1.2.0 | closed-system isothermal (P, T), Cr and NoCr variants | as 1.0.2, plus CO2 |
+
+**Versions.** A model version is named after the nGibbs release that introduced it: `MELTS120v1.2` came with nGibbs 1.2.0. Released versions are never changed or removed, so a version name always means the same weights. New models only come with minor releases (1.2.0, 1.3.0, ...). Patch releases (1.2.1) fix code only.
+
+**Compatibility.** An installed nGibbs loads model versions from its own major series that are not newer than itself: nGibbs 1.2.x loads v1.0-v1.2. A newer model can need features that older code lacks. Without a version, `make_ngibbs` picks the newest compatible one and warns if a newer one needs an upgrade (`pip install --upgrade nGibbs`).
+
+**Where models go.** Downloads are kept in `~/.cache/ngibbs/models/<model>/v<version>/` (set `NGIBBS_MODELS_DIR` to move them) and reused after that, including offline. Each folder holds the weights, the validation datasets, the standard simulator runs and a `README.md` describing the model. To free space, delete a version's folder. In a clone of this repository, `make_ngibbs('MELTS120')` uses the working copy in `src/ngibbs/engine/TrainedModels/` instead (`model_version == 'checkout'`); name a version to load a released one.
+
+The old ready-made objects (`HeFESToEmulatorCPU`, `MELTS120EmulatorGPU`, `CPU_MODELS`, ...) still work but are deprecated: each is `make_ngibbs(<model>, device=...)` for its model.
 
 A missing column for an oxide the model knows is treated as zero. The HeFESTo models cover about 0–141 GPa, and `api.training_pressure_bounds()` returns the exact range. MELTS training data were generated with alphaMELTS 2.3.1.
 
@@ -149,7 +177,8 @@ Input features + headers
 
 ```python
 import numpy as np
-from ngibbs import HeFESToEmulatorCPU
+from ngibbs import make_ngibbs
+HeFESTo = make_ngibbs('HeFESToEarth')
 
 # Bulk Silicate Earth (McDonough & Sun, 1995)
 BSE = {'SiO2': 45.0, 'Al2O3': 4.45, 'FeO': 7.75, 'Fe2O3': 0.35,
@@ -158,7 +187,7 @@ BSE = {'SiO2': 45.0, 'Al2O3': 4.45, 'FeO': 7.75, 'Fe2O3': 0.35,
 headers    = ['P(GPa)', 'T(K)'] + list(BSE)
 comp_array = np.array([0, 0] + list(BSE.values()), dtype=np.float32).reshape(1, -1)
 
-T_grid, P_grid, props = HeFESToEmulatorCPU.get_isentrope(
+T_grid, P_grid, props = HeFESTo.get_isentrope(
     features               = comp_array,
     headers                = headers,
     pressures              = np.linspace(0, 140, 300),           # GPa
@@ -181,18 +210,18 @@ DMM = {'SiO2': 44.7, 'Al2O3': 3.98, 'FeO': 7.9, 'Fe2O3': 0.3,
 comp_array = np.array([[0, 1800] + list(BSE.values()),
                        [0, 1500] + list(DMM.values())], dtype=np.float32)
 
-T_grid, P_grid, props = HeFESToEmulatorCPU.get_isentrope(
+T_grid, P_grid, props = HeFESTo.get_isentrope(
     features=comp_array, headers=headers,
     pressures=np.linspace(0, 140, 300), properties=['rho', 'Vs'],
 )   # shapes (2, 300)
 ```
 
-`properties` accepts any key of the HeFESTo EOS calculator (see [below](#hefesto-get_property_hefesto_vectorized_from_assemblage)). Omit it to get only `(T_grid, P_grid)`. The Martian model, `HeFESToMarsEmulatorCPU`, has the same API.
+`properties` accepts any key of the HeFESTo EOS calculator (see [below](#hefesto-get_property_hefesto_vectorized_from_assemblage)). Omit it to get only `(T_grid, P_grid)`. The Martian model, `make_ngibbs('HeFESToMars')`, has the same API.
 
 ### `ForwardMB()` — direct forward pass
 
 ```python
-out = HeFESToEmulatorCPU.ForwardMB(
+out = HeFESTo.ForwardMB(
     features,                       # (N, F) array with an entropy column → isentropic model
     headers = headers,
     outputs = ['component_moles', 'phase_tables', 'temperature'],
@@ -221,7 +250,8 @@ Available `outputs`:
 
 ```python
 import numpy as np
-from ngibbs import MELTS102EmulatorCPU
+from ngibbs import make_ngibbs
+MELTS102 = make_ngibbs('MELTS102')
 
 MORB = {'SiO2': 48.68, 'TiO2': 1.01, 'Al2O3': 17.64, 'Cr2O3': 0.03,
         'FeO': 7.59, 'Fe2O3': 0.89, 'MgO': 9.10, 'CaO': 12.45,
@@ -232,12 +262,12 @@ T_C   = np.tile(np.linspace(1400, 900, 250), 3)      # ... × 250 temperatures
 grid  = np.column_stack([P_bar, T_C, np.tile(list(MORB.values()), (len(P_bar), 1))])
 headers = ['P(bar)', 'T(C)'] + list(MORB)
 
-out = MELTS102EmulatorCPU.ForwardMB(grid, headers=headers, outputs=['ptt_out'])
+out = MELTS102.ForwardMB(grid, headers=headers, outputs=['ptt_out'])
 ptt = out['ptt_out']   # {'Conditions': DataFrame, 'liquid1': DataFrame, 'olivine1': ..., ...}
 
 # Split into one set of tables per isobar
 _, table_id = np.unique(grid[:, 0], return_inverse=True)
-per_isobar = MELTS102EmulatorCPU.divide_ptt_tables(ptt, table_id)
+per_isobar = MELTS102.divide_ptt_tables(ptt, table_id)
 ```
 
 `'ptt_out'` uses the table layout of [PetThermoTools](https://github.com/gleesonm1/PetThermoTools), so nGibbs can stand in for alphaMELTS calls in existing PetThermoTools workflows.
@@ -247,7 +277,7 @@ per_isobar = MELTS102EmulatorCPU.divide_ptt_tables(ptt, table_id)
 Ask for `'ptt_props'` instead of `'ptt_out'` to also run the built-in vectorized MELTS EOS on the predicted assemblage. It adds bulk columns to `ptt['Conditions']`: `H_J`, `S_J/K`, `V_cm^3`, `rho_kg/m^3`, `Cp_J/K`, `dVdP_cm^3/bar`, `log10(fO2)`. It also adds a `<phase>_prop` table per phase, in the layout of PetThermoTools' `calc_phase_props_MELTS_parallel`:
 
 ```python
-out = MELTS102EmulatorCPU.ForwardMB(grid, headers=headers, outputs=['ptt_props'])
+out = MELTS102.ForwardMB(grid, headers=headers, outputs=['ptt_props'])
 out['ptt_out']['Conditions'][['T_C', 'P_bar', 'rho_kg/m^3', 'S_J/K']]
 ```
 
@@ -260,7 +290,7 @@ oxides  = {k: v for k, v in MORB.items() if k != 'Fe2O3'}
 grid_fo2 = np.column_stack([P_bar, T_C, np.full_like(T_C, 0.0),          # QFM+0
                             np.tile(list(oxides.values()), (len(P_bar), 1))])
 headers_fo2 = ['P(bar)', 'T(C)', 'logfO2(QFM)'] + list(oxides)
-out = MELTS102EmulatorCPU.ForwardMB(grid_fo2, headers=headers_fo2, outputs=['ptt_out'])
+out = MELTS102.ForwardMB(grid_fo2, headers=headers_fo2, outputs=['ptt_out'])
 ```
 
 ---
@@ -275,7 +305,8 @@ This is a vectorized translation of HeFESTo's `physub` routines. Aggregate prope
 
 ```python
 import numpy as np, torch
-from ngibbs import HeFESToEmulatorCPU as H
+from ngibbs import make_ngibbs
+H = make_ngibbs('HeFESToEarth')
 
 # Emulate an assemblage on a (P, S) grid, then evaluate the EOS at the emulated T
 P = np.linspace(1, 135, 300); S = np.full_like(P, 2.2)                # GPa, J/g/K
@@ -318,13 +349,13 @@ Some predicted liquids cannot be represented in MELTS's liquid basis. For exampl
 
 ## Performance: GPU, batch sizes and the CPU fallback
 
-- **GPU objects** (`...GPU`) process inputs in chunks, and on GPU objects small inputs are automatically sent to the matching CPU model, because transfer overhead dominates for small inputs.
+- **GPU models** (`make_ngibbs(..., device='cuda')`) process inputs in chunks, and small inputs are automatically sent to a matching CPU copy, because transfer overhead dominates for small inputs.
 - **Batch sizes** default to conservative values. Tune them once per GPU; the result is saved and reused in later sessions:
 
 ```python
 import ngibbs
-ngibbs.tune_batch_size()                       # tunes the packaged HeFESTo GPU model
-ngibbs.tune_batch_size(model='MELTS120Emulator')
+ngibbs.tune_batch_size()                       # tunes the HeFESToEarth GPU model
+ngibbs.tune_batch_size(model='MELTS120')
 ngibbs.show_batch_tuning()                     # inspect the saved profile
 ngibbs.clear_batch_tuning()                    # forget it
 ```
@@ -343,25 +374,26 @@ from ngibbs.engine.emulator import TrainingRangeWarning
 warnings.simplefilter('error', TrainingRangeWarning)
 ```
 
-If a model file is missing from your installation, the error message also reports whether a newer nGibbs is available on PyPI.
 
 ---
 
 ## Validating the models
 
-Every model object can check itself against ground truth that ships with the package. These checks need matplotlib, which is a core dependency.
+Every model ships with ground truth to check it against, and two ways to check it: its own **validation datasets**, and **simulator runs**, either the standard rocks that ship with it or any directory of your own MELTS or HeFESTo output. Nothing else needs to be downloaded. These checks need matplotlib, a core dependency.
 
 ```python
-from ngibbs import HeFESToEmulatorCPU as api
+from ngibbs import make_ngibbs
+api = make_ngibbs('HeFESToEarth')
 
-report = api.test()          # metrics tables + figures
-api.assert_quality()         # raises EmulatorQualityError below the shipped thresholds
+report = api.test()                     # validation datasets + standard runs: tables and figures
+api.assert_quality()                    # raises EmulatorQualityError below the quality thresholds
+api.evaluate_workspace('my_runs/')      # your own simulator output (below)
 ```
 
 `test()` scores the model on two datasets that ship with it:
 
-- **`validationDataset/`:** held-out samples from the model's preprocessed test set: per-phase precision and recall, abundance and composition errors, mass-balance residuals, training-coverage plots and phase-abundance parity plots.
-- **`standardWorkspace/`:** the raw simulator runs shipped for the model (standard rocks along a HeFESTo adiabat or a MELTS isobaric cooling path), scored exactly as a custom workspace is (below).
+- **`validationDataset/`:** samples from the model's preprocessed test split: per-phase precision and recall, abundance and composition errors, mass-balance residuals, training-coverage plots and phase-abundance parity plots.
+- **`standardWorkspace/`:** the raw simulator runs shipped in the model's `standards/` folder (standard rocks along a HeFESTo adiabat or a MELTS isobaric cooling path), scored exactly as a custom workspace is (below).
 
 By default everything is written to `./ngibbs_deployment_test/<model name>/` in the current directory; pass `output_dir=` to choose another location.
 
@@ -373,10 +405,11 @@ By default everything is written to `./ngibbs_deployment_test/<model name>/` in 
 - **HeFESTo:** any folder with a `control` file and its `fort.56` and `fort.99` outputs.
 
 ```python
-from ngibbs import MELTS120EmulatorCPU as api
+from ngibbs import make_ngibbs
+api = make_ngibbs('MELTS120')
 
 res = api.evaluate_workspace('path/to/alphamelts_runs')
-# -> ./ngibbs_deployment_test/MELTS120Emulator/customWorkspace/alphamelts_runs/
+# -> ./ngibbs_deployment_test/MELTS120/customWorkspace/alphamelts_runs/
 
 api.evaluate_workspace()     # no path: the model's standard workspace -> .../standardWorkspace/
 ```
@@ -397,17 +430,20 @@ Section plots need a 1-D path. A run whose pressure never changes is drawn as an
 
 The phase and property comparison is fault-tolerant. If it fails for a run, or the model has no EOS parameters, you get a warning naming the run and the reason, and every other output is still written.
 
-### Benchmarks and regression checks
+### Benchmarks: comparing versions and setups
 
-`benchmark()` writes the validation-dataset and standard-workspace results as one indexed set. `check_benchmark()` reruns them and compares with a stored baseline. It fails if any metric is worse than the baseline by more than the allowed tolerance, or if the underlying data changed:
+`benchmark()` writes the validation-dataset and standard-workspace results as one indexed set. `check_benchmark()` reruns them and compares with a stored set. It fails if any metric is worse by more than the allowed tolerance, or if the underlying data changed. Use it to check that a model gives the same results on your machine, GPU, or PyTorch version, or to compare model versions on the same data:
 
 ```python
-api.check_benchmark()                            # against the baseline shipped with the package
-api.benchmark('my_benchmark')                    # write your own
-api.check_benchmark(baseline_dir='my_benchmark') # raises BenchmarkRegressionError on a regression
+api = make_ngibbs('MELTS120v1.0')
+api.benchmark('melts120_v1.0_here')                       # record a reference
+...
+api.check_benchmark(baseline_dir='melts120_v1.0_here')    # raises BenchmarkRegressionError on a regression
 ```
 
-Baselines ship inside the package next to each model's checkpoints, in `ngibbs/engine/TrainedModels/<family>/benchmark_baseline/<cpu|cuda>/`, so an installed copy can check itself. They are kept per device because CPU and GPU float32 arithmetic round differently. Custom workspaces are never part of a benchmark. In the repository, `python scripts/run_benchmarks.py [--device cuda]` checks every shipped model, and the PyPI release workflow runs it on CPU before publishing.
+Results are kept per device because CPU and GPU float32 arithmetic round differently. Custom workspaces are never part of a benchmark: score them with `evaluate_workspace()`.
+
+The reference baselines for the models in this repository live in [`benchmarks/<model>/<cpu|cuda>/`](benchmarks/). In a clone, `python scripts/run_benchmarks.py [--device cuda]` checks every model's working copy against them, and the release workflow runs it on CPU before every release (see [DEVELOPMENT.md](DEVELOPMENT.md#releasing)).
 
 ---
 
@@ -425,9 +461,10 @@ Jupyter notebooks in [`notebooks/`](notebooks/):
 
 ```
 src/ngibbs/                         # the pip-installable package
-├── __init__.py                     # model objects (lazy), tune_batch_size, show/clear_batch_tuning
+├── __init__.py                     # make_ngibbs, available_models, tune_batch_size, show/clear_batch_tuning
+├── registry.py                     # model versions, compatibility, Hugging Face downloads
 ├── engine/
-│   ├── models.py                   # model objects (also importable from ngibbs directly)
+│   ├── models.py                   # deprecated model objects (HeFESToEmulatorCPU, ...)
 │   ├── API.py                      # EmulatorAPI, HeFESToAPI, MELTSAPI (routing, ForwardMB, get_isentrope, ...)
 │   ├── emulator.py                 # NN_MELTS inference wrapper, TrainingRangeWarning
 │   ├── mass_balance.py             # mass-balance projection
@@ -435,10 +472,12 @@ src/ngibbs/                         # the pip-installable package
 │   ├── NN.py, NN_continuous.py     # network architectures
 │   ├── EOS_arithmetic/hefesto_vec/ # vectorized HeFESTo EOS
 │   ├── EOS_arithmetic_MELTS/melts_vec/  # vectorized MELTS EOS
-│   └── TrainedModels/              # HeFESToEarth/, HeFESToMars/, 102/, 120/ checkpoints + test subsets
-├── deployment_tests/               # test(), evaluate_workspace(), benchmark(), standard workspaces, baselines
+│   └── TrainedModels/              # repository only: the working copy of each model (not in the wheel)
+│       └── <Model>/                # README.md (model card), checkpoints, validation sets, standards/
+├── deployment_tests/               # test(), evaluate_workspace(), benchmark()
 ├── config/                         # constants, ml_indexer, projection tables
 └── utils/                          # file parsing (fort.*), math helpers, batch_tuning
+benchmarks/<Model>/<cpu|cuda>/      # repository only: regression baselines for the working copies
 ```
 
 ---

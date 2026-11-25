@@ -47,11 +47,14 @@ def test_standard_workspace_attribute(tmp_path):
     assert (STANDARD_WORKSPACE, CUSTOM_WORKSPACE) == ('standardWorkspace', 'customWorkspace')
 
 
-def test_models_pin_packaged_standard_workspaces_and_baselines():
-    from ngibbs.engine import models
-    for name, model in models.CPU_MODELS.items():
-        assert model.benchmark_baseline_dir == \
-            Path(model._model_dir) / models.BENCHMARK_BASELINE_SUBDIR / 'cpu', name
-    for name, path in models.STANDARD_WORKSPACES.items():
-        assert path.is_dir(), name
-        assert models.CPU_MODELS[name].standard_workspace_dir == path
+def test_checkout_models_ship_standards_and_baselines():
+    """Each working copy carries its standard runs inside its folder, and has a
+    CPU regression baseline under benchmarks/ (outside the package)."""
+    from ngibbs import registry
+    from ngibbs.engine.API import _standards_dir
+    models = registry.checkout_models()
+    if not models:
+        pytest.skip('not a source checkout')
+    for name, d in models.items():
+        assert _standards_dir(d) is not None, name
+        assert (registry.baseline_dir(name, 'cpu') / 'benchmark_index.json').is_file(), name

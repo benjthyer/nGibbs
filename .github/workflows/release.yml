@@ -1,0 +1,257 @@
+name: Release
+
+# Run by hand (Actions -> Release -> Run workflow) with the version to release.
+# Nothing is claimed until every check has passed: the version number is used
+# up only by the PyPI upload, which is the last step before tagging, and the
+# models only reach Hugging Face's main branch after it.
+#
+#   plan       version checks + model changes vs Hugging Face (fails fast)
+#   benchmark  regression gate for every model working copy
+#   build      wheel + sdist, size check
+#   stage      Hugging Face pull request with the new model folders
+#   smoke      install the wheel in a clean venv, load every model from that PR
+#   publish    (approval required: the `release` environment) upload to PyPI
+#   finalize   merge the HF pull request, tag v<version>, GitHub release
+#   discard    close the HF pull request (dry runs and failed releases)
+#
+# Dry run (the default) does everything except publish and finalize, so the
+# whole workflow can be tested without consuming a version.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 1.1.0, 1.1.1 or 1.2.0rc1"
+        required: true
+        type: string
+      dry_run:
+        description: "Dry run: check, build, stage and smoke-test only; publish nothing"
+        type: boolean
+        default: true
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # tags, for the "already tagged?" check
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - id: v
+        run: |
+          V="${{ inputs.version }}"
+          echo "version=${V#v}" >> "$GITHUB_OUTPUT"
+
+      - name: A real release runs from main, behind an approval
+        if: ${{ !inputs.dry_run }}
+        run: |
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "::error::Real releases run from main (this is ${GITHUB_REF}). Dry runs may use any branch."
+            exit 1
+          fi
+          curl -fsS "https://api.github.com/repos/${GITHUB_REPOSITORY}/environments/release" \
+            -H "Authorization: Bearer ${{ github.token }}" -o env.json || {
+            echo "::error::Create the 'release' environment with a required reviewer (Settings -> Environments)."; exit 1; }
+          python -c "import json,sys; r=json.load(open('env.json')).get('protection_rules',[]); sys.exit(0 if any(x.get('type')=='required_reviewers' for x in r) else 1)" || {
+            echo "::error::The 'release' environment has no required reviewer, so publishing would not wait for approval."; exit 1; }
+
+      - name: Plan
+        run: |
+          pip install huggingface_hub pyyaml packaging
+          python scripts/release.py plan "${{ steps.v.outputs.version }}" \
+            --json plan.json --summary "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plan
+          path: plan.json
+
+  benchmark:
+    needs: plan
+    uses: ./.github/workflows/benchmark.yml
+
+  build:
+    needs: plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Build
+        env:
+          SETUPTOOLS_SCM_PRETEND_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          pip install build twine
+          python -m build
+          twine check dist/*
+
+      - name: Check distribution sizes
+        # PyPI rejects any file over 100 MB.
+        run: |
+          ls -l dist/
+          BIG=$(find dist -type f -size +95M)
+          if [ -n "$BIG" ]; then echo "::error::Over 95 MB: $BIG"; exit 1; fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  stage:
+    needs: [plan, benchmark, build]
+    runs-on: ubuntu-latest
+    outputs:
+      pr: ${{ steps.stage.outputs.pr }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: plan
+
+      - id: stage
+        name: Stage model uploads as a Hugging Face pull request
+        env:
+          HF_TOKEN: ${{ secrets.HUGGINGFACEAUTH }}
+        run: |
+          pip install huggingface_hub pyyaml packaging
+          python scripts/release.py stage plan.json --github-output "$GITHUB_OUTPUT"
+
+  smoke:
+    needs: [plan, build, stage]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: plan
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Install the wheel in a clean venv and load every model from Hugging Face
+        env:
+          NGIBBS_HF_REVISION: ${{ needs.stage.outputs.pr && format('refs/pr/{0}', needs.stage.outputs.pr) || 'main' }}
+          NGIBBS_MODELS_DIR: ${{ runner.temp }}/ngibbs-models
+        run: |
+          python -m venv "$RUNNER_TEMP/smoke"
+          "$RUNNER_TEMP/smoke/bin/pip" install torch --index-url https://download.pytorch.org/whl/cpu
+          "$RUNNER_TEMP/smoke/bin/pip" install dist/*.whl
+          PLAN="$PWD/plan.json"; SCRIPT="$PWD/scripts/release.py"
+          cd "$RUNNER_TEMP" && "$RUNNER_TEMP/smoke/bin/python" "$SCRIPT" smoke "$PLAN"
+
+  publish:
+    if: ${{ !inputs.dry_run }}
+    needs: [plan, smoke]
+    runs-on: ubuntu-latest
+    environment: release            # waits here for your approval
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Upload to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_TOKEN }}
+
+  finalize:
+    # Re-run this job alone if it fails: PyPI is done and each step is safe to repeat.
+    if: ${{ !inputs.dry_run }}
+    needs: [plan, stage, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Publish the staged models (merge the Hugging Face pull request)
+        if: ${{ needs.stage.outputs.pr != '' }}
+        env:
+          HF_TOKEN: ${{ secrets.HUGGINGFACEAUTH }}
+        run: |
+          pip install huggingface_hub pyyaml packaging
+          python scripts/release.py merge "${{ needs.stage.outputs.pr }}" --version "${{ needs.plan.outputs.version }}"
+
+      - name: Tag and create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ needs.plan.outputs.version }}
+        run: |
+          if gh release view "v$V" >/dev/null 2>&1; then echo "Release v$V already exists."; exit 0; fi
+          PRE=""; case "$V" in *a*|*b*|*rc*) PRE="--prerelease";; esac
+          gh release create "v$V" dist/* --target "$GITHUB_SHA" --title "nGibbs $V" --generate-notes $PRE
+
+      - name: Update CITATION.cff (best-effort)
+        continue-on-error: true
+        env:
+          V: ${{ needs.plan.outputs.version }}
+        run: |
+          DATE=$(date -u +%Y-%m-%d)
+          sed -i "s/^version: .*/version: \"${V}\"/" CITATION.cff
+          sed -i "s/^date-released: .*/date-released: \"${DATE}\"/" CITATION.cff
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CITATION.cff
+          git diff --cached --quiet || git commit -m "chore: update CITATION.cff for ${V} [skip ci]"
+          git push origin HEAD:main
+
+  discard:
+    # Dry runs, and any release that stopped before PyPI: drop the staged models.
+    if: ${{ always() && needs.stage.outputs.pr != '' && (inputs.dry_run || needs.publish.result != 'success') }}
+    needs: [stage, smoke, publish]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Close the Hugging Face pull request
+        env:
+          HF_TOKEN: ${{ secrets.HUGGINGFACEAUTH }}
+        run: |
+          pip install huggingface_hub pyyaml packaging
+          python scripts/release.py close "${{ needs.stage.outputs.pr }}" \
+            --reason "${{ inputs.dry_run && 'Dry run' || 'Release did not complete' }}: staged models discarded."

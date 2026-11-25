@@ -101,12 +101,9 @@ def test_find_hefesto_runs(tmp_path):
     assert [r.name for r in find_hefesto_runs(tmp_path)] == ['Simulation3', 'Simulation20']
 
 
-def test_package_level_model_names_match_models_py():
-    """ngibbs.__init__ lists the model names so `import ngibbs` stays light;
-    keep that list in step with engine.models._MODEL_SPECS."""
+def test_deprecated_model_names_match_models_py():
+    """ngibbs.__init__ lists the deprecated object names so `import ngibbs`
+    stays light; keep that list in step with engine.models.DEPRECATED_NAMES."""
     import ngibbs
     from ngibbs.engine import models
-    assert set(ngibbs._MODEL_NAMES) == set(models._MODEL_SPECS)
-    for name in models._MODEL_SPECS:
-        assert getattr(ngibbs, f'{name}CPU') is models.CPU_MODELS[name]
-        assert getattr(ngibbs, f'{name}GPU') is models.GPU_MODELS.get(name)
+    assert set(ngibbs._MODEL_NAMES) == set(models.DEPRECATED_NAMES)

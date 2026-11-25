@@ -1,7 +1,7 @@
 """MELTS analogue of ``meltstable_comparison.py``.
 
 Ground truth here is a set of raw alphaMELTS isobaric-cooling run folders
-(``MELTSIsobaricStandards/<model>/<Cr|NoCr>/<rock>/``) rather than a single
+(``<model>/standards/<Cr|NoCr>/<rock>/`` in each MELTS model) rather than a single
 MELTStable CSV per rock: ``System_main_tbl.txt`` (P/T/S/mass/fO2 conditions),
 ``Bulk_comp_tbl.txt`` (evolving bulk oxide composition, including a real,
 already-speciated FeO/Fe2O3 split -- these are fO2-buffered runs), and one
@@ -60,8 +60,6 @@ from ._melts_phase_plotting import build_ordered_melts_phases, melts_phase_color
 ROCKS = ('BishopTuff', 'Lherzolite', 'MORB')
 VARIANTS = ('Cr', 'NoCr')
 
-PACKAGE_DIR = Path(__file__).resolve().parent
-DEFAULT_STANDARDS_DIR = PACKAGE_DIR / 'MELTSIsobaricStandards' / '120'
 
 _BARS_PER_GPA = 10000.0
 

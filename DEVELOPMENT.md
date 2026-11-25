@@ -22,6 +22,7 @@ Repository-only code lives in `src/builder/` (it is not part of the PyPI package
 - [4. Model training](#4-model-training)
 - [5. Shipping a model](#5-shipping-a-model)
 - [6. Benchmarks and the release gate](#6-benchmarks-and-the-release-gate)
+- [7. Releasing](#releasing)
 - [builder layout](#builder-layout)
 
 ---
@@ -386,27 +387,43 @@ The CLI also takes `--stage {all,lower,upper,finetune}` and `--tarname` (to over
 
 ## 5. Shipping a model
 
-1. Put the checkpoint (`*.tar` / `*.pt`) and its `*_Test_subset15000.tar.gz` quality bundle in a directory under `src/ngibbs/engine/TrainedModels/`. `EmulatorAPI` discovers both automatically.
-2. Register it in `_MODEL_SPECS` in `src/ngibbs/engine/models.py`. The `...CPU` and `...GPU` objects are created from that entry.
-3. Put its raw standard-rock runs under `src/ngibbs/deployment_tests/` and pin them as its standard workspace in `STANDARD_WORKSPACES` in the same file.
-4. Generate its baselines (next section) and commit them.
+A model is one folder, `src/ngibbs/engine/TrainedModels/<Model>/`, holding the current (working) copy of that model. Its folder name is its public name (`make_ngibbs('<Model>')`). Only the working copy is kept in git; every released version lives on [Hugging Face](https://huggingface.co/benjthyer/nGibbs) as `<Model>/v<X.Y>/`, so delete old copies locally freely.
+
+1. **Files:** the checkpoints (`*.tar`, plus a temperature `*.pt` for isentropic models) and their `*_Test_subset15000.tar.gz` validation bundles at the top of the folder (`EmulatorAPI` matches them by filename: `NPT`/`NPS`/`Open`, `Cr`/`NoCr`), and the raw standard-rock simulator runs in `standards/`.
+2. **Model card:** a `README.md` beginning with a YAML header, which the release checks:
+   ```yaml
+   ---
+   model: MELTS120              # = the folder name
+   api: MELTSAPI                # or HeFESToAPI
+   api_kwargs:                  # optional, passed to the API class
+     melts_version: MELTS120
+   summary: one line, shown in the model index
+   requires_ngibbs: ">=1.3,<3"  # optional; default: same major series, not newer than nGibbs
+   license: agpl-3.0
+   ---
+   ```
+   followed by a description of the model, its data and how to cite it.
+3. **Baselines:** generate them (next section) into `benchmarks/<Model>/` and commit them.
+4. **Release** it in the next X.Y.0 release ([Releasing](#releasing)): it becomes `<Model>vX.Y`. Only files git tracks are published; local outputs in the folder are ignored.
+
+Changing anything but `README.md` in a released model makes it a new version at the next minor release. Editing only the model card updates it in place, in any release.
 
 ---
 
 ## 6. Benchmarks and the release gate
 
-`scripts/run_benchmarks.py` runs `benchmark()` / `check_benchmark()` (see the README) for every model in `ngibbs.engine.models`:
+`scripts/run_benchmarks.py` runs `benchmark()` / `check_benchmark()` (see the README) for every model working copy:
 
 ```bash
 python scripts/run_benchmarks.py                        # check all models on CPU
 python scripts/run_benchmarks.py --device cuda          # check against the cuda baselines
-python scripts/run_benchmarks.py --generate [--device cuda] [--models MELTS120Emulator]
+python scripts/run_benchmarks.py --generate [--device cuda] [--models MELTS120]
 ```
 
 Each run scores two things:
 
-- **Validation dataset:** the model's shipped `*_Test_subset15000` bundles.
-- **Standard workspace:** the model's shipped raw standard-rock runs (`STANDARD_WORKSPACES` in `models.py`), through `evaluate_workspace`: per-assemblage quality tables plus the per-run property and phase comparisons.
+- **Validation dataset:** the model's `*_Test_subset15000` bundles.
+- **Standard workspace:** the model's raw standard-rock runs (`standards/`), through `evaluate_workspace`: per-assemblage quality tables plus the per-run property and phase comparisons.
 
 Custom workspaces are measured with `evaluate_workspace(path)` and are never gated.
 
@@ -414,16 +431,53 @@ Pathways a model doesn't ship (e.g. isentropic MELTS) are skipped with a warning
 
 **Baselines:**
 
-- **Location:** `src/ngibbs/engine/TrainedModels/<family>/benchmark_baseline/<cpu|cuda>/`, next to the checkpoints they score, packaged with ngibbs so an installed copy can run `check_benchmark()`. Plots are drawn by default (`--no-plots` to skip); they are git-ignored and excluded from the wheel.
+- **Location:** `benchmarks/<Model>/<cpu|cuda>/`, in git but outside the package: they record what this code gives for each working copy, so they change with the code, while released model versions never change. Plots are drawn by default (`--no-plots` to skip) and are git-ignored.
 - **Per device:** baselines are kept per device because CPU and GPU float32 kernels round differently. Minor-phase compositions amplify that difference past any tolerance tight enough to be useful.
 - **When to regenerate:** whenever a model or its reference data change on purpose. A changed dataset shows up as *incomparable* and fails the check, so a data change can't pass as a model change.
 - **Tolerances:** in `BenchmarkTolerances` (`src/ngibbs/deployment_tests/benchmark.py`).
 
-**Release gate:**
+**Release gate:** the release workflow calls `.github/workflows/benchmark.yml`, which runs the CPU check on a GitHub runner; nothing is published unless every model passes. The benchmark workflow can also be run alone from the Actions tab; tick *generate* to produce CPU baselines on the runner and download them as an artifact, if the runner's CPU rounds differently from your machine's.
 
-- **Where it runs:** `.github/workflows/publish.yml` calls `.github/workflows/benchmark.yml`, which runs the CPU check on a GitHub runner. A release is uploaded to PyPI only if every model passes.
-- **Running it by hand:** the benchmark workflow can also be run from the Actions tab.
-- **Runner baselines:** tick *generate* to produce CPU baselines on the runner and download them as an artifact. Do this if the runner's CPU rounds differently from your machine's.
+---
+
+## Releasing
+
+Releases are started by hand: **Actions → Release → Run workflow**, with the version (`1.1.0`, `1.1.1`, `1.2.0rc1`) and *dry run* ticked or not. A version number is used up only by the PyPI upload, which comes after every check, so a release that fails anywhere before it can simply be run again with the same number.
+
+| Step | What it does | Fails when |
+|---|---|---|
+| plan | compares every working copy with Hugging Face and writes the plan to the run's summary page | the version is malformed, already on PyPI or tagged, or not newer than PyPI's latest; a patch release (Z ≠ 0) has new or changed models; a new or changed model has no valid model card |
+| benchmark | `scripts/run_benchmarks.py` on CPU | any model regresses |
+| build | wheel + sdist with that version | a file is over 95 MB |
+| stage | opens a Hugging Face pull request with the new `<Model>/vX.Y/` folders and `index.json` | |
+| smoke | installs the wheel in a clean venv and loads every model from that pull request | a model is missing, incomplete or the wrong version |
+| publish | **waits for your approval**, then uploads to PyPI | |
+| finalize | merges the Hugging Face pull request (the models go live), tags `v<version>`, creates the GitHub release, updates `CITATION.cff` | |
+| discard | dry runs and stopped releases: closes the Hugging Face pull request | |
+
+The plan reads, for each model:
+
+```
+New model detected: MELTS120 -> will be uploaded to Hugging Face as MELTS120v1.0
+Changed model detected: MELTS120v1.0 -> MELTS120v1.1: will be uploaded to Hugging Face as MELTS120v1.1; ...
+Unchanged: MELTS102 (stays MELTS102v1.0)
+```
+
+Run it locally first; it changes nothing: `python scripts/release.py plan 1.1.0`.
+
+**Rules:**
+
+- **Model versions** are named after the minor release that ships them (`vX.Y`) and are final once `X.Y.0` is released: never overwritten, never deleted by the workflow (delete one by hand on Hugging Face if you ever must).
+- **Pre-releases** (`X.Y.0rcN`, `aN`, `bN`) can ship models as a pre-release `vX.Y`, which later pre-releases of the same `X.Y.0` may replace. `X.Y.0` makes it final (re-uploading it if it changed).
+- **Major releases** (`X.0.0`) republish every model in the checkout as `vX.0` (same files), since nGibbs X.x does not load older-major models. Models you dropped from the checkout stay on Hugging Face for older installs; the plan warns about them.
+- **Dry runs** (the default) do everything up to and including the smoke test against a staging pull request, then close it: use them to test the workflow itself.
+
+**One-time setup** (Settings of the GitHub repository):
+
+- **Secrets:** `HUGGINGFACEAUTH` (a Hugging Face write token for `benjthyer/nGibbs`) and `PYPI_TOKEN`.
+- **Environment:** create an environment named `release` with yourself as a required reviewer. The publish step waits for that approval, and the plan step refuses a real release if the environment has no required reviewer.
+
+If `finalize` fails after PyPI has the release, re-run that job alone; each of its steps is safe to repeat.
 
 ---
 

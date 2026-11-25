@@ -18,7 +18,7 @@ Outputs (``--out``, default ``generated/mass_balance_sweep`` next to this file):
 ``sweep.csv`` (one row per emulator x setting), ``sweep_<label>.png`` and a
 ``sweep_summary.txt``.  Only the ``ngibbs`` package is used.
 
-    python mass_balance_iteration_sweep.py --families 102 120 --kinds isothermal --iters 10
+    python mass_balance_iteration_sweep.py --families MELTS102 MELTS120 --kinds isothermal --iters 10
 """
 
 from __future__ import annotations

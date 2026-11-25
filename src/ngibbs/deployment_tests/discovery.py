@@ -1,4 +1,4 @@
-"""Enumerate the emulators shipped in ``ngibbs/engine/TrainedModels`` together
+"""Enumerate the model working copies in ``ngibbs/engine/TrainedModels`` together
 with their Test_subset ground-truth bundles.
 
 Uses the same filename conventions (and the same helpers) as the ``EmulatorAPI``
@@ -29,22 +29,23 @@ class ShippedEmulator:
 
 
 def trained_models_root() -> Path:
-    import ngibbs.engine
-    return Path(ngibbs.engine.__file__).resolve().parent / 'TrainedModels'
+    """``engine/TrainedModels/``: the model working copies in a source checkout."""
+    from ngibbs.registry import CHECKOUT_MODELS_DIR
+    return CHECKOUT_MODELS_DIR
 
 
 def shipped_emulators(models_root=None, *, families: Optional[Sequence[str]] = None,
                       kinds: Optional[Sequence[str]] = None) -> Iterator[ShippedEmulator]:
-    """Yield every (checkpoint, bundle) pair under ``models_root`` (default: the
-    installed package's ``TrainedModels``), NoCr before Cr, isothermal before
-    isentropic before openox."""
+    """Yield every (checkpoint, bundle) pair of the models under ``models_root``
+    (default: the working copies in this source checkout), NoCr before Cr,
+    isothermal before isentropic before openox. ``families`` filters by model
+    folder name (e.g. 'MELTS120', 'HeFESToEarth')."""
     from ngibbs.engine.API import (
-        _classify_checkpoint_variant, _deployment_tests_root, _discover_checkpoints,
-        _discover_test_bundle,
+        _classify_checkpoint_variant, _discover_checkpoints, _discover_test_bundle,
     )
     root = Path(models_root) if models_root is not None else trained_models_root()
-    dep_root = _deployment_tests_root()
-    for d in sorted(p for p in root.iterdir() if p.is_dir()):
+    dirs = sorted(p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
+    for d in dirs:
         if families and d.name not in families:
             continue
         variants = {_classify_checkpoint_variant(t) for t in d.glob('*.tar')} - {None}
@@ -54,5 +55,5 @@ def shipped_emulators(models_root=None, *, families: Optional[Sequence[str]] = N
                 ckpt = found[kind]
                 if ckpt is None or (kinds and kind not in kinds):
                     continue
-                bundle = _discover_test_bundle(dep_root, ckpt, model_dir=d)
+                bundle = _discover_test_bundle(ckpt, d)
                 yield ShippedEmulator(d.name, v, kind, ckpt, bundle)

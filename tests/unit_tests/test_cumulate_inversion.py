@@ -17,7 +17,7 @@ import torch
 from ngibbs.engine import cumulate_inversion as ci
 
 REPO = Path(__file__).resolve().parents[2]
-MODEL_DIR = REPO / 'src/ngibbs/engine/TrainedModels/102'
+MODEL_DIR = REPO / 'src/ngibbs/engine/TrainedModels/MELTS102'
 CKPT = MODEL_DIR / '102Closed_NoCr_NPT.tar'
 BUNDLE = MODEL_DIR / '102Closed_NoCr_NPT_Test_subset15000.tar.gz'
 

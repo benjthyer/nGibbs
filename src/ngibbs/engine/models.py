@@ -1,92 +1,94 @@
+"""Deprecated ready-made model objects (``HeFESToEmulatorCPU``, ``MELTS120EmulatorGPU``,
+``CPU_MODELS``, ...).
+
+Use ``ngibbs.make_ngibbs`` instead, which also chooses between model versions::
+
+    from ngibbs import make_ngibbs
+    api = make_ngibbs('MELTS120', device='cuda')
+
+The old names still work and warn once each: each one is the latest compatible
+version of its model, built on first use and then reused.
 """
-Model loading for nGibbs thermodynamic emulators.
 
-Instantiates the ready-to-use EmulatorAPI singletons (HeFESTo, HeFESTo Mars,
-MELTS102, MELTS120) on CPU, and on GPU when available. Import the model
-singletons you need from here rather than from API.py, which is reserved
-for the emulator classes and real computation, not for loading/dispatch.
-"""
+import warnings
+from collections.abc import Mapping
 
-import torch
-from pathlib import Path
-
-from .API import HeFESToAPI, MELTSAPI
-
-# Model paths - resolved relative to the engine package location. Each
-# directory self-contains its checkpoints (*.tar/*.pt) and, alongside them
-# or under the sibling deployment_tests/, its *_Test_subset*.tar.gz quality
-# bundle -- both auto-discovered by EmulatorAPI.__init__ (see its docstring).
-_this_file_dir = Path(__file__).parent
-
-# Model name -> (API class, constructor kwargs minus `device`). Each entry is
-# written once here; the CPU and GPU singleton dicts below both build from
-# this same table so paths never have to be repeated per device.
-#
-# Mass balance: every emulator defaults to the 'iterative' (MassBalanceProjector)
-# correction -- generalizable across architectures and GPU-safe. Add
-# `mass_balance='pinv'` (one-shot pseudo-inverse) or `'none'` to an entry's kwargs
-# to change it for that model; this is the single place a deployment default lives.
-_MODEL_SPECS = {
-    "HeFESToEmulator": (
-        HeFESToAPI,
-        dict(model_dir=str(_this_file_dir / "TrainedModels" / "HeFESToEarth")),
-    ),
-    "MELTS120Emulator": (
-        MELTSAPI,
-        dict(model_dir=str(_this_file_dir / "TrainedModels" / "120")),
-    ),
-    "MELTS102Emulator": (
-            MELTSAPI,
-            dict(model_dir=str(_this_file_dir / "TrainedModels" / "102")),
-        ),
-    "HeFESToMarsEmulator": (
-        HeFESToAPI,
-        dict(model_dir=str(_this_file_dir / "TrainedModels" / "HeFESToMars")),
-    ),
+# Old object name prefix -> model name.
+DEPRECATED_NAMES = {
+    "HeFESToEmulator": "HeFESToEarth",
+    "HeFESToMarsEmulator": "HeFESToMars",
+    "MELTS102Emulator": "MELTS102",
+    "MELTS120Emulator": "MELTS120",
 }
 
-# CPU_MODELS is always fully populated; GPU_MODELS only gains entries when
-# CUDA is available. Both are keyed by the same model names as _MODEL_SPECS.
-CPU_MODELS = {
-    name: cls(**kwargs, device='cpu')
-    for name, (cls, kwargs) in _MODEL_SPECS.items()
-}
+_BUILT = {}
 
-GPU_MODELS = {
-    name: cls(**kwargs, device='cuda')
-    for name, (cls, kwargs) in _MODEL_SPECS.items()
-} if torch.cuda.is_available() else {}
 
-# Deployment tests (see ngibbs.deployment_tests). Each model's standard
-# workspace is the set of raw simulator runs shipped with the package for it;
-# test(), evaluate_workspace() with no path, and the benchmark all score it.
-# Benchmark baselines live with each model's checkpoints, under
-# TrainedModels/<family>/benchmark_baseline/<cpu|cuda>/, and are packaged so an
-# installed copy can check itself; regenerate with
-# `python scripts/run_benchmarks.py --generate [--device cuda]`. They are kept
-# per device because CPU and GPU float32 kernels round differently, and minor
-# phases' compositions amplify that past any tolerance tight enough to be useful.
-_DEPLOYMENT_TESTS = _this_file_dir.parent / "deployment_tests"
-BENCHMARK_BASELINE_SUBDIR = "benchmark_baseline"
-STANDARD_WORKSPACES = {
-    "HeFESToEmulator": _DEPLOYMENT_TESTS / "HeFESToAdiabatStandards" / "Earth",
-    "HeFESToMarsEmulator": _DEPLOYMENT_TESTS / "HeFESToAdiabatStandards" / "Mars",
-    "MELTS120Emulator": _DEPLOYMENT_TESTS / "MELTSIsobaricStandards231" / "120",
-    "MELTS102Emulator": _DEPLOYMENT_TESTS / "MELTSIsobaricStandards231" / "102",
-}
-for _name in _MODEL_SPECS:
-    for _model, _device in ((CPU_MODELS[_name], "cpu"), (GPU_MODELS.get(_name), "cuda")):
-        if _model is not None:
-            _model.benchmark_name = _name
-            _model.benchmark_baseline_dir = (
-                Path(_MODEL_SPECS[_name][1]['model_dir']) / BENCHMARK_BASELINE_SUBDIR / _device)
-            if _name in STANDARD_WORKSPACES:
-                _model.standard_workspace_dir = STANDARD_WORKSPACES[_name]
+def _get(old_name: str, device: str):
+    key = (old_name, device)
+    if key not in _BUILT:
+        from ..registry import make_ngibbs
+        _BUILT[key] = make_ngibbs(DEPRECATED_NAMES[old_name], device=device)
+    return _BUILT[key]
 
-# Public module-level singletons, kept under their original names so
-# existing `from ngibbs.engine.models import ...` call sites don't change.
-# GPU names default to None (rather than being absent) when CUDA isn't
-# available, matching the original module's behavior.
-for _name in _MODEL_SPECS:
-    globals()[f"{_name}CPU"] = CPU_MODELS[_name]
-    globals()[f"{_name}GPU"] = GPU_MODELS.get(_name)
+
+def _warn(what: str, instead: str) -> None:
+    # 1 _warn, 2 deprecated_attr, 3 a module __getattr__, 4 the caller's line
+    warnings.warn(f"{what} is deprecated and will be removed; use {instead}.",
+                  FutureWarning, stacklevel=4)
+
+
+class _DeprecatedModels(Mapping):
+    """``CPU_MODELS`` / ``GPU_MODELS``: {old name: model}, built on first lookup."""
+
+    def __init__(self, device: str):
+        self._device = device
+
+    def _available(self):
+        if self._device == "cuda":
+            import torch
+            if not torch.cuda.is_available():
+                return ()
+        return tuple(DEPRECATED_NAMES)
+
+    def __getitem__(self, name):
+        if name not in self._available():
+            raise KeyError(name)
+        return _get(name, self._device)
+
+    def __contains__(self, name):  # Mapping's default would build the model
+        return name in self._available()
+
+    def __iter__(self):
+        return iter(self._available())
+
+    def __len__(self):
+        return len(self._available())
+
+
+_LAZY_ATTRS = {f"{n}{suffix}": (n, suffix) for n in DEPRECATED_NAMES for suffix in ("CPU", "GPU")}
+
+
+def __getattr__(attr):
+    return deprecated_attr(attr)
+
+
+def deprecated_attr(attr):
+    """Resolve a deprecated name (warns). ngibbs.__getattr__ uses it too."""
+    if attr in ("CPU_MODELS", "GPU_MODELS"):
+        _warn(attr, "ngibbs.make_ngibbs(name, device=...)")
+        return _DeprecatedModels("cpu" if attr == "CPU_MODELS" else "cuda")
+    if attr in _LAZY_ATTRS:
+        old, suffix = _LAZY_ATTRS[attr]
+        device = "cpu" if suffix == "CPU" else "cuda"
+        _warn(attr, f"ngibbs.make_ngibbs('{DEPRECATED_NAMES[old]}', device='{device}')")
+        if device == "cuda":
+            import torch
+            if not torch.cuda.is_available():
+                return None
+        return _get(old, device)
+    raise AttributeError(f"module {__name__!r} has no attribute {attr!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_LAZY_ATTRS) | {"CPU_MODELS", "GPU_MODELS"})

@@ -1,15 +1,14 @@
 name: Benchmark gate
 
-# Scores every shipped model in ngibbs.engine.models (validation dataset and
-# standard workspace) on CPU and compares against the packaged baselines in
-# src/ngibbs/engine/TrainedModels/<family>/benchmark_baseline/cpu/. Fails on any regression,
-# missing baseline or errored component.
+# Scores every model working copy in src/ngibbs/engine/TrainedModels/
+# (validation dataset and standard workspace) on CPU and compares against its
+# baseline in benchmarks/<Model>/cpu/. Fails on any regression, missing
+# baseline or errored component.
 #
-# Called by publish.yml before every PyPI upload; can also be run by hand from
+# Called by release.yml before every release; can also be run by hand from
 # the Actions tab. Running it by hand with `generate` ticked writes fresh CPU
 # baselines on the runner and uploads them as an artifact, for committing to
-# src/ngibbs/engine/TrainedModels/*/benchmark_baseline/ if the runner's CPU rounds differently
-# from yours.
+# benchmarks/ if the runner's CPU rounds differently from yours.
 
 on:
   workflow_call:
@@ -22,7 +21,7 @@ on:
 
 env:
   # Keep in step with the torch that generated the committed CPU baselines
-  # (see src/ngibbs/engine/TrainedModels/*/benchmark_baseline/cpu/benchmark_index.json -> environment).
+  # (see benchmarks/*/cpu/benchmark_index.json -> environment).
   TORCH_VERSION: "2.12.1"
   # Shallow checkout has no tags; the version string is irrelevant here.
   SETUPTOOLS_SCM_PRETEND_VERSION: "0.0.0"
@@ -46,8 +45,8 @@ jobs:
           pip install "torch==${TORCH_VERSION}" --index-url https://download.pytorch.org/whl/cpu
           pip install -e . matplotlib pytest
 
-      - name: Unit tests (Cr routing, workspace discovery, headers)
-        run: pytest -q tests/unit_tests/test_API/test_melts_cr_routing_and_workspace_discovery.py tests/unit_tests/test_API/test_condition_header_aliases.py tests/unit_tests/test_API/test_workspace_layout.py
+      - name: Unit tests (Cr routing, workspace discovery, headers, model registry)
+        run: pytest -q tests/unit_tests/test_API/test_melts_cr_routing_and_workspace_discovery.py tests/unit_tests/test_API/test_condition_header_aliases.py tests/unit_tests/test_API/test_workspace_layout.py tests/unit_tests/test_registry.py
 
       - name: Benchmark check
         if: ${{ !inputs.generate }}
@@ -70,4 +69,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-baselines-cpu
-          path: src/ngibbs/engine/TrainedModels/*/benchmark_baseline/
+          path: benchmarks/

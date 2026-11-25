@@ -1,0 +1,9 @@
+# setuptools-scm puts every git-tracked file in the sdist; keep it to what
+# building and testing the package needs. Models are published to Hugging Face
+# instead (scripts/release.py), and the regression baselines stay in git.
+prune notebooks
+prune src/builder
+prune ChangeLogs
+prune benchmarks
+prune src/ngibbs/engine/TrainedModels
+global-exclude *:Zone.Identifier *.Identifier

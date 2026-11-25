@@ -28,10 +28,12 @@ Two entry points (also exposed as ``HeFESToAPI`` / ``MELTSAPI`` methods
   ``incomparable`` and fail, since a metric shift there says nothing about the
   model.
 
-Baselines ship inside the package, next to each model's checkpoints
-(``engine/TrainedModels/<family>/benchmark_baseline/<cpu|cuda>/``; plots excluded) so an installed copy can check itself. To (re)create
-one, run ``generate_benchmark`` into that directory (e.g. after an
-intentional model update) and commit it.
+The regression baselines for the model working copies live in the source
+repository, outside the package, in ``benchmarks/<Model>/<cpu|cuda>/`` (plots
+git-ignored); ``scripts/run_benchmarks.py`` checks or regenerates them. A model
+loaded from a checkout (``make_ngibbs(name, source='checkout')``) gets
+``benchmark_baseline_dir`` pointed there. Anyone can write and check a baseline
+of their own: ``api.benchmark(dir)`` then ``api.check_benchmark(baseline_dir=dir)``.
 """
 
 from __future__ import annotations
@@ -541,8 +543,8 @@ def check_benchmark(
     it); plots do not affect any compared metric.
 
     ``baseline_dir`` defaults to the model's ``benchmark_baseline_dir``
-    attribute (set in ``ngibbs.engine.models``: the packaged
-    ``engine/TrainedModels/<family>/benchmark_baseline/<device>/``). The candidate is written
+    attribute (set by ``make_ngibbs`` for a source checkout's working copy:
+    ``benchmarks/<Model>/<device>/``). The candidate is written
     to ``output_dir`` (default:
     ``./ngibbs_deployment_test/<model>/benchmark_candidate``).
 
@@ -554,7 +556,9 @@ def check_benchmark(
     if baseline_dir is None:
         baseline_dir = getattr(api, 'benchmark_baseline_dir', None)
         if baseline_dir is None:
-            raise ValueError('No baseline_dir given and the model has no benchmark_baseline_dir.')
+            raise ValueError('No baseline_dir given and the model has no benchmark_baseline_dir '
+                             '(only working copies in a source checkout have one); '
+                             'write one with api.benchmark(dir) first.')
     base_idx = load_index(baseline_dir)
     if base_idx.get('format_version') != FORMAT_VERSION:
         raise ValueError(f'Baseline {baseline_dir} has format version {base_idx.get("format_version")}, '

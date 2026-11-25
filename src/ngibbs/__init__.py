@@ -1,13 +1,36 @@
-#nGibbs - Neural network emulators for MELTS and HeFESTo thermodynamic modeling.
+"""nGibbs - Neural network emulators for MELTS and HeFESTo thermodynamic modeling.
 
-#Model singletons are loaded in ngibbs.engine.models for easy access.
+    from ngibbs import make_ngibbs
+    api = make_ngibbs('MELTS120', device='cuda')   # newest compatible version
+    api = make_ngibbs('MELTS120v1.2')              # a specific version
 
-# GPU batch-size tuning (see ngibbs.utils.batch_tuning). Imports are deferred
-# so `import ngibbs` stays light; the packaged models are only loaded when a
-# tuning call needs one.
+    import ngibbs
+    ngibbs.available_models()                      # what is on Hugging Face
+
+Models download on first use (see ngibbs.registry). Imports are deferred so
+`import ngibbs` stays light.
+"""
 
 
-def tune_batch_size(api=None, model='HeFESToEmulator', **kwargs):
+def make_ngibbs(name, device='cpu', **kwargs):
+    """Load an nGibbs emulator by name, downloading it on first use.
+    See ngibbs.registry.make_ngibbs for all options."""
+    from .registry import make_ngibbs as _make
+    return _make(name, device=device, **kwargs)
+
+
+def available_models(name=None, **kwargs):
+    """Print the models on Hugging Face: the newest version of each (default),
+    'all' versions of every model, or every version of one model by name.
+    See ngibbs.registry.available_models."""
+    from .registry import available_models as _available
+    return _available(name, **kwargs)
+
+
+# GPU batch-size tuning (see ngibbs.utils.batch_tuning).
+
+
+def tune_batch_size(api=None, model='HeFESToEarth', **kwargs):
     """Tune and persist VRAM-aware batch sizes for this GPU.
 
     ``ngibbs.tune_batch_size()`` tunes the packaged HeFESTo GPU model; pass
@@ -39,24 +62,20 @@ def clear_batch_tuning(device='cuda', workloads=None):
     batch_tuning.clear(device, workloads=workloads)
 
 
-# Model objects, importable at package level:
-#     from ngibbs import MELTS120EmulatorCPU, HeFESToEmulatorGPU
-# Resolved lazily (PEP 562) from ngibbs.engine.models, so `import ngibbs` alone
-# loads no checkpoints; the first model access loads all of them, once.
+# Deprecated model objects (HeFESToEmulatorCPU, CPU_MODELS, ...), resolved
+# lazily from ngibbs.engine.models, which warns; use make_ngibbs instead.
 _MODEL_NAMES = ('HeFESToEmulator', 'HeFESToMarsEmulator', 'MELTS102Emulator', 'MELTS120Emulator')
 _LAZY_MODEL_ATTRS = frozenset(
     [f'{n}{d}' for n in _MODEL_NAMES for d in ('CPU', 'GPU')] + ['CPU_MODELS', 'GPU_MODELS'])
 
-__all__ = ['tune_batch_size', 'batch_tuning_summary', 'show_batch_tuning',
-           'clear_batch_tuning', *sorted(_LAZY_MODEL_ATTRS)]
+__all__ = ['make_ngibbs', 'available_models', 'tune_batch_size', 'batch_tuning_summary',
+           'show_batch_tuning', 'clear_batch_tuning']
 
 
 def __getattr__(name):
     if name in _LAZY_MODEL_ATTRS:
-        from .engine import models
-        value = getattr(models, name)
-        globals()[name] = value  # cache: later lookups skip __getattr__
-        return value
+        from .engine.models import deprecated_attr
+        return deprecated_attr(name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

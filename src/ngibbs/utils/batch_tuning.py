@@ -529,21 +529,18 @@ def tune_batch_size(api, workloads: Sequence[str] = ('nn', 'eos_isomorphic'), *,
 # --------------------------------------------------------------------------- #
 # Package-level convenience: named models, reporting, verification, CLI
 # --------------------------------------------------------------------------- #
-DEFAULT_MODEL = 'HeFESToEmulator'
+DEFAULT_MODEL = 'HeFESToEarth'
 
 
 def get_gpu_model(name: str = DEFAULT_MODEL):
-    """The ready-made GPU singleton ``name`` from ``ngibbs.engine.models``.
-
-    Importing that module loads every packaged checkpoint, so it is only
-    imported here, on demand.
-    """
+    """The model ``name`` (e.g. 'HeFESToEarth', 'MELTS120v1.0') on the GPU,
+    via ``ngibbs.make_ngibbs``. The deprecated object names
+    ('HeFESToEmulator', ...) are still accepted."""
     if not torch.cuda.is_available():
         raise RuntimeError("No CUDA device visible; batch tuning only applies to GPUs.")
-    from ..engine import models  # heavy: loads checkpoints
-    if name not in models.GPU_MODELS:
-        raise KeyError(f"Unknown model {name!r}; available: {sorted(models.GPU_MODELS)}")
-    return models.GPU_MODELS[name]
+    from ..engine.models import DEPRECATED_NAMES
+    from ..registry import make_ngibbs
+    return make_ngibbs(DEPRECATED_NAMES.get(name, name), device='cuda')
 
 
 def tune(api=None, model: str = DEFAULT_MODEL, *, verify_rows: Optional[int] = None,
@@ -639,7 +636,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         prog='python -m ngibbs tune',
         description="Tune and persist VRAM-aware batch sizes for an nGibbs GPU model.")
     ap.add_argument('--model', default=DEFAULT_MODEL,
-                    help=f"packaged model name (default {DEFAULT_MODEL}; HeFESTo models need no composition)")
+                    help=f"model name, optionally with a version, e.g. MELTS120v1.0 (default {DEFAULT_MODEL}; "
+                         "HeFESTo models need no composition)")
     ap.add_argument('--workloads', nargs='+', default=['nn', 'eos_isomorphic'],
                     choices=['nn'] + [f'eos_{t}' for t in EOS_TIER_PROPERTIES])
     ap.add_argument('--composition', default=None,

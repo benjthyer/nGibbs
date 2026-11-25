@@ -72,8 +72,16 @@ from ngibbs.deployment_tests.training_coverage import (
 ENGINE_DIR = Path(_ngibbs_engine.__file__).resolve().parent
 TRAINED_DIR = ENGINE_DIR / 'TrainedModels'
 DT_DIR = Path(_ngibbs_dt.__file__).resolve().parent
-HEFESTO_STANDARDS = DT_DIR / 'HeFESToAdiabatStandards'
-MELTS_STANDARDS = DT_DIR / 'MELTSIsobaricStandards'
+# Standard runs ship inside each model's folder (<model>/standards/).
+from ngibbs.registry import CHECKOUT_MODELS_DIR as _MODELS_DIR
+
+
+def _hefesto_standards(planet):
+    return _MODELS_DIR / f'HeFESTo{planet}' / 'standards'
+
+
+def _melts_standards(version):
+    return _MODELS_DIR / f'MELTS{version}' / 'standards'
 
 MELTS_VARIANT = 'Cr'
 PATHWAYS = ('isothermal', 'isentropic')
@@ -230,10 +238,10 @@ def run_density(out_dir: Path):
         print(f'[density] {fam["label"]}')
         P, T, comp, keys = _load_family(fam)
         if fam['space'] == 'elements':
-            std = hefesto_standard_points(HEFESTO_STANDARDS / fam['std_planet'])
+            std = hefesto_standard_points(_hefesto_standards(fam['std_planet']))
             plot_pt_density(name, fam, P, T, std, out_dir)
         else:
-            std = melts_standard_points(MELTS_STANDARDS / fam['std_version'],
+            std = melts_standard_points(_melts_standards(fam['std_version']),
                                         variant=MELTS_VARIANT, oxide_cols=keys)
         plot_harker_density(name, fam, comp, std[3] if std is not None else None, out_dir)
 
@@ -331,7 +339,7 @@ def hefesto_sections(name, fam, api, out_dir):
     from ngibbs.deployment_tests._phase_plotting import (
         phase_colors, build_ordered_phases, draw_phase_stack,
     )
-    rocks = find_tables(HEFESTO_STANDARDS / fam['std_planet'])[:3]
+    rocks = find_tables(_hefesto_standards(fam['std_planet']))[:3]
     indexer = api.isothermal_emulator.ml_indexer
     mpd = indexer.mass_phasedict
     ordered = build_ordered_phases(mpd)
@@ -485,7 +493,7 @@ def melts_sections(name, fam, api, out_dir):
         draw_melts_phase_stack,
     )
     sub = api.cr if MELTS_VARIANT == 'Cr' else api.nocr
-    std_dir = MELTS_STANDARDS / fam['std_version'] / MELTS_VARIANT
+    std_dir = _melts_standards(fam['std_version']) / MELTS_VARIANT
     ordered = build_ordered_melts_phases(MELTS_PHASE_STACK_ORDER)
     colors = melts_phase_colors()
     model = MELTS_PTT_MODEL[fam['std_version']]

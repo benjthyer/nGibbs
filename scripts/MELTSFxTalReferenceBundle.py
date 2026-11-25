@@ -36,7 +36,7 @@ batch_file = '120batch'
 N_PICKS = 20
 delta = -1
 
-STANDARDS_DIR = REPO_ROOT / 'src' / 'ngibbs' / 'deployment_tests' / 'MELTSIsobaricStandards' / '120'
+STANDARDS_DIR = REPO_ROOT / 'src' / 'ngibbs' / 'engine' / 'TrainedModels' / 'MELTS120' / 'standards'
 FXTAL_DIR = STANDARDS_DIR / 'NoCr_v232_dndT_FxTal_Test'
 FXTAL_IMPORT_WS = STANDARDS_DIR / 'NoCr_v232_dndT_FxTal_Import'     # FxTal runs only (step 1)
 BATCH_WS = STANDARDS_DIR / 'NoCr_v232_dndT_FxTal_BatchWorkspace'   # batch runs + FxTal runs (steps 3-4)

@@ -318,7 +318,7 @@ VALIDATION_DATASET = 'validationDataset'
 
 
 def model_label(api) -> str:
-    """The model's name (``benchmark_name``, set in ``ngibbs.engine.models``),
+    """The model's name (``benchmark_name``, set by ``ngibbs.make_ngibbs``),
     else its model directory's name."""
     name = getattr(api, 'benchmark_name', None)
     if name:

@@ -193,9 +193,8 @@ def test_polish_negative_sp_imposes_only_the_violated_constraint():
     assert torch.equal(out[3], ic[3])
 
 
-_MELTS_120 = Path(__file__).resolve().parents[2] / "src" / "ngibbs" / "engine" / "TrainedModels" / "120"
-_STANDARDS = (Path(__file__).resolve().parents[2] / "src" / "ngibbs" / "deployment_tests" /
-              "MELTSIsobaricStandards" / "120" / "NoCr" / "BishopTuff")
+_MELTS_120 = Path(__file__).resolve().parents[2] / "src" / "ngibbs" / "engine" / "TrainedModels" / "MELTS120"
+_STANDARDS = _MELTS_120 / "standards" / "NoCr" / "BishopTuff"
 
 
 @pytest.mark.skipif(not (_MELTS_120.exists() and _STANDARDS.exists()),

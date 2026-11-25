@@ -1,9 +1,9 @@
 """Deployable self-tests for the shipped nGibbs emulators.
 
-These modules run against ground-truth data that ships inside the package
-(this directory) so an end user can call ``HeFESToEmulatorCPU.test()`` and get
-a quality-metrics report without any external data or the training-side
-``builder`` package.
+These modules run against ground-truth data that ships with each model (its
+validation datasets and its standards/ folder), so an end user can call
+``make_ngibbs('HeFESToEarth').test()`` and get a quality-metrics report without
+any other data or the training-side ``builder`` package.
 
 Nothing here imports ``builder`` or ``scripts``; the research-side equivalents
 live in ``scripts/`` and may.

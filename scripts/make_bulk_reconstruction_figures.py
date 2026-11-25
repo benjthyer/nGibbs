@@ -18,7 +18,7 @@ Test_subset bundles), so this file can live in any repository.
 Examples
 --------
     python make_bulk_reconstruction_figures.py                       # every shipped emulator
-    python make_bulk_reconstruction_figures.py --families 102 120 --kinds isothermal
+    python make_bulk_reconstruction_figures.py --families MELTS102 MELTS120 --kinds isothermal
     python make_bulk_reconstruction_figures.py --pair my_model.tar my_Test_subset.tar.gz
 """
 

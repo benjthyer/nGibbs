@@ -6,9 +6,9 @@ The packaged, ``builder``-free equivalent of
 RAW HeFESTo simulation output folders (one per standard rock, each an
 isobaric/isentropic-sweep run containing ``control`` + ``fort.56`` + ``fort.99``),
 read straight off disk exactly the way ``melts_comparison.py`` reads raw
-alphaMELTS output -- never a pre-baked MELTStable CSV. The shipped set lives in
-``deployment_tests/HeFESToAdiabatStandards/<Earth|Mars>/<rock>/``, one set per
-planet, each run along that planet's own P-T conditions.
+alphaMELTS output -- never a pre-baked MELTStable CSV. Each HeFESTo model ships
+its set in its own folder, ``<model>/standards/<rock>/`` (HeFESToEarth and
+HeFESToMars each run along their planet's own P-T conditions).
 
 The low-level fort.*/``control`` parsers (``_parse_control_file``,
 ``_parse_fort56``, ``load_fort99_componentMoles``, ...) live in
@@ -63,11 +63,6 @@ from ._phase_plotting import (
 
 ELEMENT_KEYS = ['Si', 'Mg', 'Fe', 'Ca', 'Al', 'Na', 'Cr', 'O']
 
-PACKAGE_DIR = Path(__file__).resolve().parent
-STANDARDS_ROOT = PACKAGE_DIR / 'HeFESToAdiabatStandards'
-EARTH_TABLE_DIR = STANDARDS_ROOT / 'Earth'
-MARS_TABLE_DIR = STANDARDS_ROOT / 'Mars'
-DEFAULT_TABLE_DIR = EARTH_TABLE_DIR
 
 # fort.56's own (bare, un-suffixed) column names for P/T/S.
 P_COL = 'P(GPa)'

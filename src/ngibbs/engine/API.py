@@ -670,22 +670,26 @@ def create_isentrope_design_matrix(
 # --------------------------------------------------------------------------- #
 # Single-directory model discovery (EmulatorAPI / HeFESToAPI / MELTSAPI)
 #
-# Replaces the old "long list of explicit checkpoint-path kwargs" constructors:
-# callers now point at one directory (typically engine/TrainedModels/<Family>/)
-# and everything else -- which checkpoint is isothermal/isentropic/openox,
-# which file is the temperature FCNN, which *_Test_subset*.tar.gz quality-eval
-# bundle and which standards directory belong to it -- is found by filename
-# convention. See EmulatorAPI.__init__'s docstring for the convention itself.
+# A model is one self-contained folder (a working copy in
+# engine/TrainedModels/<Model>/, or a released version downloaded by
+# ngibbs.registry): its checkpoints, temperature FCNN and *_Test_subset*.tar.gz
+# validation bundles sit at the top, identified by filename convention (see
+# EmulatorAPI.__init__'s docstring), and its standard simulator runs are in
+# standards/. Nothing is looked up outside the folder.
 # --------------------------------------------------------------------------- #
 import re as _re
 import warnings as _warnings
 
 
-def _deployment_tests_root() -> Path:
-    """The ``ngibbs/deployment_tests/`` directory (sibling of ``engine/``),
-    searched recursively for *_Test_subset*.tar.gz quality bundles and,
-    one level deep, for standards directories."""
-    return Path(__file__).resolve().parent.parent / 'deployment_tests'
+STANDARDS_SUBDIR = 'standards'
+
+
+def _standards_dir(model_dir) -> Optional[Path]:
+    """``<model_dir>/standards/``: the model's standard simulator runs (raw
+    alphaMELTS isobaric runs for MELTS, HeFESTo adiabat runs for HeFESTo), or
+    None if the model ships none."""
+    d = Path(model_dir) / STANDARDS_SUBDIR
+    return d if d.is_dir() else None
 
 
 def _checkpoint_tokens(path: Path) -> list:
@@ -770,19 +774,11 @@ def _discover_checkpoints(model_dir: Path, variant: Optional[str] = None) -> dic
     return result
 
 
-def _discover_test_bundle(
-    deployment_tests_root: Path,
-    checkpoint_path: Path,
-    model_dir: Optional[Path] = None,
-) -> Optional[Path]:
+def _discover_test_bundle(checkpoint_path: Path, model_dir: Path) -> Optional[Path]:
     """Find the ``*_Test_subset*.tar.gz`` quality-eval bundle matching
-    ``checkpoint_path``.
-
-    Candidates are gathered from ``model_dir`` itself first (non-recursive --
-    the normal layout keeps a checkpoint and its bundle side by side, e.g.
-    'TrainedModels/120/120SedIgClosed_NoCr_NPT.tar' next to
-    '120SedIgClosed_NoCr_NPT_Test_subset15000.tar.gz'), then, as a fallback
-    for older layouts, recursively under ``deployment_tests_root``.
+    ``checkpoint_path`` among those directly in ``model_dir`` (a checkpoint and
+    its bundle sit side by side, e.g. 'MELTS120/120Closed_NoCr_NPT.tar' next
+    to '120Closed_NoCr_NPT_Test_subset15000.tar.gz').
 
     Matching is primarily by (kind, variant) classification -- the same
     ``_classify_checkpoint_kind``/``_classify_checkpoint_variant`` used for
@@ -793,12 +789,6 @@ def _discover_test_bundle(
     basename, with a trailing ``_train<N>`` and its extension stripped, as a
     prefix of the bundle's basename) only if no bundle's kind/variant can be
     classified.
-
-    ``model_dir`` is tried alone first, and only if it yields nothing is the
-    search widened to ``deployment_tests_root`` -- so a bundle that already
-    resolves unambiguously next to its checkpoint is never second-guessed
-    against (and never spuriously warns about) an unrelated same-named file
-    living elsewhere under ``deployment_tests_root``.
     """
     ckpt_kind = _classify_checkpoint_kind(checkpoint_path)
     ckpt_variant = _classify_checkpoint_variant(checkpoint_path)
@@ -825,14 +815,9 @@ def _discover_test_bundle(
             )
         return matches[0]
 
-    if model_dir is not None and Path(model_dir).is_dir():
-        found = _best(sorted(Path(model_dir).glob('*Test_subset*.tar.gz')))
-        if found is not None:
-            return found
-
-    if deployment_tests_root.is_dir():
-        return _best(sorted(deployment_tests_root.rglob('*Test_subset*.tar.gz')))
-    return None
+    if not Path(model_dir).is_dir():
+        return None
+    return _best(sorted(Path(model_dir).glob('*Test_subset*.tar.gz')))
 
 
 def _name_tokens(name: str) -> set:
@@ -857,50 +842,15 @@ def _name_tokens(name: str) -> set:
 
 def _infer_melts_version(model_dir) -> Optional[str]:
     """'MELTS102'/'MELTS110'/'MELTS120' from a '102'/'110'/'120' token in
-    model_dir's own name (see _name_tokens), else None. Two different version
-    tokens also give None (ambiguous)."""
-    found = {'MELTS' + t for t in _name_tokens(Path(model_dir).resolve().name) if t in ('102', '110', '120')}
-    return found.pop() if len(found) == 1 else None
-
-
-def _discover_standards_dir(deployment_tests_root: Path, model_dir: Path) -> Optional[Path]:
-    """Best-effort match of a 'standards' comparison directory (MELTS's raw
-    alphaMELTS isobaric-cooling standards, or HeFESTo's MELTStable-format CSV
-    directory) under ``deployment_tests_root`` to ``model_dir``'s model
-    family, by fuzzy token overlap (see ``_name_tokens``).
-
-    A model_dir named after a bare version number (MELTS's '120', say) shares
-    no name token at all with a directory like 'MELTSIsobaricStandards' --
-    the overlap is only findable one level down, in a numeric-named
-    subdirectory ('MELTSIsobaricStandards/120'). Likewise HeFESTo's standards
-    are split per planet ('HeFESToAdiabatStandards/Earth', '.../Mars'), since
-    each set is run along that planet's own P-T conditions. So for each
-    'standard' candidate, the subdirectory sharing the most name tokens with
-    model_dir ('120', 'Earth', 'Mars', ...) adds to that candidate's score
-    and is what gets returned for it, on top of plain top-level name overlap.
-    Returns None if nothing scores > 0 either way.
-    """
-    if not deployment_tests_root.is_dir():
-        return None
-    target = _name_tokens(model_dir.name)
-    candidates = [d for d in deployment_tests_root.iterdir()
-                  if d.is_dir() and 'standard' in _name_tokens(d.name)]
-    best_score, best_result = 0, None
-    for c in candidates:
-        score = len(_name_tokens(c.name) & target)
-        result = c
-        sub_score, best_sub = 0, None
-        for sub in sorted(c.iterdir()):
-            if sub.is_dir():
-                s = len(_name_tokens(sub.name) & target)
-                if s > sub_score:
-                    sub_score, best_sub = s, sub
-        if best_sub is not None:
-            score += sub_score
-            result = best_sub
-        if score > best_score:
-            best_score, best_result = score, result
-    return best_result
+    model_dir's name (see _name_tokens), else in its parent's name (a
+    downloaded version folder is <Model>/v<X.Y>/), else None. Two different
+    version tokens in one name also give None (ambiguous). Released models
+    state it in their model card (api_kwargs.melts_version) instead."""
+    for name in (Path(model_dir).resolve().name, Path(model_dir).resolve().parent.name):
+        found = {'MELTS' + t for t in _name_tokens(name) if t in ('102', '110', '120')}
+        if found:
+            return found.pop() if len(found) == 1 else None
+    return None
 
 
 class EmulatorAPI:
@@ -941,10 +891,10 @@ class EmulatorAPI:
         Parameters
         ----------
         model_dir : str or Path
-            Directory holding this model family's checkpoint files (e.g.
-            ``engine/TrainedModels/HeFESTo_Adiabats/``). Checkpoints are
-            auto-discovered by filename convention, scanning ``model_dir``
-            itself (non-recursive):
+            The model's folder (e.g. ``engine/TrainedModels/HeFESToEarth/``,
+            or a downloaded version; ``ngibbs.make_ngibbs`` finds it for
+            you). Checkpoints are auto-discovered by filename convention,
+            scanning ``model_dir`` itself (non-recursive):
 
             - a ``*.tar`` whose filename contains 'NPT' or 'isothermal' is
               the isothermal (closed, T-input) emulator
@@ -957,14 +907,12 @@ class EmulatorAPI:
             At least one of the isothermal/isentropic checkpoints must be
             found, or construction raises ``FileNotFoundError``.
 
-            The matching ``*_Test_subset*.tar.gz`` quality-eval bundle for
+            The matching ``*_Test_subset*.tar.gz`` validation bundle for
             each discovered checkpoint (ground truth for ``self.test()``) is
-            auto-discovered by kind/variant, checked first inside
-            ``model_dir`` itself (bundles normally sit right next to their
-            checkpoint) and, as a fallback, recursively under the sibling
-            ``deployment_tests/`` directory — wherever you've organized it.
-            A checkpoint with no matching bundle is simply skipped from
-            ``self.test()`` (see its docstring).
+            found by kind/variant next to it in ``model_dir``. A checkpoint
+            with no matching bundle is simply skipped from ``self.test()``
+            (see its docstring). Standard simulator runs, if any, are in
+            ``model_dir/standards/``.
         device : str, default='cpu'
             Torch device ('cpu' or 'cuda')
         verbose : bool, default=False
@@ -1009,18 +957,17 @@ class EmulatorAPI:
         self._open_path = str(openox_model_path) if openox_model_path is not None else None
 
         # Ground-truth data for self.test(): one ML-ready bundle per emulator,
-        # keyed by {'isothermal', 'isentropic', 'openox'}, auto-discovered
-        # under the sibling deployment_tests/ directory. self.test() scores
-        # every configured emulator whose bundle file exists and writes the
-        # metrics tables (default: ./ngibbs_deployment_test/<model>/validationDataset).
-        _dep_root = _deployment_tests_root()
+        # keyed by {'isothermal', 'isentropic', 'openox'}, found next to its
+        # checkpoint. self.test() scores every configured emulator whose bundle
+        # file exists and writes the metrics tables (default:
+        # ./ngibbs_deployment_test/<model>/validationDataset).
         self._test_bundles = {}
         for _kind, _path in (('isothermal', isothermal_model_path),
                               ('isentropic', isentropic_model_path),
                               ('openox', openox_model_path)):
             if _path is None:
                 continue
-            _bundle = _discover_test_bundle(_dep_root, _path, model_dir=Path(model_dir))
+            _bundle = _discover_test_bundle(_path, Path(model_dir))
             if _bundle is not None:
                 self._test_bundles[_kind] = str(_bundle)
 
@@ -2109,7 +2056,7 @@ class EmulatorAPI:
             outputs = [outputs] if isinstance(outputs, str) else list(outputs)
             if self._ptt_props_fn is None:
                 raise ValueError("'ptt_props' needs the internal MELTS EOS and is only available "
-                                 "through a MELTSAPI (e.g. MELTS102EmulatorCPU / MELTS120EmulatorCPU).")
+                                 "through a MELTSAPI (e.g. make_ngibbs('MELTS102')).")
             outputs.remove('ptt_props')
             for needed in ('ptt_out', 'component_moles', 'phase_tables'):
                 if needed not in outputs:
@@ -2572,20 +2519,13 @@ class HeFESToAPI(EmulatorAPI):
         Parameters
         ----------
         model_dir : str or Path
-            Directory holding this HeFESTo model's checkpoint files (e.g.
-            ``engine/TrainedModels/HeFESTo_Adiabats/``). See
-            ``EmulatorAPI.__init__``'s docstring for the checkpoint/test-
-            bundle discovery convention (isothermal/isentropic/temperature
-            checkpoints found in ``model_dir`` itself; the matching
-            ``*_Test_subset*.tar.gz`` quality bundles found recursively under
-            the sibling ``deployment_tests/``). The MELTStable-format
-            standards directory for the HeFESTo-specific bulk-property/
-            phase-abundance comparison in ``self.test()`` is auto-discovered
-            the same way, by fuzzy name match against ``model_dir``'s name
-            (e.g. ``engine/TrainedModels/HeFESToEarthAdiabat`` ->
-            ``deployment_tests/HeFESToAdiabatStandards/Earth``,
-            ``HeFESToMars`` -> ``.../Mars``); left unconfigured
-            (comparison skipped, not failed) if nothing matches.
+            The HeFESTo model's folder (e.g.
+            ``engine/TrainedModels/HeFESToEarth/``). See
+            ``EmulatorAPI.__init__``'s docstring for what is found in it. The
+            standard adiabat runs for the HeFESTo-specific bulk-property/
+            phase-abundance comparison in ``self.test()`` are
+            ``model_dir/standards/``; the comparison is skipped, not failed,
+            if the model ships none.
         device : str, default='cpu'
             Torch device ('cpu' or 'cuda')
         verbose : bool, default=False
@@ -2611,11 +2551,10 @@ class HeFESToAPI(EmulatorAPI):
             mass_balance=mass_balance,
         )
 
-        # Directory of MELTStable adiabat CSVs for the HeFESTo-specific part of
-        # self.test() (bulk-property + phase-abundance comparison vs the
-        # internal vectorised EOS), auto-discovered by fuzzy name match
-        # against model_dir under the sibling deployment_tests/ directory.
-        _standards = _discover_standards_dir(_deployment_tests_root(), Path(model_dir))
+        # Standard adiabat runs for the HeFESTo-specific part of self.test()
+        # (bulk-property + phase-abundance comparison vs the internal
+        # vectorised EOS): model_dir/standards/.
+        _standards = _standards_dir(model_dir)
         self._test_meltstable_dir = str(_standards) if _standards is not None else None
 
         assert self.isothermal_emulator is not None and self.isentropic_emulator is not None, (
@@ -2703,9 +2642,9 @@ class HeFESToAPI(EmulatorAPI):
 
     @property
     def standard_workspace_dir(self) -> Optional[Path]:
-        """The raw HeFESTo standard-rock runs shipped for this model (its
-        standard workspace): set explicitly (``ngibbs.engine.models`` does),
-        else auto-discovered under ``deployment_tests/`` by name, or None."""
+        """The raw HeFESTo standard-rock runs shipped with this model (its
+        standard workspace, ``model_dir/standards/``), unless set explicitly;
+        None if it ships none."""
         pinned = self.__dict__.get('_standard_workspace_dir')
         if pinned is not None:
             return Path(pinned)
@@ -3143,16 +3082,15 @@ class MELTSAPI:
         Parameters
         ----------
         model_dir : str or Path
-            Directory holding both the Cr- and NoCr-tagged checkpoints for
-            this MELTS model family (e.g. ``engine/TrainedModels/MELTS120/``,
-            which holds ``120SedIgClosed_{Cr,NoCr}_{NPT,NPS}_train2.tar`` and
-            ``120SedIgOpen_{Cr,NoCr}_train2.tar`` side by side). Each
-            checkpoint's Cr/NoCr sub-API and isothermal/isentropic/openox
-            role are auto-discovered from its filename — see
-            ``EmulatorAPI.__init__``'s docstring for the exact convention.
-            The matching ``*_Test_subset*.tar.gz`` quality bundles (up to six,
-            consumed by ``self.test()``) are located the same way, under the
-            sibling ``deployment_tests/`` directory.
+            The MELTS model's folder, holding both the Cr- and NoCr-tagged
+            checkpoints (e.g. ``engine/TrainedModels/MELTS102/``, which holds
+            ``102Closed_{Cr,NoCr}_NPT.tar`` and ``102Open_{Cr,NoCr}_NPT.tar``
+            side by side). Each checkpoint's Cr/NoCr sub-API and
+            isothermal/isentropic/openox role are auto-discovered from its
+            filename — see ``EmulatorAPI.__init__``'s docstring for the exact
+            convention. Their ``*_Test_subset*.tar.gz`` validation bundles
+            (consumed by ``self.test()``) sit next to them, and the standard
+            alphaMELTS runs are in ``model_dir/standards/``.
         device : str, default='cpu'
             Torch device ('cpu' or 'cuda')
         verbose : bool, default=False
@@ -3172,8 +3110,9 @@ class MELTSAPI:
             CaCO3 speciation), the fluid model ('water' for 1.0.2, Duan
             H2O-CO2 'fluid' for 1.1/1.2) and the solid table (1.1/1.2 add the
             carbon phases). Default: inferred from model_dir's name ('102',
-            '110' or '120' token, e.g. TrainedModels/120); a ValueError is
-            raised if that is not possible and load_melts_eos is True.
+            '110' or '120' token, e.g. TrainedModels/MELTS120; released models
+            set it from their model card); a ValueError is raised if that is
+            not possible and load_melts_eos is True.
         exsolve_cpx : bool, default=False
             Split the network's single (pooled) clinopyroxene into the
             lowest-Gibbs-energy coexisting pair after mass balance, using the
@@ -3212,11 +3151,10 @@ class MELTSAPI:
         self.nocr.modelType = "MELTSAPI"
         self.cr.modelType = "MELTSAPI"
 
-        # Wire the MELTSIsobaricStandards overlay into each sub-API's own
-        # test()-time training-coverage plots (see EmulatorAPI._coverage_standards)
-        # -- auto-discovered the same way MELTSAPI.test() finds its own
-        # standards_dir default, just done once here up front.
-        _std_dir = _discover_standards_dir(_deployment_tests_root(), Path(model_dir))
+        # Wire the standard alphaMELTS runs (model_dir/standards/) into each
+        # sub-API's own test()-time training-coverage plots (see
+        # EmulatorAPI._coverage_standards).
+        _std_dir = _standards_dir(model_dir)
         # Each overlay is built over the oxides that kind's own emulator takes
         # as input, since that set differs by MELTS version and Cr/NoCr.
         if _std_dir is not None:
@@ -3506,17 +3444,13 @@ class MELTSAPI:
 
     @property
     def standard_workspace_dir(self) -> Optional[Path]:
-        """The raw alphaMELTS standard-rock runs shipped for this model (its
-        standard workspace): set explicitly (``ngibbs.engine.models`` does),
-        else ``deployment_tests/MELTSIsobaricStandards/<version>`` matched to
-        this model's directory by name, or None."""
+        """The raw alphaMELTS standard-rock runs shipped with this model (its
+        standard workspace, ``model_dir/standards/``), unless set explicitly;
+        None if it ships none."""
         pinned = self.__dict__.get('_standard_workspace_dir')
         if pinned is not None:
             return Path(pinned)
-        from ngibbs.deployment_tests.melts_comparison import DEFAULT_STANDARDS_DIR
-        found = _discover_standards_dir(_deployment_tests_root(), Path(self._model_dir))
-        found = found if found is not None else DEFAULT_STANDARDS_DIR
-        return found if found.is_dir() else None
+        return _standards_dir(self._model_dir)
 
     @standard_workspace_dir.setter
     def standard_workspace_dir(self, path) -> None:
